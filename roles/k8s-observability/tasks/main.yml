@@ -1,0 +1,15 @@
+---
+# Observability Stack Role
+# Deploys VictoriaMetrics, Loki, and Grafana
+
+galaxy_info:
+  author: NMI
+  description: Observability stack with VictoriaMetrics, Loki, and Grafana
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: k8s-observability
+    tier: "{{ tier }}"
+    state: present
