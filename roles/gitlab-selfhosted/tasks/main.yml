@@ -1,0 +1,15 @@
+---
+# GitLab Self-Hosted Role
+# Deploys GitLab CE on Kubernetes
+
+galaxy_info:
+  author: NMI
+  description: GitLab CE self-hosted deployment
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: gitlab-selfhosted
+    tier: "{{ tier }}"
+    state: present
