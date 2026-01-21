@@ -1,0 +1,28 @@
+# Common variables for all roles
+
+# Tier configuration
+minimal:
+  nodes: 2
+  ha: false
+  cost: "~€12/mo"
+
+small:
+  nodes: 3
+  ha: false
+  cost: "~€21/mo"
+
+medium:
+  nodes: 5
+  ha: true
+  cost: "~€34/mo"
+
+production:
+  nodes: 6
+  ha: true
+  cost: "~€48/mo"
+
+# Infrastructure configuration
+control_plane_count: "{{ vars[tier + '_nodes'] // 2 }}"
+worker_count: "{{ vars[tier + '_nodes'] // 2 }}"
+bastion_server_type: cx22
+worker_server_type: cpx41
