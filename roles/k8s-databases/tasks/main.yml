@@ -1,15 +1,409 @@
 ---
-# Databases Role
-# Deploys PostgreSQL and MongoDB via Percona Operators
+# PostgreSQL and MongoDB - Complete Implementation
+# Percona PostgreSQL and MongoDB clusters with HA
 
-galaxy_info:
-  author: NMI
-  description: Database deployment with Percona Operators
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
-
-roles:
-  - role: k8s-databases
-    tier: "{{ tier }}"
+- name: Create namespace for databases
+  kubernetes.core.k8s:
     state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: database
+
+- name: Create namespace for PostgreSQL
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: postgresql
+
+- name: Create namespace for MongoDB
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: mongodb
+
+- name: Create Percona PostgreSQL Helm repository
+  community.helm.helm_repository:
+    name: percona
+    repo_url: "https://percona.github.io/percona-helm-charts"
+
+- name: Install PostgreSQL using Percona Charts
+  community.helm.helm:
+    name: postgresql
+    chart_ref: percona/postgresql-operator
+    chart_version: "1.9.0"
+    release_namespace: postgresql
+    create_namespace: true
+    release_state: present
+    values:
+      postgresql:
+        enabled: true
+        auth:
+          postgresPassword: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+          password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+          database: postgres
+        persistence:
+          enabled: true
+          size: 20Gi
+          storageClass: standard
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1
+            memory: 2Gi
+      primary:
+        replicaCount: 1
+        persistence:
+          enabled: true
+      standby:
+        enabled: false
+      ssl:
+        enabled: true
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - postgresql
+                topologyKey: kubernetes.io/hostname
+
+- name: Create PostgreSQL Helm repository
+  community.helm.helm_repository:
+    name: bitnami
+    repo_url: "https://charts.bitnami.com/bitnami"
+
+- name: Install PostgreSQL using Bitnami Charts
+  community.helm.helm:
+    name: postgresql-ha
+    chart_ref: bitnami/postgresql-ha
+    chart_version: "13.4.0"
+    release_namespace: postgresql
+    create_namespace: true
+    release_state: present
+    values:
+      postgresql:
+        auth:
+          postgresPassword: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+          password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+          database: postgres
+        primary:
+          persistence:
+            size: 50Gi
+        replica:
+          enabled: true
+          replicas: 1
+      replicaCount: 1
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      service:
+        ports:
+          postgresql: 5432
+      postgresqlExporter:
+        enabled: true
+        image:
+          tag: "0.15.0"
+
+- name: Create MongoDB Helm repository
+  community.helm.helm_repository:
+    name: bitnami
+    repo_url: "https://charts.bitnami.com/bitnami"
+
+- name: Install MongoDB using Bitnami Charts
+  community.helm.helm:
+    name: mongodb
+    chart_ref: bitnami/mongodb
+    chart_version: "15.4.0"
+    release_namespace: mongodb
+    create_namespace: true
+    release_state: present
+    values:
+      auth:
+        enabled: true
+        rootUser: root
+        rootPassword: "{{ lookup('env', 'MONGODB_ROOT_PASSWORD') }}"
+        username: mongouser
+        password: "{{ lookup('env', 'MONGODB_ROOT_PASSWORD') }}"
+      persistence:
+        enabled: true
+        size: 50Gi
+        storageClass: standard
+      replicaSet:
+        enabled: true
+        replicas: 2
+      arbiter:
+        enabled: false
+      replicaCount: 1
+      secondaryReplicaCount: 1
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 2
+          memory: 4Gi
+      service:
+        type: ClusterIP
+      extraEnvVars:
+        - name: MONGODB_INITDB_ROOT_USERNAME
+          value: root
+        - name: MONGODB_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb
+              key: mongodb-root-password
+      primary:
+        podAnnotations:
+          prometheus.io/scrape: "true"
+          prometheus.io/port: "9216"
+        livenessProbe:
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+      mongodb-exporter:
+        enabled: true
+        image:
+          tag: "0.39.0"
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+
+- name: Create PostgreSQL connection Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postgresql-connection
+        namespace: postgresql
+      stringData:
+        host: "postgresql-ha-postgresql-ha-postgresql.default.svc.cluster.local"
+        port: "5432"
+        database: postgres
+        username: postgres
+        password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+
+- name: Create PostgreSQL read-only user Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postgresql-readonly-user
+        namespace: postgresql
+      stringData:
+        host: "postgresql-ha-postgresql-ha-postgresql.default.svc.cluster.local"
+        port: "5432"
+        database: postgres
+        username: readonly
+        password: "readonly-secure-password"
+
+- name: Create MongoDB connection Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: mongodb-connection
+        namespace: mongodb
+      stringData:
+        host: "mongodb-primary.mongodb.svc.cluster.local"
+        port: "27017"
+        username: root
+        password: "{{ lookup('env', 'MONGODB_ROOT_PASSWORD') }}"
+
+- name: Create PostgreSQL backup CronJob
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: postgresql-backup
+        namespace: postgresql
+      spec:
+        schedule: "0 3 * * 0"
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: postgres-backup
+                    image: postgres:15
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        # Connect to primary and run pg_dump
+                        PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB --no-owner --no-acl > /backup/postgres-backup-$(date +%Y%m%d-%H%M%S).sql
+                        
+                        # If MinIO is available, upload backup to S3
+                        if command -v mc &> /dev/null; then
+                          mc alias set minio http://minio.minio-system:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+                          mc cp /backup/postgres-backup-*.sql minio/backups/postgres/
+                        fi
+                    env:
+                      - name: POSTGRES_HOST
+                        valueFrom:
+                          secretKeyRef:
+                            name: postgresql-connection
+                            key: host
+                      - name: POSTGRES_USER
+                        valueFrom:
+                          secretKeyRef:
+                            name: postgresql-connection
+                            key: username
+                      - name: POSTGRES_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: postgresql-connection
+                            key: password
+                      - name: POSTGRES_DB
+                        valueFrom:
+                          secretKeyRef:
+                            name: postgresql-connection
+                            key: database
+                      - name: MINIO_ROOT_USER
+                        valueFrom:
+                          secretKeyRef:
+                            name: minio-client-credentials
+                            key: access-key
+                      - name: MINIO_ROOT_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: minio-client-credentials
+                            key: secret-key
+                    volumeMounts:
+                      - name: backup
+                        mountPath: /backup
+                volumes:
+                  - name: backup
+                    emptyDir: {}
+
+- name: Create MongoDB backup CronJob
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: mongodb-backup
+        namespace: mongodb
+      spec:
+        schedule: "0 4 * * 0"
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: mongo-backup
+                    image: bitnami/mongodb:7.0
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        # Get credentials
+                        MONGO_PASSWORD=$(cat /run/secrets/mongodb-root-password)
+                        MONGO_USER=$(cat /run/secrets/mongodb-root-username)
+                        
+                        # Create backup using mongodump
+                        mongodump \
+                          --host "$MONGO_HOST" \
+                          --port 27017 \
+                          --username "$MONGO_USER" \
+                          --password "$MONGO_PASSWORD" \
+                          --archive=/backup/mongo-backup-$(date +%Y%m%d-%H%M%S).archive
+                        
+                        # If MinIO is available, upload backup
+                        if command -v mc &> /dev/null; then
+                          mc alias set minio http://minio.minio-system:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+                          mc cp /backup/mongo-backup-*.archive minio/backups/mongodb/
+                        fi
+                    env:
+                      - name: MONGO_HOST
+                        valueFrom:
+                          secretKeyRef:
+                            name: mongodb-connection
+                            key: host
+                      - name: MINIO_ROOT_USER
+                        valueFrom:
+                          secretKeyRef:
+                            name: minio-client-credentials
+                            key: access-key
+                      - name: MINIO_ROOT_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: minio-client-credentials
+                            key: secret-key
+                    volumeMounts:
+                      - name: backup
+                        mountPath: /backup
+                    envFrom:
+                      - secretRef:
+                          name: mongodb-connection
+                          optional: false
+                volumes:
+                  - name: backup
+                    emptyDir: {}
+
+- name: Create PostgreSQL connection k8s Secrets manifest
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: k8s-postgresql-credentials
+        namespace: storage
+      stringData:
+        host: "postgresql-ha-postgresql-ha-postgresql.default.svc.cluster.local"
+        port: "5432"
+        username: postgres
+        password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+
+- name: Create MongoDB connection k8s Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: k8s-mongodb-credentials
+        namespace: storage
+      stringData:
+        host: "mongodb-primary.mongodb.svc.cluster.local"
+        port: "27017"
+        username: root
+        password: "{{ lookup('env', 'MONGODB_ROOT_PASSWORD') }}"
