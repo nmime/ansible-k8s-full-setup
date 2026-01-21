@@ -1,0 +1,138 @@
+#!/usr/bin/env ansible-playbook
+---
+# Ansible playbook for full-stack Kubernetes platform deployment
+# This playbook orchestrates deployment of all platform components
+
+- name: Deploy Full-Stack Kubernetes Platform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    project: k8s
+    tier: medium
+    
+  pre_tasks:
+    - name: Display startup message
+      ansible.builtin.debug:
+        msg: "Starting deployment of Kubernetes platform tier {{ tier }}"
+    
+    - name: Verify required variables
+      ansible.builtin.fail:
+        msg: "Required variable not set: {{ item }}"
+      when: vars[item] is not defined
+      loop:
+        - domain
+        - email
+        - environment
+
+- name: Step 1 - Infrastructure Provisioning
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: hetzner-infra
+      tier: "{{ tier }}"
+
+- name: Step 2 - DNS Configuration
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: hetzner-infra
+      tier: "{{ tier }}"
+      task: dns
+
+- name: Step 3 - Kubernetes Cluster Setup
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-cluster-management
+      tier: "{{ tier }}"
+
+- name: Step 4 - TLS Certificates
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-cluster-management
+      tier: "{{ tier }}"
+      task: tls
+
+- name: Step 5 - Network Security (VPN & Firewall)
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: network-security
+      tier: "{{ tier }}"
+
+- name: Step 6 - Storage Setup (MinIO)
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: minio-storage
+      tier: "{{ tier }}"
+
+- name: Step 7 - Secrets Management (Vault)
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-secrets
+      tier: "{{ tier }}"
+
+- name: Step 8 - Database Deployment
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-databases
+      tier: "{{ tier }}"
+
+- name: Step 9 - GitLab Setup
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: gitlab-selfhosted
+      tier: "{{ tier }}"
+
+- name: Step 10 - GitOps (ArgoCD)
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-gitops
+      tier: "{{ tier }}"
+
+- name: Step 11 - Observability Stack
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-observability
+      tier: "{{ tier }}"
+
+- name: Step 12 - Autoscaling (KEDA)
+  hosts: localhost
+  gather_facts: false
+  
+  roles:
+    - role: k8s-autoscaling
+      tier: "{{ tier }}"
+
+- name: Step 13 - Final Verification
+  hosts: localhost
+  gather_facts: false
+  
+  post_tasks:
+    - name: Display deployment summary
+      ansible.builtin.debug:
+        msg: |
+          Platform deployment completed successfully!
+          Services deployed across {{ tier }} tier configuration
+          Services: Infrastructure, K8s Cluster, MinIO, Vault, Databases, 
+                   GitLab, ArgoCD, Observability, Autoscaling
