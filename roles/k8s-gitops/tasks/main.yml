@@ -1,0 +1,15 @@
+---
+# GitOps (ArgoCD) Role
+# Deploys ArgoCD for GitOps continuous delivery
+
+galaxy_info:
+  author: NMI
+  description: ArgoCD GitOps continuous delivery
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: k8s-gitops
+    tier: "{{ tier }}"
+    state: present
