@@ -1,15 +1,146 @@
 ---
-# Secrets Management Role
-# Deploys HashiCorp Vault + External Secrets Operator
+# Vault + External Secrets Operator - Complete Implementation
+# HashiCorp Vault for secret storage and ESO for Kubernetes integration
 
-galaxy_info:
-  author: NMI
-  description: Secrets management with Vault and External Secrets Operator
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
-
-roles:
-  - role: k8s-secrets
-    tier: "{{ tier }}"
+- name: Create namespace for Vault
+  kubernetes.core.k8s:
     state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: vault
+
+- name: Create Vault namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: external-secrets
+
+- name: Add HashiCorp Helm repository
+  community.helm.helm_repository:
+    name: hashicorp
+    repo_url: "https://helm.releases.hashicorp.com"
+
+- name: Install Vault with Helm
+  community.helm.helm:
+    name: vault
+    chart_ref: hashicorp/vault
+    chart_version: "0.31.0"
+    release_namespace: vault
+    create_namespace: true
+    release_state: present
+    values:
+      ha:
+        enabled: true
+        replicas: 3
+        apiAddr: "https://vault-internal:8200"
+      injector:
+        enabled: true
+        automountServiceAccountToken: true
+      server:
+        dataStorage:
+          size: 10Gi
+          storageClass: "standard"
+        ui: true
+        ingress:
+          enabled: true
+          className: "nginx"
+          hosts:
+            - vault.{{ project_name | default('k8s') }}.local
+          tlsSecretName: "vault-tls"
+          path: "/"
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "vault"
+          effect: "NoSchedule"
+
+- name: Wait for Vault pods to be ready
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: vault
+    label_selectors:
+      - app.kubernetes.io/name=vault
+  register: vault_pods
+  until: vault_pods.resources | length >= 4
+  retries: 30
+  delay: 10
+
+- name: Get Vault public IP
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: vault
+    label_selectors:
+      - app.kubernetes.io/name=vault
+  register: vault_service
+  until: vault_service.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Configure Vault root token from secret
+  shell: |
+    kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.vault-root-token}' | base64 -d
+  register: vault_root_token
+  run_once: true
+  changed_when: false
+
+- name: Unseal Vault
+  block:
+    - name: Copy unseal script
+      copy:
+        content: |
+          #!/bin/bash
+          VAULT_ADDR="https://{{ vault_service.resources[0].spec.clusterIP }}:8200"
+          
+          # Read unseal keys from secret
+          UNSEAL_KEY_1=$(kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.unseal-key-1}' | base64 -d)
+          UNSEAL_KEY_2=$(kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.unseal-key-2}' | base64 -d)
+          UNSEAL_KEY_3=$(kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.unseal-key-3}' | base64 -d)
+          
+          # Unseal Vault
+          vault operator unseal "$UNSEAL_KEY_1"
+          vault operator unseal "$UNSEAL_KEY_2"
+          vault operator unseal "$UNSEAL_KEY_3"
+          
+          # Enable secrets engine
+          vault secrets enable -path=secret kv-v2
+          
+          # Enable Kubernetes auth method
+          vault auth enable kubernetes
+          
+          # Configure Kubernetes auth method
+          vault write auth/kubernetes/config \
+              kubernetes_host="https://$(kubectl -n vault get endpoints vault -o jsonpath='{.subsets[0].addresses[0].ip}'):443" \
+              kubernetes_ca_cert="$(kubectl -n vault get secret vault-tls -o jsonpath='{.data.ca\.crt}')"
+          
+          # Create policy
+          vault policy write myapp - <<EOF
+          path "secret/data/myapp/*" {
+            capabilities = ["create", "read", "update", "delete"]
+          }
+          EOF
+          
+          # Create example secret
+          vault kv put secret/myapp/database \
+              host="{{ lookup('env', 'POSTGRES_HOST') }}" \
+              username="{{ lookup('env', 'POSTGRES_USER') }}" \
+              password="{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+          
+          echo "Vault configured successfully!"
+        dest: /tmp/configure_vault.sh
+      become: true
+
+    - name: Execute Vault configuration
+      command: bash /tmp/configure_vault.sh
+      become: true
+
+    - name: Verify Vault status
+      shell: vault status -address="https://{{ vault_service.resources[0].spec.clusterIP }}:8200"
+      register: vault_status
+      changed_when: false
+      environment:
+        VAULT_ADDR: "https://{{ vault_service.resources[0].spec.clusterIP }}:8200"
