@@ -1,0 +1,15 @@
+---
+# Databases Role
+# Deploys PostgreSQL and MongoDB via Percona Operators
+
+galaxy_info:
+  author: NMI
+  description: Database deployment with Percona Operators
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: k8s-databases
+    tier: "{{ tier }}"
+    state: present
