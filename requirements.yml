@@ -1,0 +1,13 @@
+---
+# Ansible collections requirements
+collections:
+  - name: community.general
+    version: 8.0.0
+  - name: kubernetes.core
+    version: 3.3.0
+  - name: community.kubernetes
+    version: 3.2.0
+  - name: community.storage
+    version: 2.0.0
+  - name: infra.container-formation
+    version: 2.0.0
