@@ -1,0 +1,15 @@
+---
+# Kubernetes Cluster Management Role
+# Uses Kubespray to provision Kubernetes cluster
+
+galaxy_info:
+  author: NMI
+  description: Kubernetes cluster installation via Kubespray
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: k8s-cluster-management
+    tier: "{{ tier }}"
+    state: present
