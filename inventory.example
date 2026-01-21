@@ -1,0 +1,46 @@
+---
+# Ansible Inventory for Kubernetes Platform Deployment
+# Copy this file to inventory and customize for your deployment
+
+[global]
+domain = example.com
+email = admin@example.com
+environment = production
+project = k8s
+
+# Tier selection
+# minimal, small, medium, production
+tier = medium
+
+# Infrastructure
+hetzner_api_token = "{{ lookup('env', 'HETZNER_API_TOKEN') }}"
+ssh_user = "{{ lookup('env', 'SSH_USER') }}"
+
+# Kubernetes
+k8s_version = v1.34.3
+k8s_cni = cilium
+k8s_pod_cidr = 10.233.64.0/18
+k8s_service_cidr = 10.233.0.0/18
+
+# Storage
+minio_replicas = 4
+minio_storage_size = 50Gi
+
+# Secrets
+vault_replicas = 3
+eso_enabled = true
+
+# Databases
+postgresql_replicas = 2
+postgresql_storage = 20Gi
+
+# GitLab
+gitlab_runner_concurrent_jobs = 10
+
+# Observability
+metrics_retention = 30d
+metrics_storage = 50Gi
+logging_retention = 14d
+
+# Autoscaling
+keda_enabled = true
