@@ -1,0 +1,15 @@
+---
+# Storage (MinIO) Role
+# Deploys MinIO S3-compatible object storage
+
+galaxy_info:
+  author: NMI
+  description: MinIO S3-compatible object storage deployment
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: minio-storage
+    tier: "{{ tier }}"
+    state: present
