@@ -1,15 +1,220 @@
 ---
-# Kubernetes Cluster Management Role
-# Uses Kubespray to provision Kubernetes cluster
+# K8s Cluster Management - Kubespray Implementation
+# Installs Kubernetes cluster with Cilium, Gateway API, cert-manager, and LoadBalancer
 
-galaxy_info:
-  author: NMI
-  description: Kubernetes cluster installation via Kubespray
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
+- name: Check for Kubespray installation
+  stat:
+    path: "{{ playbook_dir }}/kubespray"
+  register: kubespray_dir
+  delegate_to: localhost
+  become: false
 
-roles:
-  - role: k8s-cluster-management
-    tier: "{{ tier }}"
+- name: Clone Kubespray if not present
+  git:
+    repo: https://github.com/kubernetes-sigs/kubespray.git
+    dest: "{{ playbook_dir }}/kubespray"
+    version: v2.29.1
+    depth: 1
+  when: not kubespray_dir.stat.exists
+  delegate_to: localhost
+  become: false
+
+- name: Generate inventory file for Kubespray
+  template:
+    src: inventory_kubespray.j2
+    dest: "{{ playbook_dir }}/inventory.ini"
+  vars:
+    k8s_version: "v1.34.3"
+    control_plane_nodes: "{{ control_plane_ips }}"
+    worker_nodes: "{{ worker_ips }}"
+    etcd:
+      enabled: true
+      count: "{{ control_plane_count }}"
+
+- name: Set Kubespray inventory facts
+  set_fact:
+    k8s_cluster_name: "{{ project_name | default('k8s') }}-cluster"
+    ansible_user: root
+
+- name: Run Kubespray playbook - inventory setup
+  include_tasks: playbooks/inventory.yml
+  vars:
+    target_group: k8s-cluster
+  loop: "{{ groups['k8s-cluster'] }}"
+  loop_control:
+    loop_var: inventory_host
+
+- name: Install dependencies on all nodes
+  apt:
+    name:
+      - python3-pip
+      - python3-dev
+      - python3-venv
+      - python3-setuptools
+      - python3-wheel
+      - libffi-dev
+      - libssl-dev
+      - gcc
+      - g++
     state: present
+  become: true
+
+- name: Install required Python packages
+  pip:
+    name:
+      - "ansible-core==2.16.0"
+      - "kubernetes==28.0.0"
+      - "openshift"
+      - "jmespath"
+    state: present
+
+- name: Configure kubectl from bastion
+  block:
+    - name: Install kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/v1.34.3/bin/linux/amd64/kubectl"
+        dest: "/usr/local/bin/kubectl"
+        mode: '0755'
+
+    - name: Create kubeconfig directory
+      file:
+        path: "~/.kube"
+        state: directory
+        mode: '0700'
+
+    - name: Create kubeconfig from bastion
+      copy:
+        src: "/tmp/kubeconfig"
+        dest: "~/.kube/config"
+        mode: '0600'
+      delegate_to: "{{ bastion_name }}"
+      become: true
+  when: inventory_hostname == "localhost"
+
+- name: Wait for Kubernetes cluster to be ready
+  wait_for:
+    host: "{{ hostvars[item]['k8s_control_plane_address'] }}"
+    port: 6443
+    delay: 30
+    timeout: 600
+  loop: "{{ groups['k8s-cluster'] }}"
+  when: groups['k8s-cluster'] | length > 0
+
+- name: Check if K8s cluster exists
+  command: kubectl cluster-info
+  register: k8s_cluster_info
+  ignore_errors: true
+  changed_when: false
+
+- name: Initialize Kubernetes cluster if not exists
+  block:
+    - name: Get cluster IP
+      set_fact:
+        cluster_api_server_ip: "{{ (k8s_cluster_info.stdout_lines | select('search', 'Kubernetes master') | first | split(' ')[0]) }}"
+
+    - name: Initialize cluster
+      command: kubeadm init --control-plane-endpoint "{{ cluster_api_server_ip }}:6443" --pod-network-cidr=10.244.0.0/16 --upload-certs
+      register: kubeadm_init
+      when: k8s_cluster_info.rc != 0
+
+    - name: Create kubeconfig
+      command: kubeadm init phase kubeconfig admin --kubeconfig /etc/kubernetes/admin.conf
+      when: k8s_cluster_info.rc != 0
+
+    - name: Configure kubectl for user
+      shell: mkdir -p $HOME/.kube && cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && chown $(id -u):$(id -g) $HOME/.kube/config
+      when: k8s_cluster_info.rc != 0
+
+    - name: Set kubeconfig ownership
+      file:
+        path: "~/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+  when: k8s_cluster_info.rc != 0
+
+- name: Install CNI Plugin (Cilium)
+  command: kubectl apply -f https://github.com/cilium/cilium/releases/download/v1.18.6/cilium.yaml
+  args:
+    creates: /var/run/cilium/cilium.sock
+  ignore_errors: true
+
+- name: Wait for Cilium pods to be ready
+  wait_for:
+    timeout: 120
+
+- name: Install cert-manager
+  kubernetes.core.kubernetes_helm:
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "v1.19.2"
+    release_namespace: cert-manager
+    create_namespace: true
+    values:
+      replicaCount: 2
+      webhook:
+        replicaCount: 2
+      controller:
+        replicaCount: 2
+
+- name: Install Gateway API CRDs
+  command: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml
+  args:
+    creates: /etc/kubernetes/manifests/gateway-api
+
+- name: Install MetalLB for LoadBalancer
+  kubernetes.core.kubernetes_helm:
+    name: metallb
+    chart_ref: bitnami/metallb
+    chart_version: "0.14.9"
+    release_namespace: metallb-system
+    create_namespace: true
+    values:
+      configPatches:
+        - op: add
+          path: "/metadata/labels/kustomize-apply"
+          value: "true"
+        - op: add
+          path: "/metadata/labels/environment"
+          value: "{{ tier | default('dev') }}"
+
+- name: Configure MetalLB address pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: config
+        namespace: metallb-system
+      data:
+        config: |
+          address-pools:
+          - name: default
+            protocol: layer2
+            addresses:
+            - "{{ inventory_hostname }}-{{ worker_count + 10 }}-{{ worker_count + 20 }}/32"
+
+- name: Create core Kubernetes namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ item }}"
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - logging
+    - storage
+    - database
+    - vault
+    - s3
+
+- name: Set Kubernetes cluster facts
+  set_fact:
+    k8s_cluster_initialized: true
+    k8s_control_plane_nodes: "{{ groups['k8s-cluster'] }}"
+    k8s_worker_nodes: "{{ groups['k8s-cluster'] }}"
