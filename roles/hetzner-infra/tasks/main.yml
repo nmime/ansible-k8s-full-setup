@@ -1,0 +1,15 @@
+---
+# Hetzner Infrastructure Role
+# Provisions Hetzner Cloud infrastructure: servers, networks, load balancers
+
+galaxy_info:
+  author: NMI
+  description: Hetzner Cloud infrastructure provisioning for Kubernetes
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: hetzner-infra
+    tier: "{{ tier }}"
+    state: present
