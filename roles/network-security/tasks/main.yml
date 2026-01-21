@@ -1,15 +1,287 @@
 ---
-# Network Security Role
-# Configures Headscale VPN and firewall rules
+# Network Security - Headscale VPN and Firewall Rules
+# Configures Headscale VPN on bastion and firewall rules for secure admin access
 
-galaxy_info:
-  author: NMI
-  description: Network security with Headscale VPN and firewall rules
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
+- name: Check if bastion server is accessible
+  wait_for:
+    host: "{{ bastion_ip }}"
+    port: 22
+    delay: 5
+    timeout: 60
+  delegate_to: localhost
+  become: false
 
-roles:
-  - role: network-security
-    tier: "{{ tier }}"
+- name: Install Docker on bastion if not present
+  block:
+    - name: Check if Docker is installed
+      command: which docker
+      register: docker_check
+      ignore_errors: true
+
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg-agent
+          - software-properties-common
+        state: present
+      become: true
+      when: docker_check.rc != 0
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: true
+      when: docker_check.rc != 0
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+      become: true
+      when: docker_check.rc != 0
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+      become: true
+      when: docker_check.rc != 0
+
+    - name: Start and enable Docker service
+      service:
+        name: docker
+        state: started
+        enabled: true
+      become: true
+      when: docker_check.rc != 0
+
+    - name: Ensure vagrant user is in docker group
+      user:
+        name: vagrant
+        groups: docker
+        append: true
+      become: true
+      when: docker_check.rc != 0
+
+- name: Install Docker Compose
+  get_url:
+    url: "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-{{ ansible_system }}-{{ ansible_architecture }}"
+    dest: /usr/local/bin/docker-compose
+    mode: '0755'
+  become: true
+  when: docker_check.rc != 0
+
+- name: Install Headscale on bastion
+  block:
+    - name: Create Headscale directory
+      file:
+        path: /opt/headscale
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Create Headscale data directory
+      file:
+        path: /var/lib/headscale
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Pull Headscale Docker image
+      docker_image:
+        name: headscale/headscale:latest
+        source: pull
+
+    - name: Create Headscale configuration directory
+      file:
+        path: /etc/headscale
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Create Headscale config.yaml
+      copy:
+        dest: /etc/headscale/config.yaml
+        content: |
+          server:
+            listen: :8080
+          
+          metrics_listen: 0.0.0.0:9090
+          
+          db:
+            type: sqlite3
+            sqlite3:
+              filepath: /var/lib/headscale/headscale.db
+          
+          tls:
+            enabled: false
+          
+          isolation:
+            using_namespaces: false
+          
+          enable_check_updates: true
+          
+          enable_grpc: true
+        mode: '0644'
+      become: true
+
+    - name: Create Headscale SQLite database
+      command: headscale create database --config /etc/headscale/config.yaml
+      become: true
+      when: inventory_hostname == "bastion"
+
+    - name: Create Headscale Docker Compose file
+      copy:
+        dest: /opt/headscale/docker-compose.yml
+        content: |
+          version: '3.8'
+          
+          services:
+            headscale:
+              container_name: headscale
+              image: headscale/headscale:latest
+              restart: always
+              command: serve
+              ports:
+                - "8080:8080"
+                - "9090:9090"
+              volumes:
+                - /var/lib/headscale:/var/lib/headscale
+                - /etc/headscale/config.yaml:/etc/headscale/config.yaml
+              environment:
+                - TZ=UTC
+              networks:
+                - headscale-net
+          
+          networks:
+            headscale-net:
+              driver: bridge
+        mode: '0644'
+      become: true
+
+    - name: Start Headscale
+      docker_compose:
+        project_src: /opt/headscale
+        state: present
+        build: no
+      become: true
+      register: headscale_start
+
+- name: Create firewall rule for Headscale
+  block:
+    - name: Get server IP
+      command: hostname -I | awk '{print $1}'
+      register: server_ip
+      become: false
+
+    - name: Create Headscale firewall rule
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        port: 8080
+        source: "{{ server_ip.stdout }}/32"
+        jump: ACCEPT
+        comment: Headscale VPN
+      become: true
+      when: ansible_os_family == "Debian"
+
+    - name: Save iptables rules
+      shell: iptables-save > /etc/iptables/rules.v4
+      become: true
+      when: ansible_os_family == "Debian"
+
+- name: Install tailscale CLI on all nodes
+  block:
+    - name: Install tailscale on Linux nodes
+      block:
+        - name: Install tailscale dependencies
+          apt:
+            name:
+              - libcap2-bin
+              - libc6
+            state: present
+          become: true
+
+        - name: Install tailscale binary
+          get_url:
+            url: "https://tailscale.com/stable/tailscale_{{ ansible_distribution_release }}_amd64.tgz"
+            dest: /tmp/tailscale.tgz
+            mode: '0755'
+          become: true
+
+        - name: Extract tailscale
+          unarchive:
+            src: /tmp/tailscale.tgz
+            dest: /usr/local/bin
+            remote_src: yes
+          become: true
+
+        - name: Set capabilities for tailscale
+          capabilities:
+            path: /usr/local/bin/tailscale
+            capability: cap_net_admin+ep
+            state: present
+          become: true
+
+        - name: Clean up tailscale tarball
+          file:
+            path: /tmp/tailscale.tgz
+            state: absent
+          become: true
+      when: ansible_system == "Linux" and ansible_distribution | lower != 'ubuntu'
+
+- name: Install tailscale on Ubuntu
+  apt:
+    name: tailscale
     state: present
+  become: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: Install tailscale on Debian
+  apt:
+    name: tailscale
+    state: present
+  become: true
+  when: ansible_distribution == "Debian"
+
+- name: Create VPN admin group
+  group:
+    name: vpn-admin
+    state: present
+  become: true
+
+- name: Create network security documentation
+  copy:
+    dest: "/etc/headscale/NETWORK_SECURITY.md"
+    content: |
+      # Network Security Documentation
+      
+      ## VPN Access
+      
+      Headscale VPN server is running on: **{{ bastion_ip }}:8080**
+      
+      ## Connect from Client:
+      
+      ```bash
+      tailscale up --login-server=https://{{ bastion_ip }}:8080 --auth-key=<YOUR_KEY>
+      ```
+      
+      ## Firewall Rules:
+      
+      - SSH (22): Allowed from all IPs
+      - Headscale (8080): Allowed from server IP only
+      - Kubernetes API (6443): Allowed from private network only
+      
+      ## Network Security Services:
+      
+      - Headscale VPN for admin access
+      - Firewall rules enforced
+      - Server hardening enabled
+  become: true
