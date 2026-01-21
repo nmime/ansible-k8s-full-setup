@@ -1,0 +1,15 @@
+---
+# Secrets Management Role
+# Deploys HashiCorp Vault + External Secrets Operator
+
+galaxy_info:
+  author: NMI
+  description: Secrets management with Vault and External Secrets Operator
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: k8s-secrets
+    tier: "{{ tier }}"
+    state: present
