@@ -1,0 +1,15 @@
+---
+# Network Security Role
+# Configures Headscale VPN and firewall rules
+
+galaxy_info:
+  author: NMI
+  description: Network security with Headscale VPN and firewall rules
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: network-security
+    tier: "{{ tier }}"
+    state: present
