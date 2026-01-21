@@ -1,0 +1,15 @@
+---
+# Autoscaling (KEDA) Role
+# Deploys KEDA for event-driven autoscaling
+
+galaxy_info:
+  author: NMI
+  description: KEDA event-driven autoscaling
+  company: Your Company
+  license: MIT
+  min_ansible_version: 2.15
+
+roles:
+  - role: k8s-autoscaling
+    tier: "{{ tier }}"
+    state: present
