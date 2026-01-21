@@ -1,138 +1,139 @@
-#!/usr/bin/env ansible-playbook
 ---
-# Ansible playbook for full-stack Kubernetes platform deployment
-# This playbook orchestrates deployment of all platform components
+# Ansible Workflow Platform
+# Complete automation for Kubernetes platform deployment
+#
+# Deploys full-stack Kubernetes platform including:
+# - Hetzner Cloud Infrastructure
+# - Kubernetes Cluster (via Kubespray)
+# - Network Security (VPN + Firewalls)
+# - Secrets Management (Vault + ESO)
+# - Databases (PostgreSQL + MongoDB)
+# - Storage (MinIO)
+# - GitLab CE
+# - ArgoCD (GitOps)
+# - Observability (Monitoring + Logging)
+# - Event-Driven Autoscaling (KEDA)
 
-- name: Deploy Full-Stack Kubernetes Platform
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  
+# Deployment sequence: infrastructure → network security → secrets → storage → databases → gitlab → gitops → observability → autoscaling
+
+- name: Gather facts
+  ansible.builtin.setup:
+
+- name: Display deployment banner
+  debug:
+    msg:
+      - "=========================================="
+      - "  Ansible Kubernetes Platform Deployment"
+      - "  Project: {{ project_name | default('k8s') }}"
+      - "  Tier: {{ tier | default('medium') }}"
+      - "=========================================="
+
+- name: Check required environment variables
+  assert:
+    that:
+      - "'HETZNER_API_TOKEN' in lookup('env', 'HOME') + '/.clouds/hcloud' or 'HETZNER_API_TOKEN' in lookup('env', 'HOME') + '/.config/hcloud'"
+    fail_msg: "HETZNER_API_TOKEN environment variable not found. Please set it."
+    quiet: false
+
+# Step 1: Infrastructure
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: hetzner-infra
+    tasks_from: main.yml
   vars:
-    project: k8s
-    tier: medium
-    
-  pre_tasks:
-    - name: Display startup message
-      ansible.builtin.debug:
-        msg: "Starting deployment of Kubernetes platform tier {{ tier }}"
-    
-    - name: Verify required variables
-      ansible.builtin.fail:
-        msg: "Required variable not set: {{ item }}"
-      when: vars[item] is not defined
-      loop:
-        - domain
-        - email
-        - environment
+    tier: "{{ tier | default('medium') }}"
+    project_name: "{{ project_name | default('k8s') }}"
 
-- name: Step 1 - Infrastructure Provisioning
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: hetzner-infra
-      tier: "{{ tier }}"
+# Step 2: Network Security
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: network-security
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 2 - DNS Configuration
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: hetzner-infra
-      tier: "{{ tier }}"
-      task: dns
+# Step 3: Kubernetes Cluster
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: k8s-cluster-management
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 3 - Kubernetes Cluster Setup
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-cluster-management
-      tier: "{{ tier }}"
+# Step 4: Secrets Management
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: k8s-secrets
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 4 - TLS Certificates
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-cluster-management
-      tier: "{{ tier }}"
-      task: tls
+# Step 5: Storage (MinIO)
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: minio-storage
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 5 - Network Security (VPN & Firewall)
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: network-security
-      tier: "{{ tier }}"
+# Step 6: Databases
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: k8s-databases
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 6 - Storage Setup (MinIO)
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: minio-storage
-      tier: "{{ tier }}"
+# Step 7: GitLab
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: gitlab-selfhosted
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 7 - Secrets Management (Vault)
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-secrets
-      tier: "{{ tier }}"
+# Step 8: GitOps (ArgoCD)
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: k8s-gitops
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 8 - Database Deployment
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-databases
-      tier: "{{ tier }}"
+# Step 9: Observability
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: k8s-observability
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 9 - GitLab Setup
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: gitlab-selfhosted
-      tier: "{{ tier }}"
+# Step 10: Autoscaling
+- name: "{{ gitlab. }} role"
+  ansible.builtin.include_role:
+    name: k8s-autoscaling
+    tasks_from: main.yml
+  vars:
+    tier: "{{ tier | default('medium') }}"
 
-- name: Step 10 - GitOps (ArgoCD)
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-gitops
-      tier: "{{ tier }}"
-
-- name: Step 11 - Observability Stack
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-observability
-      tier: "{{ tier }}"
-
-- name: Step 12 - Autoscaling (KEDA)
-  hosts: localhost
-  gather_facts: false
-  
-  roles:
-    - role: k8s-autoscaling
-      tier: "{{ tier }}"
-
-- name: Step 13 - Final Verification
-  hosts: localhost
-  gather_facts: false
-  
-  post_tasks:
-    - name: Display deployment summary
-      ansible.builtin.debug:
-        msg: |
-          Platform deployment completed successfully!
-          Services deployed across {{ tier }} tier configuration
-          Services: Infrastructure, K8s Cluster, MinIO, Vault, Databases, 
-                   GitLab, ArgoCD, Observability, Autoscaling
+# Final deployment summary
+- name: Display deployment completion summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Platform Deployment Complete"
+      - "  Tier: {{ tier | default('medium') }}"
+      - "  Project: {{ project_name | default('k8s') }}"
+      - "=========================================="
+      - "Services deployed:"
+      - "  - Kubernetes Cluster with Cilium CNI"
+      - "  - GitLab CE with CI/CD"
+      - "  - ArgoCD (GitOps)"
+      - "  - Grafana (Monitoring)"
+      - "  - VictoriaMetrics + Loki (Log aggregation)"
+      - "  - MinIO (Object Storage)"
+      - "  - Vault (Secrets)"
+      - "  - PostgreSQL Cluster"
+      - "  - KEDA (Event autoscaling)"
+      - "  - Headscale VPN"
+      - "=========================================="
