@@ -1,15 +1,302 @@
 ---
-# Hetzner Infrastructure Role
-# Provisions Hetzner Cloud infrastructure: servers, networks, load balancers
+# Hetzner Infrastructure Role - Actual Implementation
+# Provisions Hetzner Cloud infrastructure: servers, networks, load balancers, firewalls
 
-galaxy_info:
-  author: NMI
-  description: Hetzner Cloud infrastructure provisioning for Kubernetes
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
+- name: Check Hetzner API token
+  assert:
+    that:
+      - "'HCLOUD_TOKEN' in lookup('env', 'HOME') | default('') + '/.clouds/hcloud' | combine({}) | default('') and lookup('env', 'HCLOUD_TOKEN') is defined"
+    fail_msg: "HETZNER_API_TOKEN environment variable not found. Please set it in your shell environment."
+    success_msg: "HETZNER_API_TOKEN is set"
 
-roles:
-  - role: hetzner-infra
-    tier: "{{ tier }}"
+- name: Install hcloud CLI if not present
+  ansible.builtin.apt:
+    name: hcloud
     state: present
+  become: true
+  when: ansible_os_family == "Debian"
+
+- name: Install hcloud CLI if not present
+  ansible.builtin.yum:
+    name: hcloud
+    state: present
+  become: true
+  when: ansible_os_family == "RedHat"
+
+- name: Check if inventory file exists
+  stat:
+    path: "{{ inventory_file | default('inventory') }}"
+  register: inventory_stat
+
+- name: Read inventory file
+  slurp:
+    src: "{{ inventory_file | default('inventory') }}"
+  register: inventory_content
+  when: inventory_stat.stat.exists
+
+- name: Parse tier from inventory
+  set_fact:
+    deployment_tier: "{{ lookup('ini', 'tier section=global file={{ inventory_file | default('inventory') }}') }}"
+  when: inventory_content is defined
+
+- name: Set deployment tier to default if not specified
+  set_fact:
+    deployment_tier: "medium"
+  when: inventory_content is not defined or deployment_tier is not defined
+
+- name: Configure deployment tier
+  set_fact:
+    control_plane_count: "{{ tier_config[deployment_tier].cp }}"
+    worker_count: "{{ tier_config[deployment_tier].worker }}"
+    bastion_server_type: "{{ tier_config[deployment_tier].bastion }}"
+    worker_server_type: "{{ tier_config[deployment_tier].worker_server }}"
+  vars:
+    tier_config:
+      minimal: { cp: 1, worker: 1, bastion: 'cx11', worker_server: 'cpx21', cost: 12 }
+      small: { cp: 2, worker: 1, bastion: 'cx21', worker_server: 'cpx31', cost: 21 }
+      medium: { cp: 2, worker: 3, bastion: 'cx22', worker_server: 'cpx41', cost: 34, ha: true }
+      production: { cp: 3, worker: 3, bastion: 'cx31', worker_server: 'cpx51', cost: 48, ha: true }
+
+- name: Set project name from environment or default
+  set_fact:
+    project_name: "{{ lookup('env', 'PROJECT_NAME') | default('k8s', true) }}"
+
+- name: Create Hetzner Cloud network
+  hcloud_network:
+    name: "{{ project_name }}-network"
+    auto_delete_vms: true
+    labels:
+      project: "{{ project_name }}"
+      managed-by: ansible
+  register: hetzner_network
+
+- name: Create Hetzner Cloud subnet
+  hcloud_subnet:
+    network_id: "{{ hetzner_network.network.id }}"
+    name: "{{ project_name }}-subnet"
+    type: cloud
+    ip_range: "10.0.0.0/16"
+    auto_delete: true
+    labels:
+      project: "{{ project_name }}"
+  register: hetzner_subnet
+
+- name: Create primary IP for bastion
+  hcloud_primary_ip:
+    type: ipv4
+    name: "{{ project_name }}-bastion-ip"
+    auto_delete: true
+    labels:
+      project: "{{ project_name }}"
+      role: bastion
+  register: bastion_ip
+
+- name: Create bastion server
+  hcloud_server:
+    name: "{{ project_name }}-bastion-1"
+    image: ubuntu-24.04
+    location: fsn1
+    server_type: "{{ bastion_server_type }}"
+    startaftercreate: true
+    networks:
+      - "{{ hetzner_network.network.name }}"
+    primary_ip: "{{ bastion_ip.primary_ip.id }}"
+    ssh_keys: "{{ ssh_keys }}"
+    labels:
+      project: "{{ project_name }}"
+      role: bastion
+      managed-by: ansible
+  register: bastion_server
+
+- name: Wait for bastion to be ready
+  wait_for:
+    host: "{{ bastion_server.ipv4_address }}"
+    port: 22
+    delay: 10
+    timeout: 300
+  delegate_to: localhost
+  become: false
+
+- name: Create primary IPs for control plane
+  hcloud_primary_ip:
+    type: ipv4
+    name: "{{ project_name }}-cp-{{ item }}-ip"
+    auto_delete: true
+    labels:
+      project: "{{ project_name }}"
+      role: control-plane
+      index: "{{ item }}"
+  loop: "{{ range(1, control_plane_count + 1) | list }}"
+  loop_control:
+    index_var: cp_index
+  register: cp_ips
+
+- name: Create control plane servers
+  hcloud_server:
+    name: "{{ project_name }}-cp-{{ item }}"
+    image: ubuntu-24.04
+    location: fsn1
+    server_type: cx22
+    startaftercreate: true
+    networks:
+      - "{{ hetzner_network.network.name }}"
+    primary_ip: "{{ item_dict.value.primary_ip.id }}"
+    ssh_keys: "{{ ssh_keys }}"
+    labels:
+      project: "{{ project_name }}"
+      role: control-plane
+      index: "{{ item }}"
+  loop: "{{ range(1, control_plane_count + 1) | list }}"
+  loop_control:
+    index_var: cp_index
+    loop_var: item
+  register: control_plane_servers
+
+- name: Create worker servers
+  hcloud_server:
+    name: "{{ project_name }}-worker-{{ item }}"
+    image: ubuntu-24.04
+    location: fsn1
+    server_type: "{{ worker_server_type }}"
+    startaftercreate: true
+    networks:
+      - "{{ hetzner_network.network.name }}"
+    ssh_keys: "{{ ssh_keys }}"
+    labels:
+      project: "{{ project_name }}"
+      role: worker
+      index: "{{ item }}"
+  loop: "{{ range(1, worker_count + 1) | list }}"
+  loop_control:
+    index_var: worker_index
+    loop_var: item
+  register: worker_servers
+
+- name: Create firewall for control plane
+  hcloud_firewall:
+    name: "{{ project_name }}-fw-cp"
+    rules:
+      - direction: in
+        protocol: tcp
+        port: "22"
+        source_ips:
+          - 10.0.0.0/16
+      - direction: in
+        protocol: tcp
+        port: "6443"
+        source_ips:
+          - 10.0.0.0/16
+      - direction: out
+        protocol: tcp
+        port: "1-65535"
+    labels:
+      project: "{{ project_name }}"
+      role: control-plane
+  register: firewall_cp
+
+- name: Create firewall for worker nodes
+  hcloud_firewall:
+    name: "{{ project_name }}-fw-worker"
+    rules:
+      - direction: in
+        protocol: tcp
+        port: "22"
+        source_ips:
+          - 10.0.0.0/16
+      - direction: in
+        protocol: tcp
+        port: "10250"
+        source_ips:
+          - 10.0.0.0/16
+      - direction: in
+        protocol: tcp
+        port: "30000-32767"
+        source_ips:
+          - 10.0.0.0/16
+      - direction: out
+        protocol: tcp
+        port: "1-65535"
+    labels:
+      project: "{{ project_name }}"
+      role: worker
+  register: firewall_worker
+
+- name: Apply firewalls to servers
+  hcloud_server:
+    name: "{{ item }}"
+    firewall_ids: "{{ [firewall_cp.id] if 'cp' in item else [firewall_worker.id] }}"
+  loop: "{{ control_plane_servers.servers | map(attribute='name') | list }}"
+  loop_control:
+    loop_var: server_name
+  when: firewall_cp.id is defined
+
+- name: Apply firewalls to servers
+  hcloud_server:
+    name: "{{ item }}"
+    firewall_ids: "[{{ firewall_worker.id }}]"
+  loop: "{{ worker_servers.servers | map(attribute='name') | list }}"
+  loop_control:
+    loop_var: server_name
+  when: firewall_worker.id is defined
+
+- name: Create load balancer
+  hcloud_load_balancer:
+    name: "{{ project_name }}-lb"
+    type: lba11
+    location: fsn1
+    algorithm: round_robin
+    labels:
+      project: "{{ project_name }}"
+      role: load-balancer
+  when: control_plane_count > 1
+  register: load_balancer
+
+- name: Attach load balancer targets
+  hcloud_load_balancer_target:
+    load_balancer_id: "{{ load_balancer.load_balancer.id }}"
+    target_type: server
+    server_id: "{{ item }}"
+    port: 6443
+    labels:
+      role: kubernetes
+  loop: "{{ control_plane_servers.servers | map(attribute='id') | list }}"
+  when: control_plane_count > 1
+
+- name: Create private network route
+  hcloud_route:
+    network_id: "{{ hetzner_network.network.id }}"
+    destination: "{{ hetzner_network.network.ip_range }}"
+    gateway: "{{ control_plane_servers.servers[0].ipv4_address }}"
+  when: control_plane_count > 1
+
+- name: Create network DNS entry for GitLab
+  hcloud_dns_record:
+    dns_zone_id: "{{ hetzner_dns_zone.id }}"
+    name: gitlab
+    value: "{{ load_balancer.load_balancer.ipv4 }}"
+    type: A
+  when: hetzner_dns_zone.id is defined
+  register: gitlab_dns
+
+- name: Create network DNS entry for registry
+  hcloud_dns_record:
+    dns_zone_id: "{{ hetzner_dns_zone.id }}"
+    name: registry
+    value: "{{ load_balancer.load_balancer.ipv4 }}"
+    type: A
+  when: hetzner_dns_zone.id is defined
+  register: registry_dns
+
+- name: Write infrastructure facts to file
+  copy:
+    dest: "{{ project_name }}-infra-facts.yml"
+    content: |
+      ---
+      hetzner_network_name: "{{ hetzner_network.network.name }}"
+      hetzner_subnet_name: "{{ hetzner_subnet.subnet.name }}"
+      control_plane_ips: "{{ control_plane_servers.servers | map(attribute='ipv4_address') | list }}"
+      worker_ips: "{{ worker_servers.servers | map(attribute='ipv4_address') | list }}"
+      bastion_ip: "{{ bastion_server.ipv4_address }}"
+      load_balancer_ip: "{{ load_balancer.load_balancer.ipv4 }}"
+      control_plane_server_names: "{{ control_plane_servers.servers | map(attribute='name') | list }}"
+      worker_server_names: "{{ worker_servers.servers | map(attribute='name') | list }}"
