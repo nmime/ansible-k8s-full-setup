@@ -1,15 +1,289 @@
 ---
-# Storage (MinIO) Role
-# Deploys MinIO S3-compatible object storage
+# MinIO S3-Compatible Storage - Complete Implementation
+# S3-compatible object storage on Kubernetes
 
-galaxy_info:
-  author: NMI
-  description: MinIO S3-compatible object storage deployment
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
-
-roles:
-  - role: minio-storage
-    tier: "{{ tier }}"
+- name: Create namespace for MinIO
+  kubernetes.core.k8s:
     state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: storage
+
+- name: Create MinIO configuration ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: minio-config
+        namespace: storage
+      data:
+        MINIO_ROOT_USER: "{{ lookup('env', 'MINIO_ROOT_USER') | default('minioadmin', true) }}"
+        MINIO_ROOT_PASSWORD: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('minioadmin123', true) }}"
+
+- name: Create MinIO StorageClass
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: minio-standard
+      provisioner: kubernetes.io/no-provisioner
+      volumeBindingMode: WaitForFirstConsumer
+
+- name: Create MinIO Deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: minio
+        namespace: storage
+        labels:
+          app: minio
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: minio
+        template:
+          metadata:
+            labels:
+              app: minio
+          spec:
+            containers:
+              - name: minio
+                image: minio/minio:latest
+                args:
+                  - server
+                  - /data
+                  - --console-address
+                  - ":9001"
+                ports:
+                  - containerPort: 9000
+                    name: api
+                  - containerPort: 9001
+                    name: console
+                env:
+                  - name: MINIO_ROOT_USER
+                    valueFrom:
+                      secretKeyRef:
+                        name: minio-credentials
+                        key: username
+                  - name: MINIO_ROOT_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: minio-credentials
+                        key: password
+                volumeMounts:
+                  - name: data
+                    mountPath: /data
+                resources:
+                  requests:
+                    memory: "2Gi"
+                    cpu: "500m"
+                  limits:
+                    memory: "4Gi"
+                    cpu: "2"
+                livenessProbe:
+                  httpGet:
+                    path: /minio/health/live
+                    port: 9000
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: /minio/health/ready
+                    port: 9000
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+            volumes:
+              - name: data
+                persistentVolumeClaim:
+                  claimName: minio-pvc
+
+- name: Create MinIO Persistent Volume Claim
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: minio-pvc
+        namespace: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: minio-standard
+        resources:
+          requests:
+            storage: 100Gi
+
+- name: Create MinIO Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: minio
+        namespace: storage
+        labels:
+          app: minio
+      spec:
+        selector:
+          app: minio
+        ports:
+          - port: 9000
+            targetPort: 9000
+            name: api
+          - port: 9001
+            targetPort: 9001
+            name: console
+        type: LoadBalancer
+
+- name: Create MinIO Bucket
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: kuttl.dev/v1beta1
+      kind: TestAssert
+      metadata:
+        name: minio-bucket-check
+    spec:
+      check: |-
+        result=$(kubectl exec -n storage minio-0 -- mc mb storage/bucket --ignore-existing)
+        if [[ "$result" == *"error"* ]]; then
+          exit 1
+        fi
+
+- name: Create MinIO Console Ingress
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: minio-console
+        namespace: storage
+        annotations:
+          nginx.ingress.kubernetes.io/backend-protocol: HTTP
+      spec:
+        rules:
+          - host: minio-console.{{ project_name | default('k8s') }}.local
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: minio
+                      port:
+                        number: 9001
+
+- name: Create MinIO CLI CronJob for daily backups
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: minio-backup
+        namespace: storage
+      spec:
+        schedule: "0 2 * * *"
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: minio-backup
+                    image: minio/mc:latest
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        mc alias set myminio \
+                          http://$(kubectl get svc -n storage minio -o jsonpath='{.status.loadBalancer.ingress[0].ip}') \
+                          $(kubectl get secret -n storage minio-credentials -o jsonpath='{.data.username}' | base64 -d) \
+                          $(kubectl get secret -n storage minio-credentials -o jsonpath='{.data.password}' | base64 -d)
+                        
+                        today=$(date +%Y-%m-%d)
+                        mc mirror --overwrite myminio/storage/bucket /backups/bucket-$today
+                volumes:
+                  - name: backup
+                    emptyDir: {}
+
+- name: Wait for MinIO to be ready
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: storage
+    name: minio
+  register: minio_service
+  until: minio_service.resources[0].status.loadBalancer.ingress | length > 0
+  retries: 30
+  delay: 10
+
+- name: Create MinIO client credentials Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: minio-client-credentials
+        namespace: storage
+      stringData:
+        access-key: "{{ lookup('env', 'MINIO_ROOT_USER') | default('minioadmin', true) }}"
+        secret-key: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('minioadmin123', true) }}"
+
+- name: Create MinIO integration example for GitLab
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: minio-gitlab-integration
+        namespace: gitlab
+      data:
+        config.toml: |
+          [gitlab]
+          url = "http://localhost:8080"
+          [gitlab.hooks]
+          enabled = true
+
+- name: Create MinIO Storage Bucket Claim
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: s3-filesystem
+      provisioner: s3
+      reclaimPolicy: Retain
+      parameters:
+        bucketName: "{{ project_name | default('k8s') }}-k8s-bucket"
+
+- name: Create MinIO resource limits and monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: minio-quota
+        namespace: storage
+      spec:
+        hard:
+          requests.cpu: "2"
+          requests.memory: 4Gi
+          requests.storage: 500Gi
+          persistentvolumeclaims: "3"
