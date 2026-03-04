@@ -1,289 +1,279 @@
 ---
-# MinIO S3-Compatible Storage - Complete Implementation
-# S3-compatible object storage on Kubernetes
+# MinIO S3-Compatible Storage Role - Bitnami Helm Chart 17.0.21
+# S3-compatible object storage on Kubernetes using Chainguard image
+# Supports standalone (minimal/small) and distributed (medium/production) modes
 
-- name: Create namespace for MinIO
+- name: Set MinIO tier-specific variables
+  set_fact:
+    minio_ns: "storage"
+    minio_chart_ver: "17.0.21"
+    minio_mode: "{{ 'distributed' if tier in ['medium', 'production'] else 'standalone' }}"
+    minio_replicas_count: "{{ minio_replicas | default(4) if tier in ['medium', 'production'] else 1 }}"
+    minio_storage: "{{ minio_storage_size | default('50Gi') }}"
+    minio_console_domain: "minio.{{ domain | default('example.com') }}"
+    minio_api_domain: "s3.{{ domain | default('example.com') }}"
+    minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default('minioadmin', true) }}"
+    minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32'), true) }}"
+
+# ============================================
+# MinIO Installation via Bitnami Helm
+# ============================================
+
+- name: Create storage namespace
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: storage
-
-- name: Create MinIO configuration ConfigMap
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: minio-config
-        namespace: storage
-      data:
-        MINIO_ROOT_USER: "{{ lookup('env', 'MINIO_ROOT_USER') | default('minioadmin', true) }}"
-        MINIO_ROOT_PASSWORD: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('minioadmin123', true) }}"
-
-- name: Create MinIO StorageClass
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: storage.k8s.io/v1
-      kind: StorageClass
-      metadata:
-        name: minio-standard
-      provisioner: kubernetes.io/no-provisioner
-      volumeBindingMode: WaitForFirstConsumer
-
-- name: Create MinIO Deployment
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: minio
-        namespace: storage
+        name: "{{ minio_ns }}"
         labels:
-          app: minio
-      spec:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: minio
-        template:
-          metadata:
-            labels:
-              app: minio
-          spec:
-            containers:
-              - name: minio
-                image: minio/minio:latest
-                args:
-                  - server
-                  - /data
-                  - --console-address
-                  - ":9001"
-                ports:
-                  - containerPort: 9000
-                    name: api
-                  - containerPort: 9001
-                    name: console
-                env:
-                  - name: MINIO_ROOT_USER
-                    valueFrom:
-                      secretKeyRef:
-                        name: minio-credentials
-                        key: username
-                  - name: MINIO_ROOT_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: minio-credentials
-                        key: password
-                volumeMounts:
-                  - name: data
-                    mountPath: /data
-                resources:
-                  requests:
-                    memory: "2Gi"
-                    cpu: "500m"
-                  limits:
-                    memory: "4Gi"
-                    cpu: "2"
-                livenessProbe:
-                  httpGet:
-                    path: /minio/health/live
-                    port: 9000
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                readinessProbe:
-                  httpGet:
-                    path: /minio/health/ready
-                    port: 9000
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-            volumes:
-              - name: data
-                persistentVolumeClaim:
-                  claimName: minio-pvc
+          app.kubernetes.io/part-of: minio
 
-- name: Create MinIO Persistent Volume Claim
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: PersistentVolumeClaim
-      metadata:
-        name: minio-pvc
-        namespace: storage
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        storageClassName: minio-standard
-        resources:
-          requests:
-            storage: 100Gi
+- name: Add Bitnami Helm repository
+  kubernetes.core.helm_repository:
+    name: bitnami
+    repo_url: "https://charts.bitnami.com/bitnami"
 
-- name: Create MinIO Service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: minio
-        namespace: storage
-        labels:
-          app: minio
-      spec:
-        selector:
-          app: minio
-        ports:
-          - port: 9000
-            targetPort: 9000
-            name: api
-          - port: 9001
-            targetPort: 9001
-            name: console
-        type: LoadBalancer
-
-- name: Create MinIO Bucket
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: kuttl.dev/v1beta1
-      kind: TestAssert
-      metadata:
-        name: minio-bucket-check
-    spec:
-      check: |-
-        result=$(kubectl exec -n storage minio-0 -- mc mb storage/bucket --ignore-existing)
-        if [[ "$result" == *"error"* ]]; then
-          exit 1
-        fi
-
-- name: Create MinIO Console Ingress
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: networking.k8s.io/v1
-      kind: Ingress
-      metadata:
-        name: minio-console
-        namespace: storage
-        annotations:
-          nginx.ingress.kubernetes.io/backend-protocol: HTTP
-      spec:
-        rules:
-          - host: minio-console.{{ project_name | default('k8s') }}.local
-            http:
-              paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: minio
-                      port:
-                        number: 9001
-
-- name: Create MinIO CLI CronJob for daily backups
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: CronJob
-      metadata:
-        name: minio-backup
-        namespace: storage
-      spec:
-        schedule: "0 2 * * *"
-        jobTemplate:
-          spec:
-            template:
-              spec:
-                restartPolicy: OnFailure
-                containers:
-                  - name: minio-backup
-                    image: minio/mc:latest
-                    command:
-                      - /bin/sh
-                      - -c
-                      - |
-                        mc alias set myminio \
-                          http://$(kubectl get svc -n storage minio -o jsonpath='{.status.loadBalancer.ingress[0].ip}') \
-                          $(kubectl get secret -n storage minio-credentials -o jsonpath='{.data.username}' | base64 -d) \
-                          $(kubectl get secret -n storage minio-credentials -o jsonpath='{.data.password}' | base64 -d)
-                        
-                        today=$(date +%Y-%m-%d)
-                        mc mirror --overwrite myminio/storage/bucket /backups/bucket-$today
-                volumes:
-                  - name: backup
-                    emptyDir: {}
-
-- name: Wait for MinIO to be ready
-  kubernetes.core.k8s_info:
-    kind: Service
-    namespace: storage
-    name: minio
-  register: minio_service
-  until: minio_service.resources[0].status.loadBalancer.ingress | length > 0
-  retries: 30
-  delay: 10
-
-- name: Create MinIO client credentials Secret
+- name: Create MinIO credentials secret
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
-        name: minio-client-credentials
-        namespace: storage
+        name: minio-credentials
+        namespace: "{{ minio_ns }}"
       stringData:
-        access-key: "{{ lookup('env', 'MINIO_ROOT_USER') | default('minioadmin', true) }}"
-        secret-key: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('minioadmin123', true) }}"
+        root-user: "{{ minio_root_user }}"
+        root-password: "{{ minio_root_password }}"
 
-- name: Create MinIO integration example for GitLab
+- name: Install MinIO via Bitnami Helm chart
+  kubernetes.core.helm:
+    name: minio
+    chart_ref: bitnami/minio
+    chart_version: "{{ minio_chart_ver }}"
+    release_namespace: "{{ minio_ns }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    timeout: 10m0s
+    values:
+      image:
+        registry: cgr.dev
+        repository: chainguard/minio
+        tag: latest
+      mode: "{{ minio_mode }}"
+      auth:
+        existingSecret: minio-credentials
+      statefulset:
+        replicaCount: "{{ minio_replicas_count }}"
+      persistence:
+        enabled: true
+        size: "{{ minio_storage }}"
+        storageClass: "hcloud-volumes"
+      resources:
+        requests:
+          memory: "512Mi"
+          cpu: "250m"
+        limits:
+          memory: "2Gi"
+          cpu: "1"
+      service:
+        type: ClusterIP
+        ports:
+          api: 9000
+          console: 9001
+      ingress:
+        enabled: false
+      apiIngress:
+        enabled: false
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      provisioning:
+        enabled: true
+        buckets:
+          - name: gitlab-artifacts
+            policy: none
+          - name: gitlab-uploads
+            policy: none
+          - name: gitlab-packages
+            policy: none
+          - name: gitlab-registry
+            policy: none
+          - name: gitlab-lfs
+            policy: none
+          - name: gitlab-terraform-state
+            policy: none
+          - name: gitlab-ci-secure-files
+            policy: none
+          - name: gitlab-dependency-proxy
+            policy: none
+          - name: gitlab-pages
+            policy: none
+          - name: loki-chunks
+            policy: none
+          - name: loki-ruler
+            policy: none
+          - name: backups
+            policy: none
+          - name: velero
+            policy: none
+
+- name: Wait for MinIO to be ready
+  kubernetes.core.k8s_info:
+    kind: StatefulSet
+    namespace: "{{ minio_ns }}"
+    name: minio
+  register: minio_sts
+  until: >
+    minio_sts.resources | length > 0
+    and (minio_sts.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
+
+# ============================================
+# Gateway API Routes
+# ============================================
+
+- name: Create MinIO Console TLS certificate
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: v1
-      kind: ConfigMap
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
       metadata:
-        name: minio-gitlab-integration
-        namespace: gitlab
-      data:
-        config.toml: |
-          [gitlab]
-          url = "http://localhost:8080"
-          [gitlab.hooks]
-          enabled = true
-
-- name: Create MinIO Storage Bucket Claim
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: storage.k8s.io/v1
-      kind: StorageClass
-      metadata:
-        name: s3-filesystem
-      provisioner: s3
-      reclaimPolicy: Retain
-      parameters:
-        bucketName: "{{ project_name | default('k8s') }}-k8s-bucket"
-
-- name: Create MinIO resource limits and monitoring
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ResourceQuota
-      metadata:
-        name: minio-quota
-        namespace: storage
+        name: minio-console-tls
+        namespace: "{{ minio_ns }}"
       spec:
-        hard:
-          requests.cpu: "2"
-          requests.memory: 4Gi
-          requests.storage: 500Gi
-          persistentvolumeclaims: "3"
+        secretName: minio-console-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ minio_console_domain }}"
+
+- name: Create MinIO API TLS certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: minio-api-tls
+        namespace: "{{ minio_ns }}"
+      spec:
+        secretName: minio-api-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ minio_api_domain }}"
+
+- name: Create MinIO Console HTTPRoute (VPN access)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: minio-console
+        namespace: "{{ minio_ns }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "{{ minio_console_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: minio
+                port: 9001
+
+- name: Create MinIO API HTTPRoute (public S3)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: minio-api
+        namespace: "{{ minio_ns }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "{{ minio_api_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: minio
+                port: 9000
+
+# ============================================
+# Cross-namespace access secrets
+# ============================================
+
+- name: Create MinIO credentials in GitLab namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: minio-credentials
+        namespace: gitlab
+      stringData:
+        accesskey: "{{ minio_root_user }}"
+        secretkey: "{{ minio_root_password }}"
+        connection: |
+          provider: AWS
+          region: us-east-1
+          aws_access_key_id: {{ minio_root_user }}
+          aws_secret_access_key: {{ minio_root_password }}
+          aws_signature_version: 4
+          host: minio.{{ minio_ns }}.svc.cluster.local
+          endpoint: http://minio.{{ minio_ns }}.svc.cluster.local:9000
+          path_style: true
+
+- name: Create MinIO credentials in monitoring namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: minio-credentials
+        namespace: monitoring
+      stringData:
+        accesskey: "{{ minio_root_user }}"
+        secretkey: "{{ minio_root_password }}"
+        endpoint: "http://minio.{{ minio_ns }}.svc.cluster.local:9000"
+
+- name: Display MinIO storage summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  MinIO S3 Storage Deployed"
+      - "=========================================="
+      - "  Chart: bitnami/minio {{ minio_chart_ver }}"
+      - "  Image: cgr.dev/chainguard/minio"
+      - "  Mode: {{ minio_mode }}"
+      - "  Replicas: {{ minio_replicas_count }}"
+      - "  Storage: {{ minio_storage }} per node"
+      - "  Console: {{ minio_console_domain }}"
+      - "  S3 API: {{ minio_api_domain }}"
+      - "  Buckets: gitlab-*, loki-*, backups, velero"
+      - "=========================================="

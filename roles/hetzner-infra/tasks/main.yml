@@ -1,302 +1,448 @@
 ---
-# Hetzner Infrastructure Role - Actual Implementation
-# Provisions Hetzner Cloud infrastructure: servers, networks, load balancers, firewalls
+# Hetzner Infrastructure Role
+# Provisions Hetzner Cloud: servers, networks, load balancers, firewalls, DNS
+# Uses hcloud CLI (idempotent). Naming: {project}-{resource}
 
-- name: Check Hetzner API token
+- name: Set infrastructure tier-specific variables
+  set_fact:
+    project: "{{ project_name | default('k8s') }}"
+    region: "{{ hetzner_region | default('hel1') }}"
+    infra_tier: "{{ tier | default('medium') }}"
+
+- name: Set tier-specific server configuration
+  set_fact:
+    cp_count: "{{ tier_map[infra_tier].cp_count }}"
+    cp_type: "{{ tier_map[infra_tier].cp_type }}"
+    cp_schedulable: "{{ tier_map[infra_tier].cp_schedulable | default(false) }}"
+    worker_count: "{{ tier_map[infra_tier].worker_count }}"
+    worker_type: "{{ tier_map[infra_tier].worker_type }}"
+    bastion_type: cx22
+    lb_enabled: "{{ tier_map[infra_tier].lb_enabled | default(true) }}"
+  vars:
+    tier_map:
+      minimal:
+        cp_count: 1
+        cp_type: cx32
+        cp_schedulable: true
+        worker_count: 1
+        worker_type: cx22
+        lb_enabled: false
+      small:
+        cp_count: 1
+        cp_type: cx22
+        cp_schedulable: false
+        worker_count: 2
+        worker_type: cx32
+        lb_enabled: true
+      medium:
+        cp_count: 3
+        cp_type: cx22
+        cp_schedulable: false
+        worker_count: 2
+        worker_type: cx32
+        lb_enabled: true
+      production:
+        cp_count: 3
+        cp_type: cx32
+        cp_schedulable: false
+        worker_count: 3
+        worker_type: cx32
+        lb_enabled: true
+
+- name: Validate HCLOUD_TOKEN is set
   assert:
     that:
-      - "'HCLOUD_TOKEN' in lookup('env', 'HOME') | default('') + '/.clouds/hcloud' | combine({}) | default('') and lookup('env', 'HCLOUD_TOKEN') is defined"
-    fail_msg: "HETZNER_API_TOKEN environment variable not found. Please set it in your shell environment."
-    success_msg: "HETZNER_API_TOKEN is set"
+      - lookup('env', 'HCLOUD_TOKEN') | length > 0
+    fail_msg: "HCLOUD_TOKEN not set. Get from: https://console.hetzner.cloud -> Security -> API Tokens"
 
-- name: Install hcloud CLI if not present
-  ansible.builtin.apt:
-    name: hcloud
-    state: present
-  become: true
-  when: ansible_os_family == "Debian"
+# ============================================
+# SSH Key
+# ============================================
 
-- name: Install hcloud CLI if not present
-  ansible.builtin.yum:
-    name: hcloud
-    state: present
-  become: true
-  when: ansible_os_family == "RedHat"
+- name: Upload SSH public key to Hetzner
+  ansible.builtin.command:
+    cmd: >
+      hcloud ssh-key create
+      --name {{ project }}-key
+      --public-key-from-file {{ ssh_key_path | default('~/.ssh/id_ed25519') }}.pub
+  register: ssh_key_create
+  changed_when: ssh_key_create.rc == 0
+  failed_when: false
 
-- name: Check if inventory file exists
-  stat:
-    path: "{{ inventory_file | default('inventory') }}"
-  register: inventory_stat
-
-- name: Read inventory file
-  slurp:
-    src: "{{ inventory_file | default('inventory') }}"
-  register: inventory_content
-  when: inventory_stat.stat.exists
-
-- name: Parse tier from inventory
+- name: Set SSH key name fact
   set_fact:
-    deployment_tier: "{{ lookup('ini', 'tier section=global file={{ inventory_file | default('inventory') }}') }}"
-  when: inventory_content is defined
+    hcloud_ssh_key: "{{ project }}-key"
 
-- name: Set deployment tier to default if not specified
-  set_fact:
-    deployment_tier: "medium"
-  when: inventory_content is not defined or deployment_tier is not defined
+# ============================================
+# Network
+# ============================================
 
-- name: Configure deployment tier
-  set_fact:
-    control_plane_count: "{{ tier_config[deployment_tier].cp }}"
-    worker_count: "{{ tier_config[deployment_tier].worker }}"
-    bastion_server_type: "{{ tier_config[deployment_tier].bastion }}"
-    worker_server_type: "{{ tier_config[deployment_tier].worker_server }}"
-  vars:
-    tier_config:
-      minimal: { cp: 1, worker: 1, bastion: 'cx11', worker_server: 'cpx21', cost: 12 }
-      small: { cp: 2, worker: 1, bastion: 'cx21', worker_server: 'cpx31', cost: 21 }
-      medium: { cp: 2, worker: 3, bastion: 'cx22', worker_server: 'cpx41', cost: 34, ha: true }
-      production: { cp: 3, worker: 3, bastion: 'cx31', worker_server: 'cpx51', cost: 48, ha: true }
+- name: Create private network
+  ansible.builtin.command:
+    cmd: >
+      hcloud network create
+      --name {{ project }}-network
+      --ip-range 10.0.0.0/16
+      --label project={{ project }}
+  register: network_create
+  changed_when: network_create.rc == 0
+  failed_when: network_create.rc != 0 and 'uniqueness_error' not in (network_create.stderr | default(''))
 
-- name: Set project name from environment or default
-  set_fact:
-    project_name: "{{ lookup('env', 'PROJECT_NAME') | default('k8s', true) }}"
+- name: Create infrastructure subnet
+  ansible.builtin.command:
+    cmd: >
+      hcloud network add-subnet {{ project }}-network
+      --type cloud
+      --network-zone eu-central
+      --ip-range 10.0.0.0/24
+  register: subnet_infra
+  changed_when: subnet_infra.rc == 0
+  failed_when: subnet_infra.rc != 0 and 'already' not in (subnet_infra.stderr | default(''))
 
-- name: Create Hetzner Cloud network
-  hcloud_network:
-    name: "{{ project_name }}-network"
-    auto_delete_vms: true
-    labels:
-      project: "{{ project_name }}"
-      managed-by: ansible
-  register: hetzner_network
+- name: Create control plane subnet
+  ansible.builtin.command:
+    cmd: >
+      hcloud network add-subnet {{ project }}-network
+      --type cloud
+      --network-zone eu-central
+      --ip-range 10.0.1.0/24
+  register: subnet_cp
+  changed_when: subnet_cp.rc == 0
+  failed_when: subnet_cp.rc != 0 and 'already' not in (subnet_cp.stderr | default(''))
 
-- name: Create Hetzner Cloud subnet
-  hcloud_subnet:
-    network_id: "{{ hetzner_network.network.id }}"
-    name: "{{ project_name }}-subnet"
-    type: cloud
-    ip_range: "10.0.0.0/16"
-    auto_delete: true
-    labels:
-      project: "{{ project_name }}"
-  register: hetzner_subnet
+- name: Create workers subnet
+  ansible.builtin.command:
+    cmd: >
+      hcloud network add-subnet {{ project }}-network
+      --type cloud
+      --network-zone eu-central
+      --ip-range 10.0.2.0/24
+  register: subnet_workers
+  changed_when: subnet_workers.rc == 0
+  failed_when: subnet_workers.rc != 0 and 'already' not in (subnet_workers.stderr | default(''))
 
-- name: Create primary IP for bastion
-  hcloud_primary_ip:
-    type: ipv4
-    name: "{{ project_name }}-bastion-ip"
-    auto_delete: true
-    labels:
-      project: "{{ project_name }}"
-      role: bastion
-  register: bastion_ip
+# ============================================
+# Placement Group (for HA)
+# ============================================
+
+- name: Create placement group for spread
+  ansible.builtin.command:
+    cmd: >
+      hcloud placement-group create
+      --name {{ project }}-spread
+      --type spread
+  register: pg_create
+  changed_when: pg_create.rc == 0
+  failed_when: pg_create.rc != 0 and 'uniqueness_error' not in (pg_create.stderr | default(''))
+  when: infra_tier in ['medium', 'production']
+
+# ============================================
+# Firewalls
+# ============================================
+
+- name: Create bastion firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall create
+      --name {{ project }}-fw-bastion
+      --label project={{ project }}
+  register: fw_bastion
+  changed_when: fw_bastion.rc == 0
+  failed_when: fw_bastion.rc != 0 and 'uniqueness_error' not in (fw_bastion.stderr | default(''))
+
+- name: Add SSH rule to bastion firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-bastion
+      --direction in --protocol tcp --port 22
+      --source-ips 0.0.0.0/0 --source-ips ::/0
+      --description "SSH access"
+  register: fw_rule_ssh
+  changed_when: fw_rule_ssh.rc == 0
+  failed_when: fw_rule_ssh.rc != 0 and 'duplicate' not in (fw_rule_ssh.stderr | default(''))
+
+- name: Add VPN rule to bastion firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-bastion
+      --direction in --protocol tcp --port 443
+      --source-ips 0.0.0.0/0 --source-ips ::/0
+      --description "Headscale VPN"
+  register: fw_rule_vpn
+  changed_when: fw_rule_vpn.rc == 0
+  failed_when: fw_rule_vpn.rc != 0 and 'duplicate' not in (fw_rule_vpn.stderr | default(''))
+
+- name: Add Headscale DERP rule to bastion firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-bastion
+      --direction in --protocol udp --port 3478
+      --source-ips 0.0.0.0/0 --source-ips ::/0
+      --description "STUN/DERP for VPN"
+  register: fw_rule_derp
+  changed_when: fw_rule_derp.rc == 0
+  failed_when: fw_rule_derp.rc != 0 and 'duplicate' not in (fw_rule_derp.stderr | default(''))
+
+- name: Create node firewall (private network only)
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall create
+      --name {{ project }}-fw-nodes
+      --label project={{ project }}
+  register: fw_nodes
+  changed_when: fw_nodes.rc == 0
+  failed_when: fw_nodes.rc != 0 and 'uniqueness_error' not in (fw_nodes.stderr | default(''))
+
+- name: Add SSH from bastion to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol tcp --port 22
+      --source-ips 10.0.0.0/16
+      --description "SSH from private network"
+  register: fw_node_ssh
+  changed_when: fw_node_ssh.rc == 0
+  failed_when: fw_node_ssh.rc != 0 and 'duplicate' not in (fw_node_ssh.stderr | default(''))
+
+- name: Add K8s API to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol tcp --port 6443
+      --source-ips 10.0.0.0/16
+      --description "Kubernetes API"
+  register: fw_node_api
+  changed_when: fw_node_api.rc == 0
+  failed_when: fw_node_api.rc != 0 and 'duplicate' not in (fw_node_api.stderr | default(''))
+
+- name: Add kubelet to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol tcp --port 10250
+      --source-ips 10.0.0.0/16
+      --description "Kubelet API"
+  register: fw_node_kubelet
+  changed_when: fw_node_kubelet.rc == 0
+  failed_when: fw_node_kubelet.rc != 0 and 'duplicate' not in (fw_node_kubelet.stderr | default(''))
+
+- name: Add NodePort range to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol tcp --port 30000-32767
+      --source-ips 10.0.0.0/16
+      --description "NodePort range"
+  register: fw_node_np
+  changed_when: fw_node_np.rc == 0
+  failed_when: fw_node_np.rc != 0 and 'duplicate' not in (fw_node_np.stderr | default(''))
+
+- name: Add etcd ports to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol tcp --port 2379-2380
+      --source-ips 10.0.0.0/16
+      --description "etcd cluster"
+  register: fw_node_etcd
+  changed_when: fw_node_etcd.rc == 0
+  failed_when: fw_node_etcd.rc != 0 and 'duplicate' not in (fw_node_etcd.stderr | default(''))
+
+# ============================================
+# Bastion Server (public IP)
+# ============================================
 
 - name: Create bastion server
-  hcloud_server:
-    name: "{{ project_name }}-bastion-1"
-    image: ubuntu-24.04
-    location: fsn1
-    server_type: "{{ bastion_server_type }}"
-    startaftercreate: true
-    networks:
-      - "{{ hetzner_network.network.name }}"
-    primary_ip: "{{ bastion_ip.primary_ip.id }}"
-    ssh_keys: "{{ ssh_keys }}"
-    labels:
-      project: "{{ project_name }}"
-      role: bastion
-      managed-by: ansible
-  register: bastion_server
+  ansible.builtin.command:
+    cmd: >
+      hcloud server create
+      --name {{ project }}-bastion
+      --type {{ bastion_type }}
+      --image ubuntu-24.04
+      --location {{ region }}
+      --ssh-key {{ hcloud_ssh_key }}
+      --network {{ project }}-network
+      --firewall {{ project }}-fw-bastion
+      --label project={{ project }},role=bastion
+  register: bastion_create
+  changed_when: bastion_create.rc == 0
+  failed_when: bastion_create.rc != 0 and 'uniqueness_error' not in (bastion_create.stderr | default(''))
 
-- name: Wait for bastion to be ready
+- name: Get bastion public IP
+  ansible.builtin.command:
+    cmd: hcloud server ip {{ project }}-bastion
+  register: bastion_ip_result
+  changed_when: false
+
+- name: Set bastion IP fact
+  set_fact:
+    bastion_public_ip: "{{ bastion_ip_result.stdout | trim }}"
+
+- name: Wait for bastion SSH to be ready
   wait_for:
-    host: "{{ bastion_server.ipv4_address }}"
+    host: "{{ bastion_public_ip }}"
     port: 22
     delay: 10
     timeout: 300
   delegate_to: localhost
   become: false
 
-- name: Create primary IPs for control plane
-  hcloud_primary_ip:
-    type: ipv4
-    name: "{{ project_name }}-cp-{{ item }}-ip"
-    auto_delete: true
-    labels:
-      project: "{{ project_name }}"
-      role: control-plane
-      index: "{{ item }}"
-  loop: "{{ range(1, control_plane_count + 1) | list }}"
-  loop_control:
-    index_var: cp_index
-  register: cp_ips
+# ============================================
+# Control Plane Servers (private network only)
+# ============================================
 
 - name: Create control plane servers
-  hcloud_server:
-    name: "{{ project_name }}-cp-{{ item }}"
-    image: ubuntu-24.04
-    location: fsn1
-    server_type: cx22
-    startaftercreate: true
-    networks:
-      - "{{ hetzner_network.network.name }}"
-    primary_ip: "{{ item_dict.value.primary_ip.id }}"
-    ssh_keys: "{{ ssh_keys }}"
-    labels:
-      project: "{{ project_name }}"
-      role: control-plane
-      index: "{{ item }}"
-  loop: "{{ range(1, control_plane_count + 1) | list }}"
-  loop_control:
-    index_var: cp_index
-    loop_var: item
-  register: control_plane_servers
+  ansible.builtin.command:
+    cmd: >
+      hcloud server create
+      --name {{ project }}-master-{{ item }}
+      --type {{ cp_type }}
+      --image ubuntu-24.04
+      --location {{ region }}
+      --ssh-key {{ hcloud_ssh_key }}
+      --network {{ project }}-network
+      --firewall {{ project }}-fw-nodes
+      --without-ipv4
+      --without-ipv6
+      --label project={{ project }},role=master,index={{ item }}
+      {{ '--placement-group ' + project + '-spread' if infra_tier in ['medium', 'production'] else '' }}
+  loop: "{{ range(1, (cp_count | int) + 1) | list }}"
+  register: master_create
+  changed_when: master_create.rc == 0
+  failed_when: master_create.rc != 0 and 'uniqueness_error' not in (master_create.stderr | default(''))
+
+# ============================================
+# Worker Servers (private network only)
+# ============================================
 
 - name: Create worker servers
-  hcloud_server:
-    name: "{{ project_name }}-worker-{{ item }}"
-    image: ubuntu-24.04
-    location: fsn1
-    server_type: "{{ worker_server_type }}"
-    startaftercreate: true
-    networks:
-      - "{{ hetzner_network.network.name }}"
-    ssh_keys: "{{ ssh_keys }}"
-    labels:
-      project: "{{ project_name }}"
-      role: worker
-      index: "{{ item }}"
-  loop: "{{ range(1, worker_count + 1) | list }}"
-  loop_control:
-    index_var: worker_index
-    loop_var: item
-  register: worker_servers
+  ansible.builtin.command:
+    cmd: >
+      hcloud server create
+      --name {{ project }}-worker-{{ item }}
+      --type {{ worker_type }}
+      --image ubuntu-24.04
+      --location {{ region }}
+      --ssh-key {{ hcloud_ssh_key }}
+      --network {{ project }}-network
+      --firewall {{ project }}-fw-nodes
+      --without-ipv4
+      --without-ipv6
+      --label project={{ project }},role=worker,index={{ item }}
+      {{ '--placement-group ' + project + '-spread' if infra_tier in ['medium', 'production'] else '' }}
+  loop: "{{ range(1, (worker_count | int) + 1) | list }}"
+  register: worker_create
+  changed_when: worker_create.rc == 0
+  failed_when: worker_create.rc != 0 and 'uniqueness_error' not in (worker_create.stderr | default(''))
 
-- name: Create firewall for control plane
-  hcloud_firewall:
-    name: "{{ project_name }}-fw-cp"
-    rules:
-      - direction: in
-        protocol: tcp
-        port: "22"
-        source_ips:
-          - 10.0.0.0/16
-      - direction: in
-        protocol: tcp
-        port: "6443"
-        source_ips:
-          - 10.0.0.0/16
-      - direction: out
-        protocol: tcp
-        port: "1-65535"
-    labels:
-      project: "{{ project_name }}"
-      role: control-plane
-  register: firewall_cp
-
-- name: Create firewall for worker nodes
-  hcloud_firewall:
-    name: "{{ project_name }}-fw-worker"
-    rules:
-      - direction: in
-        protocol: tcp
-        port: "22"
-        source_ips:
-          - 10.0.0.0/16
-      - direction: in
-        protocol: tcp
-        port: "10250"
-        source_ips:
-          - 10.0.0.0/16
-      - direction: in
-        protocol: tcp
-        port: "30000-32767"
-        source_ips:
-          - 10.0.0.0/16
-      - direction: out
-        protocol: tcp
-        port: "1-65535"
-    labels:
-      project: "{{ project_name }}"
-      role: worker
-  register: firewall_worker
-
-- name: Apply firewalls to servers
-  hcloud_server:
-    name: "{{ item }}"
-    firewall_ids: "{{ [firewall_cp.id] if 'cp' in item else [firewall_worker.id] }}"
-  loop: "{{ control_plane_servers.servers | map(attribute='name') | list }}"
-  loop_control:
-    loop_var: server_name
-  when: firewall_cp.id is defined
-
-- name: Apply firewalls to servers
-  hcloud_server:
-    name: "{{ item }}"
-    firewall_ids: "[{{ firewall_worker.id }}]"
-  loop: "{{ worker_servers.servers | map(attribute='name') | list }}"
-  loop_control:
-    loop_var: server_name
-  when: firewall_worker.id is defined
+# ============================================
+# Load Balancer
+# ============================================
 
 - name: Create load balancer
-  hcloud_load_balancer:
-    name: "{{ project_name }}-lb"
-    type: lba11
-    location: fsn1
-    algorithm: round_robin
-    labels:
-      project: "{{ project_name }}"
-      role: load-balancer
-  when: control_plane_count > 1
-  register: load_balancer
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer create
+      --name {{ project }}-lb
+      --type lb11
+      --location {{ region }}
+      --label project={{ project }}
+  register: lb_create
+  changed_when: lb_create.rc == 0
+  failed_when: lb_create.rc != 0 and 'uniqueness_error' not in (lb_create.stderr | default(''))
+  when: lb_enabled | bool
 
-- name: Attach load balancer targets
-  hcloud_load_balancer_target:
-    load_balancer_id: "{{ load_balancer.load_balancer.id }}"
-    target_type: server
-    server_id: "{{ item }}"
-    port: 6443
-    labels:
-      role: kubernetes
-  loop: "{{ control_plane_servers.servers | map(attribute='id') | list }}"
-  when: control_plane_count > 1
+- name: Attach LB to private network
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer attach-to-network {{ project }}-lb
+      --network {{ project }}-network
+  register: lb_network
+  changed_when: lb_network.rc == 0
+  failed_when: lb_network.rc != 0 and 'already' not in (lb_network.stderr | default(''))
+  when: lb_enabled | bool
 
-- name: Create private network route
-  hcloud_route:
-    network_id: "{{ hetzner_network.network.id }}"
-    destination: "{{ hetzner_network.network.ip_range }}"
-    gateway: "{{ control_plane_servers.servers[0].ipv4_address }}"
-  when: control_plane_count > 1
+- name: Add LB service for HTTPS
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer add-service {{ project }}-lb
+      --protocol tcp --listen-port 443 --destination-port 443
+  register: lb_svc_https
+  changed_when: lb_svc_https.rc == 0
+  failed_when: lb_svc_https.rc != 0 and 'already' not in (lb_svc_https.stderr | default(''))
+  when: lb_enabled | bool
 
-- name: Create network DNS entry for GitLab
-  hcloud_dns_record:
-    dns_zone_id: "{{ hetzner_dns_zone.id }}"
-    name: gitlab
-    value: "{{ load_balancer.load_balancer.ipv4 }}"
-    type: A
-  when: hetzner_dns_zone.id is defined
-  register: gitlab_dns
+- name: Add LB service for HTTP
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer add-service {{ project }}-lb
+      --protocol tcp --listen-port 80 --destination-port 80
+  register: lb_svc_http
+  changed_when: lb_svc_http.rc == 0
+  failed_when: lb_svc_http.rc != 0 and 'already' not in (lb_svc_http.stderr | default(''))
+  when: lb_enabled | bool
 
-- name: Create network DNS entry for registry
-  hcloud_dns_record:
-    dns_zone_id: "{{ hetzner_dns_zone.id }}"
-    name: registry
-    value: "{{ load_balancer.load_balancer.ipv4 }}"
-    type: A
-  when: hetzner_dns_zone.id is defined
-  register: registry_dns
+- name: Add worker servers as LB targets
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer add-target {{ project }}-lb
+      --server {{ project }}-worker-{{ item }}
+      --use-private-ip
+  loop: "{{ range(1, (worker_count | int) + 1) | list }}"
+  register: lb_target
+  changed_when: lb_target.rc == 0
+  failed_when: lb_target.rc != 0 and 'already' not in (lb_target.stderr | default(''))
+  when: lb_enabled | bool
 
-- name: Write infrastructure facts to file
+- name: Get load balancer public IP
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer describe {{ project }}-lb -o json
+  register: lb_info
+  changed_when: false
+  when: lb_enabled | bool
+
+- name: Set LB IP fact
+  set_fact:
+    lb_public_ip: "{{ (lb_info.stdout | from_json).public_net.ipv4.ip }}"
+  when: lb_enabled | bool and lb_info.stdout is defined
+
+- name: Set public IP to bastion when no LB
+  set_fact:
+    lb_public_ip: "{{ bastion_public_ip }}"
+  when: not (lb_enabled | bool)
+
+# ============================================
+# Write infrastructure state
+# ============================================
+
+- name: Write infrastructure facts
   copy:
-    dest: "{{ project_name }}-infra-facts.yml"
+    dest: "{{ playbook_dir }}/{{ project }}-infra-facts.yml"
     content: |
       ---
-      hetzner_network_name: "{{ hetzner_network.network.name }}"
-      hetzner_subnet_name: "{{ hetzner_subnet.subnet.name }}"
-      control_plane_ips: "{{ control_plane_servers.servers | map(attribute='ipv4_address') | list }}"
-      worker_ips: "{{ worker_servers.servers | map(attribute='ipv4_address') | list }}"
-      bastion_ip: "{{ bastion_server.ipv4_address }}"
-      load_balancer_ip: "{{ load_balancer.load_balancer.ipv4 }}"
-      control_plane_server_names: "{{ control_plane_servers.servers | map(attribute='name') | list }}"
-      worker_server_names: "{{ worker_servers.servers | map(attribute='name') | list }}"
+      project: "{{ project }}"
+      domain: "{{ domain | default('example.com') }}"
+      region: "{{ region }}"
+      tier: "{{ infra_tier }}"
+      bastion_ip: "{{ bastion_public_ip }}"
+      lb_ip: "{{ lb_public_ip }}"
+      lb_enabled: {{ lb_enabled | bool }}
+      cp_count: {{ cp_count }}
+      worker_count: {{ worker_count }}
+    mode: '0644'
+
+- name: Display infrastructure summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Hetzner Infrastructure Provisioned"
+      - "=========================================="
+      - "  Project: {{ project }}"
+      - "  Region: {{ region }}"
+      - "  Tier: {{ infra_tier }}"
+      - "  Bastion IP: {{ bastion_public_ip }}"
+      - "  LB IP: {{ lb_public_ip }}"
+      - "  Masters: {{ cp_count }}x {{ cp_type }}"
+      - "  Workers: {{ worker_count }}x {{ worker_type }}"
+      - "=========================================="
