@@ -1,46 +1,101 @@
 ---
-# Ansible Inventory for Kubernetes Platform Deployment
-# Copy this file to inventory and customize for your deployment
+# ============================================
+# Ansible Inventory for Kubernetes Platform
+# ============================================
+# Copy to inventory.yml and customize
+# Usage: ansible-playbook playbooks/deploy_platform.yml -i inventory.yml
+# ============================================
 
-[global]
-domain = example.com
-email = admin@example.com
-environment = production
-project = k8s
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
 
-# Tier selection
-# minimal, small, medium, production
-tier = medium
+  vars:
+    # ----------------------------------------
+    # Global Settings
+    # ----------------------------------------
+    domain: example.com
+    email: admin@example.com
+    project_name: k8s
+    environment: production
 
-# Infrastructure
-hetzner_api_token = "{{ lookup('env', 'HETZNER_API_TOKEN') }}"
-ssh_user = "{{ lookup('env', 'SSH_USER') }}"
+    # Tier selection: minimal, small, medium, production
+    tier: medium
 
-# Kubernetes
-k8s_version = v1.34.3
-k8s_cni = cilium
-k8s_pod_cidr = 10.233.64.0/18
-k8s_service_cidr = 10.233.0.0/18
+    # ----------------------------------------
+    # Infrastructure (Hetzner)
+    # ----------------------------------------
+    hetzner_api_token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+    hetzner_region: hel1
+    ssh_user: root
+    ssh_key_path: ~/.ssh/id_ed25519
 
-# Storage
-minio_replicas = 4
-minio_storage_size = 50Gi
+    # ----------------------------------------
+    # Kubernetes
+    # ----------------------------------------
+    k8s_version: v1.34.3
+    k8s_cni: cilium
+    k8s_pod_cidr: 10.233.64.0/18
+    k8s_service_cidr: 10.233.0.0/18
 
-# Secrets
-vault_replicas = 3
-eso_enabled = true
+    # ----------------------------------------
+    # Network
+    # ----------------------------------------
+    private_network_cidr: 10.0.0.0/16
+    vpn_enabled: true
 
-# Databases
-postgresql_replicas = 2
-postgresql_storage = 20Gi
+    # ----------------------------------------
+    # Storage (MinIO)
+    # ----------------------------------------
+    minio_replicas: 4
+    minio_storage_size: 50Gi
+    # minio_access_key: minioadmin
+    # minio_secret_key: minioadmin123
 
-# GitLab
-gitlab_runner_concurrent_jobs = 10
+    # ----------------------------------------
+    # Secrets (Vault + ESO)
+    # ----------------------------------------
+    vault_replicas: 3
+    vault_storage_size: 10Gi
+    eso_enabled: true
 
-# Observability
-metrics_retention = 30d
-metrics_storage = 50Gi
-logging_retention = 14d
+    # ----------------------------------------
+    # Databases
+    # ----------------------------------------
+    postgresql_replicas: 2
+    postgresql_storage: 20Gi
+    postgresql_version: 17
 
-# Autoscaling
-keda_enabled = true
+    # ----------------------------------------
+    # GitLab
+    # ----------------------------------------
+    gitlab_runner_concurrent_jobs: 10
+    # gitlab_runner_token: ""  # Set after GitLab is running
+    # gitlab_postgresql_password: ""  # Auto-generated if not set
+
+    # ----------------------------------------
+    # Observability
+    # ----------------------------------------
+    metrics_retention: 30d
+    metrics_storage: 50Gi
+    logging_retention: 14d
+
+    # ----------------------------------------
+    # Autoscaling (KEDA)
+    # ----------------------------------------
+    keda_enabled: true
+
+    # ----------------------------------------
+    # Backup
+    # ----------------------------------------
+    backup_schedule: "0 2 * * *"
+    backup_retention_days: 30
+
+    # ----------------------------------------
+    # Boilerplate Application (optional)
+    # ----------------------------------------
+    deploy_boilerplate: false
+    # app_name: myapp
+    # app_namespace: production
+    # git_provider: gitlab-selfhosted

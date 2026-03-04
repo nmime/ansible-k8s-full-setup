@@ -1,0 +1,151 @@
+# ============================================
+# PRODUCTION TIER - ~€74-100/mo
+# ============================================
+# Best for: Full HA, medium-high traffic
+# Nodes: 6+ (3 masters, 3+ workers)
+# HA: Full (control plane + workloads)
+# ============================================
+
+tier: production
+cost_estimate: "€74-100/mo"
+
+global:
+  project: k8s
+  domain: example.com
+  email: admin@example.com
+  environment: production
+
+# ---------------------------------------------
+# Infrastructure
+# ---------------------------------------------
+infrastructure:
+  provider: hetzner
+  region: hel1
+
+  control_plane:
+    count: 3
+    type: cx32
+    schedulable: false
+
+  workers:
+    count: 3
+    type: cx32
+
+# ---------------------------------------------
+# Network
+# ---------------------------------------------
+network:
+  bastion:
+    enabled: true
+    server_type: cx22
+
+  load_balancer:
+    enabled: true
+    type: lb11
+
+  vpn:
+    enabled: true
+    groups:
+      admin: []
+      dev: []
+      readonly: []
+
+# ---------------------------------------------
+# Kubernetes
+# ---------------------------------------------
+kubernetes:
+  version: v1.34.3
+  cni: cilium
+  ha_control_plane: true
+  features:
+    gateway_api: true
+    hubble: true
+    encryption: true
+    network_policies: true
+
+# ---------------------------------------------
+# Storage
+# ---------------------------------------------
+storage:
+  enabled: true
+  mode: distributed
+  replicas: 4
+  size_per_replica: 100Gi
+
+# ---------------------------------------------
+# Secrets
+# ---------------------------------------------
+secrets:
+  enabled: true
+  vault:
+    replicas: 3
+    storage_size: 10Gi
+  eso:
+    enabled: true
+
+# ---------------------------------------------
+# Databases
+# ---------------------------------------------
+databases:
+  postgresql:
+    enabled: true
+    replicas: 3
+    storage_size: 50Gi
+
+# ---------------------------------------------
+# GitLab
+# ---------------------------------------------
+gitlab:
+  enabled: true
+  webservice_replicas: 2
+  sidekiq_replicas: 2
+  gitaly_replicas: 1
+  runner:
+    enabled: true
+    concurrent_jobs: 20
+
+# ---------------------------------------------
+# GitOps
+# ---------------------------------------------
+gitops:
+  enabled: true
+  ha_enabled: true
+
+# ---------------------------------------------
+# Observability
+# ---------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    retention: 30d
+    storage_size: 100Gi
+
+  logging:
+    enabled: true
+    retention: 14d
+
+  grafana:
+    enabled: true
+    replicas: 2
+
+# ---------------------------------------------
+# Autoscaling
+# ---------------------------------------------
+autoscaling:
+  enabled: true
+  defaults:
+    min_replicas: 2
+    max_replicas: 20
+
+# ---------------------------------------------
+# Backup
+# ---------------------------------------------
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  retention_days: 30
+  include:
+    - databases
+    - gitlab
+    - secrets
+    - minio
