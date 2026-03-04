@@ -1,15 +1,22 @@
 ---
-# Vault + External Secrets Operator - Complete Implementation
-# HashiCorp Vault for secret storage and ESO for Kubernetes integration
+# K8s Secrets Role - Vault v1.21.2 + ESO v1.2.1
+# HashiCorp Vault for secret storage + External Secrets Operator for K8s integration
+# Components: Vault (Helm chart 0.29.0), ESO (Helm chart 0.15.0)
 
-- name: Create namespace for Vault
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: vault
+- name: Set secrets tier-specific variables
+  set_fact:
+    vault_ns: "vault"
+    eso_ns: "external-secrets"
+    vault_chart_ver: "0.29.0"
+    eso_chart_ver: "0.15.0"
+    vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
+    vault_ha: "{{ true if tier in ['medium', 'production'] else false }}"
+    vault_storage: "{{ vault_storage_size | default('10Gi') }}"
+    vault_domain: "vault.{{ domain | default('example.com') }}"
+
+# ============================================
+# Vault Installation
+# ============================================
 
 - name: Create Vault namespace
   kubernetes.core.k8s:
@@ -18,129 +25,390 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: external-secrets
+        name: "{{ vault_ns }}"
+        labels:
+          app.kubernetes.io/part-of: vault
 
 - name: Add HashiCorp Helm repository
-  community.helm.helm_repository:
+  kubernetes.core.helm_repository:
     name: hashicorp
     repo_url: "https://helm.releases.hashicorp.com"
 
-- name: Install Vault with Helm
-  community.helm.helm:
+- name: Install Vault via Helm
+  kubernetes.core.helm:
     name: vault
     chart_ref: hashicorp/vault
-    chart_version: "0.31.0"
-    release_namespace: vault
+    chart_version: "{{ vault_chart_ver }}"
+    release_namespace: "{{ vault_ns }}"
     create_namespace: true
     release_state: present
+    wait: true
+    timeout: 10m0s
     values:
-      ha:
+      global:
         enabled: true
-        replicas: 3
-        apiAddr: "https://vault-internal:8200"
       injector:
         enabled: true
-        automountServiceAccountToken: true
+        replicas: "{{ 2 if vault_ha else 1 }}"
       server:
+        image:
+          tag: "1.21.2"
+        replicas: "{{ vault_replicas }}"
         dataStorage:
-          size: 10Gi
-          storageClass: "standard"
-        ui: true
-        ingress:
           enabled: true
-          className: "nginx"
-          hosts:
-            - vault.{{ project_name | default('k8s') }}.local
-          tlsSecretName: "vault-tls"
-          path: "/"
-      tolerations:
-        - key: "dedicated"
-          operator: "Equal"
-          value: "vault"
-          effect: "NoSchedule"
+          size: "{{ vault_storage }}"
+          storageClass: "hcloud-volumes"
+        auditStorage:
+          enabled: true
+          size: "5Gi"
+          storageClass: "hcloud-volumes"
+        ha:
+          enabled: "{{ vault_ha }}"
+          replicas: "{{ vault_replicas }}"
+          raft:
+            enabled: "{{ vault_ha }}"
+            config: |
+              ui = true
+              listener "tcp" {
+                tls_disable = 1
+                address = "[::]:8200"
+                cluster_address = "[::]:8201"
+              }
+              storage "raft" {
+                path = "/vault/data"
+              }
+              service_registration "kubernetes" {}
+        standalone:
+          enabled: "{{ not vault_ha }}"
+          config: |
+            ui = true
+            listener "tcp" {
+              tls_disable = 1
+              address = "[::]:8200"
+              cluster_address = "[::]:8201"
+            }
+            storage "file" {
+              path = "/vault/data"
+            }
+        ingress:
+          enabled: false
+        ui:
+          enabled: true
+      csi:
+        enabled: true
 
-- name: Wait for Vault pods to be ready
+- name: Wait for Vault pods to be running
   kubernetes.core.k8s_info:
     kind: Pod
-    namespace: vault
+    namespace: "{{ vault_ns }}"
     label_selectors:
       - app.kubernetes.io/name=vault
+      - component=server
   register: vault_pods
-  until: vault_pods.resources | length >= 4
+  until: >
+    vault_pods.resources | length >= (vault_replicas | int)
+    and vault_pods.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
   retries: 30
   delay: 10
 
-- name: Get Vault public IP
-  kubernetes.core.k8s_info:
-    kind: Service
-    namespace: vault
-    label_selectors:
-      - app.kubernetes.io/name=vault
-  register: vault_service
-  until: vault_service.resources | length > 0
-  retries: 30
-  delay: 10
+# ============================================
+# Vault Initialization & Configuration
+# ============================================
 
-- name: Configure Vault root token from secret
-  shell: |
-    kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.vault-root-token}' | base64 -d
-  register: vault_root_token
-  run_once: true
+- name: Check Vault init status
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: vault status -format=json
+  register: vault_status_raw
+  failed_when: false
   changed_when: false
 
-- name: Unseal Vault
-  block:
-    - name: Copy unseal script
-      copy:
-        content: |
-          #!/bin/bash
-          VAULT_ADDR="https://{{ vault_service.resources[0].spec.clusterIP }}:8200"
-          
-          # Read unseal keys from secret
-          UNSEAL_KEY_1=$(kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.unseal-key-1}' | base64 -d)
-          UNSEAL_KEY_2=$(kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.unseal-key-2}' | base64 -d)
-          UNSEAL_KEY_3=$(kubectl get secret vault-unseal-keys -n vault -o jsonpath='{.data.unseal-key-3}' | base64 -d)
-          
-          # Unseal Vault
-          vault operator unseal "$UNSEAL_KEY_1"
-          vault operator unseal "$UNSEAL_KEY_2"
-          vault operator unseal "$UNSEAL_KEY_3"
-          
-          # Enable secrets engine
-          vault secrets enable -path=secret kv-v2
-          
-          # Enable Kubernetes auth method
-          vault auth enable kubernetes
-          
-          # Configure Kubernetes auth method
-          vault write auth/kubernetes/config \
-              kubernetes_host="https://$(kubectl -n vault get endpoints vault -o jsonpath='{.subsets[0].addresses[0].ip}'):443" \
-              kubernetes_ca_cert="$(kubectl -n vault get secret vault-tls -o jsonpath='{.data.ca\.crt}')"
-          
-          # Create policy
-          vault policy write myapp - <<EOF
-          path "secret/data/myapp/*" {
-            capabilities = ["create", "read", "update", "delete"]
-          }
-          EOF
-          
-          # Create example secret
-          vault kv put secret/myapp/database \
-              host="{{ lookup('env', 'POSTGRES_HOST') }}" \
-              username="{{ lookup('env', 'POSTGRES_USER') }}" \
-              password="{{ lookup('env', 'POSTGRES_PASSWORD') }}"
-          
-          echo "Vault configured successfully!"
-        dest: /tmp/configure_vault.sh
-      become: true
+- name: Initialize Vault (if not initialized)
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: vault operator init -key-shares=5 -key-threshold=3 -format=json
+  register: vault_init
+  when: vault_status_raw.rc != 0 or (vault_status_raw.stdout | from_json).initialized == false
+  failed_when: false
 
-    - name: Execute Vault configuration
-      command: bash /tmp/configure_vault.sh
-      become: true
+- name: Store Vault init keys as K8s secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: vault-init-keys
+        namespace: "{{ vault_ns }}"
+        labels:
+          app: vault
+      stringData:
+        init-output: "{{ vault_init.stdout }}"
+  when: vault_init is changed
 
-    - name: Verify Vault status
-      shell: vault status -address="https://{{ vault_service.resources[0].spec.clusterIP }}:8200"
-      register: vault_status
-      changed_when: false
-      environment:
-        VAULT_ADDR: "https://{{ vault_service.resources[0].spec.clusterIP }}:8200"
+- name: Unseal Vault (primary)
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: "vault operator unseal {{ (vault_init.stdout | from_json).unseal_keys_b64[item] }}"
+  loop: [0, 1, 2]
+  when: vault_init is changed
+  no_log: true
+
+- name: Join raft peers (HA mode)
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-{{ item }}"
+    command: vault operator raft join http://vault-0.vault-internal:8200
+  loop: "{{ range(1, vault_replicas | int) | list }}"
+  when: vault_ha and vault_init is changed
+  failed_when: false
+
+- name: Unseal raft peers (HA mode)
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-{{ item.0 }}"
+    command: "vault operator unseal {{ (vault_init.stdout | from_json).unseal_keys_b64[item.1] }}"
+  loop: "{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}"
+  when: vault_ha and vault_init is changed
+  no_log: true
+
+- name: Enable KV v2 secrets engine
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: vault secrets enable -path=secret kv-v2
+    environment:
+      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+  when: vault_init is changed
+  failed_when: false
+
+- name: Enable Kubernetes auth method
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: vault auth enable kubernetes
+    environment:
+      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+  when: vault_init is changed
+  failed_when: false
+
+- name: Configure Kubernetes auth method
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: >
+      vault write auth/kubernetes/config
+      kubernetes_host="https://kubernetes.default.svc:443"
+    environment:
+      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+  when: vault_init is changed
+  failed_when: false
+
+# ============================================
+# Vault Gateway API Route
+# ============================================
+
+- name: Create Vault TLS certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: vault-tls
+        namespace: "{{ vault_ns }}"
+      spec:
+        secretName: vault-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ vault_domain }}"
+
+- name: Create Vault HTTPRoute
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: vault
+        namespace: "{{ vault_ns }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "{{ vault_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: vault-ui
+                port: 8200
+
+# ============================================
+# External Secrets Operator v1.2.1
+# ============================================
+
+- name: Create ESO namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ eso_ns }}"
+        labels:
+          app.kubernetes.io/part-of: external-secrets
+
+- name: Add External Secrets Helm repository
+  kubernetes.core.helm_repository:
+    name: external-secrets
+    repo_url: "https://charts.external-secrets.io"
+
+- name: Install External Secrets Operator via Helm
+  kubernetes.core.helm:
+    name: external-secrets
+    chart_ref: external-secrets/external-secrets
+    chart_version: "{{ eso_chart_ver }}"
+    release_namespace: "{{ eso_ns }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    values:
+      replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+      webhook:
+        replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+      certController:
+        replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+      serviceMonitor:
+        enabled: true
+
+- name: Wait for ESO to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ eso_ns }}"
+    name: external-secrets
+  register: eso_deploy
+  until: >
+    eso_deploy.resources | length > 0
+    and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
+
+# ============================================
+# ClusterSecretStore (Vault Backend)
+# ============================================
+
+- name: Create Vault ESO service account
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: external-secrets-vault
+        namespace: "{{ eso_ns }}"
+
+- name: Create Vault ESO auth role
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: >
+      vault write auth/kubernetes/role/external-secrets
+      bound_service_account_names=external-secrets-vault
+      bound_service_account_namespaces={{ eso_ns }}
+      policies=default,external-secrets
+      ttl=1h
+    environment:
+      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+  when: vault_init is changed
+  failed_when: false
+
+- name: Create Vault policy for ESO
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: |
+      vault policy write external-secrets - <<EOF
+      path "secret/data/*" {
+        capabilities = ["read", "list"]
+      }
+      path "secret/metadata/*" {
+        capabilities = ["read", "list"]
+      }
+      EOF
+    environment:
+      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+  when: vault_init is changed
+  failed_when: false
+
+- name: Create ClusterSecretStore for Vault
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: external-secrets.io/v1beta1
+      kind: ClusterSecretStore
+      metadata:
+        name: vault-backend
+      spec:
+        provider:
+          vault:
+            server: "http://vault.{{ vault_ns }}.svc.cluster.local:8200"
+            path: "secret"
+            version: "v2"
+            auth:
+              kubernetes:
+                mountPath: "kubernetes"
+                role: "external-secrets"
+                serviceAccountRef:
+                  name: "external-secrets-vault"
+                  namespace: "{{ eso_ns }}"
+
+# ============================================
+# Example ExternalSecret
+# ============================================
+
+- name: Create example ExternalSecret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: external-secrets.io/v1beta1
+      kind: ExternalSecret
+      metadata:
+        name: example-secret
+        namespace: default
+      spec:
+        refreshInterval: 1h
+        secretStoreRef:
+          name: vault-backend
+          kind: ClusterSecretStore
+        target:
+          name: example-secret
+          creationPolicy: Owner
+        data:
+          - secretKey: password
+            remoteRef:
+              key: secret/data/example
+              property: password
+
+- name: Display secrets management summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Secrets Management Deployed"
+      - "=========================================="
+      - "  Vault: v1.21.2 (chart {{ vault_chart_ver }})"
+      - "  ESO: v1.2.1 (chart {{ eso_chart_ver }})"
+      - "  HA Mode: {{ vault_ha }}"
+      - "  Replicas: {{ vault_replicas }}"
+      - "  UI: {{ vault_domain }}"
+      - "  ClusterSecretStore: vault-backend"
+      - "=========================================="

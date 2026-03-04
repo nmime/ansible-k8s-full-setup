@@ -1,6 +1,22 @@
 ---
-# K8s Cluster Management - Kubespray Implementation
-# Installs Kubernetes cluster with Cilium, Gateway API, cert-manager, and LoadBalancer
+# K8s Cluster Management - Kubespray v2.29.1 + Cilium v1.18.6 + Gateway API v1.4.0
+# Installs Kubernetes cluster with core addons
+# Components: K8s v1.34.3, etcd v3.5.26, containerd v2.2.1, cert-manager v1.19.2, MetalLB v0.14.9
+
+- name: Set cluster management variables
+  set_fact:
+    project: "{{ project_name | default('k8s') }}"
+    k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
+    kubespray_version: "v2.29.1"
+    cilium_ver: "{{ cilium_version | default('v1.18.6') }}"
+    gateway_api_ver: "{{ gateway_api_version | default('v1.4.0') }}"
+    certmanager_ver: "v1.19.2"
+    metallb_ver: "v0.14.9"
+    cluster_tier: "{{ tier | default('medium') }}"
+
+# ============================================
+# Kubespray Setup
+# ============================================
 
 - name: Check for Kubespray installation
   stat:
@@ -9,193 +25,310 @@
   delegate_to: localhost
   become: false
 
-- name: Clone Kubespray if not present
+- name: Clone Kubespray
   git:
     repo: https://github.com/kubernetes-sigs/kubespray.git
     dest: "{{ playbook_dir }}/kubespray"
-    version: v2.29.1
+    version: "{{ kubespray_version }}"
     depth: 1
   when: not kubespray_dir.stat.exists
   delegate_to: localhost
   become: false
 
-- name: Generate inventory file for Kubespray
-  template:
-    src: inventory_kubespray.j2
-    dest: "{{ playbook_dir }}/inventory.ini"
-  vars:
-    k8s_version: "v1.34.3"
-    control_plane_nodes: "{{ control_plane_ips }}"
-    worker_nodes: "{{ worker_ips }}"
-    etcd:
-      enabled: true
-      count: "{{ control_plane_count }}"
-
-- name: Set Kubespray inventory facts
-  set_fact:
-    k8s_cluster_name: "{{ project_name | default('k8s') }}-cluster"
-    ansible_user: root
-
-- name: Run Kubespray playbook - inventory setup
-  include_tasks: playbooks/inventory.yml
-  vars:
-    target_group: k8s-cluster
-  loop: "{{ groups['k8s-cluster'] }}"
-  loop_control:
-    loop_var: inventory_host
-
-- name: Install dependencies on all nodes
-  apt:
-    name:
-      - python3-pip
-      - python3-dev
-      - python3-venv
-      - python3-setuptools
-      - python3-wheel
-      - libffi-dev
-      - libssl-dev
-      - gcc
-      - g++
-    state: present
-  become: true
-
-- name: Install required Python packages
+- name: Install Kubespray Python requirements
   pip:
-    name:
-      - "ansible-core==2.16.0"
-      - "kubernetes==28.0.0"
-      - "openshift"
-      - "jmespath"
+    requirements: "{{ playbook_dir }}/kubespray/requirements.txt"
     state: present
+  delegate_to: localhost
+  become: false
 
-- name: Configure kubectl from bastion
-  block:
-    - name: Install kubectl
-      get_url:
-        url: "https://dl.k8s.io/release/v1.34.3/bin/linux/amd64/kubectl"
-        dest: "/usr/local/bin/kubectl"
-        mode: '0755'
+- name: Create Kubespray inventory directory
+  file:
+    path: "{{ playbook_dir }}/kubespray/inventory/{{ project }}/group_vars/all"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
 
-    - name: Create kubeconfig directory
-      file:
-        path: "~/.kube"
-        state: directory
-        mode: '0700'
+- name: Generate Kubespray inventory
+  copy:
+    dest: "{{ playbook_dir }}/kubespray/inventory/{{ project }}/hosts.yml"
+    content: |
+      all:
+        hosts:
+      {% for i in range(1, (cp_count | default(1) | int) + 1) %}
+          {{ project }}-master-{{ i }}:
+            ansible_host: 10.0.1.{{ i }}
+            ip: 10.0.1.{{ i }}
+            access_ip: 10.0.1.{{ i }}
+      {% endfor %}
+      {% for i in range(1, (worker_count | default(2) | int) + 1) %}
+          {{ project }}-worker-{{ i }}:
+            ansible_host: 10.0.2.{{ i }}
+            ip: 10.0.2.{{ i }}
+            access_ip: 10.0.2.{{ i }}
+      {% endfor %}
+        children:
+          kube_control_plane:
+            hosts:
+      {% for i in range(1, (cp_count | default(1) | int) + 1) %}
+              {{ project }}-master-{{ i }}: {}
+      {% endfor %}
+          kube_node:
+            hosts:
+      {% for i in range(1, (worker_count | default(2) | int) + 1) %}
+              {{ project }}-worker-{{ i }}: {}
+      {% endfor %}
+      {% if cp_schedulable | default(false) | bool %}
+      {% for i in range(1, (cp_count | default(1) | int) + 1) %}
+              {{ project }}-master-{{ i }}: {}
+      {% endfor %}
+      {% endif %}
+          etcd:
+            hosts:
+      {% for i in range(1, (cp_count | default(1) | int) + 1) %}
+              {{ project }}-master-{{ i }}: {}
+      {% endfor %}
+          k8s_cluster:
+            children:
+              kube_control_plane: {}
+              kube_node: {}
+    mode: '0644'
+  delegate_to: localhost
+  become: false
 
-    - name: Create kubeconfig from bastion
-      copy:
-        src: "/tmp/kubeconfig"
-        dest: "~/.kube/config"
-        mode: '0600'
-      delegate_to: "{{ bastion_name }}"
-      become: true
-  when: inventory_hostname == "localhost"
+- name: Generate Kubespray group_vars
+  copy:
+    dest: "{{ playbook_dir }}/kubespray/inventory/{{ project }}/group_vars/all/custom.yml"
+    content: |
+      ---
+      kube_version: {{ k8s_ver }}
+      container_manager: containerd
+      kube_network_plugin: cilium
+      kube_pods_subnet: {{ k8s_pod_cidr | default('10.233.64.0/18') }}
+      kube_service_addresses: {{ k8s_service_cidr | default('10.233.0.0/18') }}
+      etcd_deployment_type: kubeadm
+      ansible_ssh_common_args: '-o ProxyJump=root@{{ bastion_public_ip | default("") }}'
+      ansible_user: root
+      cilium_version: {{ cilium_ver }}
+      cilium_enable_hubble: true
+      cilium_hubble_relay_enabled: true
+      cilium_hubble_ui_enabled: true
+      cilium_enable_bandwidth_manager: true
+      cilium_kube_proxy_replacement: true
+      dashboard_enabled: false
+      metrics_server_enabled: true
+    mode: '0644'
+  delegate_to: localhost
+  become: false
 
-- name: Wait for Kubernetes cluster to be ready
-  wait_for:
-    host: "{{ hostvars[item]['k8s_control_plane_address'] }}"
-    port: 6443
-    delay: 30
-    timeout: 600
-  loop: "{{ groups['k8s-cluster'] }}"
-  when: groups['k8s-cluster'] | length > 0
+- name: Run Kubespray cluster deployment
+  ansible.builtin.command:
+    cmd: >
+      ansible-playbook -i inventory/{{ project }}/hosts.yml
+      --become --become-user=root
+      cluster.yml
+    chdir: "{{ playbook_dir }}/kubespray"
+  delegate_to: localhost
+  become: false
+  register: kubespray_result
+  changed_when: true
 
-- name: Check if K8s cluster exists
-  command: kubectl cluster-info
-  register: k8s_cluster_info
-  ignore_errors: true
-  changed_when: false
+# ============================================
+# Post-install: kubeconfig
+# ============================================
 
-- name: Initialize Kubernetes cluster if not exists
-  block:
-    - name: Get cluster IP
-      set_fact:
-        cluster_api_server_ip: "{{ (k8s_cluster_info.stdout_lines | select('search', 'Kubernetes master') | first | split(' ')[0]) }}"
+- name: Copy kubeconfig to bastion
+  ansible.builtin.raw: |
+    mkdir -p /root/.kube
+    ssh -o StrictHostKeyChecking=no root@10.0.1.1 "cat /etc/kubernetes/admin.conf" > /root/.kube/config
+    chmod 600 /root/.kube/config
+    sed -i 's|https://.*:6443|https://10.0.1.1:6443|g' /root/.kube/config
+  delegate_to: "{{ bastion_public_ip | default('') }}"
+  become: true
+  when: bastion_public_ip is defined
 
-    - name: Initialize cluster
-      command: kubeadm init --control-plane-endpoint "{{ cluster_api_server_ip }}:6443" --pod-network-cidr=10.244.0.0/16 --upload-certs
-      register: kubeadm_init
-      when: k8s_cluster_info.rc != 0
-
-    - name: Create kubeconfig
-      command: kubeadm init phase kubeconfig admin --kubeconfig /etc/kubernetes/admin.conf
-      when: k8s_cluster_info.rc != 0
-
-    - name: Configure kubectl for user
-      shell: mkdir -p $HOME/.kube && cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && chown $(id -u):$(id -g) $HOME/.kube/config
-      when: k8s_cluster_info.rc != 0
-
-    - name: Set kubeconfig ownership
-      file:
-        path: "~/.kube/config"
-        owner: "{{ ansible_user }}"
-        group: "{{ ansible_user }}"
-        mode: '0600'
-  when: k8s_cluster_info.rc != 0
-
-- name: Install CNI Plugin (Cilium)
-  command: kubectl apply -f https://github.com/cilium/cilium/releases/download/v1.18.6/cilium.yaml
-  args:
-    creates: /var/run/cilium/cilium.sock
-  ignore_errors: true
-
-- name: Wait for Cilium pods to be ready
-  wait_for:
-    timeout: 120
-
-- name: Install cert-manager
-  kubernetes.core.kubernetes_helm:
-    name: cert-manager
-    chart_ref: jetstack/cert-manager
-    chart_version: "v1.19.2"
-    release_namespace: cert-manager
-    create_namespace: true
-    values:
-      replicaCount: 2
-      webhook:
-        replicaCount: 2
-      controller:
-        replicaCount: 2
+# ============================================
+# Gateway API CRDs + Cilium Gateway
+# ============================================
 
 - name: Install Gateway API CRDs
-  command: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml
-  args:
-    creates: /etc/kubernetes/manifests/gateway-api
+  kubernetes.core.k8s:
+    state: present
+    src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/standard-install.yaml"
 
-- name: Install MetalLB for LoadBalancer
-  kubernetes.core.kubernetes_helm:
-    name: metallb
-    chart_ref: bitnami/metallb
-    chart_version: "0.14.9"
-    release_namespace: metallb-system
-    create_namespace: true
-    values:
-      configPatches:
-        - op: add
-          path: "/metadata/labels/kustomize-apply"
-          value: "true"
-        - op: add
-          path: "/metadata/labels/environment"
-          value: "{{ tier | default('dev') }}"
-
-- name: Configure MetalLB address pool
+- name: Create cilium-secrets namespace
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
-      kind: ConfigMap
+      kind: Namespace
       metadata:
-        name: config
-        namespace: metallb-system
-      data:
-        config: |
-          address-pools:
-          - name: default
-            protocol: layer2
-            addresses:
-            - "{{ inventory_hostname }}-{{ worker_count + 10 }}-{{ worker_count + 20 }}/32"
+        name: cilium-secrets
 
-- name: Create core Kubernetes namespaces
+- name: Create Cilium main Gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: main-gateway
+        namespace: cilium-system
+      spec:
+        gatewayClassName: cilium
+        listeners:
+          - name: http
+            protocol: HTTP
+            port: 80
+            allowedRoutes:
+              namespaces:
+                from: All
+          - name: https
+            protocol: HTTPS
+            port: 443
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: wildcard-tls
+                  namespace: cilium-secrets
+            allowedRoutes:
+              namespaces:
+                from: All
+
+# ============================================
+# cert-manager v1.19.2
+# ============================================
+
+- name: Add Jetstack Helm repository
+  kubernetes.core.helm_repository:
+    name: jetstack
+    repo_url: "https://charts.jetstack.io"
+
+- name: Install cert-manager
+  kubernetes.core.helm:
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ certmanager_ver }}"
+    release_namespace: cert-manager
+    create_namespace: true
+    release_state: present
+    wait: true
+    values:
+      crds:
+        enabled: true
+      replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
+      webhook:
+        replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
+      cainjector:
+        replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
+
+- name: Create Let's Encrypt ClusterIssuer (staging)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: letsencrypt-staging
+      spec:
+        acme:
+          server: https://acme-staging-v02.api.letsencrypt.org/directory
+          email: "{{ email | default('admin@example.com') }}"
+          privateKeySecretRef:
+            name: letsencrypt-staging
+          solvers:
+            - http01:
+                ingress:
+                  class: cilium
+
+- name: Create Let's Encrypt ClusterIssuer (production)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: letsencrypt-prod
+      spec:
+        acme:
+          server: https://acme-v02.api.letsencrypt.org/directory
+          email: "{{ email | default('admin@example.com') }}"
+          privateKeySecretRef:
+            name: letsencrypt-prod
+          solvers:
+            - http01:
+                ingress:
+                  class: cilium
+
+- name: Create wildcard TLS certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: wildcard-tls
+        namespace: cilium-secrets
+      spec:
+        secretName: wildcard-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ domain | default('example.com') }}"
+          - "*.{{ domain | default('example.com') }}"
+
+# ============================================
+# MetalLB v0.14.9
+# ============================================
+
+- name: Add MetalLB Helm repository
+  kubernetes.core.helm_repository:
+    name: metallb
+    repo_url: "https://metallb.github.io/metallb"
+
+- name: Install MetalLB
+  kubernetes.core.helm:
+    name: metallb
+    chart_ref: metallb/metallb
+    chart_version: "{{ metallb_ver }}"
+    release_namespace: metallb-system
+    create_namespace: true
+    release_state: present
+    wait: true
+
+- name: Configure MetalLB IPAddressPool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: default-pool
+        namespace: metallb-system
+      spec:
+        addresses:
+          - "10.0.10.1-10.0.10.254"
+
+- name: Configure MetalLB L2Advertisement
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: default
+        namespace: metallb-system
+      spec:
+        ipAddressPools:
+          - default-pool
+
+# ============================================
+# Core Namespaces
+# ============================================
+
+- name: Create platform namespaces
   kubernetes.core.k8s:
     state: present
     definition:
@@ -207,14 +340,22 @@
     - gitlab
     - argocd
     - monitoring
-    - logging
     - storage
-    - database
+    - databases
     - vault
-    - s3
+    - keda
+    - production
 
-- name: Set Kubernetes cluster facts
-  set_fact:
-    k8s_cluster_initialized: true
-    k8s_control_plane_nodes: "{{ groups['k8s-cluster'] }}"
-    k8s_worker_nodes: "{{ groups['k8s-cluster'] }}"
+- name: Display cluster management summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Kubernetes Cluster Deployed"
+      - "=========================================="
+      - "  K8s: {{ k8s_ver }}"
+      - "  Kubespray: {{ kubespray_version }}"
+      - "  Cilium: {{ cilium_ver }} + Gateway API {{ gateway_api_ver }}"
+      - "  cert-manager: {{ certmanager_ver }}"
+      - "  MetalLB: {{ metallb_ver }}"
+      - "  Tier: {{ cluster_tier }}"
+      - "=========================================="
