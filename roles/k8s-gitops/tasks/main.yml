@@ -1,15 +1,234 @@
 ---
-# GitOps (ArgoCD) Role
-# Deploys ArgoCD for GitOps continuous delivery
+# GitOps (ArgoCD) Role - Complete Implementation
+# Deploys ArgoCD v3.2.5 for GitOps continuous delivery
+# Supports standalone and HA modes based on tier
 
-galaxy_info:
-  author: NMI
-  description: ArgoCD GitOps continuous delivery
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
+- name: Set ArgoCD tier-specific variables
+  set_fact:
+    argocd_namespace: "argocd"
+    argocd_chart_version: "7.8.5"
+    argocd_version: "v3.2.5"
+    argocd_domain: "argocd.{{ domain | default('example.com') }}"
+    argocd_ha: "{{ true if tier in ['medium', 'production'] else false }}"
+    argocd_server_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    argocd_repo_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    argocd_controller_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 
-roles:
-  - role: k8s-gitops
-    tier: "{{ tier }}"
+- name: Create ArgoCD namespace
+  kubernetes.core.k8s:
     state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ argocd_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: argocd
+
+- name: Add Argo Helm repository
+  kubernetes.core.helm_repository:
+    name: argo
+    repo_url: "https://argoproj.github.io/argo-helm"
+
+- name: Install ArgoCD with Helm
+  kubernetes.core.helm:
+    name: argocd
+    chart_ref: argo/argo-cd
+    chart_version: "{{ argocd_chart_version }}"
+    release_namespace: "{{ argocd_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    timeout: "10m0s"
+    values:
+      global:
+        domain: "{{ argocd_domain }}"
+      server:
+        replicas: "{{ argocd_server_replicas }}"
+        ingress:
+          enabled: false
+        extraArgs:
+          - "--insecure"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      controller:
+        replicas: "{{ argocd_controller_replicas }}"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+      repoServer:
+        replicas: "{{ argocd_repo_replicas }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      applicationSet:
+        replicas: "{{ 2 if argocd_ha else 1 }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      redis:
+        enabled: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      notifications:
+        enabled: true
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      configs:
+        cm:
+          url: "https://{{ argocd_domain }}"
+          admin.enabled: "true"
+          exec.enabled: "true"
+          application.resourceTrackingMethod: annotation
+        params:
+          server.insecure: true
+        rbac:
+          policy.default: role:readonly
+          policy.csv: |
+            g, admin, role:admin
+
+- name: Create ArgoCD Gateway API HTTPRoute
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: argocd-server
+        namespace: "{{ argocd_namespace }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+        hostnames:
+          - "{{ argocd_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: argocd-server
+                port: 80
+
+- name: Create TLS Certificate for ArgoCD
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: argocd-tls
+        namespace: cilium-secrets
+      spec:
+        secretName: argocd-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ argocd_domain }}"
+
+# Create default ArgoCD project
+- name: Create default ArgoCD AppProject
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: AppProject
+      metadata:
+        name: platform
+        namespace: "{{ argocd_namespace }}"
+      spec:
+        description: Platform applications
+        sourceRepos:
+          - '*'
+        destinations:
+          - namespace: '*'
+            server: 'https://kubernetes.default.svc'
+        clusterResourceWhitelist:
+          - group: '*'
+            kind: '*'
+        namespaceResourceWhitelist:
+          - group: '*'
+            kind: '*'
+
+# Create ApplicationSet for multi-environment deployment
+- name: Create ApplicationSet for environments
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: ApplicationSet
+      metadata:
+        name: platform-apps
+        namespace: "{{ argocd_namespace }}"
+      spec:
+        goTemplate: true
+        goTemplateOptions:
+          - "missingkey=error"
+        generators:
+          - git:
+              repoURL: "https://gitlab.{{ domain | default('example.com') }}/platform/deployments.git"
+              revision: HEAD
+              directories:
+                - path: "envs/*/apps/*"
+        template:
+          metadata:
+            name: "{{ '{{.path.basename}}' }}-{{ '{{index .path.segments 1}}' }}"
+            namespace: "{{ argocd_namespace }}"
+          spec:
+            project: platform
+            source:
+              repoURL: "https://gitlab.{{ domain | default('example.com') }}/platform/deployments.git"
+              targetRevision: HEAD
+              path: "{{ '{{.path.path}}' }}"
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: "{{ '{{index .path.segments 1}}' }}"
+            syncPolicy:
+              automated:
+                prune: true
+                selfHeal: true
+              syncOptions:
+                - CreateNamespace=true
+  when: tier in ['medium', 'production']
+
+- name: Display ArgoCD deployment info
+  debug:
+    msg:
+      - "=========================================="
+      - "  ArgoCD Deployed Successfully"
+      - "  HA Mode: {{ argocd_ha }}"
+      - "=========================================="
+      - "  ArgoCD URL: https://{{ argocd_domain }}"
+      - ""
+      - "  Get admin password:"
+      - "  kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d"
+      - "=========================================="
