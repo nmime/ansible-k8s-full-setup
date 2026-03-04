@@ -1,15 +1,472 @@
 ---
-# Observability Stack Role
-# Deploys VictoriaMetrics, Loki, and Grafana
+# Observability Stack Role - Complete Implementation
+# Deploys VictoriaMetrics + Loki + Grafana on Kubernetes
+# VictoriaMetrics v1.133.0, Loki v3.6.3, Grafana v12.3.1
 
-galaxy_info:
-  author: NMI
-  description: Observability stack with VictoriaMetrics, Loki, and Grafana
-  company: Your Company
-  license: MIT
-  min_ansible_version: 2.15
+- name: Set observability tier-specific variables
+  set_fact:
+    monitoring_namespace: "monitoring"
+    vm_operator_version: "0.52.0"
+    loki_chart_version: "6.29.0"
+    grafana_chart_version: "8.10.0"
+    grafana_domain: "grafana.{{ domain | default('example.com') }}"
+    vm_retention: "{{ metrics_retention | default('30d') }}"
+    vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
+    loki_retention: "{{ logging_retention | default('14d') }}"
+    vm_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    grafana_replicas: "{{ 2 if tier == 'production' else 1 }}"
 
-roles:
-  - role: k8s-observability
-    tier: "{{ tier }}"
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
     state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: observability
+
+# ============================================
+# VictoriaMetrics
+# ============================================
+
+- name: Add VictoriaMetrics Helm repository
+  kubernetes.core.helm_repository:
+    name: vm
+    repo_url: "https://victoriametrics.github.io/helm-charts/"
+
+- name: Install VictoriaMetrics Operator
+  kubernetes.core.helm:
+    name: vm-operator
+    chart_ref: vm/victoria-metrics-operator
+    chart_version: "{{ vm_operator_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    values:
+      operator:
+        enable_converter_ownership: true
+
+- name: Deploy VMCluster (distributed mode)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMCluster
+      metadata:
+        name: vmcluster
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        retentionPeriod: "{{ vm_retention }}"
+        replicationFactor: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+        vmstorage:
+          replicaCount: "{{ vm_replicas }}"
+          storage:
+            volumeClaimTemplate:
+              spec:
+                storageClassName: hcloud-volumes
+                resources:
+                  requests:
+                    storage: "{{ vm_storage_size }}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+        vmselect:
+          replicaCount: "{{ vm_replicas }}"
+          cacheMountPath: /cache
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+        vminsert:
+          replicaCount: "{{ vm_replicas }}"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  when: tier in ['medium', 'production']
+
+- name: Deploy VMSingle (standalone mode for minimal/small)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMSingle
+      metadata:
+        name: vmsingle
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        retentionPeriod: "{{ vm_retention }}"
+        storage:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: hcloud-volumes
+              resources:
+                requests:
+                  storage: "{{ vm_storage_size }}"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+  when: tier in ['minimal', 'small']
+
+- name: Deploy VMAgent for scraping
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMAgent
+      metadata:
+        name: vmagent
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        replicaCount: "{{ vm_replicas }}"
+        selectAllByDefault: true
+        remoteWrite:
+          - url: "{{ 'http://vminsert-vmcluster.' + monitoring_namespace + '.svc:8480/insert/0/prometheus/api/v1/write' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429/api/v1/write' }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+# ============================================
+# Loki (Log Aggregation)
+# ============================================
+
+- name: Add Grafana Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: "https://grafana.github.io/helm-charts"
+
+- name: Create Loki S3 credentials secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: loki-s3-credentials
+        namespace: "{{ monitoring_namespace }}"
+      type: Opaque
+      stringData:
+        S3_ACCESS_KEY: "{{ minio_access_key | default('minioadmin') }}"
+        S3_SECRET_KEY: "{{ minio_secret_key | default('minioadmin123') }}"
+
+- name: Install Loki with Helm
+  kubernetes.core.helm:
+    name: loki
+    chart_ref: grafana/loki
+    chart_version: "{{ loki_chart_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    timeout: "10m0s"
+    values:
+      deploymentMode: SimpleScalable
+      loki:
+        auth_enabled: false
+        commonConfig:
+          replication_factor: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+        storage:
+          type: s3
+          s3:
+            endpoint: "http://minio.storage.svc.cluster.local:9000"
+            bucketnames: loki-chunks
+            access_key_id: "{{ minio_access_key | default('minioadmin') }}"
+            secret_access_key: "{{ minio_secret_key | default('minioadmin123') }}"
+            s3ForcePathStyle: true
+            insecure: true
+          bucketNames:
+            chunks: loki-chunks
+            ruler: loki-ruler
+            admin: loki-admin
+        schemaConfig:
+          configs:
+            - from: "2024-01-01"
+              store: tsdb
+              object_store: s3
+              schema: v13
+              index:
+                prefix: loki_index_
+                period: 24h
+        limits_config:
+          retention_period: "{{ loki_retention }}"
+          max_query_length: 721h
+          max_query_parallelism: 32
+      read:
+        replicas: "{{ vm_replicas }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      write:
+        replicas: "{{ vm_replicas }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        persistence:
+          enabled: true
+          size: 10Gi
+          storageClass: hcloud-volumes
+      backend:
+        replicas: "{{ vm_replicas }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        persistence:
+          enabled: true
+          size: 10Gi
+          storageClass: hcloud-volumes
+      gateway:
+        enabled: true
+        replicas: 1
+      minio:
+        enabled: false
+      test:
+        enabled: false
+
+- name: Install Promtail for log collection
+  kubernetes.core.helm:
+    name: promtail
+    chart_ref: grafana/promtail
+    chart_version: "6.16.6"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    values:
+      config:
+        clients:
+          - url: "http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local/loki/api/v1/push"
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+# ============================================
+# Grafana
+# ============================================
+
+- name: Install Grafana with Helm
+  kubernetes.core.helm:
+    name: grafana
+    chart_ref: grafana/grafana
+    chart_version: "{{ grafana_chart_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: true
+    values:
+      replicas: "{{ grafana_replicas }}"
+      adminUser: admin
+      adminPassword: admin
+      persistence:
+        enabled: true
+        size: 5Gi
+        storageClass: hcloud-volumes
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+            - name: VictoriaMetrics
+              type: prometheus
+              uid: victoria-metrics
+              url: "{{ 'http://vmselect-vmcluster.' + monitoring_namespace + '.svc:8481/select/0/prometheus' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429' }}"
+              access: proxy
+              isDefault: true
+              jsonData:
+                timeInterval: 15s
+            - name: Loki
+              type: loki
+              uid: loki
+              url: "http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local"
+              access: proxy
+              jsonData:
+                maxLines: 1000
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+            - name: default
+              orgId: 1
+              folder: ''
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/default
+      dashboards:
+        default:
+          node-exporter:
+            gnetId: 1860
+            revision: 37
+            datasource: VictoriaMetrics
+          kubernetes-cluster:
+            gnetId: 7249
+            revision: 1
+            datasource: VictoriaMetrics
+          victoriametrics-cluster:
+            gnetId: 11176
+            revision: 18
+            datasource: VictoriaMetrics
+          loki-dashboard:
+            gnetId: 13639
+            revision: 2
+            datasource: Loki
+          cilium-dashboard:
+            gnetId: 16611
+            revision: 1
+            datasource: VictoriaMetrics
+          postgresql-dashboard:
+            gnetId: 9628
+            revision: 7
+            datasource: VictoriaMetrics
+          argocd-dashboard:
+            gnetId: 14584
+            revision: 1
+            datasource: VictoriaMetrics
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      sidecar:
+        dashboards:
+          enabled: true
+        datasources:
+          enabled: true
+
+- name: Create Grafana Gateway API HTTPRoute
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: grafana
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+        hostnames:
+          - "{{ grafana_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: grafana
+                port: 80
+
+- name: Create TLS Certificate for Grafana
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: grafana-tls
+        namespace: cilium-secrets
+      spec:
+        secretName: grafana-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ grafana_domain }}"
+
+# ============================================
+# Alerting Rules
+# ============================================
+
+- name: Deploy VMRule for alerting
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: platform-alerts
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        groups:
+          - name: kubernetes
+            rules:
+              - alert: KubePodCrashLooping
+                expr: 'rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0'
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Pod {{ '{{ $labels.namespace }}' }}/{{ '{{ $labels.pod }}' }} is crash looping"
+              - alert: KubeNodeNotReady
+                expr: 'kube_node_status_condition{condition="Ready",status="true"} == 0'
+                for: 15m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "Node {{ '{{ $labels.node }}' }} is not ready"
+              - alert: KubePersistentVolumeFillingUp
+                expr: 'kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15'
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "PV {{ '{{ $labels.persistentvolumeclaim }}' }} filling up (< 15% free)"
+              - alert: HighMemoryUsage
+                expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9'
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "High memory usage on {{ '{{ $labels.instance }}' }}"
+
+- name: Display observability deployment info
+  debug:
+    msg:
+      - "=========================================="
+      - "  Observability Stack Deployed"
+      - "=========================================="
+      - "  Grafana: https://{{ grafana_domain }}"
+      - "    User: admin / admin"
+      - "  VictoriaMetrics: {{ 'Cluster' if tier in ['medium', 'production'] else 'Single' }} mode"
+      - "  Loki: SimpleScalable mode"
+      - "  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}"
+      - "=========================================="
