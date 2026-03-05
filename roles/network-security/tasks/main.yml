@@ -75,6 +75,35 @@
   become: true
 
 # ============================================
+# NAT Gateway (bastion routes outbound for private nodes)
+# ============================================
+
+- name: Enable IP forwarding and NAT on bastion
+  ansible.builtin.raw: |
+    # Enable IP forwarding
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
+    sysctl -p /etc/sysctl.d/99-nat.conf
+    # NAT masquerade for private network traffic
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null || \
+      iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE
+    # Persist iptables rules
+    apt-get install -y iptables-persistent
+    netfilter-persistent save
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Add bastion as default route on private network
+  ansible.builtin.raw: |
+    hcloud network add-route {{ project }}-network \
+      --destination 0.0.0.0/0 \
+      --gateway 10.0.0.1
+  delegate_to: localhost
+  become: false
+  register: nat_route
+  changed_when: nat_route.rc == 0
+  failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default(''))
+
+# ============================================
 # Docker Installation (for Headscale)
 # ============================================
 
