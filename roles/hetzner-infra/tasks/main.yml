@@ -183,6 +183,17 @@
   changed_when: fw_rule_derp.rc == 0
   failed_when: fw_rule_derp.rc != 0 and 'duplicate' not in (fw_rule_derp.stderr | default(''))
 
+- name: Add WireGuard/Tailscale UDP rule to bastion firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-bastion
+      --direction in --protocol udp --port 41641
+      --source-ips 0.0.0.0/0 --source-ips ::/0
+      --description "WireGuard/Tailscale VPN"
+  register: fw_rule_wg
+  changed_when: fw_rule_wg.rc == 0
+  failed_when: fw_rule_wg.rc != 0 and 'duplicate' not in (fw_rule_wg.stderr | default(''))
+
 - name: Create node firewall (private network only)
   ansible.builtin.command:
     cmd: >
@@ -193,13 +204,13 @@
   changed_when: fw_nodes.rc == 0
   failed_when: fw_nodes.rc != 0 and 'uniqueness_error' not in (fw_nodes.stderr | default(''))
 
-- name: Add SSH from bastion to node firewall
+- name: Add SSH from bastion and VPN to node firewall
   ansible.builtin.command:
     cmd: >
       hcloud firewall add-rule {{ project }}-fw-nodes
       --direction in --protocol tcp --port 22
-      --source-ips 10.0.0.0/16
-      --description "SSH from private network"
+      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
+      --description "SSH from private network and VPN"
   register: fw_node_ssh
   changed_when: fw_node_ssh.rc == 0
   failed_when: fw_node_ssh.rc != 0 and 'duplicate' not in (fw_node_ssh.stderr | default(''))
@@ -209,7 +220,7 @@
     cmd: >
       hcloud firewall add-rule {{ project }}-fw-nodes
       --direction in --protocol tcp --port 6443
-      --source-ips 10.0.0.0/16
+      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
       --description "Kubernetes API"
   register: fw_node_api
   changed_when: fw_node_api.rc == 0
@@ -220,7 +231,7 @@
     cmd: >
       hcloud firewall add-rule {{ project }}-fw-nodes
       --direction in --protocol tcp --port 10250
-      --source-ips 10.0.0.0/16
+      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
       --description "Kubelet API"
   register: fw_node_kubelet
   changed_when: fw_node_kubelet.rc == 0
@@ -231,7 +242,7 @@
     cmd: >
       hcloud firewall add-rule {{ project }}-fw-nodes
       --direction in --protocol tcp --port 30000-32767
-      --source-ips 10.0.0.0/16
+      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
       --description "NodePort range"
   register: fw_node_np
   changed_when: fw_node_np.rc == 0
@@ -247,6 +258,28 @@
   register: fw_node_etcd
   changed_when: fw_node_etcd.rc == 0
   failed_when: fw_node_etcd.rc != 0 and 'duplicate' not in (fw_node_etcd.stderr | default(''))
+
+- name: Add Cilium health check port to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol tcp --port 4240
+      --source-ips 10.0.0.0/16
+      --description "Cilium health checks"
+  register: fw_node_cilium_health
+  changed_when: fw_node_cilium_health.rc == 0
+  failed_when: fw_node_cilium_health.rc != 0 and 'duplicate' not in (fw_node_cilium_health.stderr | default(''))
+
+- name: Add Cilium VXLAN port to node firewall
+  ansible.builtin.command:
+    cmd: >
+      hcloud firewall add-rule {{ project }}-fw-nodes
+      --direction in --protocol udp --port 8472
+      --source-ips 10.0.0.0/16
+      --description "Cilium VXLAN overlay"
+  register: fw_node_cilium_vxlan
+  changed_when: fw_node_cilium_vxlan.rc == 0
+  failed_when: fw_node_cilium_vxlan.rc != 0 and 'duplicate' not in (fw_node_cilium_vxlan.stderr | default(''))
 
 # ============================================
 # Bastion Server (public IP)
@@ -362,21 +395,22 @@
   failed_when: lb_network.rc != 0 and 'already' not in (lb_network.stderr | default(''))
   when: lb_enabled | bool
 
-- name: Add LB service for HTTPS
+- name: Add LB service for HTTPS (443 -> NodePort 30443)
   ansible.builtin.command:
     cmd: >
       hcloud load-balancer add-service {{ project }}-lb
-      --protocol tcp --listen-port 443 --destination-port 443
+      --protocol tcp --listen-port 443 --destination-port 30443
+      --health-check-protocol tcp --health-check-port 30443
   register: lb_svc_https
   changed_when: lb_svc_https.rc == 0
   failed_when: lb_svc_https.rc != 0 and 'already' not in (lb_svc_https.stderr | default(''))
   when: lb_enabled | bool
 
-- name: Add LB service for HTTP
+- name: Add LB service for HTTP (80 -> NodePort 30080)
   ansible.builtin.command:
     cmd: >
       hcloud load-balancer add-service {{ project }}-lb
-      --protocol tcp --listen-port 80 --destination-port 80
+      --protocol tcp --listen-port 80 --destination-port 30080
   register: lb_svc_http
   changed_when: lb_svc_http.rc == 0
   failed_when: lb_svc_http.rc != 0 and 'already' not in (lb_svc_http.stderr | default(''))
