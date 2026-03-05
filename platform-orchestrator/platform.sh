@@ -95,6 +95,7 @@ deploy_component() {
   log "Deploying: $component"
   case "$component" in
     "infra")        deploy_infra ;;
+    "network")      deploy_network ;;
     "dns")          deploy_dns ;;
     "cluster")      deploy_cluster ;;
     "tls")          deploy_tls ;;
@@ -194,6 +195,14 @@ s3 IN 3600 A ${ip}"
 vault IN 3600 A ${ip}"
 
   echo "$records"
+}
+
+deploy_network() {
+  log "Deploying network security (VPN + bastion hardening)..."
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" \
+    --tags network \
+    2>&1 | tee -a "${LOG_DIR}/network.log"
 }
 
 deploy_cluster() {
@@ -333,7 +342,7 @@ show_credentials() {
   }
 
   echo "Vault: https://vault.$DOMAIN"
-  echo "  Check: kubectl get secret vault-unseal-keys -n vault"
+  echo "  Check: kubectl get secret vault-init-keys -n vault"
   echo ""
 }
 
@@ -353,7 +362,7 @@ Usage: ./platform.sh <command>
 Commands:
   init              Create config
   deploy all        Full deployment
-  deploy <comp>     infra|dns|cluster|tls|minio|secrets|databases|gitlab|gitops|observability|autoscaling
+  deploy <comp>     infra|network|dns|cluster|tls|minio|secrets|databases|gitlab|gitops|observability|autoscaling
   status            Show status
   credentials       Show passwords
   health / heal     Check/fix

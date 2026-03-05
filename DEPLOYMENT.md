@@ -45,6 +45,7 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml
 ```bash
 # Deploy only specific components using tags
 ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags infrastructure
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags network
 ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags cluster
 ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags secrets
 ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags storage
@@ -164,8 +165,8 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e tier=producti
 # GitLab backup
 kubectl exec -n gitlab -it $(kubectl get pods -n gitlab -l app=toolbox -o name) -- backup-utility
 
-# PostgreSQL backup
-kubectl exec -n databases -it $(kubectl get pods -n databases -l postgres-operator.crunchydata.com/role=master -o name) -- pg_dump -U postgres gitlabhq_production > backup.sql
+# PostgreSQL backup (via Percona pgbackrest)
+kubectl exec -n databases -it $(kubectl get pods -n databases -l postgres-operator.crunchydata.com/data=postgres -o name | head -1) -- pgbackrest backup --stanza=db --type=full
 ```
 
 ## Clean Up
