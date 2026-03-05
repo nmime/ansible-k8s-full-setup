@@ -63,6 +63,22 @@
 # PostgreSQL Cluster (PerconaPGCluster CR)
 # ============================================
 
+- name: Create pgbackrest S3 credentials secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pgbackrest-s3-creds
+        namespace: "{{ db_ns }}"
+      type: Opaque
+      stringData:
+        s3.conf: |
+          [global]
+          repo2-s3-key={{ minio_root_user | default('minioadmin') }}
+          repo2-s3-key-secret={{ minio_root_password | default('minioadmin') }}
+
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
     state: present
@@ -151,6 +167,9 @@
                   bucket: "backups"
                   endpoint: "http://minio.storage.svc.cluster.local:9000"
                   region: "us-east-1"
+            configuration:
+              - secret:
+                  name: pgbackrest-s3-creds
             global:
               repo2-path: "/pgbackrest/{{ project_name | default('k8s') }}-pg/repo2"
               repo2-s3-uri-style: "path"
@@ -210,6 +229,19 @@
 # MongoDB Cluster (PerconaServerMongoDB CR)
 # ============================================
 
+- name: Create MongoDB backup credentials for MinIO
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: minio-backup-credentials
+        namespace: "{{ db_ns }}"
+      stringData:
+        AWS_ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
+        AWS_SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
+
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
     state: present
@@ -266,19 +298,6 @@
               keep: "{{ backup_retention_days | default(30) }}"
               storageName: s3-minio
               compressionType: gzip
-
-- name: Create MongoDB backup credentials for MinIO
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: minio-backup-credentials
-        namespace: "{{ db_ns }}"
-      stringData:
-        AWS_ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
-        AWS_SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
