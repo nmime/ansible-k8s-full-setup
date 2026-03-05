@@ -31,19 +31,6 @@
     name: gitlab
     repo_url: "https://charts.gitlab.io/"
 
-- name: Create PostgreSQL password secret for GitLab
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: gitlab-postgresql-password
-        namespace: "{{ gitlab_namespace }}"
-      type: Opaque
-      stringData:
-        postgresql-password: "{{ gitlab_postgresql_password | default('gitlab-db-password-change-me') }}"
-
 - name: Create S3 object storage secret for GitLab
   kubernetes.core.k8s:
     state: present
@@ -58,8 +45,8 @@
         connection: |
           provider: AWS
           region: us-east-1
-          aws_access_key_id: "{{ minio_access_key | default('minioadmin') }}"
-          aws_secret_access_key: "{{ minio_secret_key | default('minioadmin123') }}"
+          aws_access_key_id: "{{ minio_root_user | default('minioadmin') }}"
+          aws_secret_access_key: "{{ minio_root_password | default('minioadmin') }}"
           endpoint: "http://minio.storage.svc.cluster.local:9000"
           path_style: true
 
@@ -77,8 +64,8 @@
         config: |
           s3:
             bucket: gitlab-registry
-            accesskey: "{{ minio_access_key | default('minioadmin') }}"
-            secretkey: "{{ minio_secret_key | default('minioadmin123') }}"
+            accesskey: "{{ minio_root_user | default('minioadmin') }}"
+            secretkey: "{{ minio_root_password | default('minioadmin') }}"
             region: us-east-1
             regionendpoint: "http://minio.storage.svc.cluster.local:9000"
             v4auth: true
@@ -125,6 +112,7 @@
           password:
             secret: gitlab-postgresql-password
             key: postgresql-password
+          preparedStatements: false
         registry:
           enabled: true
           bucket: gitlab-registry
@@ -429,8 +417,8 @@
         namespace: "{{ gitlab_namespace }}"
       type: Opaque
       stringData:
-        accesskey: "{{ minio_access_key | default('minioadmin') }}"
-        secretkey: "{{ minio_secret_key | default('minioadmin123') }}"
+        accesskey: "{{ minio_root_user | default('minioadmin') }}"
+        secretkey: "{{ minio_root_password | default('minioadmin') }}"
 
 - name: Display GitLab deployment info
   debug:

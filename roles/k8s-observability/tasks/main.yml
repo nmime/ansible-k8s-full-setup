@@ -167,8 +167,8 @@
         namespace: "{{ monitoring_namespace }}"
       type: Opaque
       stringData:
-        S3_ACCESS_KEY: "{{ minio_access_key | default('minioadmin') }}"
-        S3_SECRET_KEY: "{{ minio_secret_key | default('minioadmin123') }}"
+        S3_ACCESS_KEY: "{{ minio_root_user | default('minioadmin') }}"
+        S3_SECRET_KEY: "{{ minio_root_password | default('minioadmin') }}"
 
 - name: Install Loki with Helm
   kubernetes.core.helm:
@@ -191,8 +191,8 @@
           s3:
             endpoint: "http://minio.storage.svc.cluster.local:9000"
             bucketnames: loki-chunks
-            access_key_id: "{{ minio_access_key | default('minioadmin') }}"
-            secret_access_key: "{{ minio_secret_key | default('minioadmin123') }}"
+            access_key_id: "{{ minio_root_user | default('minioadmin') }}"
+            secret_access_key: "{{ minio_root_password | default('minioadmin') }}"
             s3ForcePathStyle: true
             insecure: true
           bucketNames:
