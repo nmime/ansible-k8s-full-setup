@@ -323,7 +323,7 @@ show_credentials() {
   kubectl get secret minio -n storage -o jsonpath='{.data.rootUser}' &>/dev/null && {
     echo "MinIO: https://minio.$DOMAIN"
     echo "  User: $(kubectl get secret minio -n storage -o jsonpath='{.data.rootUser}' | base64 -d 2>/dev/null || echo 'minioadmin')"
-    echo "  Pass: $(kubectl get secret minio -n storage -o jsonpath='{.data.rootPassword}' | base64 -d 2>/dev/null || echo 'minioadmin123')"
+    echo "  Pass: $(kubectl get secret minio -n storage -o jsonpath='{.data.rootPassword}' | base64 -d 2>/dev/null || echo 'minioadmin')"
     echo ""
   }
 
