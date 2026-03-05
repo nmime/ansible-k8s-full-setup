@@ -29,7 +29,7 @@ network:
 
   bastion:
     enabled: true
-    server_type: cx22
+    server_type: cx23
     private_ip: 10.0.0.2
 
   load_balancer:
@@ -109,12 +109,12 @@ infrastructure:
 
   control_plane:
     count: 1
-    type: cx22
+    type: cx23
     public_ip: false
 
   workers:
     count: 2
-    type: cx32
+    type: cx23
     public_ip: false
 
 # ---------------------------------------------
