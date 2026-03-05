@@ -280,6 +280,31 @@
       cainjector:
         replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
 
+- name: Install Hetzner DNS webhook for cert-manager
+  kubernetes.core.helm_repository:
+    name: cert-manager-webhook-hetzner
+    repo_url: "https://vadimkim.github.io/cert-manager-webhook-hetzner"
+
+- name: Deploy Hetzner DNS webhook
+  kubernetes.core.helm:
+    name: cert-manager-webhook-hetzner
+    chart_ref: cert-manager-webhook-hetzner/cert-manager-webhook-hetzner
+    release_namespace: cert-manager
+    release_state: present
+    wait: true
+
+- name: Create Hetzner DNS API secret for cert-manager
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: hetzner-secret
+        namespace: cert-manager
+      stringData:
+        api-key: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+
 - name: Create Let's Encrypt ClusterIssuer (staging)
   kubernetes.core.k8s:
     state: present
@@ -293,11 +318,15 @@
           server: https://acme-staging-v02.api.letsencrypt.org/directory
           email: "{{ email | default('admin@example.com') }}"
           privateKeySecretRef:
-            name: letsencrypt-staging
+            name: letsencrypt-staging-key
           solvers:
-            - http01:
-                ingress:
-                  class: cilium
+            - dns01:
+                webhook:
+                  groupName: acme.hetzner.cloud
+                  solverName: hetzner
+                  config:
+                    secretName: hetzner-secret
+                    apiUrl: https://dns.hetzner.com/api/v1
 
 - name: Create Let's Encrypt ClusterIssuer (production)
   kubernetes.core.k8s:
@@ -312,11 +341,15 @@
           server: https://acme-v02.api.letsencrypt.org/directory
           email: "{{ email | default('admin@example.com') }}"
           privateKeySecretRef:
-            name: letsencrypt-prod
+            name: letsencrypt-prod-key
           solvers:
-            - http01:
-                ingress:
-                  class: cilium
+            - dns01:
+                webhook:
+                  groupName: acme.hetzner.cloud
+                  solverName: hetzner
+                  config:
+                    secretName: hetzner-secret
+                    apiUrl: https://dns.hetzner.com/api/v1
 
 - name: Create wildcard TLS certificate
   kubernetes.core.k8s:
