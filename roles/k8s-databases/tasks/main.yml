@@ -277,8 +277,8 @@
         name: minio-backup-credentials
         namespace: "{{ db_ns }}"
       stringData:
-        AWS_ACCESS_KEY_ID: "{{ lookup('env', 'MINIO_ROOT_USER') | default('minioadmin', true) }}"
-        AWS_SECRET_ACCESS_KEY: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default('minioadmin123', true) }}"
+        AWS_ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
+        AWS_SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
