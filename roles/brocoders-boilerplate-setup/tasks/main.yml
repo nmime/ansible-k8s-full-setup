@@ -42,7 +42,7 @@
         NODE_ENV: production
         APP_PORT: "3000"
         DATABASE_TYPE: postgres
-        DATABASE_HOST: "postgresql-primary.databases.svc.cluster.local"
+        DATABASE_HOST: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
         DATABASE_PORT: "5432"
         DATABASE_NAME: "{{ app_name }}"
         DATABASE_SSL_ENABLED: "false"

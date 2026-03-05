@@ -2,19 +2,19 @@
 
 This directory contains 11 Ansible roles for each platform component:
 
-| Role | Description | Key Technologies |
-|------|-------------|-----------------|
-| `hetzner-infra/` | Cloud infrastructure provisioning | hcloud CLI |
-| `network-security/` | VPN and firewall configuration | Headscale, iptables |
-| `k8s-cluster-management/` | Kubernetes cluster installation | Kubespray, Cilium, Gateway API |
-| `k8s-secrets/` | Secrets management | Vault, External Secrets Operator |
-| `minio-storage/` | S3-compatible object storage | MinIO |
-| `k8s-databases/` | Database deployments | PostgreSQL (Percona), MongoDB |
-| `gitlab-selfhosted/` | GitLab CE with CI/CD | Helm, GitLab Runner |
-| `k8s-gitops/` | GitOps continuous delivery | ArgoCD, ApplicationSets |
-| `k8s-observability/` | Monitoring, logging, dashboards | VictoriaMetrics, Loki, Grafana |
-| `k8s-autoscaling/` | Event-driven autoscaling | KEDA (70+ scalers) |
-| `brocoders-boilerplate-setup/` | Full-stack application setup | NestJS, React, Helm |
+| Role | Description | Key Technologies | Version |
+|------|-------------|-----------------|---------|
+| `hetzner-infra/` | Cloud infrastructure provisioning | hcloud CLI, Ubuntu 24.04 | - |
+| `network-security/` | VPN and bastion hardening | Headscale, Tailscale, UFW, fail2ban | v0.27.1 |
+| `k8s-cluster-management/` | Kubernetes cluster installation | Kubespray, Cilium, Gateway API, cert-manager, MetalLB | K8s v1.34.3, Cilium v1.18.6 |
+| `k8s-secrets/` | Secrets management | Vault (HA Raft), External Secrets Operator | Vault v1.21.2, ESO v1.2.1 |
+| `minio-storage/` | S3-compatible object storage | Bitnami Helm, Chainguard image | Chart 17.0.21 |
+| `k8s-databases/` | Database deployments | Percona PG Operator, Percona MongoDB Operator | PG v2.8.2, PSMDB v1.21.2 |
+| `gitlab-selfhosted/` | GitLab CE with CI/CD | Helm, GitLab Runner | CE v18.7.1, Chart 9.7.1 |
+| `k8s-gitops/` | GitOps continuous delivery | ArgoCD, ApplicationSets | v3.2.5, Chart 7.8.5 |
+| `k8s-observability/` | Monitoring, logging, dashboards | VictoriaMetrics, Loki, Grafana | VM v1.133.0, Loki v3.6.3, Grafana v12.3.1 |
+| `k8s-autoscaling/` | Event-driven autoscaling | KEDA (70+ scalers) | v2.18.2 |
+| `brocoders-boilerplate-setup/` | Full-stack application setup | NestJS, React, ArgoCD | - |
 
 ## Deployment Order
 

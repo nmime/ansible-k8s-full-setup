@@ -11,7 +11,7 @@ Platform Orchestrator
 ├── Kubernetes Cluster (Kubespray + Cilium + Gateway API)
 ├── Secrets Management (Vault + External Secrets Operator)
 ├── Storage (MinIO S3-compatible)
-├── Databases (PostgreSQL HA via Percona Operator)
+├── Databases (PostgreSQL + MongoDB via Percona Operators)
 ├── GitLab CE (Self-hosted CI/CD + Registry)
 ├── ArgoCD (GitOps Continuous Delivery)
 ├── Observability (VictoriaMetrics + Loki + Grafana)

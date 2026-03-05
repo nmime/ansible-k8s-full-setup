@@ -123,7 +123,7 @@ infrastructure:
 kubernetes:
   version: v1.34.3
   cni: cilium
-  cilium_version: v1.18.5
+  cilium_version: v1.18.6
   pod_cidr: 10.233.64.0/18
   service_cidr: 10.233.0.0/18
   features:
@@ -159,7 +159,7 @@ secrets:
 databases:
   postgresql:
     enabled: true
-    version: 17
+    version: 18
     replicas: 1
     storage_size: 20Gi
 
