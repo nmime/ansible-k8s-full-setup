@@ -24,12 +24,12 @@ infrastructure:
 
   control_plane:
     count: 1
-    type: cx32
+    type: cx23
     schedulable: true  # Master also runs workloads
 
   workers:
     count: 1
-    type: cx22
+    type: cx23
 
 # ---------------------------------------------
 # Network
@@ -37,7 +37,7 @@ infrastructure:
 network:
   bastion:
     enabled: true
-    server_type: cx22
+    server_type: cx23
 
   load_balancer:
     enabled: false  # Save €6/mo - bastion proxies
