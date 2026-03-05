@@ -178,6 +178,32 @@
   become: true
   when: bastion_public_ip is defined
 
+- name: Copy kubeconfig to Ansible controller
+  ansible.builtin.raw: |
+    cat /root/.kube/config
+  delegate_to: "{{ bastion_public_ip | default('') }}"
+  become: true
+  register: kubeconfig_content
+  when: bastion_public_ip is defined
+
+- name: Write kubeconfig locally
+  copy:
+    content: "{{ kubeconfig_content.stdout }}"
+    dest: "{{ lookup('env', 'HOME') }}/.kube/config"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: kubeconfig_content is defined and kubeconfig_content.stdout is defined
+
+- name: Update local kubeconfig API server to use bastion SSH tunnel
+  ansible.builtin.replace:
+    path: "{{ lookup('env', 'HOME') }}/.kube/config"
+    regexp: 'https://.*:6443'
+    replace: "https://10.0.1.1:6443"
+  delegate_to: localhost
+  become: false
+  when: kubeconfig_content is defined
+
 # ============================================
 # Hetzner Cloud Controller Manager v1.22.0
 # ============================================
@@ -247,6 +273,15 @@
     state: present
     src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/experimental-install.yaml"
 
+- name: Create cilium-system namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: cilium-system
+
 - name: Create cilium-secrets namespace
   kubernetes.core.k8s:
     state: present
@@ -255,6 +290,24 @@
       kind: Namespace
       metadata:
         name: cilium-secrets
+
+- name: Create ReferenceGrant for Gateway to access TLS secrets
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1beta1
+      kind: ReferenceGrant
+      metadata:
+        name: allow-gateway-tls
+        namespace: cilium-secrets
+      spec:
+        from:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            namespace: cilium-system
+        to:
+          - group: ""
+            kind: Secret
 
 - name: Create Cilium main Gateway
   kubernetes.core.k8s:

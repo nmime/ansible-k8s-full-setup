@@ -22,6 +22,9 @@
   connection: local
   gather_facts: true
 
+  vars_files:
+    - ../defaults/main.yml
+
   vars:
     tier: "{{ tier | default('medium') }}"
     project_name: "{{ project_name | default('k8s') }}"
@@ -46,6 +49,45 @@
           - tier in ['minimal', 'small', 'medium', 'production']
         fail_msg: "Invalid tier '{{ tier }}'. Must be: minimal, small, medium, production"
         quiet: false
+
+    - name: Pre-flight check - hcloud CLI installed
+      ansible.builtin.command: hcloud version
+      register: hcloud_check
+      changed_when: false
+      failed_when: hcloud_check.rc != 0
+      ignore_errors: true
+
+    - name: Fail if hcloud CLI not found
+      fail:
+        msg: "hcloud CLI not found. Install: https://github.com/hetznercloud/cli/releases"
+      when: hcloud_check.rc != 0
+
+    - name: Pre-flight check - HCLOUD_TOKEN set
+      assert:
+        that:
+          - lookup('env', 'HCLOUD_TOKEN') | length > 0
+        fail_msg: "HCLOUD_TOKEN environment variable is required. Export it: export HCLOUD_TOKEN=your-token"
+
+    - name: Pre-flight check - SSH key exists
+      stat:
+        path: "{{ ssh_key_path | default('~/.ssh/id_ed25519') }}"
+      register: ssh_key_stat
+
+    - name: Fail if SSH key not found
+      fail:
+        msg: "SSH key not found at {{ ssh_key_path | default('~/.ssh/id_ed25519') }}. Generate with: ssh-keygen -t ed25519"
+      when: not ssh_key_stat.stat.exists
+
+    - name: Pre-flight check - kubectl installed
+      ansible.builtin.command: kubectl version --client
+      register: kubectl_check
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if kubectl not found
+      debug:
+        msg: "WARNING: kubectl not installed locally. Install it for post-deployment cluster access."
+      when: kubectl_check.rc != 0
 
   tasks:
     # Step 1: Infrastructure
