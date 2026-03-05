@@ -118,7 +118,7 @@
           display_name: GitLab
           reply_to: "noreply@{{ domain | default('example.com') }}"
         psql:
-          host: "gitlab-pg-pgbouncer.databases.svc.cluster.local"
+          host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
           port: 5432
           database: gitlabhq_production
           username: gitlab
