@@ -447,6 +447,47 @@
   when: not (lb_enabled | bool)
 
 # ============================================
+# DNS Setup (Hetzner DNS)
+# ============================================
+
+- name: Create DNS zone
+  ansible.builtin.command:
+    cmd: hcloud dns zone create --name {{ domain | default('example.com') }}
+  register: dns_zone_create
+  changed_when: dns_zone_create.rc == 0
+  failed_when: dns_zone_create.rc != 0 and 'already' not in (dns_zone_create.stderr | default('')) and 'exists' not in (dns_zone_create.stderr | default(''))
+
+- name: Create DNS A record for root domain
+  ansible.builtin.command:
+    cmd: >
+      hcloud dns record create
+      --zone {{ domain | default('example.com') }}
+      --type A --name @ --value {{ lb_public_ip }}
+  register: dns_root
+  changed_when: dns_root.rc == 0
+  failed_when: dns_root.rc != 0 and 'already' not in (dns_root.stderr | default(''))
+
+- name: Create DNS wildcard A record
+  ansible.builtin.command:
+    cmd: >
+      hcloud dns record create
+      --zone {{ domain | default('example.com') }}
+      --type A --name '*' --value {{ lb_public_ip }}
+  register: dns_wildcard
+  changed_when: dns_wildcard.rc == 0
+  failed_when: dns_wildcard.rc != 0 and 'already' not in (dns_wildcard.stderr | default(''))
+
+- name: Create DNS A record for VPN (bastion)
+  ansible.builtin.command:
+    cmd: >
+      hcloud dns record create
+      --zone {{ domain | default('example.com') }}
+      --type A --name vpn --value {{ bastion_public_ip }}
+  register: dns_vpn
+  changed_when: dns_vpn.rc == 0
+  failed_when: dns_vpn.rc != 0 and 'already' not in (dns_vpn.stderr | default(''))
+
+# ============================================
 # Write infrastructure state
 # ============================================
 
