@@ -107,6 +107,11 @@
           pgBouncer:
             replicas: "{{ pg_proxy_replicas }}"
             image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-pgbouncer"
+            config:
+              global:
+                pool_mode: "transaction"
+                max_client_conn: "1000"
+                default_pool_size: "25"
             resources:
               requests:
                 cpu: "100m"

@@ -60,13 +60,14 @@
           storageClass: "hcloud-volumes"
         auditStorage:
           enabled: true
-          size: "5Gi"
+          size: "10Gi"
           storageClass: "hcloud-volumes"
         ha:
           enabled: "{{ vault_ha }}"
           replicas: "{{ vault_replicas }}"
           raft:
             enabled: "{{ vault_ha }}"
+            setNodeId: true
             config: |
               ui = true
               listener "tcp" {
