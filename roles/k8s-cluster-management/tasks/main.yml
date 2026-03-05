@@ -209,10 +209,15 @@
 # Gateway API CRDs + Cilium Gateway
 # ============================================
 
-- name: Install Gateway API CRDs
+- name: Install Gateway API CRDs (standard)
   kubernetes.core.k8s:
     state: present
     src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/standard-install.yaml"
+
+- name: Install Gateway API CRDs (experimental - TCPRoute, TLSRoute, GRPCRoute)
+  kubernetes.core.k8s:
+    state: present
+    src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/experimental-install.yaml"
 
 - name: Create cilium-secrets namespace
   kubernetes.core.k8s:
@@ -252,6 +257,40 @@
             allowedRoutes:
               namespaces:
                 from: All
+
+- name: Wait for Cilium to create Gateway service
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: cilium-system
+    label_selectors:
+      - "io.cilium.gateway/owning-gateway=main-gateway"
+  register: gw_svc
+  until: gw_svc.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Patch Gateway service to use fixed NodePorts (30080/30443)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ gw_svc.resources[0].metadata.name }}"
+        namespace: cilium-system
+      spec:
+        ports:
+          - name: http
+            port: 80
+            targetPort: 80
+            nodePort: 30080
+            protocol: TCP
+          - name: https
+            port: 443
+            targetPort: 443
+            nodePort: 30443
+            protocol: TCP
+  when: gw_svc.resources | length > 0
 
 # ============================================
 # cert-manager v1.19.2
