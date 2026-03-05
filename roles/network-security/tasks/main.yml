@@ -1,5 +1,5 @@
 ---
-# Network Security Role - Headscale VPN v0.27.1 + Bastion Hardening
+# Network Security Role - Headscale VPN v0.28.0 + Bastion Hardening
 # Installs Headscale VPN on bastion for secure admin access
 # Architecture: Public (LB) -> app, api, s3, registry
 #               Admin (VPN) -> gitlab, argocd, grafana, vault, k8s
@@ -8,7 +8,7 @@
   set_fact:
     project: "{{ project_name | default('k8s') }}"
     vpn_domain: "vpn.{{ domain | default('example.com') }}"
-    headscale_version: "0.27.1"
+    headscale_version: "0.28.0"
     bastion_host: "{{ bastion_public_ip | default(bastion_ip | default('')) }}"
 
 - name: Validate bastion IP is available
@@ -89,7 +89,7 @@
   become: true
 
 # ============================================
-# Headscale VPN v0.27.1
+# Headscale VPN v0.28.0
 # ============================================
 
 - name: Create Headscale directories

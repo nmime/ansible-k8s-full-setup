@@ -5,9 +5,9 @@ This directory contains 11 Ansible roles for each platform component:
 | Role | Description | Key Technologies | Version |
 |------|-------------|-----------------|---------|
 | `hetzner-infra/` | Cloud infrastructure provisioning | hcloud CLI, Ubuntu 24.04 | - |
-| `network-security/` | VPN and bastion hardening | Headscale, Tailscale, UFW, fail2ban | v0.27.1 |
+| `network-security/` | VPN and bastion hardening | Headscale, Tailscale, UFW, fail2ban | v0.28.0 |
 | `k8s-cluster-management/` | Kubernetes cluster installation | Kubespray, Cilium, Gateway API, cert-manager, MetalLB | K8s v1.34.3, Cilium v1.18.6 |
-| `k8s-secrets/` | Secrets management | Vault (HA Raft), External Secrets Operator | Vault v1.21.2, ESO v1.2.1 |
+| `k8s-secrets/` | Secrets management | Vault (HA Raft), External Secrets Operator | Vault v1.21.2, ESO v0.15.0 |
 | `minio-storage/` | S3-compatible object storage | Bitnami Helm, Chainguard image | Chart 17.0.21 |
 | `k8s-databases/` | Database deployments | Percona PG Operator, Percona MongoDB Operator | PG v2.8.2, PSMDB v1.21.2 |
 | `gitlab-selfhosted/` | GitLab CE with CI/CD | Helm, GitLab Runner | CE v18.7.1, Chart 9.7.1 |
