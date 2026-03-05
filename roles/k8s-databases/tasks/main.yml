@@ -161,6 +161,9 @@
             databases:
               - "{{ project_name | default('k8s') }}"
             options: "SUPERUSER"
+          - name: gitlab
+            databases:
+              - gitlabhq_production
 
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
@@ -294,6 +297,21 @@
 # Cross-namespace connection secrets
 # ============================================
 
+- name: Retrieve Percona-generated GitLab PG password
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "{{ project_name | default('k8s') }}-pg-pguser-gitlab"
+  register: gitlab_pg_secret
+  until: gitlab_pg_secret.resources | length > 0
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Set GitLab PG password fact
+  set_fact:
+    gitlab_pg_password: "{{ (gitlab_pg_secret.resources[0].data.password | b64decode) if gitlab_pg_secret.resources | length > 0 else '' }}"
+
 - name: Create PostgreSQL connection secret for GitLab
   kubernetes.core.k8s:
     state: present
@@ -301,15 +319,15 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: postgresql-credentials
+        name: gitlab-postgresql-password
         namespace: gitlab
+      type: Opaque
       stringData:
+        postgresql-password: "{{ gitlab_pg_password }}"
         host: "{{ project_name | default('k8s') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local"
         port: "5432"
-        database: "{{ project_name | default('k8s') }}"
-        username: "{{ project_name | default('k8s') }}"
-        password: ""
-        note: "Password is managed by Percona operator - retrieve from {{ project_name | default('k8s') }}-pg-pguser-{{ project_name | default('k8s') }} secret in {{ db_ns }} namespace"
+        database: gitlabhq_production
+        username: gitlab
 
 - name: Display databases summary
   debug:

@@ -50,8 +50,8 @@ all:
     # ----------------------------------------
     minio_replicas: 4
     minio_storage_size: 50Gi
-    # minio_access_key: minioadmin
-    # minio_secret_key: minioadmin123
+    # minio_root_user: minioadmin        # or set MINIO_ROOT_USER env var
+    # minio_root_password: minioadmin    # or set MINIO_ROOT_PASSWORD env var
 
     # ----------------------------------------
     # Secrets (Vault + ESO)
