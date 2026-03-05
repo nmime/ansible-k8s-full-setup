@@ -1,5 +1,5 @@
 ---
-# K8s Secrets Role - Vault v1.21.2 + ESO v1.2.1
+# K8s Secrets Role - Vault v1.21.2 + ESO v0.15.0
 # HashiCorp Vault for secret storage + External Secrets Operator for K8s integration
 # Components: Vault (Helm chart 0.29.0), ESO (Helm chart 0.15.0)
 
@@ -407,7 +407,7 @@
       - "  Secrets Management Deployed"
       - "=========================================="
       - "  Vault: v1.21.2 (chart {{ vault_chart_ver }})"
-      - "  ESO: v1.2.1 (chart {{ eso_chart_ver }})"
+      - "  ESO: v0.15.0 (chart {{ eso_chart_ver }})"
       - "  HA Mode: {{ vault_ha }}"
       - "  Replicas: {{ vault_replicas }}"
       - "  UI: {{ vault_domain }}"

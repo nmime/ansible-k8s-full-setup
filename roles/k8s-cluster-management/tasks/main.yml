@@ -1,7 +1,7 @@
 ---
 # K8s Cluster Management - Kubespray v2.29.1 + Cilium v1.18.6 + Gateway API v1.4.0
 # Installs Kubernetes cluster with core addons
-# Components: K8s v1.34.3, etcd v3.5.26, containerd v2.2.1, cert-manager v1.19.2, MetalLB v0.14.9
+# Components: K8s v1.34.3, etcd v3.5.26, containerd v2.2.1, Hetzner CCM v1.22.0, cert-manager v1.19.2, MetalLB v0.14.9
 
 - name: Set cluster management variables
   set_fact:
@@ -12,6 +12,8 @@
     gateway_api_ver: "{{ gateway_api_version | default('v1.4.0') }}"
     certmanager_ver: "v1.19.2"
     metallb_ver: "v0.14.9"
+    hetzner_ccm_ver: "v1.22.0"
+    hetzner_csi_ver: "v2.12.0"
     cluster_tier: "{{ tier | default('medium') }}"
 
 # ============================================
@@ -147,6 +149,61 @@
   delegate_to: "{{ bastion_public_ip | default('') }}"
   become: true
   when: bastion_public_ip is defined
+
+# ============================================
+# Hetzner Cloud Controller Manager v1.22.0
+# ============================================
+
+- name: Create hcloud-token secret for CCM
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: hcloud
+        namespace: kube-system
+      stringData:
+        token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+        network: "{{ project }}-network"
+
+- name: Install Hetzner Cloud Controller Manager
+  kubernetes.core.k8s:
+    state: present
+    src: "https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/{{ hetzner_ccm_ver }}/ccm-networks.yaml"
+
+- name: Wait for Hetzner CCM to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+  register: ccm_deploy
+  until: >
+    ccm_deploy.resources | length > 0
+    and (ccm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
+
+# ============================================
+# Hetzner CSI Driver (for hcloud-volumes StorageClass)
+# ============================================
+
+- name: Install Hetzner CSI Driver
+  kubernetes.core.k8s:
+    state: present
+    src: "https://raw.githubusercontent.com/hetznercloud/csi-driver/{{ hetzner_csi_ver }}/deploy/kubernetes/hcloud-csi.yml"
+
+- name: Wait for Hetzner CSI controller to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-csi-controller
+  register: csi_deploy
+  until: >
+    csi_deploy.resources | length > 0
+    and (csi_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
 
 # ============================================
 # Gateway API CRDs + Cilium Gateway
@@ -355,6 +412,8 @@
       - "  K8s: {{ k8s_ver }}"
       - "  Kubespray: {{ kubespray_version }}"
       - "  Cilium: {{ cilium_ver }} + Gateway API {{ gateway_api_ver }}"
+      - "  Hetzner CCM: {{ hetzner_ccm_ver }}"
+      - "  Hetzner CSI: {{ hetzner_csi_ver }}"
       - "  cert-manager: {{ certmanager_ver }}"
       - "  MetalLB: {{ metallb_ver }}"
       - "  Tier: {{ cluster_tier }}"
