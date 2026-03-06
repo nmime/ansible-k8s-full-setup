@@ -291,8 +291,8 @@
     wait: true
     values:
       replicas: "{{ grafana_replicas }}"
-      adminUser: admin
-      adminPassword: admin
+      adminUser: "{{ grafana_admin_user | default('admin') }}"
+      adminPassword: "{{ grafana_admin_password }}"
       persistence:
         enabled: true
         size: 5Gi
@@ -371,7 +371,7 @@
         datasources:
           enabled: true
 
-- name: Create Grafana Gateway API HTTPRoute
+- name: Create Grafana Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -382,8 +382,9 @@
         namespace: "{{ monitoring_namespace }}"
       spec:
         parentRefs:
-          - name: main-gateway
+          - name: admin-gateway
             namespace: cilium-system
+            sectionName: https
         hostnames:
           - "{{ grafana_domain }}"
         rules:

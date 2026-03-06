@@ -114,7 +114,7 @@
           policy.csv: |
             g, admin, role:admin
 
-- name: Create ArgoCD Gateway API HTTPRoute
+- name: Create ArgoCD Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -125,8 +125,9 @@
         namespace: "{{ argocd_namespace }}"
       spec:
         parentRefs:
-          - name: main-gateway
+          - name: admin-gateway
             namespace: cilium-system
+            sectionName: https
         hostnames:
           - "{{ argocd_domain }}"
         rules:

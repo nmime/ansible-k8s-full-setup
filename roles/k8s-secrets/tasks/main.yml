@@ -229,7 +229,7 @@
         dnsNames:
           - "{{ vault_domain }}"
 
-- name: Create Vault HTTPRoute
+- name: Create Vault HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -240,7 +240,7 @@
         namespace: "{{ vault_ns }}"
       spec:
         parentRefs:
-          - name: main-gateway
+          - name: admin-gateway
             namespace: cilium-system
             sectionName: https
         hostnames:

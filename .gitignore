@@ -1,0 +1,30 @@
+# Platform secrets (auto-generated credentials)
+.platform-secrets.yml
+.minio-credentials
+
+# Ansible retry files
+*.retry
+
+# Kubespray
+kubespray/
+
+# Python
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Terraform state (if used)
+*.tfstate
+*.tfstate.backup
+.terraform/

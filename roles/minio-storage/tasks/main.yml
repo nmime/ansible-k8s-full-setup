@@ -3,21 +3,6 @@
 # S3-compatible object storage on Kubernetes using Chainguard image
 # Supports standalone (minimal/small) and distributed (medium/production) modes
 
-- name: Check for existing MinIO credentials file
-  stat:
-    path: "{{ playbook_dir }}/.minio-credentials"
-  register: minio_creds_file
-  delegate_to: localhost
-  become: false
-
-- name: Load existing MinIO credentials
-  include_vars:
-    file: "{{ playbook_dir }}/.minio-credentials"
-    name: minio_saved_creds
-  when: minio_creds_file.stat.exists
-  delegate_to: localhost
-  become: false
-
 - name: Set MinIO tier-specific variables
   set_fact:
     minio_ns: "storage"
@@ -27,18 +12,6 @@
     minio_storage: "{{ minio_storage_size | default('50Gi') }}"
     minio_console_domain: "minio.{{ domain | default('example.com') }}"
     minio_api_domain: "s3.{{ domain | default('example.com') }}"
-    minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default(minio_saved_creds.minio_root_user | default('minioadmin'), true) }}"
-    minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default(minio_saved_creds.minio_root_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
-
-- name: Save MinIO credentials for idempotent re-runs
-  copy:
-    content: |
-      minio_root_user: "{{ minio_root_user }}"
-      minio_root_password: "{{ minio_root_password }}"
-    dest: "{{ playbook_dir }}/.minio-credentials"
-    mode: '0600'
-  delegate_to: localhost
-  become: false
 
 # ============================================
 # MinIO Installation via Bitnami Helm
@@ -201,7 +174,7 @@
         dnsNames:
           - "{{ minio_api_domain }}"
 
-- name: Create MinIO Console HTTPRoute (VPN access)
+- name: Create MinIO Console HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -212,8 +185,9 @@
         namespace: "{{ minio_ns }}"
       spec:
         parentRefs:
-          - name: main-gateway
+          - name: admin-gateway
             namespace: cilium-system
+            sectionName: https
             sectionName: https
         hostnames:
           - "{{ minio_console_domain }}"
