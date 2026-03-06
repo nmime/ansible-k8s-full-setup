@@ -90,6 +90,14 @@
       when: kubectl_check.rc != 0
 
   tasks:
+    # Step 0: Generate and persist all platform secrets
+    - name: Generate platform secrets
+      ansible.builtin.include_role:
+        name: generate-secrets
+        tasks_from: main.yml
+      tags:
+        - always
+
     # Step 1: Infrastructure
     - name: Deploy Hetzner Cloud Infrastructure
       ansible.builtin.include_role:

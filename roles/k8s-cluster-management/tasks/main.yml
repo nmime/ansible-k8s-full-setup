@@ -374,6 +374,81 @@
   when: gw_svc.resources | length > 0
 
 # ============================================
+# Admin Gateway (VPN-only access for admin services)
+# ============================================
+
+- name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: admin-gateway
+        namespace: cilium-system
+      spec:
+        gatewayClassName: cilium
+        listeners:
+          - name: https
+            protocol: HTTPS
+            port: 8443
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: wildcard-tls
+                  namespace: cilium-secrets
+            allowedRoutes:
+              namespaces:
+                from: All
+
+- name: Wait for admin Gateway service
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: cilium-system
+    label_selectors:
+      - "io.cilium.gateway/owning-gateway=admin-gateway"
+  register: admin_gw_svc
+  until: admin_gw_svc.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Patch admin Gateway service to use NodePort 30443 on internal only
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ admin_gw_svc.resources[0].metadata.name }}"
+        namespace: cilium-system
+      spec:
+        ports:
+          - name: https
+            port: 8443
+            targetPort: 8443
+            nodePort: 31443
+            protocol: TCP
+  when: admin_gw_svc.resources | length > 0
+
+- name: Create NetworkPolicy to restrict admin-gateway to VPN and private network
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: admin-gateway-vpn-only
+        namespace: cilium-system
+      spec:
+        endpointSelector:
+          matchLabels:
+            io.cilium.gateway/owning-gateway: admin-gateway
+        ingress:
+          - fromCIDR:
+              - 10.0.0.0/16
+              - 100.64.0.0/10
+
+# ============================================
 # cert-manager v1.19.2
 # ============================================
 

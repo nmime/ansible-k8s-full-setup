@@ -69,10 +69,10 @@
       type: Opaque
       stringData:
         DATABASE_USERNAME: "{{ app_name }}"
-        DATABASE_PASSWORD: "{{ app_db_password | default('change-me-in-production') }}"
-        AUTH_JWT_SECRET: "{{ app_jwt_secret | default('jwt-secret-change-me') }}"
+        DATABASE_PASSWORD: "{{ app_db_password }}"
+        AUTH_JWT_SECRET: "{{ app_jwt_secret }}"
         AUTH_JWT_TOKEN_EXPIRES_IN: "15m"
-        AUTH_REFRESH_SECRET: "{{ app_refresh_secret | default('refresh-secret-change-me') }}"
+        AUTH_REFRESH_SECRET: "{{ app_refresh_secret }}"
         AUTH_REFRESH_TOKEN_EXPIRES_IN: "7d"
 
 - name: Deploy backend Deployment

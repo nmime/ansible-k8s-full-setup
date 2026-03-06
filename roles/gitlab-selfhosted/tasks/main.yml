@@ -257,7 +257,7 @@
           create: true
   when: tier is defined
 
-- name: Create GitLab Gateway API HTTPRoute
+- name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -268,8 +268,9 @@
         namespace: "{{ gitlab_namespace }}"
       spec:
         parentRefs:
-          - name: main-gateway
+          - name: admin-gateway
             namespace: cilium-system
+            sectionName: https
         hostnames:
           - "{{ gitlab_domain }}"
         rules:
@@ -305,7 +306,7 @@
               - name: gitlab-registry
                 port: 5000
 
-- name: Create GitLab KAS HTTPRoute
+- name: Create GitLab KAS HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -316,8 +317,9 @@
         namespace: "{{ gitlab_namespace }}"
       spec:
         parentRefs:
-          - name: main-gateway
+          - name: admin-gateway
             namespace: cilium-system
+            sectionName: https
         hostnames:
           - "{{ kas_domain }}"
         rules:
