@@ -2,6 +2,9 @@
 .platform-secrets.yml
 .minio-credentials
 
+# GitLab license (generated keys and license files)
+.gitlab-license/
+
 # Infrastructure state (contains IPs)
 *-infra-facts.yml
 

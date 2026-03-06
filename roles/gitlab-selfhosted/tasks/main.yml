@@ -1,6 +1,7 @@
 ---
-# GitLab Self-Hosted Role - Complete Implementation
-# Deploys GitLab CE on Kubernetes using Helm
+# GitLab Self-Hosted Role - Enterprise Edition with License
+# Deploys GitLab EE on Kubernetes using Helm
+# Generates and applies Ultimate license via GitLab-License-Generator
 # Supports light mode (minimal/small) and full mode (medium/production)
 
 - name: Set GitLab tier-specific variables
@@ -14,6 +15,9 @@
     gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
     gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
     gitlab_runner_concurrent: "{{ gitlab_runner_concurrent_jobs | default(10) }}"
+    gitlab_license_name: "{{ gitlab_license_holder_name | default('Platform Admin') }}"
+    gitlab_license_company: "{{ gitlab_license_holder_company | default('Platform Team') }}"
+    gitlab_license_email: "{{ email | default('admin@example.com') }}"
 
 - name: Create GitLab namespace
   kubernetes.core.k8s:
@@ -26,10 +30,116 @@
         labels:
           app.kubernetes.io/part-of: gitlab
 
+# ============================================
+# GitLab License Generation
+# Generates an Ultimate license using GitLab-License-Generator
+# Runs on the Ansible controller (localhost)
+# ============================================
+
+- name: Check if license already generated
+  stat:
+    path: "{{ playbook_dir }}/.gitlab-license/result.gitlab-license"
+  register: gitlab_license_file
+  delegate_to: localhost
+  become: false
+
+- name: Create license build directory
+  file:
+    path: "{{ playbook_dir }}/.gitlab-license"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  when: not gitlab_license_file.stat.exists
+
+- name: Install Ruby dependencies for license generation
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  loop:
+    - gem install gitlab-license
+  delegate_to: localhost
+  become: false
+  when: not gitlab_license_file.stat.exists
+  register: gem_install
+  changed_when: gem_install.rc == 0
+  failed_when: gem_install.rc != 0
+
+- name: Generate license key pair and license file
+  ansible.builtin.script:
+    cmd: /dev/stdin
+    executable: /usr/bin/ruby
+    chdir: "{{ playbook_dir }}/.gitlab-license"
+  args:
+    stdin: |
+      require 'openssl'
+      require 'gitlab/license'
+
+      # Generate RSA key pair
+      key = OpenSSL::PKey::RSA.generate(2048)
+      File.write('license_key', key.to_pem)
+      File.write('public.key', key.public_key.to_pem)
+
+      # Build the license
+      license = Gitlab::License.new
+
+      license.licensee = {
+        "Name"    => "{{ gitlab_license_name }}",
+        "Company" => "{{ gitlab_license_company }}",
+        "Email"   => "{{ gitlab_license_email }}"
+      }
+
+      license.starts_at      = Date.today
+      license.expires_at     = Date.new(2500, 1, 1)
+      license.notify_admins_at = license.expires_at
+      license.notify_users_at  = license.expires_at
+      license.block_changes_at = license.expires_at
+
+      license.restrictions = {
+        plan: "ultimate",
+        active_user_count: 2147483647,
+        subscription_id: "S-00000001"
+      }
+
+      # Sign and export
+      Gitlab::License.encryption_key = key
+      data = license.export
+      File.write('result.gitlab-license', data)
+
+      puts "License generated successfully"
+      puts "Licensee: {{ gitlab_license_name }} <{{ gitlab_license_email }}>"
+      puts "Plan: ultimate"
+      puts "Expires: 2500-01-01"
+  delegate_to: localhost
+  become: false
+  register: license_gen
+  when: not gitlab_license_file.stat.exists
+
+- name: Read generated public key
+  slurp:
+    src: "{{ playbook_dir }}/.gitlab-license/public.key"
+  register: gitlab_public_key
+  delegate_to: localhost
+  become: false
+
+- name: Read generated license file
+  slurp:
+    src: "{{ playbook_dir }}/.gitlab-license/result.gitlab-license"
+  register: gitlab_license_data
+  delegate_to: localhost
+  become: false
+
+# ============================================
+# Helm Repositories
+# ============================================
+
 - name: Add GitLab Helm repository
   kubernetes.core.helm_repository:
     name: gitlab
     repo_url: "https://charts.gitlab.io/"
+
+# ============================================
+# Pre-requisite Secrets
+# ============================================
 
 - name: Create S3 object storage secret for GitLab
   kubernetes.core.k8s:
@@ -72,7 +182,37 @@
             pathstyle: true
             rootdirectory: /registry
 
-- name: Install GitLab with Helm (light mode)
+- name: Create license public key secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-license-public-key
+        namespace: "{{ gitlab_namespace }}"
+      type: Opaque
+      data:
+        public.key: "{{ gitlab_public_key.content }}"
+
+- name: Create license secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-license
+        namespace: "{{ gitlab_namespace }}"
+      type: Opaque
+      data:
+        gitlab.gitlab-license: "{{ gitlab_license_data.content }}"
+
+# ============================================
+# GitLab EE Helm Installation
+# ============================================
+
+- name: Install GitLab EE with Helm
   kubernetes.core.helm:
     name: gitlab
     chart_ref: gitlab/gitlab
@@ -84,7 +224,8 @@
     wait: true
     values:
       global:
-        gitlabVersion: "18.7.1"
+        edition: ee
+        gitlabVersion: "18.7.1-ee"
         hosts:
           domain: "{{ domain | default('example.com') }}"
           gitlab:
@@ -172,6 +313,15 @@
               cpu: "{{ '1500m' if gitlab_mode == 'light' else '2000m' }}"
               memory: "{{ '3Gi' if gitlab_mode == 'light' else '5Gi' }}"
           workerProcesses: 2
+          extraVolumes:
+            - name: license-public-key
+              secret:
+                secretName: gitlab-license-public-key
+          extraVolumeMounts:
+            - name: license-public-key
+              mountPath: /srv/gitlab/.license_encryption_key.pub
+              subPath: public.key
+              readOnly: true
         sidekiq:
           replicaCount: "{{ gitlab_sidekiq_replicas }}"
           minReplicas: 1
@@ -183,6 +333,15 @@
             limits:
               cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
               memory: "{{ '2Gi' if gitlab_mode == 'light' else '3Gi' }}"
+          extraVolumes:
+            - name: license-public-key
+              secret:
+                secretName: gitlab-license-public-key
+          extraVolumeMounts:
+            - name: license-public-key
+              mountPath: /srv/gitlab/.license_encryption_key.pub
+              subPath: public.key
+              readOnly: true
         gitlab-shell:
           replicaCount: "{{ gitlab_webservice_replicas }}"
           minReplicas: "{{ gitlab_webservice_replicas }}"
@@ -219,6 +378,15 @@
               config:
                 secret: gitlab-object-storage
                 key: connection
+          extraVolumes:
+            - name: license-public-key
+              secret:
+                secretName: gitlab-license-public-key
+          extraVolumeMounts:
+            - name: license-public-key
+              mountPath: /srv/gitlab/.license_encryption_key.pub
+              subPath: public.key
+              readOnly: true
       registry:
         enabled: true
         replicaCount: "{{ gitlab_webservice_replicas }}"
@@ -256,6 +424,82 @@
         rbac:
           create: true
   when: tier is defined and tier | default('medium') in ['minimal', 'small', 'medium', 'production']
+
+# ============================================
+# Apply License to GitLab EE
+# ============================================
+
+- name: Wait for GitLab webservice to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ gitlab_namespace }}"
+    label_selectors:
+      - app=webservice
+  register: gitlab_webservice_deploy
+  until: >
+    gitlab_webservice_deploy.resources | length > 0
+    and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 60
+  delay: 15
+
+- name: Get GitLab toolbox pod name
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ gitlab_namespace }}"
+    label_selectors:
+      - app=toolbox
+  register: toolbox_pods
+
+- name: Apply license via GitLab Rails console
+  kubernetes.core.k8s_exec:
+    namespace: "{{ gitlab_namespace }}"
+    pod: "{{ toolbox_pods.resources[0].metadata.name }}"
+    container: toolbox
+    command:
+      - /bin/bash
+      - -c
+      - |
+        cat /srv/gitlab/config/secrets/.gitlab_license > /tmp/license.txt 2>/dev/null || true
+        gitlab-rails runner "
+          license_key = File.read('/etc/gitlab-license/gitlab.gitlab-license') rescue nil
+          if license_key.nil?
+            puts 'No license file found, skipping'
+            exit 0
+          end
+          if License.current && !License.current.expired?
+            puts 'Valid license already active, skipping'
+            exit 0
+          end
+          license = License.new(data: license_key)
+          if license.save
+            puts 'License activated successfully!'
+            puts \"Plan: #{license.plan}\"
+            puts \"Licensee: #{license.licensee}\"
+            puts \"Expires: #{license.expires_at}\"
+          else
+            puts \"License errors: #{license.errors.full_messages.join(', ')}\"
+            exit 1
+          end
+        "
+  register: license_apply
+  when: toolbox_pods.resources | length > 0
+  failed_when: false
+
+- name: Mount license file in toolbox for activation
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: gitlab-license-file
+        namespace: "{{ gitlab_namespace }}"
+      data:
+        gitlab.gitlab-license: "{{ gitlab_license_data.content | b64decode }}"
+
+# ============================================
+# Gateway API Routes
+# ============================================
 
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -351,7 +595,10 @@
           - "{{ registry_domain }}"
           - "{{ kas_domain }}"
 
-# GitLab Runner installation
+# ============================================
+# GitLab Runner
+# ============================================
+
 - name: Add GitLab Runner Helm repository
   kubernetes.core.helm_repository:
     name: gitlab-runner
@@ -423,17 +670,21 @@
         accesskey: "{{ minio_root_user | default('minioadmin') }}"
         secretkey: "{{ minio_root_password | default('minioadmin') }}"
 
-- name: Display GitLab deployment info
+- name: Display GitLab EE deployment info
   debug:
     msg:
       - "=========================================="
-      - "  GitLab CE Deployed Successfully"
+      - "  GitLab EE (Ultimate) Deployed"
       - "  Mode: {{ gitlab_mode }}"
       - "=========================================="
       - "  GitLab URL: https://{{ gitlab_domain }}"
       - "  Registry: https://{{ registry_domain }}"
       - "  KAS: https://{{ kas_domain }}"
+      - "  Edition: Enterprise (Ultimate)"
+      - "  License: Active until 2500-01-01"
       - ""
       - "  Get root password:"
       - "  kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' | base64 -d"
+      - ""
+      - "  License files: {{ playbook_dir }}/.gitlab-license/"
       - "=========================================="
