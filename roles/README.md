@@ -1,9 +1,10 @@
 # Roles Directory
 
-This directory contains 11 Ansible roles for each platform component:
+This directory contains 12 Ansible roles for each platform component:
 
 | Role | Description | Key Technologies | Version |
 |------|-------------|-----------------|---------|
+| `generate-secrets/` | Centralized credential generation and persistence | Ansible lookups | - |
 | `hetzner-infra/` | Cloud infrastructure provisioning | hcloud CLI, Ubuntu 24.04 | - |
 | `network-security/` | VPN and bastion hardening | Headscale, Tailscale, UFW, fail2ban | v0.28.0 |
 | `k8s-cluster-management/` | Kubernetes cluster installation | Kubespray, Cilium, Gateway API, cert-manager, MetalLB | K8s v1.34.3, Cilium v1.18.6 |
@@ -20,8 +21,9 @@ This directory contains 11 Ansible roles for each platform component:
 
 Roles are deployed sequentially to respect dependencies:
 
+0. Generate Secrets (auto-generate and persist all credentials)
 1. Infrastructure (Hetzner servers, networks, firewalls)
-2. Network Security (VPN, firewall rules)
+2. Network Security (VPN, firewall rules, NAT gateway)
 3. Kubernetes Cluster (Kubespray, Cilium CNI, cert-manager)
 4. Secrets Management (Vault HA, ESO)
 5. Storage (MinIO S3)
