@@ -59,16 +59,20 @@
       all:
         hosts:
       {% for i in range(1, (cp_count | default(1) | int) + 1) %}
-          {{ project }}-master-{{ i }}:
-            ansible_host: 10.0.1.{{ i }}
-            ip: 10.0.1.{{ i }}
-            access_ip: 10.0.1.{{ i }}
+      {% set host = project + '-master-' + (i | string) %}
+      {% set ip = master_ips[host] | default('10.0.1.' + (i | string)) %}
+          {{ host }}:
+            ansible_host: {{ ip }}
+            ip: {{ ip }}
+            access_ip: {{ ip }}
       {% endfor %}
       {% for i in range(1, (worker_count | default(2) | int) + 1) %}
-          {{ project }}-worker-{{ i }}:
-            ansible_host: 10.0.2.{{ i }}
-            ip: 10.0.2.{{ i }}
-            access_ip: 10.0.2.{{ i }}
+      {% set host = project + '-worker-' + (i | string) %}
+      {% set ip = worker_ips[host] | default('10.0.2.' + (i | string)) %}
+          {{ host }}:
+            ansible_host: {{ ip }}
+            ip: {{ ip }}
+            access_ip: {{ ip }}
       {% endfor %}
         children:
           kube_control_plane:
@@ -171,9 +175,9 @@
 - name: Copy kubeconfig to bastion
   ansible.builtin.raw: |
     mkdir -p /root/.kube
-    ssh -o StrictHostKeyChecking=no root@10.0.1.1 "cat /etc/kubernetes/admin.conf" > /root/.kube/config
+    ssh -o StrictHostKeyChecking=no root@{{ first_master_ip | default('10.0.1.1') }} "cat /etc/kubernetes/admin.conf" > /root/.kube/config
     chmod 600 /root/.kube/config
-    sed -i 's|https://.*:6443|https://10.0.1.1:6443|g' /root/.kube/config
+    sed -i 's|https://.*:6443|https://{{ first_master_ip | default("10.0.1.1") }}:6443|g' /root/.kube/config
   delegate_to: "{{ bastion_public_ip | default('') }}"
   become: true
   when: bastion_public_ip is defined
@@ -186,6 +190,14 @@
   register: kubeconfig_content
   when: bastion_public_ip is defined
 
+- name: Create local .kube directory
+  file:
+    path: "{{ lookup('env', 'HOME') }}/.kube"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+
 - name: Write kubeconfig locally
   copy:
     content: "{{ kubeconfig_content.stdout }}"
@@ -195,11 +207,11 @@
   become: false
   when: kubeconfig_content is defined and kubeconfig_content.stdout is defined
 
-- name: Update local kubeconfig API server to use bastion SSH tunnel
+- name: Update local kubeconfig API server endpoint
   ansible.builtin.replace:
     path: "{{ lookup('env', 'HOME') }}/.kube/config"
     regexp: 'https://.*:6443'
-    replace: "https://10.0.1.1:6443"
+    replace: "https://{{ first_master_ip | default('10.0.1.1') }}:6443"
   delegate_to: localhost
   become: false
   when: kubeconfig_content is defined
