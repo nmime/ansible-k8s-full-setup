@@ -487,20 +487,20 @@
       cainjector:
         replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
 
-- name: Install Hetzner DNS webhook for cert-manager
+- name: Add Hetzner Cloud Helm repository
   kubernetes.core.helm_repository:
-    name: cert-manager-webhook-hetzner
-    repo_url: "https://vadimkim.github.io/cert-manager-webhook-hetzner"
+    name: hcloud
+    repo_url: "https://charts.hetzner.cloud"
 
-- name: Deploy Hetzner DNS webhook
+- name: Install official Hetzner Cloud DNS webhook for cert-manager
   kubernetes.core.helm:
     name: cert-manager-webhook-hetzner
-    chart_ref: cert-manager-webhook-hetzner/cert-manager-webhook-hetzner
+    chart_ref: hcloud/cert-manager-webhook-hetzner
     release_namespace: cert-manager
     release_state: present
     wait: true
 
-- name: Create Hetzner DNS API secret for cert-manager
+- name: Create Hetzner Cloud API token secret for cert-manager
   kubernetes.core.k8s:
     state: present
     definition:
@@ -510,7 +510,7 @@
         name: hetzner-secret
         namespace: cert-manager
       stringData:
-        api-key: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+        api-token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
 
 - name: Create Let's Encrypt ClusterIssuer (staging)
   kubernetes.core.k8s:
@@ -529,11 +529,12 @@
           solvers:
             - dns01:
                 webhook:
-                  groupName: acme.hetzner.cloud
+                  groupName: acme.hetzner.com
                   solverName: hetzner
                   config:
-                    secretName: hetzner-secret
-                    apiUrl: https://dns.hetzner.com/api/v1
+                    tokenSecretKeyRef:
+                      name: hetzner-secret
+                      key: api-token
 
 - name: Create Let's Encrypt ClusterIssuer (production)
   kubernetes.core.k8s:
@@ -552,11 +553,12 @@
           solvers:
             - dns01:
                 webhook:
-                  groupName: acme.hetzner.cloud
+                  groupName: acme.hetzner.com
                   solverName: hetzner
                   config:
-                    secretName: hetzner-secret
-                    apiUrl: https://dns.hetzner.com/api/v1
+                    tokenSecretKeyRef:
+                      name: hetzner-secret
+                      key: api-token
 
 - name: Create wildcard TLS certificate
   kubernetes.core.k8s:
