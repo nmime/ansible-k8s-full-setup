@@ -563,118 +563,62 @@
   when: not (lb_enabled | bool)
 
 # ============================================
-# DNS Setup (Hetzner DNS via unified HCLOUD_TOKEN)
-# Uses the Hetzner DNS API (dns.hetzner.com)
-# authenticated with the same HCLOUD_TOKEN.
-# Idempotent: checks for existing records before creating.
+# DNS Setup (Hetzner Cloud unified DNS via hcloud CLI)
+# Since hcloud v1.53.0, DNS is part of the Cloud API.
+# Uses HCLOUD_TOKEN (same token as servers/networks).
+# Commands: hcloud zone create, hcloud zone rrset create
+# Idempotent: checks existing before creating.
 # ============================================
 
-- name: Set DNS token from HCLOUD_TOKEN
-  set_fact:
-    dns_token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
-
-- name: Get DNS zone ID
-  ansible.builtin.uri:
-    url: "https://dns.hetzner.com/api/v1/zones?name={{ domain | default('example.com') }}"
-    method: GET
-    headers:
-      Auth-API-Token: "{{ dns_token }}"
-    return_content: true
-    status_code: [200]
-  register: dns_zone_lookup
+- name: Check if DNS zone already exists
+  ansible.builtin.command:
+    cmd: hcloud zone describe {{ domain | default('example.com') }} -o json
+  register: dns_zone_check
+  changed_when: false
   failed_when: false
 
-- name: Create DNS zone if it does not exist
-  ansible.builtin.uri:
-    url: "https://dns.hetzner.com/api/v1/zones"
-    method: POST
-    headers:
-      Auth-API-Token: "{{ dns_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      name: "{{ domain | default('example.com') }}"
-      ttl: 3600
-    return_content: true
-    status_code: [200, 201, 409, 422]
+- name: Create DNS zone
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone create
+      --name {{ domain | default('example.com') }}
+      --mode primary
   register: dns_zone_create
-  when: dns_zone_lookup.json.zones | default([]) | length == 0
-  failed_when: false
+  when: dns_zone_check.rc != 0
+  failed_when: dns_zone_create.rc != 0 and 'already' not in (dns_zone_create.stderr | default('')) and 'exists' not in (dns_zone_create.stderr | default(''))
 
-- name: Set DNS zone ID
-  set_fact:
-    dns_zone_id: "{{ (dns_zone_lookup.json.zones[0].id) if (dns_zone_lookup.json.zones | default([]) | length > 0) else (dns_zone_create.json.zone.id | default('')) }}"
+- name: Create DNS wildcard A record (*.domain -> LB)
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain | default('example.com') }}
+      --name '*'
+      --type A
+      --record {{ lb_public_ip }}
+  register: dns_wildcard
+  changed_when: dns_wildcard.rc == 0
+  failed_when: dns_wildcard.rc != 0 and 'already' not in (dns_wildcard.stderr | default('')) and 'exists' not in (dns_wildcard.stderr | default(''))
 
-- name: Get existing DNS records for zone
-  ansible.builtin.uri:
-    url: "https://dns.hetzner.com/api/v1/records?zone_id={{ dns_zone_id }}"
-    method: GET
-    headers:
-      Auth-API-Token: "{{ dns_token }}"
-    return_content: true
-    status_code: [200]
-  register: dns_existing_records
-  when: dns_zone_id | length > 0
-  failed_when: false
+- name: Create DNS root A record (domain -> LB)
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain | default('example.com') }}
+      --name @
+      --type A
+      --record {{ lb_public_ip }}
+  register: dns_root
+  changed_when: dns_root.rc == 0
+  failed_when: dns_root.rc != 0 and 'already' not in (dns_root.stderr | default('')) and 'exists' not in (dns_root.stderr | default(''))
 
-- name: Build list of existing record names
-  set_fact:
-    existing_dns_names: "{{ dns_existing_records.json.records | default([]) | map(attribute='name') | list }}"
-  when: dns_zone_id | length > 0
-
-- name: Create DNS wildcard A record
-  ansible.builtin.uri:
-    url: "https://dns.hetzner.com/api/v1/records"
-    method: POST
-    headers:
-      Auth-API-Token: "{{ dns_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      zone_id: "{{ dns_zone_id }}"
-      type: "A"
-      name: "*"
-      value: "{{ lb_public_ip }}"
-      ttl: 300
-    status_code: [200, 201, 409, 422]
-  when: dns_zone_id | length > 0 and '*' not in (existing_dns_names | default([]))
-  failed_when: false
-
-- name: Create DNS root A record
-  ansible.builtin.uri:
-    url: "https://dns.hetzner.com/api/v1/records"
-    method: POST
-    headers:
-      Auth-API-Token: "{{ dns_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      zone_id: "{{ dns_zone_id }}"
-      type: "A"
-      name: "@"
-      value: "{{ lb_public_ip }}"
-      ttl: 300
-    status_code: [200, 201, 409, 422]
-  when: dns_zone_id | length > 0 and '@' not in (existing_dns_names | default([]))
-  failed_when: false
-
-- name: Create DNS VPN A record (bastion)
-  ansible.builtin.uri:
-    url: "https://dns.hetzner.com/api/v1/records"
-    method: POST
-    headers:
-      Auth-API-Token: "{{ dns_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      zone_id: "{{ dns_zone_id }}"
-      type: "A"
-      name: "vpn"
-      value: "{{ bastion_public_ip }}"
-      ttl: 300
-    status_code: [200, 201, 409, 422]
-  when: dns_zone_id | length > 0 and 'vpn' not in (existing_dns_names | default([]))
-  failed_when: false
+- name: Create DNS VPN A record (vpn.domain -> bastion)
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain | default('example.com') }}
+      --name vpn
+      --type A
+      --record {{ bastion_public_ip }}
+  register: dns_vpn
+  changed_when: dns_vpn.rc == 0
+  failed_when: dns_vpn.rc != 0 and 'already' not in (dns_vpn.stderr | default('')) and 'exists' not in (dns_vpn.stderr | default(''))
 
 # ============================================
 # Write infrastructure state
