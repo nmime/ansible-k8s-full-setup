@@ -64,7 +64,7 @@ A comprehensive Ansible workflow for deploying a complete Kubernetes platform st
 ### Environment Variables
 
 ```bash
-# Required
+# Required (used for servers, networks, DNS, and all Hetzner services)
 export HCLOUD_TOKEN="your-hetzner-cloud-api-token"
 # Get from: https://console.hetzner.cloud → Security → API Tokens
 
