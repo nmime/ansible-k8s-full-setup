@@ -79,6 +79,19 @@
           repo2-s3-key={{ minio_root_user | default('minioadmin') }}
           repo2-s3-key-secret={{ minio_root_password | default('minioadmin') }}
 
+- name: Create PMM API key secret for databases namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pmm-secret
+        namespace: "{{ db_ns }}"
+      type: Opaque
+      stringData:
+        PMM_SERVER_KEY: "api_key"
+
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
     state: present
@@ -171,10 +184,41 @@
               - secret:
                   name: pgbackrest-s3-creds
             global:
+              repo1-retention-full: "7"
+              repo1-retention-diff: "4"
               repo2-path: "/pgbackrest/{{ project_name | default('k8s') }}-pg/repo2"
               repo2-s3-uri-style: "path"
+              repo2-retention-full: "4"
+              repo2-retention-full-type: "count"
+            restore:
+              enabled: true
         pmm:
-          enabled: false
+          enabled: true
+          image: "percona/pmm-client:2"
+          serverHost: "pmm-server.monitoring.svc.cluster.local"
+          secret: pmm-secret
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+        extensions:
+          builtin:
+            pg_stat_statements: {}
+        patroni:
+          dynamicConfiguration:
+            postgresql:
+              parameters:
+                shared_preload_libraries: "pg_stat_statements,pg_stat_monitor"
+                pg_stat_statements.track: "all"
+                pg_stat_monitor.pgsm_query_max_len: "2048"
+                track_activity_query_size: "2048"
+                track_io_timing: "on"
+                log_checkpoints: "on"
+                log_lock_waits: "on"
+                log_temp_files: "0"
         users:
           - name: "{{ project_name | default('k8s') }}"
             databases:
@@ -275,6 +319,19 @@
                 memory: "2Gi"
             affinity:
               antiAffinityTopologyKey: "kubernetes.io/hostname"
+        pmm:
+          enabled: true
+          image: "percona/pmm-client:2"
+          serverHost: "pmm-server.monitoring.svc.cluster.local"
+          mongodParams: "--enable-all-collectors"
+          mongosParams: "--enable-all-collectors"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
         sharding:
           enabled: false
         mongos:
@@ -291,6 +348,10 @@
                 region: "us-east-1"
                 credentialsSecret: minio-backup-credentials
                 prefix: "mongodb/{{ project_name | default('k8s') }}-mongo"
+          pitr:
+            enabled: true
+            oplogOnly: true
+            compressionType: gzip
           tasks:
             - name: daily-backup
               enabled: true
@@ -298,6 +359,13 @@
               keep: "{{ backup_retention_days | default(30) }}"
               storageName: s3-minio
               compressionType: gzip
+            - name: weekly-full-backup
+              enabled: true
+              schedule: "0 3 * * 0"
+              keep: 8
+              storageName: s3-minio
+              compressionType: gzip
+              type: physical
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
@@ -365,5 +433,12 @@
       - "    MongoDB: 8.0.x"
       - "    Replicas: {{ mongo_replicas }}"
       - "    Cluster: {{ project_name | default('k8s') }}-mongo.{{ db_ns }}"
-      - "  Backups: pgbackrest + PBM to MinIO S3"
+      - "  Monitoring:"
+      - "    PMM Server: pmm-server.monitoring.svc.cluster.local"
+      - "    PostgreSQL: pg_stat_statements, pg_stat_monitor, PMM client"
+      - "    MongoDB: PMM client with all collectors"
+      - "  Backups:"
+      - "    PostgreSQL: pgbackrest (daily full + 6h diff + S3 weekly)"
+      - "    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)"
+      - "    Retention: PG 7 full / 4 diff, Mongo {{ backup_retention_days | default(30) }} days"
       - "=========================================="
