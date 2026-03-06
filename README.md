@@ -36,6 +36,7 @@ A comprehensive Ansible workflow for deploying a complete Kubernetes platform st
                     │    → grafana.domain.com  (Monitoring)                    │
                     │    → vault.domain.com    (Secrets)                       │
                     │    → minio.domain.com    (Storage Console)               │
+                    │    → pmm.domain.com      (DB Monitoring)                │
                     └──────────────────────────────────────────────────────────┘
 ```
 
@@ -146,6 +147,7 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags boilerpla
 | Grafana | VPN-only | `grafana.example.com` | Monitoring dashboards |
 | Vault | VPN-only | `vault.example.com` | Secrets management |
 | MinIO Console | VPN-only | `minio.example.com` | S3 admin console |
+| PMM | VPN-only | `pmm.example.com` | Percona DB monitoring |
 | Headscale VPN | Public | `vpn.example.com` | VPN entry point |
 
 ## Secrets Management
@@ -213,7 +215,7 @@ TLS certificates are automatically issued by cert-manager using DNS01 challenges
 7. k8s-databases       → PostgreSQL + MongoDB via Percona Operators
 8. gitlab-selfhosted   → GitLab EE (Ultimate) + Runner + Registry + License
 9. k8s-gitops          → ArgoCD + ApplicationSets
-10. k8s-observability  → VictoriaMetrics + Loki + Grafana
+10. k8s-observability  → VictoriaMetrics + Loki + Grafana + PMM Server
 11. k8s-autoscaling    → KEDA event-driven autoscaling
 12. brocoders-boilerplate → NestJS backend + React frontend
 ```
@@ -282,10 +284,21 @@ tailscale up --login-server https://vpn.example.com
 
 ## Backup & Restore
 
-- **PostgreSQL**: Automated via pgbackrest (daily full + 6-hourly differential) to local volume + MinIO S3
-- **MongoDB**: Automated via Percona Backup for MongoDB to MinIO S3
+- **PostgreSQL**: Automated via pgbackrest (daily full + 6-hourly differential + weekly S3) to local volume + MinIO S3, retention: 7 full / 4 diff
+- **MongoDB**: Automated via Percona Backup for MongoDB (daily logical + weekly physical + PITR/oplog) to MinIO S3
 - **GitLab**: Built-in backup to `gitlab-backups` MinIO bucket
 - **Vault**: Auto-unseal with stored init keys; data persisted on `hcloud-volumes`
+
+## Database Monitoring (Percona PMM)
+
+All databases are monitored via **Percona Monitoring and Management (PMM)**:
+
+- **PMM Server**: Deployed in the monitoring namespace, accessible via VPN at `pmm.example.com`
+- **PostgreSQL**: PMM client sidecar with `pg_stat_statements`, `pg_stat_monitor` extensions enabled
+- **MongoDB**: PMM client sidecar with all collectors enabled
+- **Metrics pipeline**: PMM metrics are also scraped by VictoriaMetrics via VMServiceScrape
+- **Grafana dashboards**: PostgreSQL overview, MongoDB overview, replication monitoring, PMM datasource
+- **Alerts**: Database-specific alerting rules for downtime, replication lag, connections, deadlocks, backup staleness
 
 ## Troubleshooting
 

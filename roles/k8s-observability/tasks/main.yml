@@ -316,6 +316,13 @@
               access: proxy
               jsonData:
                 maxLines: 1000
+            - name: PMM
+              type: prometheus
+              uid: pmm
+              url: "http://pmm-server.{{ monitoring_namespace }}.svc.cluster.local/prometheus"
+              access: proxy
+              jsonData:
+                timeInterval: 5s
       dashboardProviders:
         dashboardproviders.yaml:
           apiVersion: 1
@@ -353,6 +360,22 @@
           postgresql-dashboard:
             gnetId: 9628
             revision: 7
+            datasource: VictoriaMetrics
+          mongodb-dashboard:
+            gnetId: 2583
+            revision: 2
+            datasource: VictoriaMetrics
+          percona-pg-overview:
+            gnetId: 12273
+            revision: 5
+            datasource: VictoriaMetrics
+          percona-mongodb-overview:
+            gnetId: 7353
+            revision: 5
+            datasource: VictoriaMetrics
+          percona-pg-replication:
+            gnetId: 12280
+            revision: 2
             datasource: VictoriaMetrics
           argocd-dashboard:
             gnetId: 14584
@@ -414,6 +437,262 @@
           - "{{ grafana_domain }}"
 
 # ============================================
+# Percona Monitoring and Management (PMM) Server
+# ============================================
+
+- name: Create PMM admin password secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pmm-secret
+        namespace: "{{ monitoring_namespace }}"
+      type: Opaque
+      stringData:
+        PMM_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+
+- name: Create PMM API key secret for database operators
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pmm-api-key
+        namespace: databases
+      type: Opaque
+      stringData:
+        PMM_SERVER_KEY: "api_key"
+
+- name: Deploy PMM Server
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: pmm-server
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          app: pmm-server
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: pmm-server
+        template:
+          metadata:
+            labels:
+              app: pmm-server
+          spec:
+            containers:
+              - name: pmm-server
+                image: "percona/pmm-server:2"
+                ports:
+                  - containerPort: 443
+                    name: https
+                  - containerPort: 80
+                    name: http
+                env:
+                  - name: DISABLE_UPDATES
+                    value: "1"
+                  - name: METRICS_RESOLUTION
+                    value: "5s"
+                  - name: DISABLE_TELEMETRY
+                    value: "1"
+                  - name: PMM_ADMIN_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: pmm-secret
+                        key: PMM_ADMIN_PASSWORD
+                volumeMounts:
+                  - name: pmm-data
+                    mountPath: /srv
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 512Mi
+                  limits:
+                    cpu: "2"
+                    memory: 2Gi
+                readinessProbe:
+                  httpGet:
+                    path: /v1/readyz
+                    port: 80
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /v1/readyz
+                    port: 80
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+            volumes:
+              - name: pmm-data
+                persistentVolumeClaim:
+                  claimName: pmm-server-data
+
+- name: Create PMM Server PVC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: pmm-server-data
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: hcloud-volumes
+        resources:
+          requests:
+            storage: 20Gi
+
+- name: Create PMM Server Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: pmm-server
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          app: pmm-server
+      spec:
+        selector:
+          app: pmm-server
+        ports:
+          - name: http
+            port: 80
+            targetPort: 80
+          - name: https
+            port: 443
+            targetPort: 443
+
+- name: Wait for PMM Server to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ monitoring_namespace }}"
+    name: pmm-server
+  register: pmm_deploy
+  until: >
+    pmm_deploy.resources | length > 0
+    and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 15
+  failed_when: false
+
+- name: Create PMM HTTPRoute (VPN-only via admin-gateway)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: pmm
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        parentRefs:
+          - name: admin-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "pmm.{{ domain | default('example.com') }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: pmm-server
+                port: 80
+
+- name: Create TLS Certificate for PMM
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: pmm-tls
+        namespace: cilium-secrets
+      spec:
+        secretName: pmm-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "pmm.{{ domain | default('example.com') }}"
+
+# ============================================
+# VMServiceScrape for Percona exporters
+# ============================================
+
+- name: Create VMServiceScrape for PostgreSQL exporter
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: percona-pg-exporter
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        namespaceSelector:
+          matchNames:
+            - databases
+        selector:
+          matchLabels:
+            postgres-operator.crunchydata.com/crunchy-postgres-exporter: "true"
+        endpoints:
+          - port: exporter
+            path: /metrics
+            interval: 30s
+
+- name: Create VMServiceScrape for MongoDB exporter
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: percona-mongodb-exporter
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        namespaceSelector:
+          matchNames:
+            - databases
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: percona-server-mongodb
+        endpoints:
+          - port: metrics
+            path: /metrics
+            interval: 30s
+
+- name: Create VMServiceScrape for PMM Server
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: pmm-server
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            app: pmm-server
+        endpoints:
+          - port: http
+            path: /prometheus/metrics
+            interval: 30s
+
+# ============================================
 # Alerting Rules
 # ============================================
 
@@ -458,6 +737,64 @@
                   severity: warning
                 annotations:
                   summary: "High memory usage on {{ '{{ $labels.instance }}' }}"
+          - name: databases
+            rules:
+              - alert: PostgreSQLDown
+                expr: 'pg_up == 0'
+                for: 2m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "PostgreSQL instance {{ '{{ $labels.instance }}' }} is down"
+              - alert: PostgreSQLReplicationLag
+                expr: 'pg_replication_lag > 30'
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "PostgreSQL replication lag is {{ '{{ $value }}' }}s on {{ '{{ $labels.instance }}' }}"
+              - alert: PostgreSQLTooManyConnections
+                expr: 'sum by (instance) (pg_stat_activity_count) > pg_settings_max_connections * 0.8'
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "PostgreSQL connections above 80% on {{ '{{ $labels.instance }}' }}"
+              - alert: PostgreSQLDeadlocks
+                expr: 'rate(pg_stat_database_deadlocks[5m]) > 0'
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "PostgreSQL deadlocks detected on {{ '{{ $labels.datname }}' }}"
+              - alert: MongoDBDown
+                expr: 'mongodb_up == 0'
+                for: 2m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "MongoDB instance {{ '{{ $labels.instance }}' }} is down"
+              - alert: MongoDBReplicationLag
+                expr: 'mongodb_mongod_replset_member_replication_lag > 30'
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "MongoDB replication lag is {{ '{{ $value }}' }}s on {{ '{{ $labels.instance }}' }}"
+              - alert: MongoDBCursorsOpen
+                expr: 'mongodb_mongod_metrics_cursor_open{state="total"} > 10000'
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "MongoDB has {{ '{{ $value }}' }} open cursors on {{ '{{ $labels.instance }}' }}"
+              - alert: PGBackrestBackupStale
+                expr: 'time() - pg_backrest_backup_last_completed_time_epoch > 172800'
+                for: 1h
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "pgbackrest backup is older than 48h"
 
 - name: Display observability deployment info
   debug:
@@ -466,8 +803,11 @@
       - "  Observability Stack Deployed"
       - "=========================================="
       - "  Grafana: https://{{ grafana_domain }}"
-      - "    User: admin / admin"
+      - "    User: {{ grafana_admin_user }} / {{ grafana_admin_password[:4] }}****"
       - "  VictoriaMetrics: {{ 'Cluster' if tier in ['medium', 'production'] else 'Single' }} mode"
       - "  Loki: SimpleScalable mode"
+      - "  PMM Server: https://pmm.{{ domain | default('example.com') }}"
+      - "    User: admin / {{ grafana_admin_password[:4] }}****"
       - "  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}"
+      - "  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM"
       - "=========================================="
