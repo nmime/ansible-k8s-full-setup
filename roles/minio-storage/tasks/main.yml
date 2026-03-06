@@ -188,7 +188,6 @@
           - name: admin-gateway
             namespace: cilium-system
             sectionName: https
-            sectionName: https
         hostnames:
           - "{{ minio_console_domain }}"
         rules:
