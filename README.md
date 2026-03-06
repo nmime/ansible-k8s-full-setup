@@ -167,6 +167,23 @@ kubectl get secret -n gitlab gitlab-gitlab-initial-root-password -o jsonpath='{.
 kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 ```
 
+## GitLab EE License
+
+GitLab is deployed as **Enterprise Edition (Ultimate)** with an auto-generated license:
+
+- The `gitlab-selfhosted` role uses the `gitlab-license` Ruby gem to generate a 2048-bit RSA key pair and Ultimate license
+- The generated `public.key` replaces GitLab's `.license_encryption_key.pub` via volume mount
+- The license is applied via the GitLab Rails console on the toolbox pod
+- License files are stored locally in `.gitlab-license/` (gitignored)
+- On re-runs, existing license files are reused (idempotent)
+
+**Prerequisites on the Ansible controller:**
+```bash
+# Ruby and gem must be installed
+apt install ruby-full    # Debian/Ubuntu
+gem install gitlab-license
+```
+
 ## DNS Configuration
 
 After deployment, configure DNS records pointing to the Hetzner Load Balancer IP:
@@ -194,7 +211,7 @@ TLS certificates are automatically issued by cert-manager using DNS01 challenges
 5. k8s-secrets         → Vault HA, External Secrets Operator
 6. minio-storage       → MinIO S3 (standalone or distributed by tier)
 7. k8s-databases       → PostgreSQL + MongoDB via Percona Operators
-8. gitlab-selfhosted   → GitLab CE + Runner + Registry
+8. gitlab-selfhosted   → GitLab EE (Ultimate) + Runner + Registry + License
 9. k8s-gitops          → ArgoCD + ApplicationSets
 10. k8s-observability  → VictoriaMetrics + Loki + Grafana
 11. k8s-autoscaling    → KEDA event-driven autoscaling
@@ -219,7 +236,7 @@ TLS certificates are automatically issued by cert-manager using DNS01 challenges
 │   ├── k8s-secrets/                   # HashiCorp Vault + ESO
 │   ├── minio-storage/                 # MinIO S3-compatible storage
 │   ├── k8s-databases/                 # PostgreSQL + MongoDB (Percona Operators)
-│   ├── gitlab-selfhosted/             # GitLab CE + Runner + Registry
+│   ├── gitlab-selfhosted/             # GitLab EE (Ultimate) + License + Runner + Registry
 │   ├── k8s-gitops/                    # ArgoCD + ApplicationSets
 │   ├── k8s-observability/             # VictoriaMetrics + Loki + Grafana
 │   ├── k8s-autoscaling/               # KEDA event-driven autoscaler

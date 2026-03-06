@@ -11,7 +11,7 @@ This directory contains 12 Ansible roles for each platform component:
 | `k8s-secrets/` | Secrets management | Vault (HA Raft), External Secrets Operator | Vault v1.21.2, ESO v0.15.0 |
 | `minio-storage/` | S3-compatible object storage | Bitnami Helm, Chainguard image | Chart 17.0.21 |
 | `k8s-databases/` | Database deployments | Percona PG Operator, Percona MongoDB Operator | PG v2.8.2, PSMDB v1.21.2 |
-| `gitlab-selfhosted/` | GitLab CE with CI/CD | Helm, GitLab Runner | CE v18.7.1, Chart 9.7.1 |
+| `gitlab-selfhosted/` | GitLab EE (Ultimate) with auto-license | Helm, GitLab Runner, gitlab-license gem | EE v18.7.1, Chart 9.7.1 |
 | `k8s-gitops/` | GitOps continuous delivery | ArgoCD, ApplicationSets | v3.2.5, Chart 7.8.5 |
 | `k8s-observability/` | Monitoring, logging, dashboards | VictoriaMetrics, Loki, Grafana | VM v1.133.0, Loki v3.6.3, Grafana v12.3.1 |
 | `k8s-autoscaling/` | Event-driven autoscaling | KEDA (70+ scalers) | v2.18.2 |
