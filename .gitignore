@@ -2,6 +2,9 @@
 .platform-secrets.yml
 .minio-credentials
 
+# Infrastructure state (contains IPs)
+*-infra-facts.yml
+
 # Ansible retry files
 *.retry
 

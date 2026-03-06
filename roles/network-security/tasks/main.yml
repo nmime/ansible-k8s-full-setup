@@ -93,15 +93,16 @@
   become: true
 
 - name: Add bastion as default route on private network
-  ansible.builtin.raw: |
-    hcloud network add-route {{ project }}-network \
-      --destination 0.0.0.0/0 \
-      --gateway 10.0.0.1
+  ansible.builtin.command:
+    cmd: >
+      hcloud network add-route {{ project }}-network
+      --destination 0.0.0.0/0
+      --gateway {{ bastion_private_ip | default('10.0.0.2') }}
   delegate_to: localhost
   become: false
   register: nat_route
   changed_when: nat_route.rc == 0
-  failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default(''))
+  failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default('')) and 'route' not in (nat_route.stderr | default(''))
 
 # ============================================
 # Docker Installation (for Headscale)
