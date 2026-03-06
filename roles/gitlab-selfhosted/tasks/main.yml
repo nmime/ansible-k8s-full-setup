@@ -255,7 +255,7 @@
         enabled: true
         rbac:
           create: true
-  when: tier is defined
+  when: tier is defined and tier | default('medium') in ['minimal', 'small', 'medium', 'production']
 
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -295,6 +295,7 @@
         parentRefs:
           - name: main-gateway
             namespace: cilium-system
+            sectionName: https
         hostnames:
           - "{{ registry_domain }}"
         rules:
