@@ -55,6 +55,18 @@
         AWS_DEFAULT_S3_BUCKET: "{{ app_name }}-uploads"
         AWS_S3_ENDPOINT: "http://minio.storage.svc.cluster.local:9000"
 
+- name: Retrieve app database password from cross-namespace secret
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}-postgresql-password"
+  register: app_pg_conn_secret
+  failed_when: false
+
+- name: Set app database password from Percona-generated secret
+  set_fact:
+    resolved_app_db_password: "{{ (app_pg_conn_secret.resources[0].data['postgresql-password'] | b64decode) if app_pg_conn_secret.resources | length > 0 else app_db_password }}"
+
 - name: Create backend Secret
   kubernetes.core.k8s:
     state: present
@@ -67,7 +79,7 @@
       type: Opaque
       stringData:
         DATABASE_USERNAME: "{{ app_name }}"
-        DATABASE_PASSWORD: "{{ app_db_password }}"
+        DATABASE_PASSWORD: "{{ resolved_app_db_password }}"
         AUTH_JWT_SECRET: "{{ app_jwt_secret }}"
         AUTH_JWT_TOKEN_EXPIRES_IN: "15m"
         AUTH_REFRESH_SECRET: "{{ app_refresh_secret }}"

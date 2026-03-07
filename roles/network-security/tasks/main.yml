@@ -57,8 +57,10 @@
     ufw default deny incoming
     ufw default allow outgoing
     ufw allow 22/tcp comment "SSH"
+    ufw allow 80/tcp comment "HTTP ACME challenge"
     ufw allow 443/tcp comment "Headscale HTTPS"
     ufw allow 3478/udp comment "STUN/DERP"
+    ufw allow 41641/udp comment "WireGuard/Tailscale"
     ufw allow from 10.0.0.0/16 comment "Private network"
     echo "y" | ufw enable
   delegate_to: "{{ bastion_host }}"
@@ -131,7 +133,7 @@
   ansible.builtin.raw: |
     cat > /etc/headscale/config.yaml << 'EOF'
     server_url: https://{{ vpn_domain }}
-    listen_addr: 0.0.0.0:443
+    listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 0.0.0.0:9090
     private_key_path: /var/lib/headscale/private.key
     noise:
@@ -166,6 +168,16 @@
   delegate_to: "{{ bastion_host }}"
   become: true
 
+- name: Create Caddyfile for Headscale TLS termination
+  ansible.builtin.raw: |
+    cat > /opt/headscale/Caddyfile << 'EOF'
+    {{ vpn_domain }} {
+      reverse_proxy headscale:8080
+    }
+    EOF
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
 - name: Deploy Headscale Docker Compose
   ansible.builtin.raw: |
     cat > /opt/headscale/docker-compose.yml << 'EOF'
@@ -176,7 +188,6 @@
         restart: always
         command: serve
         ports:
-          - "443:443"
           - "9090:9090"
           - "3478:3478/udp"
         volumes:
@@ -184,6 +195,22 @@
           - /etc/headscale:/etc/headscale:ro
         environment:
           - TZ=UTC
+      caddy:
+        container_name: caddy
+        image: caddy:2-alpine
+        restart: always
+        ports:
+          - "443:443"
+          - "80:80"
+        volumes:
+          - /opt/headscale/Caddyfile:/etc/caddy/Caddyfile:ro
+          - caddy_data:/data
+          - caddy_config:/config
+        depends_on:
+          - headscale
+    volumes:
+      caddy_data:
+      caddy_config:
     EOF
   delegate_to: "{{ bastion_host }}"
   become: true
@@ -295,6 +322,6 @@
       - "  curl -fsSL https://tailscale.com/install.sh | sh"
       - "  tailscale up --login-server https://{{ vpn_domain }} --authkey <KEY>"
       - ""
-      - "  Firewall: SSH(22), HTTPS(443), STUN(3478)"
+      - "  Firewall: SSH(22), HTTP(80), HTTPS(443), STUN(3478), WG(41641)"
       - "  Hardening: fail2ban, password-auth disabled"
       - "=========================================="
