@@ -9,13 +9,13 @@
 # - Secrets Management (Vault + ESO)
 # - Databases (PostgreSQL + MongoDB)
 # - Storage (MinIO)
-# - GitLab CE
+# - GitLab EE (Enterprise with Ultimate license)
 # - ArgoCD (GitOps)
 # - Observability (Monitoring + Logging)
 # - Event-Driven Autoscaling (KEDA)
 # - Brocoders Boilerplate Setup (optional)
 
-# Deployment sequence: infrastructure → network security → cluster → secrets → storage → databases → gitlab → gitops → observability → autoscaling
+# Deployment sequence: infrastructure → network security → cluster → secrets → storage → observability (PMM) → databases → gitlab → gitops → autoscaling
 
 - name: Deploy Kubernetes Platform
   hosts: localhost
@@ -154,7 +154,19 @@
         - storage
         - minio
 
-    # Step 6: Databases
+    # Step 6: Observability (before databases — PMM Server must exist for DB monitoring)
+    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana + PMM)
+      ansible.builtin.include_role:
+        name: k8s-observability
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+        domain: "{{ domain }}"
+      tags:
+        - observability
+        - monitoring
+
+    # Step 7: Databases (PMM client sidecars connect to PMM Server from step 6)
     - name: Deploy Databases (PostgreSQL + MongoDB)
       ansible.builtin.include_role:
         name: k8s-databases
@@ -165,8 +177,8 @@
         - databases
         - postgresql
 
-    # Step 7: GitLab
-    - name: Deploy GitLab CE Self-Hosted
+    # Step 8: GitLab EE
+    - name: Deploy GitLab EE Self-Hosted
       ansible.builtin.include_role:
         name: gitlab-selfhosted
         tasks_from: main.yml
@@ -177,7 +189,7 @@
         - gitlab
         - cicd
 
-    # Step 8: GitOps (ArgoCD)
+    # Step 9: GitOps (ArgoCD)
     - name: Deploy ArgoCD GitOps
       ansible.builtin.include_role:
         name: k8s-gitops
@@ -188,18 +200,6 @@
       tags:
         - gitops
         - argocd
-
-    # Step 9: Observability
-    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
-      ansible.builtin.include_role:
-        name: k8s-observability
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
-      tags:
-        - observability
-        - monitoring
 
     # Step 10: Autoscaling
     - name: Deploy KEDA Event-Driven Autoscaling
@@ -239,7 +239,7 @@
           - ""
           - "Services deployed:"
           - "  - Kubernetes Cluster with Cilium CNI"
-          - "  - GitLab CE: https://gitlab.{{ domain }}"
+          - "  - GitLab EE: https://gitlab.{{ domain }}"
           - "  - ArgoCD: https://argocd.{{ domain }}"
           - "  - Grafana: https://grafana.{{ domain }}"
           - "  - VictoriaMetrics + Loki (Observability)"

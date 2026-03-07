@@ -119,6 +119,8 @@
             policy: none
           - name: loki-ruler
             policy: none
+          - name: loki-admin
+            policy: none
           - name: backups
             policy: none
           - name: velero
