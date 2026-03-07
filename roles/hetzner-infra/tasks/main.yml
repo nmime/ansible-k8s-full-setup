@@ -10,45 +10,75 @@
     region: "{{ hetzner_region | default('hel1') }}"
     infra_tier: "{{ tier | default('medium') }}"
 
+# ============================================
+# Auto-select cheapest server types from Hetzner API
+# ============================================
+
+- name: Fetch available server types from Hetzner API
+  ansible.builtin.command:
+    cmd: hcloud server-type list -o json
+  register: hcloud_server_types_raw
+  changed_when: false
+
+- name: Parse server types and sort by price
+  set_fact:
+    available_server_types: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('architecture', 'equalto', 'x86')
+         | sort(attribute='prices.0.price_monthly.gross')
+         | list }}
+
+- name: Set tier spec reference
+  set_fact:
+    current_tier_spec: "{{ hetzner_tier_specs[infra_tier] }}"
+
+- name: Auto-select cheapest bastion type (2 cores, 4GB minimum)
+  set_fact:
+    auto_bastion_type: >-
+      {{ (available_server_types
+          | selectattr('cores', 'ge', 2)
+          | selectattr('memory', 'ge', 4)
+          | map(attribute='name')
+          | first) }}
+  when: hetzner_bastion_type | default('') | length == 0
+
+- name: Auto-select cheapest control plane type
+  set_fact:
+    auto_cp_type: >-
+      {{ (available_server_types
+          | selectattr('cores', 'ge', current_tier_spec.cp_min_cores | int)
+          | selectattr('memory', 'ge', current_tier_spec.cp_min_memory | int)
+          | map(attribute='name')
+          | first) }}
+  when: hetzner_cp_type | default('') | length == 0
+
+- name: Auto-select cheapest worker type
+  set_fact:
+    auto_worker_type: >-
+      {{ (available_server_types
+          | selectattr('cores', 'ge', current_tier_spec.worker_min_cores | int)
+          | selectattr('memory', 'ge', current_tier_spec.worker_min_memory | int)
+          | map(attribute='name')
+          | first) }}
+  when: hetzner_worker_type | default('') | length == 0
+
 - name: Set tier-specific server configuration
   set_fact:
-    cp_count: "{{ tier_map[infra_tier].cp_count }}"
-    cp_type: "{{ tier_map[infra_tier].cp_type }}"
-    cp_schedulable: "{{ tier_map[infra_tier].cp_schedulable | default(false) }}"
-    worker_count: "{{ tier_map[infra_tier].worker_count }}"
-    worker_type: "{{ tier_map[infra_tier].worker_type }}"
-    bastion_type: cx22
-    lb_enabled: "{{ tier_map[infra_tier].lb_enabled | default(true) }}"
-  vars:
-    tier_map:
-      minimal:
-        cp_count: 1
-        cp_type: cx22
-        cp_schedulable: true
-        worker_count: 1
-        worker_type: cx22
-        lb_enabled: false
-      small:
-        cp_count: 1
-        cp_type: cx22
-        cp_schedulable: false
-        worker_count: 2
-        worker_type: cx22
-        lb_enabled: true
-      medium:
-        cp_count: 3
-        cp_type: cx22
-        cp_schedulable: false
-        worker_count: 2
-        worker_type: cx32
-        lb_enabled: true
-      production:
-        cp_count: 3
-        cp_type: cx32
-        cp_schedulable: false
-        worker_count: 3
-        worker_type: cx32
-        lb_enabled: true
+    cp_count: "{{ current_tier_spec.cp_count }}"
+    cp_type: "{{ hetzner_cp_type | default(auto_cp_type) | trim }}"
+    cp_schedulable: "{{ current_tier_spec.cp_schedulable | default(false) }}"
+    worker_count: "{{ current_tier_spec.worker_count }}"
+    worker_type: "{{ hetzner_worker_type | default(auto_worker_type) | trim }}"
+    bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type) | trim }}"
+    lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
+
+- name: Display selected server types
+  debug:
+    msg:
+      - "Tier: {{ infra_tier }}"
+      - "Bastion: {{ bastion_type }}"
+      - "Control plane: {{ cp_type }} (min {{ current_tier_spec.cp_min_cores }}c/{{ current_tier_spec.cp_min_memory }}GB)"
+      - "Workers: {{ worker_type }} (min {{ current_tier_spec.worker_min_cores }}c/{{ current_tier_spec.worker_min_memory }}GB)"
 
 - name: Map region to network zone
   set_fact:
