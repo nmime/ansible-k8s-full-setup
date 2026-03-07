@@ -197,6 +197,7 @@
           image: "percona/pmm-client:2"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
           secret: pmm-secret
+          pmmParams: "--query-source=pgstatmonitor"
           resources:
             requests:
               cpu: 50m
@@ -207,6 +208,7 @@
         extensions:
           builtin:
             pg_stat_statements: {}
+            pg_stat_monitor: {}
         patroni:
           dynamicConfiguration:
             postgresql:
@@ -214,6 +216,8 @@
                 shared_preload_libraries: "pg_stat_statements,pg_stat_monitor"
                 pg_stat_statements.track: "all"
                 pg_stat_monitor.pgsm_query_max_len: "2048"
+                pg_stat_monitor.pgsm_enable_query_plan: "on"
+                pg_stat_monitor.pgsm_normalized_query: "on"
                 track_activity_query_size: "2048"
                 track_io_timing: "on"
                 log_checkpoints: "on"
@@ -323,7 +327,7 @@
           enabled: true
           image: "percona/pmm-client:2"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
-          mongodParams: "--enable-all-collectors"
+          mongodParams: "--enable-all-collectors --query-source=profiler"
           mongosParams: "--enable-all-collectors"
           resources:
             requests:
@@ -332,6 +336,11 @@
             limits:
               cpu: 300m
               memory: 256Mi
+        mongod:
+          operationProfiling:
+            mode: slowOp
+            slowOpThresholdMs: 100
+            rateLimit: 100
         sharding:
           enabled: false
         mongos:
