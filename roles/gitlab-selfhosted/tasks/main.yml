@@ -295,7 +295,7 @@
       redis:
         install: true
         architecture: standalone
-        master:
+        primary:
           persistence:
             enabled: true
             size: 8Gi

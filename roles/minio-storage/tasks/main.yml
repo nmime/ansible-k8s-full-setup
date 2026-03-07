@@ -125,6 +125,8 @@
             policy: none
           - name: velero
             policy: none
+          - name: "{{ app_name | default('myapp') }}-uploads"
+            policy: none
 
 - name: Wait for MinIO to be ready
   kubernetes.core.k8s_info:
