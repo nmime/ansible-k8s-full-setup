@@ -212,10 +212,10 @@ TLS certificates are automatically issued by cert-manager using DNS01 challenges
 4. k8s-cluster-management → Kubespray, Cilium CNI, Gateway API, cert-manager
 5. k8s-secrets         → Vault HA, External Secrets Operator
 6. minio-storage       → MinIO S3 (standalone or distributed by tier)
-7. k8s-databases       → PostgreSQL + MongoDB via Percona Operators
-8. gitlab-selfhosted   → GitLab EE (Ultimate) + Runner + Registry + License
-9. k8s-gitops          → ArgoCD + ApplicationSets
-10. k8s-observability  → VictoriaMetrics + Loki + Grafana + PMM Server
+7. k8s-observability   → VictoriaMetrics + Loki + Grafana + PMM Server
+8. k8s-databases       → PostgreSQL + MongoDB via Percona Operators (PMM clients connect to step 7)
+9. gitlab-selfhosted   → GitLab EE (Ultimate) + Runner + Registry + License
+10. k8s-gitops         → ArgoCD + ApplicationSets
 11. k8s-autoscaling    → KEDA event-driven autoscaling
 12. brocoders-boilerplate → NestJS backend + React frontend
 ```
