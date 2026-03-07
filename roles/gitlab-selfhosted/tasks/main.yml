@@ -8,9 +8,9 @@
   set_fact:
     gitlab_chart_version: "9.7.1"
     gitlab_namespace: "gitlab"
-    gitlab_domain: "gitlab.{{ domain | default('example.com') }}"
-    registry_domain: "registry.{{ domain | default('example.com') }}"
-    kas_domain: "kas.{{ domain | default('example.com') }}"
+    gitlab_domain: "gitlab.{{ domain }}"
+    registry_domain: "registry.{{ domain }}"
+    kas_domain: "kas.{{ domain }}"
     gitlab_mode: "{{ 'light' if tier in ['minimal', 'small'] else 'full' }}"
     gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
     gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
@@ -227,7 +227,7 @@
         edition: ee
         gitlabVersion: "18.7.1-ee"
         hosts:
-          domain: "{{ domain | default('example.com') }}"
+          domain: "{{ domain }}"
           gitlab:
             name: "{{ gitlab_domain }}"
             https: true
@@ -242,9 +242,9 @@
           configureCertmanager: false
         time_zone: UTC
         email:
-          from: "gitlab@{{ domain | default('example.com') }}"
+          from: "gitlab@{{ domain }}"
           display_name: GitLab
-          reply_to: "noreply@{{ domain | default('example.com') }}"
+          reply_to: "noreply@{{ domain }}"
         psql:
           host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
           port: 5432

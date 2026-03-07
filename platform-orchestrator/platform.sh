@@ -49,7 +49,10 @@ load_config() {
   PROJECT=$(yq '.global.project // "k8s"' "$CONFIG_FILE")
   TIER=$(yq '.tier // "small"' "$CONFIG_FILE")
   DOMAIN=$(yq '.global.domain' "$CONFIG_FILE")
-  EMAIL=$(yq '.global.email // "admin@example.com"' "$CONFIG_FILE")
+  EMAIL=$(yq '.global.email' "$CONFIG_FILE")
+
+  [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "domain is required in config. Set global.domain in $CONFIG_FILE"; exit 1; }
+  [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "email is required in config. Set global.email in $CONFIG_FILE"; exit 1; }
   REGION=$(yq ".infrastructure.region // \"${DEFAULT_REGION}\"" "$CONFIG_FILE")
 
   NETWORK_NAME="${PROJECT}-network"

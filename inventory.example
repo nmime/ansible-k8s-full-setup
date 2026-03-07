@@ -15,8 +15,8 @@ all:
     # ----------------------------------------
     # Global Settings
     # ----------------------------------------
-    domain: example.com
-    email: admin@example.com
+    domain: example.com          # REQUIRED: change to your domain
+    email: admin@example.com     # REQUIRED: change to your email
     project_name: k8s
     environment: production
 

@@ -575,8 +575,8 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "{{ domain | default('example.com') }}"
-          - "*.{{ domain | default('example.com') }}"
+          - "{{ domain }}"
+          - "*.{{ domain }}"
 
 # ============================================
 # MetalLB v0.14.9

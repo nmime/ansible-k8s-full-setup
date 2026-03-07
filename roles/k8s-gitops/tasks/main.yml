@@ -8,7 +8,7 @@
     argocd_namespace: "argocd"
     argocd_chart_version: "7.8.5"
     argocd_version: "v3.2.5"
-    argocd_domain: "argocd.{{ domain | default('example.com') }}"
+    argocd_domain: "argocd.{{ domain }}"
     argocd_ha: "{{ true if tier in ['medium', 'production'] else false }}"
     argocd_server_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
     argocd_repo_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
@@ -196,7 +196,7 @@
           - "missingkey=error"
         generators:
           - git:
-              repoURL: "https://gitlab.{{ domain | default('example.com') }}/platform/deployments.git"
+              repoURL: "https://gitlab.{{ domain }}/platform/deployments.git"
               revision: HEAD
               directories:
                 - path: "envs/*/apps/*"
@@ -207,7 +207,7 @@
           spec:
             project: platform
             source:
-              repoURL: "https://gitlab.{{ domain | default('example.com') }}/platform/deployments.git"
+              repoURL: "https://gitlab.{{ domain }}/platform/deployments.git"
               targetRevision: HEAD
               path: "{{ '{{.path.path}}' }}"
             destination:

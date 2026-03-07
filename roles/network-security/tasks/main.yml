@@ -7,7 +7,7 @@
 - name: Set network security variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
-    vpn_domain: "vpn.{{ domain | default('example.com') }}"
+    vpn_domain: "vpn.{{ domain }}"
     headscale_version: "0.28.0"
     bastion_host: "{{ bastion_public_ip | default(bastion_ip | default('')) }}"
 

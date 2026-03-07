@@ -10,8 +10,8 @@
     minio_mode: "{{ 'distributed' if tier in ['medium', 'production'] else 'standalone' }}"
     minio_replicas_count: "{{ minio_replicas | default(4) if tier in ['medium', 'production'] else 1 }}"
     minio_storage: "{{ minio_storage_size | default('50Gi') }}"
-    minio_console_domain: "minio.{{ domain | default('example.com') }}"
-    minio_api_domain: "s3.{{ domain | default('example.com') }}"
+    minio_console_domain: "minio.{{ domain }}"
+    minio_api_domain: "s3.{{ domain }}"
 
 # ============================================
 # MinIO Installation via Bitnami Helm

@@ -8,8 +8,8 @@ tier: medium
 
 # Global settings
 project_name: k8s
-domain: example.com
-email: admin@example.com
+# domain: REQUIRED - must be provided via -e domain=yourdomain.com
+# email: REQUIRED - must be provided via -e email=you@yourdomain.com
 
 # Tier configuration (node counts for reference — actual server types auto-selected at runtime)
 minimal:
