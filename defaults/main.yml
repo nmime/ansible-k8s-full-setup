@@ -11,49 +11,38 @@ project_name: k8s
 domain: example.com
 email: admin@example.com
 
-# Tier configuration
+# Tier configuration (node counts for reference — actual server types auto-selected at runtime)
 minimal:
   nodes: 2
   ha: false
-  cost: "~€18-20/mo"
   control_plane_count: 1
-  control_plane_type: cx23
   control_plane_schedulable: true
   worker_count: 1
-  worker_type: cx23
 
 small:
   nodes: 3
   ha: false
-  cost: "~€28-35/mo"
   control_plane_count: 1
-  control_plane_type: cx23
   control_plane_schedulable: false
   worker_count: 2
-  worker_type: cx23
 
 medium:
   nodes: 5
   ha: true
-  cost: "~€48-55/mo"
   control_plane_count: 3
-  control_plane_type: cx23
   control_plane_schedulable: false
   worker_count: 2
-  worker_type: cx33
 
 production:
   nodes: 6
   ha: true
-  cost: "~€74-100/mo"
   control_plane_count: 3
-  control_plane_type: cx33
   control_plane_schedulable: false
   worker_count: 3
-  worker_type: cx33
 
 # Infrastructure configuration
-bastion_server_type: cx23
+# Server types auto-selected from Hetzner API (cheapest meeting tier requirements)
+# Override with: hetzner_bastion_type, hetzner_cp_type, hetzner_worker_type
 hetzner_region: hel1
 ssh_key_path: ~/.ssh/id_ed25519
 
