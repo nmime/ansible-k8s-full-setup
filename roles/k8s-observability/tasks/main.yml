@@ -453,19 +453,6 @@
       stringData:
         PMM_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
 
-- name: Create PMM API key secret for database operators
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: pmm-api-key
-        namespace: databases
-      type: Opaque
-      stringData:
-        PMM_SERVER_KEY: "api_key"
-
 - name: Deploy PMM Server
   kubernetes.core.k8s:
     state: present
