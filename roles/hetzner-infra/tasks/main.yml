@@ -723,7 +723,7 @@
 
 - name: Check if DNS zone already exists
   ansible.builtin.command:
-    cmd: hcloud zone describe {{ domain | default('example.com') }} -o json
+    cmd: hcloud zone describe {{ domain }} -o json
   register: dns_zone_check
   changed_when: false
   failed_when: false
@@ -732,7 +732,7 @@
   ansible.builtin.command:
     cmd: >
       hcloud zone create
-      --name {{ domain | default('example.com') }}
+      --name {{ domain }}
       --mode primary
   register: dns_zone_create
   when: dns_zone_check.rc != 0
@@ -741,7 +741,7 @@
 - name: Create DNS wildcard A record (*.domain -> LB)
   ansible.builtin.command:
     cmd: >
-      hcloud zone rrset create {{ domain | default('example.com') }}
+      hcloud zone rrset create {{ domain }}
       --name '*'
       --type A
       --record {{ lb_public_ip }}
@@ -752,7 +752,7 @@
 - name: Create DNS root A record (domain -> LB)
   ansible.builtin.command:
     cmd: >
-      hcloud zone rrset create {{ domain | default('example.com') }}
+      hcloud zone rrset create {{ domain }}
       --name @
       --type A
       --record {{ lb_public_ip }}
@@ -763,7 +763,7 @@
 - name: Create DNS VPN A record (vpn.domain -> bastion)
   ansible.builtin.command:
     cmd: >
-      hcloud zone rrset create {{ domain | default('example.com') }}
+      hcloud zone rrset create {{ domain }}
       --name vpn
       --type A
       --record {{ bastion_public_ip }}
@@ -781,7 +781,7 @@
     content: |
       ---
       project: "{{ project }}"
-      domain: "{{ domain | default('example.com') }}"
+      domain: "{{ domain }}"
       region: "{{ region }}"
       tier: "{{ infra_tier }}"
       bastion_public_ip: "{{ bastion_public_ip }}"

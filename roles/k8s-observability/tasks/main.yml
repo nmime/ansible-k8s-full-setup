@@ -9,7 +9,7 @@
     vm_operator_version: "0.52.0"
     loki_chart_version: "6.29.0"
     grafana_chart_version: "8.10.0"
-    grafana_domain: "grafana.{{ domain | default('example.com') }}"
+    grafana_domain: "grafana.{{ domain }}"
     vm_retention: "{{ metrics_retention | default('30d') }}"
     vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
     loki_retention: "{{ logging_retention | default('14d') }}"
@@ -588,7 +588,7 @@
             namespace: cilium-system
             sectionName: https
         hostnames:
-          - "pmm.{{ domain | default('example.com') }}"
+          - "pmm.{{ domain }}"
         rules:
           - matches:
               - path:
@@ -613,7 +613,7 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "pmm.{{ domain | default('example.com') }}"
+          - "pmm.{{ domain }}"
 
 # ============================================
 # VMServiceScrape for Percona exporters
@@ -793,7 +793,7 @@
       - "    User: {{ grafana_admin_user }} / {{ grafana_admin_password[:4] }}****"
       - "  VictoriaMetrics: {{ 'Cluster' if tier in ['medium', 'production'] else 'Single' }} mode"
       - "  Loki: SimpleScalable mode"
-      - "  PMM Server: https://pmm.{{ domain | default('example.com') }}"
+      - "  PMM Server: https://pmm.{{ domain }}"
       - "    User: admin / {{ grafana_admin_password[:4] }}****"
       - "  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}"
       - "  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM"

@@ -48,7 +48,7 @@
         DATABASE_SSL_ENABLED: "false"
         MAIL_HOST: "mailhog.{{ app_namespace }}.svc.cluster.local"
         MAIL_PORT: "1025"
-        MAIL_DEFAULT_EMAIL: "noreply@{{ domain | default('example.com') }}"
+        MAIL_DEFAULT_EMAIL: "noreply@{{ domain }}"
         MAIL_DEFAULT_NAME: "{{ app_name }}"
         FILE_DRIVER: s3
         AWS_S3_REGION: us-east-1
@@ -116,7 +116,7 @@
               runAsUser: 1000
             containers:
               - name: backend
-                image: "registry.{{ domain | default('example.com') }}/{{ app_name }}/backend:latest"
+                image: "registry.{{ domain }}/{{ app_name }}/backend:latest"
                 ports:
                   - containerPort: 3000
                     name: http
@@ -251,7 +251,7 @@
               runAsUser: 1000
             containers:
               - name: frontend
-                image: "registry.{{ domain | default('example.com') }}/{{ app_name }}/frontend:latest"
+                image: "registry.{{ domain }}/{{ app_name }}/frontend:latest"
                 ports:
                   - containerPort: 8080
                     name: http
@@ -320,7 +320,7 @@
             namespace: cilium-system
             sectionName: https
         hostnames:
-          - "api.{{ domain | default('example.com') }}"
+          - "api.{{ domain }}"
         rules:
           - matches:
               - path:
@@ -345,7 +345,7 @@
             namespace: cilium-system
             sectionName: https
         hostnames:
-          - "app.{{ domain | default('example.com') }}"
+          - "app.{{ domain }}"
         rules:
           - matches:
               - path:
@@ -370,8 +370,8 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "app.{{ domain | default('example.com') }}"
-          - "api.{{ domain | default('example.com') }}"
+          - "app.{{ domain }}"
+          - "api.{{ domain }}"
 
 # ============================================
 # ArgoCD Application for GitOps
@@ -389,7 +389,7 @@
       spec:
         project: platform
         source:
-          repoURL: "https://gitlab.{{ domain | default('example.com') }}/{{ app_name }}/backend.git"
+          repoURL: "https://gitlab.{{ domain }}/{{ app_name }}/backend.git"
           targetRevision: HEAD
           path: deploy/k8s
         destination:
@@ -415,7 +415,7 @@
       spec:
         project: platform
         source:
-          repoURL: "https://gitlab.{{ domain | default('example.com') }}/{{ app_name }}/frontend.git"
+          repoURL: "https://gitlab.{{ domain }}/{{ app_name }}/frontend.git"
           targetRevision: HEAD
           path: deploy/k8s
         destination:
@@ -439,8 +439,8 @@
       - "  Namespace: {{ app_namespace }}"
       - "  Git Provider: {{ git_provider }}"
       - ""
-      - "  Frontend: https://app.{{ domain | default('example.com') }}"
-      - "  Backend API: https://api.{{ domain | default('example.com') }}"
+      - "  Frontend: https://app.{{ domain }}"
+      - "  Backend API: https://api.{{ domain }}"
       - ""
       - "  Boilerplate repos:"
       - "  Backend: {{ backend_repo }}"

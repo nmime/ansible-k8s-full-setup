@@ -11,8 +11,8 @@ cost_estimate: "€74-100/mo"
 
 global:
   project: k8s
-  domain: example.com
-  email: admin@example.com
+  domain: ""          # REQUIRED: set your domain
+  email: ""           # REQUIRED: set your email
   environment: production
 
 # ---------------------------------------------
