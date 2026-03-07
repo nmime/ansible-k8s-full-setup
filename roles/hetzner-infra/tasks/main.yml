@@ -20,6 +20,13 @@
   register: hcloud_server_types_raw
   changed_when: false
 
+- name: Set EU locations list
+  set_fact:
+    hetzner_eu_locations:
+      - "fsn1"
+      - "nbg1"
+      - "hel1"
+
 - name: Build region-aware server type list sorted by price
   set_fact:
     available_server_types: >-
@@ -41,35 +48,136 @@
   set_fact:
     current_tier_spec: "{{ hetzner_tier_specs[infra_tier] }}"
 
-- name: Auto-select cheapest bastion type (2 cores, 4GB minimum)
+# --- Try primary region first, fallback to any EU location ---
+
+- name: Find bastion type in primary region
   set_fact:
     auto_bastion_type: >-
       {{ (available_server_types
           | selectattr('cores', 'ge', 2)
           | selectattr('memory', 'ge', 4)
           | map(attribute='name')
-          | first) }}
+          | first | default('')) }}
   when: hetzner_bastion_type | default('') | length == 0
 
-- name: Auto-select cheapest control plane type
+- name: Find control plane type in primary region
   set_fact:
     auto_cp_type: >-
       {{ (available_server_types
           | selectattr('cores', 'ge', current_tier_spec.cp_min_cores | int)
           | selectattr('memory', 'ge', current_tier_spec.cp_min_memory | int)
           | map(attribute='name')
-          | first) }}
+          | first | default('')) }}
   when: hetzner_cp_type | default('') | length == 0
 
-- name: Auto-select cheapest worker type
+- name: Find worker type in primary region
   set_fact:
     auto_worker_type: >-
       {{ (available_server_types
           | selectattr('cores', 'ge', current_tier_spec.worker_min_cores | int)
           | selectattr('memory', 'ge', current_tier_spec.worker_min_memory | int)
           | map(attribute='name')
-          | first) }}
+          | first | default('')) }}
   when: hetzner_worker_type | default('') | length == 0
+
+- name: Check if any auto-selected type is missing in primary region
+  set_fact:
+    needs_eu_fallback: >-
+      {{ (hetzner_bastion_type | default(auto_bastion_type | default('')) | trim | length == 0)
+         or (hetzner_cp_type | default(auto_cp_type | default('')) | trim | length == 0)
+         or (hetzner_worker_type | default(auto_worker_type | default('')) | trim | length == 0) }}
+
+- name: Find cheapest EU fallback region
+  block:
+    - name: Build EU-wide server type lists per location
+      set_fact:
+        eu_types_by_location: >-
+          {{ dict(
+               hetzner_eu_locations
+               | zip(
+                   hetzner_eu_locations | map('regex_replace', '(.*)',
+                     hcloud_server_types_raw.stdout | from_json
+                     | selectattr('architecture', 'equalto', 'x86')
+                     | list
+                     | to_json
+                   )
+                 )
+             ) }}
+
+    - name: Pick cheapest EU location that has all needed types
+      set_fact:
+        eu_fallback_region: "{{ item }}"
+        eu_fallback_types: >-
+          {{ hcloud_server_types_raw.stdout | from_json
+             | selectattr('architecture', 'equalto', 'x86')
+             | list
+             | json_query('[].{
+                 name: name,
+                 cores: cores,
+                 memory: memory,
+                 price: prices[?location==`' + item + '`] | [0].price_monthly.gross
+               }')
+             | selectattr('price', 'defined')
+             | selectattr('price', 'ne', None)
+             | sort(attribute='price')
+             | list }}
+      loop: "{{ hetzner_eu_locations | reject('equalto', region) | list }}"
+      when: >-
+        eu_fallback_region is not defined
+        and (hcloud_server_types_raw.stdout | from_json
+             | selectattr('architecture', 'equalto', 'x86')
+             | list
+             | json_query('[].{
+                 name: name,
+                 cores: cores,
+                 memory: memory,
+                 price: prices[?location==`' + item + '`] | [0].price_monthly.gross
+               }')
+             | selectattr('price', 'defined')
+             | selectattr('price', 'ne', None)
+             | selectattr('cores', 'ge', current_tier_spec.worker_min_cores | int)
+             | selectattr('memory', 'ge', current_tier_spec.worker_min_memory | int)
+             | list | length > 0)
+
+    - name: Switch to EU fallback region
+      set_fact:
+        region: "{{ eu_fallback_region }}"
+        available_server_types: "{{ eu_fallback_types }}"
+
+    - name: Re-select bastion type from EU fallback
+      set_fact:
+        auto_bastion_type: >-
+          {{ (eu_fallback_types
+              | selectattr('cores', 'ge', 2)
+              | selectattr('memory', 'ge', 4)
+              | map(attribute='name')
+              | first) }}
+      when: hetzner_bastion_type | default('') | length == 0 and (auto_bastion_type | default('') | trim | length == 0)
+
+    - name: Re-select control plane type from EU fallback
+      set_fact:
+        auto_cp_type: >-
+          {{ (eu_fallback_types
+              | selectattr('cores', 'ge', current_tier_spec.cp_min_cores | int)
+              | selectattr('memory', 'ge', current_tier_spec.cp_min_memory | int)
+              | map(attribute='name')
+              | first) }}
+      when: hetzner_cp_type | default('') | length == 0 and (auto_cp_type | default('') | trim | length == 0)
+
+    - name: Re-select worker type from EU fallback
+      set_fact:
+        auto_worker_type: >-
+          {{ (eu_fallback_types
+              | selectattr('cores', 'ge', current_tier_spec.worker_min_cores | int)
+              | selectattr('memory', 'ge', current_tier_spec.worker_min_memory | int)
+              | map(attribute='name')
+              | first) }}
+      when: hetzner_worker_type | default('') | length == 0 and (auto_worker_type | default('') | trim | length == 0)
+
+    - name: Warn about region fallback
+      debug:
+        msg: "WARNING: Region {{ hetzner_region | default('hel1') }} lacked suitable types. Falling back to {{ eu_fallback_region }}"
+  when: needs_eu_fallback | bool
 
 - name: Set tier-specific server configuration
   set_fact:
