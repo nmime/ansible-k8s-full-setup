@@ -79,7 +79,7 @@
           repo2-s3-key={{ minio_root_user | default('minioadmin') }}
           repo2-s3-key-secret={{ minio_root_password | default('minioadmin') }}
 
-- name: Create PMM API key secret for databases namespace
+- name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
     state: present
     definition:
@@ -90,7 +90,8 @@
         namespace: "{{ db_ns }}"
       type: Opaque
       stringData:
-        PMM_SERVER_KEY: "api_key"
+        PMM_SERVER_USER: "admin"
+        PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
 
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
@@ -231,6 +232,9 @@
           - name: gitlab
             databases:
               - gitlabhq_production
+          - name: "{{ app_name | default('myapp') }}"
+            databases:
+              - "{{ app_name | default('myapp') }}"
 
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
@@ -424,6 +428,39 @@
         port: "5432"
         database: gitlabhq_production
         username: gitlab
+
+- name: Retrieve Percona-generated app PG password
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "{{ project_name | default('k8s') }}-pg-pguser-{{ app_name | default('myapp') }}"
+  register: app_pg_secret
+  until: app_pg_secret.resources | length > 0
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Set app PG password fact
+  set_fact:
+    app_pg_password: "{{ (app_pg_secret.resources[0].data.password | b64decode) if app_pg_secret.resources | length > 0 else '' }}"
+
+- name: Create PostgreSQL connection secret for application
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ app_name | default('myapp') }}-postgresql-password"
+        namespace: "{{ app_namespace | default('production') }}"
+      type: Opaque
+      stringData:
+        postgresql-password: "{{ app_pg_password }}"
+        host: "{{ project_name | default('k8s') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local"
+        port: "5432"
+        database: "{{ app_name | default('myapp') }}"
+        username: "{{ app_name | default('myapp') }}"
+  when: app_pg_password | length > 0
 
 - name: Display databases summary
   debug:

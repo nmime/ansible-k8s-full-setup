@@ -17,37 +17,37 @@
     cp_schedulable: "{{ tier_map[infra_tier].cp_schedulable | default(false) }}"
     worker_count: "{{ tier_map[infra_tier].worker_count }}"
     worker_type: "{{ tier_map[infra_tier].worker_type }}"
-    bastion_type: cx23
+    bastion_type: cx22
     lb_enabled: "{{ tier_map[infra_tier].lb_enabled | default(true) }}"
   vars:
     tier_map:
       minimal:
         cp_count: 1
-        cp_type: cx23
+        cp_type: cx22
         cp_schedulable: true
         worker_count: 1
-        worker_type: cx23
+        worker_type: cx22
         lb_enabled: false
       small:
         cp_count: 1
-        cp_type: cx23
+        cp_type: cx22
         cp_schedulable: false
         worker_count: 2
-        worker_type: cx23
+        worker_type: cx22
         lb_enabled: true
       medium:
         cp_count: 3
-        cp_type: cx23
+        cp_type: cx22
         cp_schedulable: false
         worker_count: 2
-        worker_type: cx33
+        worker_type: cx32
         lb_enabled: true
       production:
         cp_count: 3
-        cp_type: cx33
+        cp_type: cx32
         cp_schedulable: false
         worker_count: 3
-        worker_type: cx33
+        worker_type: cx32
         lb_enabled: true
 
 - name: Map region to network zone
