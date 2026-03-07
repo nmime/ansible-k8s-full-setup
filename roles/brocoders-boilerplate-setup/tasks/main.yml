@@ -51,8 +51,6 @@
         MAIL_DEFAULT_EMAIL: "noreply@{{ domain | default('example.com') }}"
         MAIL_DEFAULT_NAME: "{{ app_name }}"
         FILE_DRIVER: s3
-        ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
-        SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
         AWS_S3_REGION: us-east-1
         AWS_DEFAULT_S3_BUCKET: "{{ app_name }}-uploads"
         AWS_S3_ENDPOINT: "http://minio.storage.svc.cluster.local:9000"
@@ -74,6 +72,8 @@
         AUTH_JWT_TOKEN_EXPIRES_IN: "15m"
         AUTH_REFRESH_SECRET: "{{ app_refresh_secret }}"
         AUTH_REFRESH_TOKEN_EXPIRES_IN: "7d"
+        ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
+        SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
 
 - name: Deploy backend Deployment
   kubernetes.core.k8s:
@@ -241,7 +241,7 @@
               - name: frontend
                 image: "registry.{{ domain | default('example.com') }}/{{ app_name }}/frontend:latest"
                 ports:
-                  - containerPort: 80
+                  - containerPort: 8080
                     name: http
                 resources:
                   requests:
@@ -253,13 +253,13 @@
                 livenessProbe:
                   httpGet:
                     path: /
-                    port: 80
+                    port: 8080
                   initialDelaySeconds: 10
                   periodSeconds: 10
                 readinessProbe:
                   httpGet:
                     path: /
-                    port: 80
+                    port: 8080
                   initialDelaySeconds: 5
                   periodSeconds: 5
                 securityContext:
@@ -282,7 +282,7 @@
         type: ClusterIP
         ports:
           - port: 80
-            targetPort: 80
+            targetPort: 8080
             protocol: TCP
             name: http
         selector:
