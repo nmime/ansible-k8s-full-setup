@@ -28,8 +28,7 @@
   vars:
     tier: "{{ tier | default('medium') }}"
     project_name: "{{ project_name | default('k8s') }}"
-    domain: "{{ domain | default('example.com') }}"
-    email: "{{ email | default('admin@example.com') }}"
+    # domain and email are required — validated in pre_tasks
     state: "{{ state | default('present') }}"
 
   pre_tasks:
@@ -42,6 +41,22 @@
           - "  Tier: {{ tier }}"
           - "  Domain: {{ domain }}"
           - "=========================================="
+
+    - name: Pre-flight check - domain is set
+      assert:
+        that:
+          - domain is defined
+          - domain | length > 0
+          - domain != 'example.com'
+        fail_msg: "domain is required. Set via -e domain=yourdomain.com or in inventory"
+
+    - name: Pre-flight check - email is set
+      assert:
+        that:
+          - email is defined
+          - email | length > 0
+          - email != 'admin@example.com'
+        fail_msg: "email is required. Set via -e email=you@yourdomain.com or in inventory"
 
     - name: Validate tier selection
       assert:

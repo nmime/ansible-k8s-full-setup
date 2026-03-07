@@ -8,8 +8,8 @@
 # Global Settings
 # ---------------------------------------------
 global:
-  domain: example.com
-  email: admin@example.com
+  domain: ""          # REQUIRED: set your domain
+  email: ""           # REQUIRED: set your email
   timezone: UTC
   environment: production
   project: k8s
