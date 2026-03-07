@@ -20,12 +20,21 @@
   register: hcloud_server_types_raw
   changed_when: false
 
-- name: Parse server types and sort by price
+- name: Build region-aware server type list sorted by price
   set_fact:
     available_server_types: >-
       {{ hcloud_server_types_raw.stdout | from_json
          | selectattr('architecture', 'equalto', 'x86')
-         | sort(attribute='prices.0.price_monthly.gross')
+         | list
+         | json_query('[].{
+             name: name,
+             cores: cores,
+             memory: memory,
+             price: prices[?location==`' + region + '`] | [0].price_monthly.gross
+           }')
+         | selectattr('price', 'defined')
+         | selectattr('price', 'ne', None)
+         | sort(attribute='price')
          | list }}
 
 - name: Set tier spec reference
@@ -72,13 +81,17 @@
     bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
 
+- name: Build price lookup from available types
+  set_fact:
+    type_price_map: "{{ dict(available_server_types | map(attribute='name') | zip(available_server_types | map(attribute='price'))) }}"
+
 - name: Display selected server types
   debug:
     msg:
-      - "Tier: {{ infra_tier }}"
-      - "Bastion: {{ bastion_type }}"
-      - "Control plane: {{ cp_type }} (min {{ current_tier_spec.cp_min_cores }}c/{{ current_tier_spec.cp_min_memory }}GB)"
-      - "Workers: {{ worker_type }} (min {{ current_tier_spec.worker_min_cores }}c/{{ current_tier_spec.worker_min_memory }}GB)"
+      - "Tier: {{ infra_tier }} | Region: {{ region }}"
+      - "Bastion: {{ bastion_type }} (~€{{ type_price_map[bastion_type] | default('?') }}/mo)"
+      - "Control plane: {{ cp_type }} x{{ cp_count }} (~€{{ type_price_map[cp_type] | default('?') }}/mo each)"
+      - "Workers: {{ worker_type }} x{{ worker_count }} (~€{{ type_price_map[worker_type] | default('?') }}/mo each)"
 
 - name: Map region to network zone
   set_fact:
