@@ -69,7 +69,7 @@
       persistence:
         enabled: true
         size: "{{ minio_storage }}"
-        storageClass: "hcloud-volumes"
+        storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       resources:
         requests:
           memory: "512Mi"

@@ -57,11 +57,11 @@
         dataStorage:
           enabled: true
           size: "{{ vault_storage }}"
-          storageClass: "hcloud-volumes"
+          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
         auditStorage:
           enabled: true
           size: "10Gi"
-          storageClass: "hcloud-volumes"
+          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
         ha:
           enabled: "{{ vault_ha }}"
           replicas: "{{ vault_replicas }}"
@@ -125,14 +125,20 @@
   failed_when: false
   changed_when: false
 
+- name: Parse Vault status
+  set_fact:
+    vault_initialized: "{{ (vault_status_raw.stdout | from_json).initialized | default(false) }}"
+  when: vault_status_raw.rc == 0 or vault_status_raw.rc == 2
+  failed_when: false
+
 - name: Initialize Vault (if not initialized)
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
     command: vault operator init -key-shares=5 -key-threshold=3 -format=json
   register: vault_init
-  when: vault_status_raw.rc != 0 or (vault_status_raw.stdout | from_json).initialized == false
-  failed_when: false
+  when: not (vault_initialized | default(false) | bool)
+  failed_when: vault_init.rc is defined and vault_init.rc != 0
 
 - name: Store Vault init keys as K8s secret
   kubernetes.core.k8s:

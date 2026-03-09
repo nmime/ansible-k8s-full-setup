@@ -17,7 +17,7 @@
     gitlab_runner_concurrent: "{{ gitlab_runner_concurrent_jobs | default(10) }}"
     gitlab_license_name: "{{ gitlab_license_holder_name | default('Platform Admin') }}"
     gitlab_license_company: "{{ gitlab_license_holder_company | default('Platform Team') }}"
-    gitlab_license_email: "{{ email | default('admin@example.com') }}"
+    gitlab_license_email: "{{ email }}"
 
 - name: Create GitLab namespace
   kubernetes.core.k8s:
@@ -155,8 +155,8 @@
         connection: |
           provider: AWS
           region: us-east-1
-          aws_access_key_id: "{{ minio_root_user | default('minioadmin') }}"
-          aws_secret_access_key: "{{ minio_root_password | default('minioadmin') }}"
+          aws_access_key_id: "{{ minio_root_user }}"
+          aws_secret_access_key: "{{ minio_root_password }}"
           endpoint: "http://minio.storage.svc.cluster.local:9000"
           path_style: true
 
@@ -174,8 +174,8 @@
         config: |
           s3:
             bucket: gitlab-registry
-            accesskey: "{{ minio_root_user | default('minioadmin') }}"
-            secretkey: "{{ minio_root_password | default('minioadmin') }}"
+            accesskey: "{{ minio_root_user }}"
+            secretkey: "{{ minio_root_password }}"
             region: us-east-1
             regionendpoint: "http://minio.storage.svc.cluster.local:9000"
             v4auth: true
@@ -299,7 +299,7 @@
           persistence:
             enabled: true
             size: 8Gi
-            storageClass: hcloud-volumes
+            storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gitlab:
         webservice:
           replicaCount: "{{ gitlab_webservice_replicas }}"
@@ -356,7 +356,7 @@
           persistence:
             enabled: true
             size: 50Gi
-            storageClass: hcloud-volumes
+            storageClass: "{{ storage_class | default('hcloud-volumes') }}"
           resources:
             requests:
               cpu: "{{ '100m' if gitlab_mode == 'light' else '200m' }}"
@@ -667,8 +667,8 @@
         namespace: "{{ gitlab_namespace }}"
       type: Opaque
       stringData:
-        accesskey: "{{ minio_root_user | default('minioadmin') }}"
-        secretkey: "{{ minio_root_password | default('minioadmin') }}"
+        accesskey: "{{ minio_root_user }}"
+        secretkey: "{{ minio_root_password }}"
 
 - name: Display GitLab EE deployment info
   debug:

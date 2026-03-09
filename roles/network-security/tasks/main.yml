@@ -68,10 +68,16 @@
 
 - name: Harden SSH on bastion
   ansible.builtin.raw: |
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-    sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-    sed -i 's/#MaxAuthTries 6/MaxAuthTries 3/' /etc/ssh/sshd_config
+    # Ensure settings are present regardless of whether they were commented out
+    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
+      && sed -i 's/^.*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+      || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
+      && sed -i 's/^.*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+      || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
+    grep -q '^MaxAuthTries' /etc/ssh/sshd_config \
+      && sed -i 's/^.*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config \
+      || echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config
     systemctl restart sshd
   delegate_to: "{{ bastion_host }}"
   become: true
@@ -85,11 +91,14 @@
     # Enable IP forwarding
     echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
     sysctl -p /etc/sysctl.d/99-nat.conf
+    # Detect default outbound interface
+    DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+    DEFAULT_IF="${DEFAULT_IF:-eth0}"
     # NAT masquerade for private network traffic
-    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null || \
-      iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
+      iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
     # Persist iptables rules
-    apt-get install -y iptables-persistent
+    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
     netfilter-persistent save
   delegate_to: "{{ bastion_host }}"
   become: true
