@@ -8,6 +8,11 @@
 # Infrastructure state (contains IPs)
 *-infra-facts.yml
 
+# Platform orchestrator state and logs
+platform-orchestrator/.state/
+platform-orchestrator/logs/
+platform-orchestrator/platform.yaml
+
 # Ansible retry files
 *.retry
 

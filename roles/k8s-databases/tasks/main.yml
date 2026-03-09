@@ -76,8 +76,8 @@
       stringData:
         s3.conf: |
           [global]
-          repo2-s3-key={{ minio_root_user | default('minioadmin') }}
-          repo2-s3-key-secret={{ minio_root_password | default('minioadmin') }}
+          repo2-s3-key={{ minio_root_user }}
+          repo2-s3-key-secret={{ minio_root_password }}
 
 - name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
@@ -113,7 +113,7 @@
             dataVolumeClaimSpec:
               accessModes:
                 - ReadWriteOnce
-              storageClassName: "hcloud-volumes"
+              storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
               resources:
                 requests:
                   storage: "{{ pg_storage }}"
@@ -170,7 +170,7 @@
                   volumeClaimSpec:
                     accessModes:
                       - ReadWriteOnce
-                    storageClassName: "hcloud-volumes"
+                    storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
                     resources:
                       requests:
                         storage: "{{ pg_storage }}"
@@ -291,8 +291,8 @@
         name: minio-backup-credentials
         namespace: "{{ db_ns }}"
       stringData:
-        AWS_ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
-        AWS_SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
+        AWS_ACCESS_KEY_ID: "{{ minio_root_user }}"
+        AWS_SECRET_ACCESS_KEY: "{{ minio_root_password }}"
 
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
@@ -312,7 +312,7 @@
             size: "{{ mongo_replicas }}"
             volumeSpec:
               persistentVolumeClaim:
-                storageClassName: "hcloud-volumes"
+                storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
                 accessModes:
                   - ReadWriteOnce
                 resources:

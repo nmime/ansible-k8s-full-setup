@@ -64,7 +64,8 @@ load_config() {
 
 is_enabled() {
   local path="$1"
-  local value=$(yq "${path} // true" "$CONFIG_FILE")
+  local value
+  value=$(yq "${path} // false" "$CONFIG_FILE" 2>/dev/null) || return 1
   [[ "$value" == "true" ]]
 }
 
@@ -75,17 +76,25 @@ is_enabled() {
 heal_check() {
   log "Health check..."
   local issues=0
-  local unhealthy=$(kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' || true)
-  [[ -n "$unhealthy" ]] && { warn "Unhealthy pods:"; echo "$unhealthy"; ((issues++)); }
-  [[ $issues -eq 0 ]] && log "All healthy!" || warn "$issues issues"
-  return $issues
+  local unhealthy
+  unhealthy=$(kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' || true)
+  if [[ -n "$unhealthy" ]]; then
+    warn "Unhealthy pods:"
+    echo "$unhealthy"
+    ((issues++)) || true
+  fi
+  [[ $issues -eq 0 ]] && log "All healthy!" || warn "$issues issue(s) found"
+  return 0
 }
 
 heal_auto() {
-  log "Auto-healing..."
-  kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' | while read ns name _; do
+  warn "Auto-healing: will delete unhealthy pods"
+  local unhealthy
+  unhealthy=$(kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' || true)
+  [[ -z "$unhealthy" ]] && { log "No unhealthy pods"; return 0; }
+  echo "$unhealthy" | while read -r ns name _; do
     warn "Deleting: $ns/$name"
-    kubectl delete pod "$name" -n "$ns" --force --grace-period=0 2>/dev/null || true
+    kubectl delete pod "$name" -n "$ns" --grace-period=30 2>/dev/null || true
   done
 }
 
@@ -135,7 +144,7 @@ deploy_infra() {
   log "Deploying infrastructure (project: $PROJECT, region: $REGION)..."
   check_env
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
     --tags infrastructure \
     2>&1 | tee -a "${LOG_DIR}/infra.log"
 
@@ -203,7 +212,7 @@ vault IN 3600 A ${ip}"
 deploy_network() {
   log "Deploying network security (VPN + bastion hardening)..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
     --tags network \
     2>&1 | tee -a "${LOG_DIR}/network.log"
 }
@@ -211,7 +220,7 @@ deploy_network() {
 deploy_cluster() {
   log "Deploying K8s cluster..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
     --tags cluster \
     2>&1 | tee -a "${LOG_DIR}/cluster.log"
 }
@@ -219,7 +228,7 @@ deploy_cluster() {
 deploy_tls() {
   log "Setting up TLS..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
     --tags tls \
     2>&1 | tee -a "${LOG_DIR}/tls.log"
 }
@@ -228,56 +237,63 @@ deploy_minio() {
   is_enabled '.storage.enabled' || { log "MinIO: disabled"; return 0; }
   log "Installing MinIO..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" --tags storage \
-    2>&1 | tee -a "${LOG_DIR}/minio.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags storage \
+    2>&1 | tee -a "${LOG_DIR}/minio.log"
 }
 
 deploy_secrets() {
   is_enabled '.secrets.enabled' || { log "Vault: disabled"; return 0; }
   log "Installing Vault..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" --tags secrets \
-    2>&1 | tee -a "${LOG_DIR}/secrets.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags secrets \
+    2>&1 | tee -a "${LOG_DIR}/secrets.log"
 }
 
 deploy_databases() {
   is_enabled '.databases.postgresql.enabled' || { log "PostgreSQL: disabled"; return 0; }
   log "Installing PostgreSQL..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" --tags databases \
-    2>&1 | tee -a "${LOG_DIR}/databases.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags databases \
+    2>&1 | tee -a "${LOG_DIR}/databases.log"
 }
 
 deploy_gitlab() {
   is_enabled '.gitlab.enabled' || { log "GitLab: disabled"; return 0; }
   log "Installing GitLab..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "domain=${DOMAIN}" --tags gitlab \
-    2>&1 | tee -a "${LOG_DIR}/gitlab.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags gitlab \
+    2>&1 | tee -a "${LOG_DIR}/gitlab.log"
 }
 
 deploy_gitops() {
   is_enabled '.gitops.enabled' || { log "ArgoCD: disabled"; return 0; }
   log "Installing ArgoCD..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" --tags gitops \
-    2>&1 | tee -a "${LOG_DIR}/gitops.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags gitops \
+    2>&1 | tee -a "${LOG_DIR}/gitops.log"
 }
 
 deploy_observability() {
   is_enabled '.observability.metrics.enabled' || { log "Observability: disabled"; return 0; }
   log "Installing monitoring..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" --tags observability \
-    2>&1 | tee -a "${LOG_DIR}/observability.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags observability \
+    2>&1 | tee -a "${LOG_DIR}/observability.log"
 }
 
 deploy_autoscaling() {
   is_enabled '.autoscaling.enabled' || { log "KEDA: disabled"; return 0; }
   log "Installing KEDA..."
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" --tags autoscaling \
-    2>&1 | tee -a "${LOG_DIR}/autoscaling.log" || true
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    --tags autoscaling \
+    2>&1 | tee -a "${LOG_DIR}/autoscaling.log"
 }
 
 # ============================================
@@ -287,15 +303,16 @@ deploy_autoscaling() {
 destroy_all() {
   warn "DESTROY project '$PROJECT'?"
   warn "DNS: Only platform records removed, your records preserved"
-  read -p "Type 'DESTROY': " confirm
+  read -rp "Type 'DESTROY': " confirm
   [[ "$confirm" != "DESTROY" ]] && exit 0
 
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
     -e "state=absent" \
-    2>&1 | tee -a "${LOG_DIR}/destroy.log" || true
+    2>&1 | tee -a "${LOG_DIR}/destroy.log"
 
-  rm -rf ~/.kube/config "${STATE_DIR}"/*
+  rm -f ~/.kube/config
+  rm -rf "${STATE_DIR:?}"/*
   log "Destroyed! DNS zone preserved (only platform records removed)"
 }
 
@@ -395,7 +412,7 @@ main() {
     status)       load_config 2>/dev/null || true; show_status ;;
     credentials)  load_config; show_credentials ;;
     health)       heal_check ;;
-    heal)         heal_check || heal_auto ;;
+    heal)         heal_check; heal_auto ;;
     init)
       [[ -f "$CONFIG_FILE" ]] && { warn "platform.yaml exists"; exit 0; }
       cp "${SCRIPT_DIR}/profiles/small.yaml" "$CONFIG_FILE"

@@ -44,7 +44,9 @@ production:
 # Server types auto-selected from Hetzner API (cheapest meeting tier requirements)
 # Override with: hetzner_bastion_type, hetzner_cp_type, hetzner_worker_type
 hetzner_region: hel1
+hetzner_image: ubuntu-24.04
 ssh_key_path: ~/.ssh/id_ed25519
+storage_class: hcloud-volumes
 
 # Kubernetes
 k8s_version: v1.34.3

@@ -189,6 +189,17 @@
     bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
 
+- name: Validate all server types were found
+  assert:
+    that:
+      - bastion_type | length > 0
+      - cp_type | length > 0
+      - worker_type | length > 0
+    fail_msg: >
+      Could not find suitable server types in any EU region.
+      Bastion={{ bastion_type }}, CP={{ cp_type }}, Worker={{ worker_type }}.
+      Override manually: hetzner_bastion_type, hetzner_cp_type, hetzner_worker_type
+
 - name: Build price lookup from available types
   set_fact:
     type_price_map: "{{ dict(available_server_types | map(attribute='name') | zip(available_server_types | map(attribute='price'))) }}"
@@ -490,7 +501,7 @@
       hcloud server create
       --name {{ project }}-bastion
       --type {{ bastion_type }}
-      --image ubuntu-24.04
+      --image {{ hetzner_image | default('ubuntu-24.04') }}
       --location {{ region }}
       --ssh-key {{ hcloud_ssh_key }}
       --network {{ project }}-network
@@ -545,7 +556,7 @@
       hcloud server create
       --name {{ project }}-master-{{ item }}
       --type {{ cp_type }}
-      --image ubuntu-24.04
+      --image {{ hetzner_image | default('ubuntu-24.04') }}
       --location {{ region }}
       --ssh-key {{ hcloud_ssh_key }}
       --network {{ project }}-network
@@ -575,7 +586,7 @@
       hcloud server create
       --name {{ project }}-worker-{{ item }}
       --type {{ worker_type }}
-      --image ubuntu-24.04
+      --image {{ hetzner_image | default('ubuntu-24.04') }}
       --location {{ region }}
       --ssh-key {{ hcloud_ssh_key }}
       --network {{ project }}-network

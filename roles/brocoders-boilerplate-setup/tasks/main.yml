@@ -84,8 +84,8 @@
         AUTH_JWT_TOKEN_EXPIRES_IN: "15m"
         AUTH_REFRESH_SECRET: "{{ app_refresh_secret }}"
         AUTH_REFRESH_TOKEN_EXPIRES_IN: "7d"
-        ACCESS_KEY_ID: "{{ minio_root_user | default('minioadmin') }}"
-        SECRET_ACCESS_KEY: "{{ minio_root_password | default('minioadmin') }}"
+        ACCESS_KEY_ID: "{{ minio_root_user }}"
+        SECRET_ACCESS_KEY: "{{ minio_root_password }}"
 
 - name: Deploy backend Deployment
   kubernetes.core.k8s:
