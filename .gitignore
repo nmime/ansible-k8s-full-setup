@@ -1,0 +1,41 @@
+# Platform secrets (auto-generated credentials)
+.platform-secrets.yml
+.minio-credentials
+
+# GitLab license (generated keys and license files)
+.gitlab-license/
+
+# Infrastructure state (contains IPs)
+*-infra-facts.yml
+
+# Platform orchestrator state and logs
+platform-orchestrator/.state/
+platform-orchestrator/logs/
+platform-orchestrator/platform.yaml
+
+# Ansible retry files
+*.retry
+
+# Kubespray
+kubespray/
+
+# Python
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Terraform state (if used)
+*.tfstate
+*.tfstate.backup
+.terraform/

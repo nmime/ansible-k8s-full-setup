@@ -9,131 +9,261 @@
 # - Secrets Management (Vault + ESO)
 # - Databases (PostgreSQL + MongoDB)
 # - Storage (MinIO)
-# - GitLab CE
+# - GitLab EE (Enterprise with Ultimate license)
 # - ArgoCD (GitOps)
 # - Observability (Monitoring + Logging)
 # - Event-Driven Autoscaling (KEDA)
+# - Brocoders Boilerplate Setup (optional)
 
-# Deployment sequence: infrastructure → network security → secrets → storage → databases → gitlab → gitops → observability → autoscaling
+# Deployment sequence: infrastructure → network security → cluster → secrets → storage → observability (PMM) → databases → gitlab → gitops → autoscaling
 
-- name: Gather facts
-  ansible.builtin.setup:
+- name: Deploy Kubernetes Platform
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  any_errors_fatal: true
 
-- name: Display deployment banner
-  debug:
-    msg:
-      - "=========================================="
-      - "  Ansible Kubernetes Platform Deployment"
-      - "  Project: {{ project_name | default('k8s') }}"
-      - "  Tier: {{ tier | default('medium') }}"
-      - "=========================================="
+  vars_files:
+    - ../defaults/main.yml
 
-- name: Check required environment variables
-  assert:
-    that:
-      - "'HETZNER_API_TOKEN' in lookup('env', 'HOME') + '/.clouds/hcloud' or 'HETZNER_API_TOKEN' in lookup('env', 'HOME') + '/.config/hcloud'"
-    fail_msg: "HETZNER_API_TOKEN environment variable not found. Please set it."
-    quiet: false
-
-# Step 1: Infrastructure
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: hetzner-infra
-    tasks_from: main.yml
   vars:
     tier: "{{ tier | default('medium') }}"
     project_name: "{{ project_name | default('k8s') }}"
+    # domain and email are required — validated in pre_tasks
 
-# Step 2: Network Security
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: network-security
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+  pre_tasks:
+    - name: Display deployment banner
+      debug:
+        msg:
+          - "=========================================="
+          - "  Ansible Kubernetes Platform Deployment"
+          - "  Project: {{ project_name }}"
+          - "  Tier: {{ tier }}"
+          - "  Domain: {{ domain }}"
+          - "=========================================="
 
-# Step 3: Kubernetes Cluster
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: k8s-cluster-management
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Pre-flight check - domain is set
+      assert:
+        that:
+          - domain is defined
+          - domain | length > 0
+          - domain != 'example.com'
+        fail_msg: "domain is required. Set via -e domain=yourdomain.com or in inventory"
 
-# Step 4: Secrets Management
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: k8s-secrets
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Pre-flight check - email is set
+      assert:
+        that:
+          - email is defined
+          - email | length > 0
+          - email != 'admin@example.com'
+        fail_msg: "email is required. Set via -e email=you@yourdomain.com or in inventory"
 
-# Step 5: Storage (MinIO)
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: minio-storage
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Validate tier selection
+      assert:
+        that:
+          - tier in ['minimal', 'small', 'medium', 'production']
+        fail_msg: "Invalid tier '{{ tier }}'. Must be: minimal, small, medium, production"
+        quiet: false
 
-# Step 6: Databases
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: k8s-databases
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Pre-flight check - hcloud CLI installed
+      ansible.builtin.command: hcloud version
+      register: hcloud_check
+      changed_when: false
+      failed_when: hcloud_check.rc != 0
+      ignore_errors: true
 
-# Step 7: GitLab
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: gitlab-selfhosted
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Fail if hcloud CLI not found
+      fail:
+        msg: "hcloud CLI not found. Install: https://github.com/hetznercloud/cli/releases"
+      when: hcloud_check.rc != 0
 
-# Step 8: GitOps (ArgoCD)
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: k8s-gitops
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Pre-flight check - HCLOUD_TOKEN set
+      assert:
+        that:
+          - lookup('env', 'HCLOUD_TOKEN') | length > 0
+        fail_msg: "HCLOUD_TOKEN environment variable is required. Export it: export HCLOUD_TOKEN=your-token"
 
-# Step 9: Observability
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: k8s-observability
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Pre-flight check - SSH key exists
+      stat:
+        path: "{{ ssh_key_path | default('~/.ssh/id_ed25519') }}"
+      register: ssh_key_stat
 
-# Step 10: Autoscaling
-- name: "{{ gitlab. }} role"
-  ansible.builtin.include_role:
-    name: k8s-autoscaling
-    tasks_from: main.yml
-  vars:
-    tier: "{{ tier | default('medium') }}"
+    - name: Fail if SSH key not found
+      fail:
+        msg: "SSH key not found at {{ ssh_key_path | default('~/.ssh/id_ed25519') }}. Generate with: ssh-keygen -t ed25519"
+      when: not ssh_key_stat.stat.exists
 
-# Final deployment summary
-- name: Display deployment completion summary
-  debug:
-    msg:
-      - "=========================================="
-      - "  Platform Deployment Complete"
-      - "  Tier: {{ tier | default('medium') }}"
-      - "  Project: {{ project_name | default('k8s') }}"
-      - "=========================================="
-      - "Services deployed:"
-      - "  - Kubernetes Cluster with Cilium CNI"
-      - "  - GitLab CE with CI/CD"
-      - "  - ArgoCD (GitOps)"
-      - "  - Grafana (Monitoring)"
-      - "  - VictoriaMetrics + Loki (Log aggregation)"
-      - "  - MinIO (Object Storage)"
-      - "  - Vault (Secrets)"
-      - "  - PostgreSQL Cluster"
-      - "  - KEDA (Event autoscaling)"
-      - "  - Headscale VPN"
-      - "=========================================="
+    - name: Pre-flight check - kubectl installed
+      ansible.builtin.command: kubectl version --client
+      register: kubectl_check
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if kubectl not found
+      debug:
+        msg: "WARNING: kubectl not installed locally. Install it for post-deployment cluster access."
+      when: kubectl_check.rc != 0
+
+  tasks:
+    # Step 0: Generate and persist all platform secrets
+    - name: Generate platform secrets
+      ansible.builtin.include_role:
+        name: generate-secrets
+        tasks_from: main.yml
+      tags:
+        - always
+
+    # Step 1: Infrastructure
+    - name: Deploy Hetzner Cloud Infrastructure
+      ansible.builtin.include_role:
+        name: hetzner-infra
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+        project_name: "{{ project_name }}"
+      tags:
+        - infrastructure
+        - infra
+
+    # Step 2: Network Security
+    - name: Deploy Network Security (VPN + Firewalls)
+      ansible.builtin.include_role:
+        name: network-security
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+      tags:
+        - network
+        - security
+
+    # Step 3: Kubernetes Cluster
+    - name: Deploy Kubernetes Cluster
+      ansible.builtin.include_role:
+        name: k8s-cluster-management
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+      tags:
+        - cluster
+        - kubernetes
+
+    # Step 4: Secrets Management
+    - name: Deploy Secrets Management (Vault + ESO)
+      ansible.builtin.include_role:
+        name: k8s-secrets
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+      tags:
+        - secrets
+        - vault
+
+    # Step 5: Storage (MinIO)
+    - name: Deploy MinIO S3 Storage
+      ansible.builtin.include_role:
+        name: minio-storage
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+      tags:
+        - storage
+        - minio
+
+    # Step 6: Observability (before databases — PMM Server must exist for DB monitoring)
+    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana + PMM)
+      ansible.builtin.include_role:
+        name: k8s-observability
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+        domain: "{{ domain }}"
+      tags:
+        - observability
+        - monitoring
+
+    # Step 7: Databases (PMM client sidecars connect to PMM Server from step 6)
+    - name: Deploy Databases (PostgreSQL + MongoDB)
+      ansible.builtin.include_role:
+        name: k8s-databases
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+      tags:
+        - databases
+        - postgresql
+
+    # Step 8: GitLab EE
+    - name: Deploy GitLab EE Self-Hosted
+      ansible.builtin.include_role:
+        name: gitlab-selfhosted
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+        domain: "{{ domain }}"
+      tags:
+        - gitlab
+        - cicd
+
+    # Step 9: GitOps (ArgoCD)
+    - name: Deploy ArgoCD GitOps
+      ansible.builtin.include_role:
+        name: k8s-gitops
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+        domain: "{{ domain }}"
+      tags:
+        - gitops
+        - argocd
+
+    # Step 10: Autoscaling
+    - name: Deploy KEDA Event-Driven Autoscaling
+      ansible.builtin.include_role:
+        name: k8s-autoscaling
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+      tags:
+        - autoscaling
+        - keda
+
+    # Step 11: Brocoders Boilerplate (optional)
+    - name: Deploy Brocoders Boilerplate Application
+      ansible.builtin.include_role:
+        name: brocoders-boilerplate-setup
+        tasks_from: main.yml
+      vars:
+        tier: "{{ tier }}"
+        domain: "{{ domain }}"
+      when: deploy_boilerplate | default(false) | bool
+      tags:
+        - boilerplate
+        - application
+
+  post_tasks:
+    # Final deployment summary
+    - name: Display deployment completion summary
+      debug:
+        msg:
+          - "=========================================="
+          - "  Platform Deployment Complete"
+          - "  Tier: {{ tier }}"
+          - "  Project: {{ project_name }}"
+          - "  Domain: {{ domain }}"
+          - "=========================================="
+          - ""
+          - "Services deployed:"
+          - "  - Kubernetes Cluster with Cilium CNI"
+          - "  - GitLab EE: https://gitlab.{{ domain }}"
+          - "  - ArgoCD: https://argocd.{{ domain }}"
+          - "  - Grafana: https://grafana.{{ domain }}"
+          - "  - VictoriaMetrics + Loki (Observability)"
+          - "  - MinIO S3: https://minio.{{ domain }}"
+          - "  - Vault: https://vault.{{ domain }}"
+          - "  - PostgreSQL HA Cluster"
+          - "  - KEDA (Event Autoscaling)"
+          - "  - Headscale VPN"
+          - ""
+          - "Get credentials:"
+          - "  ./platform-orchestrator/platform.sh credentials"
+          - "=========================================="

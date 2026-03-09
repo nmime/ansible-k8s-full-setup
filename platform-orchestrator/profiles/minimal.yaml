@@ -1,0 +1,122 @@
+# ============================================
+# MINIMAL TIER - ~€18-20/mo
+# ============================================
+# Best for: Development, learning, testing
+# Nodes: 2 (1 master+worker, 1 worker)
+# HA: No
+# ============================================
+
+tier: minimal
+cost_estimate: "€18-20/mo"
+
+global:
+  project: k8s
+  domain: ""          # REQUIRED: set your domain
+  email: ""           # REQUIRED: set your email
+  environment: development
+
+# ---------------------------------------------
+# Infrastructure
+# ---------------------------------------------
+infrastructure:
+  provider: hetzner
+  region: hel1
+
+  control_plane:
+    count: 1
+    type: cx23
+    schedulable: true  # Master also runs workloads
+
+  workers:
+    count: 1
+    type: cx23
+
+# ---------------------------------------------
+# Network
+# ---------------------------------------------
+network:
+  bastion:
+    enabled: true
+    server_type: cx23
+
+  load_balancer:
+    enabled: false  # Save €6/mo - bastion proxies
+    proxy_public_apps: true  # Bastion handles routing
+
+  vpn:
+    enabled: true
+
+# ---------------------------------------------
+# Kubernetes
+# ---------------------------------------------
+kubernetes:
+  version: v1.34.3
+  cni: cilium
+  ha_control_plane: false
+
+# ---------------------------------------------
+# Storage
+# ---------------------------------------------
+storage:
+  enabled: true
+  mode: standalone
+  replicas: 1
+  size: 50Gi
+
+# ---------------------------------------------
+# Secrets
+# ---------------------------------------------
+secrets:
+  enabled: true
+  vault:
+    replicas: 1
+    storage_size: 10Gi
+
+# ---------------------------------------------
+# Databases
+# ---------------------------------------------
+databases:
+  postgresql:
+    enabled: true
+    replicas: 1
+    storage_size: 10Gi
+
+# ---------------------------------------------
+# GitLab
+# ---------------------------------------------
+gitlab:
+  enabled: true
+  webservice_replicas: 1
+  sidekiq_replicas: 1
+  runner:
+    enabled: true
+    concurrent_jobs: 2
+
+# ---------------------------------------------
+# GitOps
+# ---------------------------------------------
+gitops:
+  enabled: true
+  ha_enabled: false
+
+# ---------------------------------------------
+# Observability
+# ---------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    retention: 7d
+    storage_size: 10Gi
+
+  logging:
+    enabled: true
+    retention: 3d
+
+  grafana:
+    enabled: true
+
+# ---------------------------------------------
+# Autoscaling
+# ---------------------------------------------
+autoscaling:
+  enabled: true

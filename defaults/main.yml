@@ -1,28 +1,99 @@
-# Common variables for all roles
+# ============================================
+# Global Default Variables
+# ============================================
+# Tier-specific configuration for all roles
 
-# Tier configuration
+# Tier definitions
+tier: medium
+
+# Global settings
+project_name: k8s
+# domain: REQUIRED - must be provided via -e domain=yourdomain.com
+# email: REQUIRED - must be provided via -e email=you@yourdomain.com
+
+# Tier configuration (node counts for reference — actual server types auto-selected at runtime)
 minimal:
   nodes: 2
   ha: false
-  cost: "~€12/mo"
+  control_plane_count: 1
+  control_plane_schedulable: true
+  worker_count: 1
 
 small:
   nodes: 3
   ha: false
-  cost: "~€21/mo"
+  control_plane_count: 1
+  control_plane_schedulable: false
+  worker_count: 2
 
 medium:
   nodes: 5
   ha: true
-  cost: "~€34/mo"
+  control_plane_count: 3
+  control_plane_schedulable: false
+  worker_count: 2
 
 production:
   nodes: 6
   ha: true
-  cost: "~€48/mo"
+  control_plane_count: 3
+  control_plane_schedulable: false
+  worker_count: 3
 
 # Infrastructure configuration
-control_plane_count: "{{ vars[tier + '_nodes'] // 2 }}"
-worker_count: "{{ vars[tier + '_nodes'] // 2 }}"
-bastion_server_type: cx22
-worker_server_type: cpx41
+# Server types auto-selected from Hetzner API (cheapest meeting tier requirements)
+# Override with: hetzner_bastion_type, hetzner_cp_type, hetzner_worker_type
+hetzner_region: hel1
+hetzner_image: ubuntu-24.04
+ssh_key_path: ~/.ssh/id_ed25519
+storage_class: hcloud-volumes
+
+# Kubernetes
+k8s_version: v1.34.3
+k8s_cni: cilium
+cilium_version: v1.18.6
+gateway_api_version: v1.4.0
+k8s_pod_cidr: 10.233.64.0/18
+k8s_service_cidr: 10.233.0.0/18
+
+# Network
+private_network_cidr: 10.0.0.0/16
+infrastructure_subnet: 10.0.0.0/24
+control_plane_subnet: 10.0.1.0/24
+workers_subnet: 10.0.2.0/24
+services_subnet: 10.0.10.0/24
+
+# Storage (MinIO)
+minio_replicas: 4
+minio_storage_size: 50Gi
+
+# Secrets (Vault)
+vault_replicas: 3
+vault_storage_size: 10Gi
+eso_enabled: true
+
+# Databases
+postgresql_replicas: 2
+postgresql_storage: 20Gi
+postgresql_version: 18
+mongodb_storage: 20Gi
+
+# GitLab
+gitlab_chart_version: "9.7.1"
+gitlab_runner_concurrent_jobs: 10
+
+# GitOps (ArgoCD)
+argocd_chart_version: "7.8.5"
+
+# Observability
+metrics_retention: 30d
+metrics_storage: 50Gi
+logging_retention: 14d
+
+# Autoscaling
+keda_enabled: true
+keda_chart_version: "2.18.2"
+
+# Backup
+backup_schedule: "0 2 * * *"
+backup_retention_days: 30
