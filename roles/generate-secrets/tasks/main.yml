@@ -1,0 +1,110 @@
+---
+# Generate Secrets Role - Centralized credential generation
+# Generates all credentials ONCE and persists them to a local secrets file.
+# On subsequent runs, existing credentials are loaded (never regenerated).
+# This prevents credential drift and ensures consistency across all roles.
+
+- name: Set secrets file path
+  set_fact:
+    secrets_file: "{{ playbook_dir }}/.platform-secrets.yml"
+
+- name: Check for existing secrets file
+  stat:
+    path: "{{ secrets_file }}"
+  register: secrets_file_stat
+  delegate_to: localhost
+  become: false
+
+- name: Load existing secrets
+  include_vars:
+    file: "{{ secrets_file }}"
+    name: saved_secrets
+  when: secrets_file_stat.stat.exists
+
+# ============================================
+# Generate new secrets (only if not already saved)
+# ============================================
+
+- name: Generate MinIO credentials
+  set_fact:
+    generated_minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default(saved_secrets.minio_root_user | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
+    generated_minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default(saved_secrets.minio_root_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
+
+- name: Generate Grafana admin credentials
+  set_fact:
+    generated_grafana_admin_user: "{{ saved_secrets.grafana_admin_user | default('admin') }}"
+    generated_grafana_admin_password: "{{ saved_secrets.grafana_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+
+- name: Generate application database password
+  set_fact:
+    generated_app_db_password: "{{ saved_secrets.app_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
+
+- name: Generate JWT secrets
+  set_fact:
+    generated_jwt_secret: "{{ saved_secrets.jwt_secret | default(lookup('password', '/dev/null chars=ascii_letters,digits length=64')) }}"
+    generated_jwt_refresh_secret: "{{ saved_secrets.jwt_refresh_secret | default(lookup('password', '/dev/null chars=ascii_letters,digits length=64')) }}"
+
+- name: Generate ArgoCD admin password
+  set_fact:
+    generated_argocd_admin_password: "{{ saved_secrets.argocd_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+
+- name: Generate Headscale API key
+  set_fact:
+    generated_headscale_api_key: "{{ saved_secrets.headscale_api_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48')) }}"
+
+# ============================================
+# Expose all secrets as unified variables
+# ============================================
+
+- name: Set unified secret variables for all roles
+  set_fact:
+    minio_root_user: "{{ generated_minio_root_user }}"
+    minio_root_password: "{{ generated_minio_root_password }}"
+    grafana_admin_user: "{{ generated_grafana_admin_user }}"
+    grafana_admin_password: "{{ generated_grafana_admin_password }}"
+    app_db_password: "{{ generated_app_db_password }}"
+    app_jwt_secret: "{{ generated_jwt_secret }}"
+    app_refresh_secret: "{{ generated_jwt_refresh_secret }}"
+    argocd_admin_password: "{{ generated_argocd_admin_password }}"
+    headscale_api_key: "{{ generated_headscale_api_key }}"
+
+# ============================================
+# Persist secrets to file (idempotent)
+# ============================================
+
+- name: Save all generated secrets to file
+  copy:
+    content: |
+      ---
+      # Auto-generated platform secrets - DO NOT COMMIT TO GIT
+      # Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+      minio_root_user: "{{ minio_root_user }}"
+      minio_root_password: "{{ minio_root_password }}"
+      grafana_admin_user: "{{ grafana_admin_user }}"
+      grafana_admin_password: "{{ grafana_admin_password }}"
+      app_db_password: "{{ app_db_password }}"
+      jwt_secret: "{{ app_jwt_secret }}"
+      jwt_refresh_secret: "{{ app_refresh_secret }}"
+      argocd_admin_password: "{{ argocd_admin_password }}"
+      headscale_api_key: "{{ headscale_api_key }}"
+    dest: "{{ secrets_file }}"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+
+- name: Display generated credentials summary
+  debug:
+    msg:
+      - "============================================"
+      - "  Platform Secrets Generated"
+      - "============================================"
+      - "  Secrets file: {{ secrets_file }}"
+      - "  MinIO user: {{ minio_root_user }}"
+      - "  MinIO password: {{ minio_root_password[:4] }}****"
+      - "  Grafana user: {{ grafana_admin_user }}"
+      - "  Grafana password: {{ grafana_admin_password[:4] }}****"
+      - "  App DB password: {{ app_db_password[:4] }}****"
+      - "  ArgoCD password: {{ argocd_admin_password[:4] }}****"
+      - "============================================"
+      - "  IMPORTANT: Back up {{ secrets_file }} securely!"
+      - "============================================"

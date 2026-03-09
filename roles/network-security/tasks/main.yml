@@ -1,287 +1,336 @@
 ---
-# Network Security - Headscale VPN and Firewall Rules
-# Configures Headscale VPN on bastion and firewall rules for secure admin access
+# Network Security Role - Headscale VPN v0.28.0 + Bastion Hardening
+# Installs Headscale VPN on bastion for secure admin access
+# Architecture: Public (LB) -> app, api, s3, registry
+#               Admin (VPN) -> gitlab, argocd, grafana, vault, k8s
 
-- name: Check if bastion server is accessible
+- name: Set network security variables
+  set_fact:
+    project: "{{ project_name | default('k8s') }}"
+    vpn_domain: "vpn.{{ domain }}"
+    headscale_version: "0.28.0"
+    bastion_host: "{{ bastion_public_ip | default(bastion_ip | default('')) }}"
+
+- name: Validate bastion IP is available
+  assert:
+    that:
+      - bastion_host | length > 0
+    fail_msg: "Bastion IP not set. Run hetzner-infra role first."
+
+- name: Wait for bastion SSH to be ready
   wait_for:
-    host: "{{ bastion_ip }}"
+    host: "{{ bastion_host }}"
     port: 22
     delay: 5
-    timeout: 60
+    timeout: 120
   delegate_to: localhost
   become: false
 
-- name: Install Docker on bastion if not present
-  block:
-    - name: Check if Docker is installed
-      command: which docker
-      register: docker_check
-      ignore_errors: true
+# ============================================
+# Bastion Hardening
+# ============================================
 
-    - name: Install Docker prerequisites
-      apt:
-        name:
-          - apt-transport-https
-          - ca-certificates
-          - curl
-          - gnupg-agent
-          - software-properties-common
-        state: present
-      become: true
-      when: docker_check.rc != 0
+- name: Update and install required packages on bastion
+  ansible.builtin.raw: |
+    apt-get update -q
+    apt-get install -y curl wget unzip jq ufw fail2ban apt-transport-https ca-certificates gnupg
+  delegate_to: "{{ bastion_host }}"
+  become: true
 
-    - name: Add Docker GPG key
-      apt_key:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        state: present
-      become: true
-      when: docker_check.rc != 0
+- name: Configure fail2ban on bastion
+  ansible.builtin.raw: |
+    cat > /etc/fail2ban/jail.local << 'EOF'
+    [sshd]
+    enabled = true
+    port = 22
+    maxretry = 5
+    bantime = 3600
+    findtime = 600
+    EOF
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+  delegate_to: "{{ bastion_host }}"
+  become: true
 
-    - name: Add Docker repository
-      apt_repository:
-        repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
-        state: present
-      become: true
-      when: docker_check.rc != 0
+- name: Configure UFW firewall on bastion
+  ansible.builtin.raw: |
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp comment "SSH"
+    ufw allow 80/tcp comment "HTTP ACME challenge"
+    ufw allow 443/tcp comment "Headscale HTTPS"
+    ufw allow 3478/udp comment "STUN/DERP"
+    ufw allow 41641/udp comment "WireGuard/Tailscale"
+    ufw allow from 10.0.0.0/16 comment "Private network"
+    echo "y" | ufw enable
+  delegate_to: "{{ bastion_host }}"
+  become: true
 
-    - name: Install Docker
-      apt:
-        name:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-        state: present
-      become: true
-      when: docker_check.rc != 0
+- name: Harden SSH on bastion
+  ansible.builtin.raw: |
+    # Ensure settings are present regardless of whether they were commented out
+    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
+      && sed -i 's/^.*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+      || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
+      && sed -i 's/^.*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+      || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
+    grep -q '^MaxAuthTries' /etc/ssh/sshd_config \
+      && sed -i 's/^.*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config \
+      || echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config
+    systemctl restart sshd
+  delegate_to: "{{ bastion_host }}"
+  become: true
 
-    - name: Start and enable Docker service
-      service:
-        name: docker
-        state: started
+# ============================================
+# NAT Gateway (bastion routes outbound for private nodes)
+# ============================================
+
+- name: Enable IP forwarding and NAT on bastion
+  ansible.builtin.raw: |
+    # Enable IP forwarding
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
+    sysctl -p /etc/sysctl.d/99-nat.conf
+    # Detect default outbound interface
+    DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+    DEFAULT_IF="${DEFAULT_IF:-eth0}"
+    # NAT masquerade for private network traffic
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
+      iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
+    # Persist iptables rules
+    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
+    netfilter-persistent save
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Add bastion as default route on private network
+  ansible.builtin.command:
+    cmd: >
+      hcloud network add-route {{ project }}-network
+      --destination 0.0.0.0/0
+      --gateway {{ bastion_private_ip | default('10.0.0.2') }}
+  delegate_to: localhost
+  become: false
+  register: nat_route
+  changed_when: nat_route.rc == 0
+  failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default('')) and 'route' not in (nat_route.stderr | default(''))
+
+# ============================================
+# Docker Installation (for Headscale)
+# ============================================
+
+- name: Install Docker on bastion
+  ansible.builtin.raw: |
+    if ! command -v docker &>/dev/null; then
+      curl -fsSL https://get.docker.com | sh
+      systemctl enable docker
+      systemctl start docker
+    fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+# ============================================
+# Headscale VPN v0.28.0
+# ============================================
+
+- name: Create Headscale directories
+  ansible.builtin.raw: mkdir -p /etc/headscale /var/lib/headscale /opt/headscale
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Deploy Headscale configuration
+  ansible.builtin.raw: |
+    cat > /etc/headscale/config.yaml << 'EOF'
+    server_url: https://{{ vpn_domain }}
+    listen_addr: 0.0.0.0:8080
+    metrics_listen_addr: 0.0.0.0:9090
+    private_key_path: /var/lib/headscale/private.key
+    noise:
+      private_key_path: /var/lib/headscale/noise_private.key
+    prefixes:
+      v4: 100.64.0.0/10
+      v6: fd7a:115c:a1e0::/48
+    derp:
+      server:
         enabled: true
-      become: true
-      when: docker_check.rc != 0
-
-    - name: Ensure vagrant user is in docker group
-      user:
-        name: vagrant
-        groups: docker
-        append: true
-      become: true
-      when: docker_check.rc != 0
-
-- name: Install Docker Compose
-  get_url:
-    url: "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-{{ ansible_system }}-{{ ansible_architecture }}"
-    dest: /usr/local/bin/docker-compose
-    mode: '0755'
-  become: true
-  when: docker_check.rc != 0
-
-- name: Install Headscale on bastion
-  block:
-    - name: Create Headscale directory
-      file:
-        path: /opt/headscale
-        state: directory
-        mode: '0755'
-      become: true
-
-    - name: Create Headscale data directory
-      file:
-        path: /var/lib/headscale
-        state: directory
-        mode: '0755'
-      become: true
-
-    - name: Pull Headscale Docker image
-      docker_image:
-        name: headscale/headscale:latest
-        source: pull
-
-    - name: Create Headscale configuration directory
-      file:
-        path: /etc/headscale
-        state: directory
-        mode: '0755'
-      become: true
-
-    - name: Create Headscale config.yaml
-      copy:
-        dest: /etc/headscale/config.yaml
-        content: |
-          server:
-            listen: :8080
-          
-          metrics_listen: 0.0.0.0:9090
-          
-          db:
-            type: sqlite3
-            sqlite3:
-              filepath: /var/lib/headscale/headscale.db
-          
-          tls:
-            enabled: false
-          
-          isolation:
-            using_namespaces: false
-          
-          enable_check_updates: true
-          
-          enable_grpc: true
-        mode: '0644'
-      become: true
-
-    - name: Create Headscale SQLite database
-      command: headscale create database --config /etc/headscale/config.yaml
-      become: true
-      when: inventory_hostname == "bastion"
-
-    - name: Create Headscale Docker Compose file
-      copy:
-        dest: /opt/headscale/docker-compose.yml
-        content: |
-          version: '3.8'
-          
-          services:
-            headscale:
-              container_name: headscale
-              image: headscale/headscale:latest
-              restart: always
-              command: serve
-              ports:
-                - "8080:8080"
-                - "9090:9090"
-              volumes:
-                - /var/lib/headscale:/var/lib/headscale
-                - /etc/headscale/config.yaml:/etc/headscale/config.yaml
-              environment:
-                - TZ=UTC
-              networks:
-                - headscale-net
-          
-          networks:
-            headscale-net:
-              driver: bridge
-        mode: '0644'
-      become: true
-
-    - name: Start Headscale
-      docker_compose:
-        project_src: /opt/headscale
-        state: present
-        build: no
-      become: true
-      register: headscale_start
-
-- name: Create firewall rule for Headscale
-  block:
-    - name: Get server IP
-      command: hostname -I | awk '{print $1}'
-      register: server_ip
-      become: false
-
-    - name: Create Headscale firewall rule
-      iptables:
-        chain: INPUT
-        protocol: tcp
-        port: 8080
-        source: "{{ server_ip.stdout }}/32"
-        jump: ACCEPT
-        comment: Headscale VPN
-      become: true
-      when: ansible_os_family == "Debian"
-
-    - name: Save iptables rules
-      shell: iptables-save > /etc/iptables/rules.v4
-      become: true
-      when: ansible_os_family == "Debian"
-
-- name: Install tailscale CLI on all nodes
-  block:
-    - name: Install tailscale on Linux nodes
-      block:
-        - name: Install tailscale dependencies
-          apt:
-            name:
-              - libcap2-bin
-              - libc6
-            state: present
-          become: true
-
-        - name: Install tailscale binary
-          get_url:
-            url: "https://tailscale.com/stable/tailscale_{{ ansible_distribution_release }}_amd64.tgz"
-            dest: /tmp/tailscale.tgz
-            mode: '0755'
-          become: true
-
-        - name: Extract tailscale
-          unarchive:
-            src: /tmp/tailscale.tgz
-            dest: /usr/local/bin
-            remote_src: yes
-          become: true
-
-        - name: Set capabilities for tailscale
-          capabilities:
-            path: /usr/local/bin/tailscale
-            capability: cap_net_admin+ep
-            state: present
-          become: true
-
-        - name: Clean up tailscale tarball
-          file:
-            path: /tmp/tailscale.tgz
-            state: absent
-          become: true
-      when: ansible_system == "Linux" and ansible_distribution | lower != 'ubuntu'
-
-- name: Install tailscale on Ubuntu
-  apt:
-    name: tailscale
-    state: present
-  become: true
-  when: ansible_distribution == "Ubuntu"
-
-- name: Install tailscale on Debian
-  apt:
-    name: tailscale
-    state: present
-  become: true
-  when: ansible_distribution == "Debian"
-
-- name: Create VPN admin group
-  group:
-    name: vpn-admin
-    state: present
+        region_id: 999
+        region_code: custom
+        region_name: Headscale
+        stun_listen_addr: 0.0.0.0:3478
+      urls: []
+      auto_update_enabled: true
+      update_frequency: 24h
+    database:
+      type: sqlite
+      sqlite:
+        path: /var/lib/headscale/db.sqlite
+    dns:
+      magic_dns: true
+      base_domain: vpn.internal
+      nameservers:
+        global:
+          - 1.1.1.1
+          - 8.8.8.8
+    log:
+      level: info
+    EOF
+  delegate_to: "{{ bastion_host }}"
   become: true
 
-- name: Create network security documentation
-  copy:
-    dest: "/etc/headscale/NETWORK_SECURITY.md"
-    content: |
-      # Network Security Documentation
-      
-      ## VPN Access
-      
-      Headscale VPN server is running on: **{{ bastion_ip }}:8080**
-      
-      ## Connect from Client:
-      
-      ```bash
-      tailscale up --login-server=https://{{ bastion_ip }}:8080 --auth-key=<YOUR_KEY>
-      ```
-      
-      ## Firewall Rules:
-      
-      - SSH (22): Allowed from all IPs
-      - Headscale (8080): Allowed from server IP only
-      - Kubernetes API (6443): Allowed from private network only
-      
-      ## Network Security Services:
-      
-      - Headscale VPN for admin access
-      - Firewall rules enforced
-      - Server hardening enabled
+- name: Create Caddyfile for Headscale TLS termination
+  ansible.builtin.raw: |
+    cat > /opt/headscale/Caddyfile << 'EOF'
+    {{ vpn_domain }} {
+      reverse_proxy headscale:8080
+    }
+    EOF
+  delegate_to: "{{ bastion_host }}"
   become: true
+
+- name: Deploy Headscale Docker Compose
+  ansible.builtin.raw: |
+    cat > /opt/headscale/docker-compose.yml << 'EOF'
+    services:
+      headscale:
+        container_name: headscale
+        image: headscale/headscale:{{ headscale_version }}
+        restart: always
+        command: serve
+        ports:
+          - "9090:9090"
+          - "3478:3478/udp"
+        volumes:
+          - /var/lib/headscale:/var/lib/headscale
+          - /etc/headscale:/etc/headscale:ro
+        environment:
+          - TZ=UTC
+      caddy:
+        container_name: caddy
+        image: caddy:2-alpine
+        restart: always
+        ports:
+          - "443:443"
+          - "80:80"
+        volumes:
+          - /opt/headscale/Caddyfile:/etc/caddy/Caddyfile:ro
+          - caddy_data:/data
+          - caddy_config:/config
+        depends_on:
+          - headscale
+    volumes:
+      caddy_data:
+      caddy_config:
+    EOF
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Start Headscale container
+  ansible.builtin.raw: cd /opt/headscale && docker compose up -d
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Wait for Headscale to be ready
+  ansible.builtin.raw: |
+    for i in $(seq 1 30); do
+      docker exec headscale headscale version 2>/dev/null && break
+      sleep 2
+    done
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+# ============================================
+# Headscale User/Namespace Setup
+# ============================================
+
+- name: Create Headscale admin user
+  ansible.builtin.raw: docker exec headscale headscale users create admin 2>/dev/null || true
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Create Headscale dev user
+  ansible.builtin.raw: docker exec headscale headscale users create dev 2>/dev/null || true
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Create pre-auth key for admin
+  ansible.builtin.raw: |
+    docker exec headscale headscale preauthkeys create --user admin --reusable --expiration 720h 2>/dev/null | tail -1
+  delegate_to: "{{ bastion_host }}"
+  become: true
+  register: admin_preauth_key
+
+# ============================================
+# Install Tailscale on bastion (self-connect)
+# ============================================
+
+- name: Install Tailscale client on bastion
+  ansible.builtin.raw: |
+    if ! command -v tailscale &>/dev/null; then
+      curl -fsSL https://tailscale.com/install.sh | sh
+    fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Connect bastion to Headscale VPN
+  ansible.builtin.raw: |
+    tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout | trim }} --hostname {{ project }}-bastion 2>/dev/null || true
+  delegate_to: "{{ bastion_host }}"
+  become: true
+  when: admin_preauth_key.stdout is defined and admin_preauth_key.stdout | trim | length > 0
+
+# ============================================
+# Install tools on bastion
+# ============================================
+
+- name: Install kubectl on bastion
+  ansible.builtin.raw: |
+    if ! command -v kubectl &>/dev/null; then
+      curl -fsSL "https://dl.k8s.io/release/v1.34.3/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl
+      chmod +x /usr/local/bin/kubectl
+    fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Install Helm on bastion
+  ansible.builtin.raw: |
+    if ! command -v helm &>/dev/null; then
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Install hcloud CLI on bastion
+  ansible.builtin.raw: |
+    if ! command -v hcloud &>/dev/null; then
+      curl -sL https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz | tar xz -C /usr/local/bin/
+    fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Install yq on bastion
+  ansible.builtin.raw: |
+    if ! command -v yq &>/dev/null; then
+      curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+      chmod +x /usr/local/bin/yq
+    fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Display network security summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Network Security Configured"
+      - "=========================================="
+      - "  Headscale VPN: https://{{ vpn_domain }}"
+      - "  Version: {{ headscale_version }}"
+      - "  Bastion: {{ bastion_host }}"
+      - "  Users: admin, dev"
+      - ""
+      - "  Connect client:"
+      - "  curl -fsSL https://tailscale.com/install.sh | sh"
+      - "  tailscale up --login-server https://{{ vpn_domain }} --authkey <KEY>"
+      - ""
+      - "  Firewall: SSH(22), HTTP(80), HTTPS(443), STUN(3478), WG(41641)"
+      - "  Hardening: fail2ban, password-auth disabled"
+      - "=========================================="
