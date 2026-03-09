@@ -1,207 +1,192 @@
----
 # Deploy and Test the Ansible Workflow
 
 ## Prerequisites
 
 ### Install Ansible
 ```bash
-# Install Ansible 2.15+
-pip install ansible-core==2.16.0
-
-# Install required collections
+pip install ansible-core>=2.16.0
 ansible-galaxy collection install -r requirements.yml
 ```
 
-### Setup Environment Variables
+### Required Tools
 ```bash
-# Copy and customize inventory
-cp inventory.example inventory
-
-# Source your environment variables
-source env_vars.sh
+# Verify tools
+ansible --version      # >= 2.16.0
+kubectl version        # >= 1.30
+helm version           # >= 3.14
+yq --version           # >= 4.0 (for platform orchestrator)
+hcloud version         # Latest
 ```
 
-## Deployment
-
-### 1. Verify Prerequisites
+### Setup Environment
 ```bash
-# Check Ansible version
-ansible --version
-
-# Verify required tools
-python3 --version
-ansible-galaxy --version
+export HCLOUD_TOKEN="your-hetzner-api-token"
 ```
 
-### 2. Customize Inventory
+## Deployment Options
+
+### Option A: Platform Orchestrator (Recommended)
 ```bash
-# Edit inventory file
-vim inventory
+cd platform-orchestrator
+./platform.sh init                # Creates platform.yaml from small profile
+vim platform.yaml                 # Set domain, project, tier
+./platform.sh deploy all          # Full deployment
+./platform.sh credentials        # Show all passwords
 ```
 
-Set your domain, tier, and required parameters:
-```ini
-[global]
-domain = your-domain.com
-email = admin@your-domain.com
-environment = production
-tier = medium
+### Option B: Ansible Directly
+```bash
+cp inventory.example inventory.yml
+vim inventory.yml                 # Customize settings
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml
 ```
 
-### 3. Run the Deployment
+### Option C: Component-by-Component
 ```bash
-# Deploy the complete platform
-ansible-playbook playbooks/deploy_platform.yml -i inventory
-
-# Deploy specific tier
-ansible-playbook playbooks/deploy_platform.yml -i inventory -e tier=medium
-```
-
-### 4. Monitor Deployment Progress
-```bash
-# View verbose output
-ansible-playbook playbooks/deploy_platform.yml -i inventory -v
-
-# Resume failed tasks
-ansible-playbook playbooks/deploy_platform.yml -i inventory --skip-tags irrelevant
+# Deploy only specific components using tags
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags infrastructure
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags network
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags cluster
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags secrets
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags storage
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags databases
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags gitlab
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags gitops
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags observability
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --tags autoscaling
 ```
 
 ## Verification
 
 ### Check Infrastructure
 ```bash
-# Check Hetzner servers
 hcloud server list
-
-# Check networks
 hcloud network list
+hcloud load-balancer list
 ```
 
 ### Check Kubernetes Cluster
 ```bash
-# Copy kubeconfig from bastion
-scp bastion:/root/.kube/config $HOME/.kube/config
-chmod 600 $HOME/.kube/config
-
-# Check nodes
 kubectl get nodes
-
-# Check all pods
 kubectl get pods -A
-
-# Check services
 kubectl get svc -A
+kubectl get pvc -A
 ```
 
 ### Check Services
-
-#### GitLab
 ```bash
-curl -k https://gitlab.your-domain.com
+# GitLab
+kubectl get pods -n gitlab
+kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' | base64 -d
+
+# ArgoCD
+kubectl get pods -n argocd
+kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d
+
+# Grafana
+kubectl get pods -n monitoring
+kubectl get secret grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 -d
+
+# MinIO
+kubectl get pods -n storage
+
+# Vault
+kubectl get pods -n vault
+kubectl exec -n vault vault-0 -- vault status
+
+# KEDA
+kubectl get pods -n keda
+kubectl get scaledobjects -A
 ```
 
-#### ArgoCD
+### Health Check (via Platform Orchestrator)
 ```bash
-curl -k https://argocd.your-domain.com
-```
-
-#### Grafana
-```bash
-curl -k https://grafana.your-domain.com
-```
-
-#### MinIO
-```bash
-# API
-curl -k https://s3.your-domain.com/minio/health/live
-
-# Console
-curl -k https://minio.your-domain.com
+./platform-orchestrator/platform.sh health
+./platform-orchestrator/platform.sh status
+./platform-orchestrator/platform.sh credentials
 ```
 
 ## Troubleshooting
 
-### Common Issues
-
-#### 1. Connection Timeouts
+### Connection Timeouts
 ```bash
-# Increase Ansible timeout
-ansible-playbook playbooks/deploy_platform.yml -i inventory --timeout=300
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml --timeout=300
 ```
 
-#### 2. Authentication Failures
+### Pod Issues
 ```bash
-# Verify API token
-hcloud server list
+# Check unhealthy pods
+kubectl get pods -A | grep -vE 'Running|Completed'
 
-# Verify SSH access
-ssh root@your-server-ip
-```
-
-#### 3. Kubernetes Cluster Issues
-```bash
-# Check node status
-kubectl describe node
-
-# Check pod events
+# Describe failing pod
 kubectl describe pod <pod-name> -n <namespace>
+kubectl logs <pod-name> -n <namespace>
+```
+
+### Helm Release Issues
+```bash
+# List all releases
+helm list -A
+
+# Check release status
+helm status gitlab -n gitlab
+helm status argocd -n argocd
+
+# Rollback if needed
+helm rollback gitlab 1 -n gitlab
+```
+
+### Auto-Healing
+```bash
+./platform-orchestrator/platform.sh heal
 ```
 
 ## Scaling
 
-### Scale Worker Nodes
+### Change Tier
 ```bash
-# Add worker nodes via Ansible
-ansible-playbook playbooks/scale_nodes.yml -i inventory -e "action=add_nodes worker_count=5"
+# Update tier in platform.yaml or inventory
+# Then redeploy
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e tier=production
 ```
 
-### Update Kubernetes Version
-```bash
-# Upgrade Kubernetes
-ansible-playbook playbooks/upgrade_k8s.yml -i inventory -e "target_version=v1.35.0"
-```
+### Tier Upgrade Path
+- minimal (~€18/mo) → small (~€30/mo) → medium (~€50/mo) → production (~€75/mo)
 
 ## Backup and Restore
 
-### Create Backup
-```bash
-ansible-playbook playbooks/backup.yml -i inventory
-```
+### Automated Backups
+- GitLab: Daily at 2 AM (via toolbox CronJob)
+- PostgreSQL: Weekly full + daily incremental (pgbackrest to MinIO)
+- MongoDB: Weekly backups to MinIO (if enabled)
 
-### Restore from Backup
+### Manual Backup
 ```bash
-ansible-playbook playbooks/restore.yml -i inventory -e "backup_date=2024-01-20"
+# GitLab backup
+kubectl exec -n gitlab -it $(kubectl get pods -n gitlab -l app=toolbox -o name) -- backup-utility
+
+# PostgreSQL backup (via Percona pgbackrest)
+kubectl exec -n databases -it $(kubectl get pods -n databases -l postgres-operator.crunchydata.com/data=postgres -o name | head -1) -- pgbackrest backup --stanza=db --type=full
 ```
 
 ## Clean Up
 
-### Remove All Resources
+### Remove Platform (preserves DNS)
 ```bash
-# WARNING: This will delete everything!
-ansible-playbook playbooks/cleanup.yml -i inventory
+./platform-orchestrator/platform.sh destroy
+```
+
+### Remove via Ansible
+```bash
+ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e state=absent
 ```
 
 ## Best Practices
 
-1. **Always test in staging first**
-2. **Use different tiers for dev/staging/prod**
-3. **Enable backups before production**
-4. **Monitor observability dashboards**
-5. **Keep Ansible playbooks in version control**
-
-## Next Steps
-
-After deployment:
-
-1. **Configure DNS**: Add DNS records for your services
-2. **Set up VPN**: Connect to VPN and access private services
-3. **Configure ArgoCD**: Set up ApplicationSets for your apps
-4. **Configure Monitoring**: Set up Grafana dashboards
-5. **Configure Alerts**: Set up alert rules
-6. **Set up Backup**: Configure automated backups
-
-For detailed documentation, see:
-- README.md - Overview and quick start
-- docs/deployment.md - Detailed deployment guide
-- docs/troubleshooting.md - Troubleshooting guide
-- docs/operations.md - Day-to-day operations
+1. Always test in staging tier before production
+2. Use VPN for all admin access (GitLab, ArgoCD, Grafana, Vault)
+3. Enable and verify backups before going to production
+4. Monitor Grafana dashboards and configure alerting
+5. Keep all configuration in version control
+6. Use External Secrets Operator for application secrets
+7. Use ArgoCD ApplicationSets for multi-environment deployments

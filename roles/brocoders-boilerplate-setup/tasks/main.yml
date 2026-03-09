@@ -1,0 +1,454 @@
+---
+# Brocoders Boilerplate Setup Role - Complete Implementation
+# Sets up NestJS + React full-stack application from Brocoders boilerplates
+# Supports GitHub, GitLab Cloud, and Self-hosted GitLab
+
+- name: Set boilerplate variables
+  set_fact:
+    app_namespace: "{{ app_namespace | default('production') }}"
+    app_name: "{{ app_name | default('myapp') }}"
+    backend_repo: "https://github.com/brocoders/nestjs-boilerplate.git"
+    frontend_repo: "https://github.com/brocoders/extensive-react-boilerplate.git"
+    git_provider: "{{ git_provider | default('gitlab-selfhosted') }}"
+    repo_strategy: "{{ repo_strategy | default('polyrepo') }}"
+    backend_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    frontend_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+
+- name: Create application namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ app_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: "{{ app_name }}"
+
+# ============================================
+# Kubernetes Manifests for Backend (NestJS)
+# ============================================
+
+- name: Create backend ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ app_name }}-backend-config"
+        namespace: "{{ app_namespace }}"
+      data:
+        NODE_ENV: production
+        APP_PORT: "3000"
+        DATABASE_TYPE: postgres
+        DATABASE_HOST: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
+        DATABASE_PORT: "5432"
+        DATABASE_NAME: "{{ app_name }}"
+        DATABASE_SSL_ENABLED: "false"
+        MAIL_HOST: "mailhog.{{ app_namespace }}.svc.cluster.local"
+        MAIL_PORT: "1025"
+        MAIL_DEFAULT_EMAIL: "noreply@{{ domain }}"
+        MAIL_DEFAULT_NAME: "{{ app_name }}"
+        FILE_DRIVER: s3
+        AWS_S3_REGION: us-east-1
+        AWS_DEFAULT_S3_BUCKET: "{{ app_name }}-uploads"
+        AWS_S3_ENDPOINT: "http://minio.storage.svc.cluster.local:9000"
+
+- name: Retrieve app database password from cross-namespace secret
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ app_namespace }}"
+    name: "{{ app_name }}-postgresql-password"
+  register: app_pg_conn_secret
+  failed_when: false
+
+- name: Set app database password from Percona-generated secret
+  set_fact:
+    resolved_app_db_password: "{{ (app_pg_conn_secret.resources[0].data['postgresql-password'] | b64decode) if app_pg_conn_secret.resources | length > 0 else app_db_password }}"
+
+- name: Create backend Secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ app_name }}-backend-secret"
+        namespace: "{{ app_namespace }}"
+      type: Opaque
+      stringData:
+        DATABASE_USERNAME: "{{ app_name }}"
+        DATABASE_PASSWORD: "{{ resolved_app_db_password }}"
+        AUTH_JWT_SECRET: "{{ app_jwt_secret }}"
+        AUTH_JWT_TOKEN_EXPIRES_IN: "15m"
+        AUTH_REFRESH_SECRET: "{{ app_refresh_secret }}"
+        AUTH_REFRESH_TOKEN_EXPIRES_IN: "7d"
+        ACCESS_KEY_ID: "{{ minio_root_user }}"
+        SECRET_ACCESS_KEY: "{{ minio_root_password }}"
+
+- name: Deploy backend Deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ app_name }}-backend"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          component: backend
+      spec:
+        replicas: "{{ backend_replicas }}"
+        selector:
+          matchLabels:
+            app: "{{ app_name }}"
+            component: backend
+        template:
+          metadata:
+            labels:
+              app: "{{ app_name }}"
+              component: backend
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+            containers:
+              - name: backend
+                image: "registry.{{ domain }}/{{ app_name }}/backend:latest"
+                ports:
+                  - containerPort: 3000
+                    name: http
+                envFrom:
+                  - configMapRef:
+                      name: "{{ app_name }}-backend-config"
+                  - secretRef:
+                      name: "{{ app_name }}-backend-secret"
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: 500m
+                    memory: 512Mi
+                livenessProbe:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 3000
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 3000
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                securityContext:
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+
+- name: Create backend Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ app_name }}-backend"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          component: backend
+      spec:
+        type: ClusterIP
+        ports:
+          - port: 8080
+            targetPort: 3000
+            protocol: TCP
+            name: http
+        selector:
+          app: "{{ app_name }}"
+          component: backend
+
+- name: Create backend HPA
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: "{{ app_name }}-backend-hpa"
+        namespace: "{{ app_namespace }}"
+      spec:
+        scaleTargetRef:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: "{{ app_name }}-backend"
+        minReplicas: "{{ backend_replicas }}"
+        maxReplicas: 20
+        metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: 70
+          - type: Resource
+            resource:
+              name: memory
+              target:
+                type: Utilization
+                averageUtilization: 80
+        behavior:
+          scaleDown:
+            stabilizationWindowSeconds: 300
+            policies:
+              - type: Percent
+                value: 10
+                periodSeconds: 60
+          scaleUp:
+            stabilizationWindowSeconds: 0
+            policies:
+              - type: Percent
+                value: 100
+                periodSeconds: 15
+              - type: Pods
+                value: 4
+                periodSeconds: 15
+            selectPolicy: Max
+
+# ============================================
+# Kubernetes Manifests for Frontend (React)
+# ============================================
+
+- name: Deploy frontend Deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ app_name }}-frontend"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          component: frontend
+      spec:
+        replicas: "{{ frontend_replicas }}"
+        selector:
+          matchLabels:
+            app: "{{ app_name }}"
+            component: frontend
+        template:
+          metadata:
+            labels:
+              app: "{{ app_name }}"
+              component: frontend
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+            containers:
+              - name: frontend
+                image: "registry.{{ domain }}/{{ app_name }}/frontend:latest"
+                ports:
+                  - containerPort: 8080
+                    name: http
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 64Mi
+                  limits:
+                    cpu: 200m
+                    memory: 256Mi
+                livenessProbe:
+                  httpGet:
+                    path: /
+                    port: 8080
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: /
+                    port: 8080
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                securityContext:
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+
+- name: Create frontend Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ app_name }}-frontend"
+        namespace: "{{ app_namespace }}"
+        labels:
+          app: "{{ app_name }}"
+          component: frontend
+      spec:
+        type: ClusterIP
+        ports:
+          - port: 80
+            targetPort: 8080
+            protocol: TCP
+            name: http
+        selector:
+          app: "{{ app_name }}"
+          component: frontend
+
+# ============================================
+# Gateway API Routes
+# ============================================
+
+- name: Create backend HTTPRoute
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: "{{ app_name }}-backend"
+        namespace: "{{ app_namespace }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "api.{{ domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: "{{ app_name }}-backend"
+                port: 8080
+
+- name: Create frontend HTTPRoute
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: "{{ app_name }}-frontend"
+        namespace: "{{ app_namespace }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "app.{{ domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: "{{ app_name }}-frontend"
+                port: 80
+
+- name: Create TLS Certificate for application
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ app_name }}-tls"
+        namespace: cilium-secrets
+      spec:
+        secretName: "{{ app_name }}-tls"
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "app.{{ domain }}"
+          - "api.{{ domain }}"
+
+# ============================================
+# ArgoCD Application for GitOps
+# ============================================
+
+- name: Create ArgoCD Application for backend
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: "{{ app_name }}-backend"
+        namespace: argocd
+      spec:
+        project: platform
+        source:
+          repoURL: "https://gitlab.{{ domain }}/{{ app_name }}/backend.git"
+          targetRevision: HEAD
+          path: deploy/k8s
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: "{{ app_namespace }}"
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=true
+  when: git_provider == 'gitlab-selfhosted'
+
+- name: Create ArgoCD Application for frontend
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: "{{ app_name }}-frontend"
+        namespace: argocd
+      spec:
+        project: platform
+        source:
+          repoURL: "https://gitlab.{{ domain }}/{{ app_name }}/frontend.git"
+          targetRevision: HEAD
+          path: deploy/k8s
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: "{{ app_namespace }}"
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=true
+  when: git_provider == 'gitlab-selfhosted'
+
+- name: Display boilerplate setup info
+  debug:
+    msg:
+      - "=========================================="
+      - "  Brocoders Boilerplate Deployed"
+      - "=========================================="
+      - "  App: {{ app_name }}"
+      - "  Namespace: {{ app_namespace }}"
+      - "  Git Provider: {{ git_provider }}"
+      - ""
+      - "  Frontend: https://app.{{ domain }}"
+      - "  Backend API: https://api.{{ domain }}"
+      - ""
+      - "  Boilerplate repos:"
+      - "  Backend: {{ backend_repo }}"
+      - "  Frontend: {{ frontend_repo }}"
+      - ""
+      - "  Next steps:"
+      - "  1. Clone boilerplates"
+      - "  2. Push to your GitLab"
+      - "  3. Build & push Docker images"
+      - "  4. ArgoCD will sync automatically"
+      - "=========================================="

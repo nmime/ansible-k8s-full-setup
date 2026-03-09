@@ -1,0 +1,50 @@
+---
+# Hetzner Infrastructure Defaults
+# Override any of these in group_vars, host_vars, or extra-vars.
+
+# Server type overrides — set these to pick exact Hetzner server types.
+# Leave empty to auto-select the cheapest available type per tier.
+# Examples: cx22, cx32, cx42, cpx21, cpx31, cax11 (ARM), cax21, etc.
+hetzner_bastion_type: ""
+hetzner_cp_type: ""
+hetzner_worker_type: ""
+
+# Minimum resource requirements per tier (used for auto-selection).
+# Auto-select picks the cheapest x86 server type meeting these minimums.
+hetzner_tier_specs:
+  minimal:
+    cp_count: 1
+    cp_min_cores: 2
+    cp_min_memory: 4
+    cp_schedulable: true
+    worker_count: 1
+    worker_min_cores: 2
+    worker_min_memory: 4
+    lb_enabled: false
+  small:
+    cp_count: 1
+    cp_min_cores: 2
+    cp_min_memory: 4
+    cp_schedulable: false
+    worker_count: 2
+    worker_min_cores: 2
+    worker_min_memory: 4
+    lb_enabled: true
+  medium:
+    cp_count: 3
+    cp_min_cores: 2
+    cp_min_memory: 4
+    cp_schedulable: false
+    worker_count: 2
+    worker_min_cores: 4
+    worker_min_memory: 8
+    lb_enabled: true
+  production:
+    cp_count: 3
+    cp_min_cores: 4
+    cp_min_memory: 8
+    cp_schedulable: false
+    worker_count: 3
+    worker_min_cores: 4
+    worker_min_memory: 8
+    lb_enabled: true

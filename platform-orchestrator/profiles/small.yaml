@@ -1,0 +1,122 @@
+# ============================================
+# SMALL TIER - ~€28-35/mo
+# ============================================
+# Best for: Startups, small teams, staging
+# Nodes: 3 (1 master, 2 workers)
+# HA: No (single master)
+# ============================================
+
+tier: small
+cost_estimate: "€28-35/mo"
+
+global:
+  project: k8s
+  domain: ""          # REQUIRED: set your domain
+  email: ""           # REQUIRED: set your email
+  environment: staging
+
+# ---------------------------------------------
+# Infrastructure
+# ---------------------------------------------
+infrastructure:
+  provider: hetzner
+  region: hel1
+
+  control_plane:
+    count: 1
+    type: cx23
+    schedulable: false
+
+  workers:
+    count: 2
+    type: cx23
+
+# ---------------------------------------------
+# Network
+# ---------------------------------------------
+network:
+  bastion:
+    enabled: true
+    server_type: cx23
+
+  load_balancer:
+    enabled: true
+    type: lb11
+
+  vpn:
+    enabled: true
+
+# ---------------------------------------------
+# Kubernetes
+# ---------------------------------------------
+kubernetes:
+  version: v1.34.3
+  cni: cilium
+  ha_control_plane: false
+
+# ---------------------------------------------
+# Storage
+# ---------------------------------------------
+storage:
+  enabled: true
+  mode: standalone
+  replicas: 1
+  size: 100Gi
+
+# ---------------------------------------------
+# Secrets
+# ---------------------------------------------
+secrets:
+  enabled: true
+  vault:
+    replicas: 1
+    storage_size: 10Gi
+
+# ---------------------------------------------
+# Databases
+# ---------------------------------------------
+databases:
+  postgresql:
+    enabled: true
+    replicas: 1
+    storage_size: 20Gi
+
+# ---------------------------------------------
+# GitLab
+# ---------------------------------------------
+gitlab:
+  enabled: true
+  webservice_replicas: 1
+  sidekiq_replicas: 1
+  runner:
+    enabled: true
+    concurrent_jobs: 5
+
+# ---------------------------------------------
+# GitOps
+# ---------------------------------------------
+gitops:
+  enabled: true
+  ha_enabled: false
+
+# ---------------------------------------------
+# Observability
+# ---------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    retention: 14d
+    storage_size: 20Gi
+
+  logging:
+    enabled: true
+    retention: 7d
+
+  grafana:
+    enabled: true
+
+# ---------------------------------------------
+# Autoscaling
+# ---------------------------------------------
+autoscaling:
+  enabled: true

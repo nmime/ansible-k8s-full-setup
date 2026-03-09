@@ -1,0 +1,132 @@
+# ============================================
+# MEDIUM TIER - ~€48-55/mo
+# ============================================
+# Best for: Small-medium traffic, teams
+# Nodes: 5 (3 masters HA, 2 workers)
+# HA: Yes (control plane)
+# ============================================
+
+tier: medium
+cost_estimate: "€48-55/mo"
+
+global:
+  project: k8s
+  domain: ""          # REQUIRED: set your domain
+  email: ""           # REQUIRED: set your email
+  environment: production
+
+# ---------------------------------------------
+# Infrastructure
+# ---------------------------------------------
+infrastructure:
+  provider: hetzner
+  region: hel1
+
+  control_plane:
+    count: 3
+    type: cx23
+    schedulable: false
+
+  workers:
+    count: 2
+    type: cx33
+
+# ---------------------------------------------
+# Network
+# ---------------------------------------------
+network:
+  bastion:
+    enabled: true
+    server_type: cx23
+
+  load_balancer:
+    enabled: true
+    type: lb11
+
+  vpn:
+    enabled: true
+
+# ---------------------------------------------
+# Kubernetes
+# ---------------------------------------------
+kubernetes:
+  version: v1.34.3
+  cni: cilium
+  ha_control_plane: true
+
+# ---------------------------------------------
+# Storage
+# ---------------------------------------------
+storage:
+  enabled: true
+  mode: distributed
+  replicas: 4
+  size_per_replica: 50Gi
+
+# ---------------------------------------------
+# Secrets
+# ---------------------------------------------
+secrets:
+  enabled: true
+  vault:
+    replicas: 3
+    storage_size: 10Gi
+  eso:
+    enabled: true
+
+# ---------------------------------------------
+# Databases
+# ---------------------------------------------
+databases:
+  postgresql:
+    enabled: true
+    replicas: 2
+    storage_size: 20Gi
+
+# ---------------------------------------------
+# GitLab
+# ---------------------------------------------
+gitlab:
+  enabled: true
+  webservice_replicas: 2
+  sidekiq_replicas: 2
+  runner:
+    enabled: true
+    concurrent_jobs: 10
+
+# ---------------------------------------------
+# GitOps
+# ---------------------------------------------
+gitops:
+  enabled: true
+  ha_enabled: true
+
+# ---------------------------------------------
+# Observability
+# ---------------------------------------------
+observability:
+  metrics:
+    enabled: true
+    retention: 30d
+    storage_size: 50Gi
+
+  logging:
+    enabled: true
+    retention: 14d
+
+  grafana:
+    enabled: true
+
+# ---------------------------------------------
+# Autoscaling
+# ---------------------------------------------
+autoscaling:
+  enabled: true
+
+# ---------------------------------------------
+# Backup
+# ---------------------------------------------
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  retention_days: 30
