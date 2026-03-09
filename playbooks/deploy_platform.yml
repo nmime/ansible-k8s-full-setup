@@ -21,6 +21,7 @@
   hosts: localhost
   connection: local
   gather_facts: true
+  any_errors_fatal: true
 
   vars_files:
     - ../defaults/main.yml
@@ -29,7 +30,6 @@
     tier: "{{ tier | default('medium') }}"
     project_name: "{{ project_name | default('k8s') }}"
     # domain and email are required — validated in pre_tasks
-    state: "{{ state | default('present') }}"
 
   pre_tasks:
     - name: Display deployment banner

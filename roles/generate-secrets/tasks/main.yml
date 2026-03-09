@@ -27,7 +27,7 @@
 
 - name: Generate MinIO credentials
   set_fact:
-    generated_minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default(saved_secrets.minio_root_user | default('minioadmin'), true) }}"
+    generated_minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default(saved_secrets.minio_root_user | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
     generated_minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default(saved_secrets.minio_root_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
 
 - name: Generate Grafana admin credentials
