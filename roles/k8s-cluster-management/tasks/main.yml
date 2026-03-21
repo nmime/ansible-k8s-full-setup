@@ -155,7 +155,7 @@
       cilium_kube_proxy_replacement: "true"
       cilium_tunnel_mode: vxlan
       cilium_auto_direct_node_routes: false
-            cilium_enable_endpoint_health_checking: true
+      cilium_enable_endpoint_health_checking: true
       cilium_enable_health_checking: true
       cilium_enable_bandwidth_manager: true
       cilium_enable_ipv4_masquerade: true
@@ -183,7 +183,7 @@
     chmod 755 /opt/cni/bin 2>/dev/null || true
   delegate_to: "{{ item }}"
   become: true
-  loop: "{{ (master_ips | default([])) + (worker_ips | default([])) }}"
+  loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
   when: item is defined and item | length > 0
   ignore_errors: true
 
@@ -515,6 +515,7 @@
   kubernetes.core.helm:
     name: cert-manager-webhook-hetzner
     chart_ref: hcloud/cert-manager-webhook-hetzner
+    chart_version: "1.4.1"
     release_namespace: cert-manager
     release_state: present
     wait: true
