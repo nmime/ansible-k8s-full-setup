@@ -592,6 +592,31 @@
   delay: 15
   failed_when: false
 
+- name: Get PMM Server pod name
+  shell: kubectl get pod -n {{ monitoring_namespace }} -l app=pmm-server -o jsonpath='{.items[0].metadata.name}'
+  register: pmm_pod_name
+  changed_when: false
+  failed_when: false
+
+- name: Generate PMM API key for database monitoring
+  shell: |
+    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- \
+      curl -s -X POST \
+      -H 'Content-Type: application/json' \
+      -u admin:admin \
+      http://localhost/graph/api/auth/keys \
+      -d '{"name":"percona-db-key-{{ ansible_date_time.epoch }}","role":"Admin"}'
+  register: pmm_api_key_result
+  failed_when: false
+  changed_when: false
+  when: pmm_pod_name.stdout | default('') | length > 0
+
+- name: Set PMM API key fact
+  set_fact:
+    pmm_api_key: "{{ (pmm_api_key_result.stdout | default('{}') | from_json).key | default('') }}"
+  when: pmm_api_key_result.rc | default(1) == 0
+  failed_when: false
+
 - name: Create PMM HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
