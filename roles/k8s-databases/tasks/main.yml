@@ -79,20 +79,6 @@
           repo2-s3-key={{ minio_root_user }}
           repo2-s3-key-secret={{ minio_root_password }}
 
-- name: Create PMM credentials secret for databases namespace
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: pmm-secret
-        namespace: "{{ db_ns }}"
-      type: Opaque
-      stringData:
-        PMM_SERVER_USER: "admin"
-        PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
-
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
     state: present
@@ -104,7 +90,7 @@
         namespace: "{{ db_ns }}"
       spec:
         crVersion: "{{ pg_operator_ver }}"
-        image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-postgres"
+        image: "percona/percona-distribution-postgresql:{{ pg_version }}.7-2"
         postgresVersion: "{{ pg_version }}"
         port: 5432
         instances:
@@ -136,7 +122,7 @@
         proxy:
           pgBouncer:
             replicas: "{{ pg_proxy_replicas }}"
-            image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-pgbouncer"
+            image: "percona/percona-pgbouncer:1.25.0-1"
             config:
               global:
                 pool_mode: "transaction"
@@ -160,7 +146,7 @@
                       topologyKey: kubernetes.io/hostname
         backups:
           pgbackrest:
-            image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-pgbackrest"
+            image: "percona/percona-pgbackrest:2.57.0-1"
             repos:
               - name: repo1
                 schedules:
@@ -191,34 +177,15 @@
               repo2-s3-uri-style: "path"
               repo2-retention-full: "4"
               repo2-retention-full-type: "count"
-            restore:
-              enabled: true
-        pmm:
-          enabled: true
-          image: "percona/pmm-client:2"
-          serverHost: "pmm-server.monitoring.svc.cluster.local"
-          secret: pmm-secret
-          pmmParams: "--query-source=pgstatmonitor"
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 300m
-              memory: 256Mi
         extensions:
           builtin:
             pg_stat_statements: {}
-            pg_stat_monitor: {}
         patroni:
           dynamicConfiguration:
             postgresql:
               parameters:
-                shared_preload_libraries: "pg_stat_statements,pg_stat_monitor"
+                shared_preload_libraries: "pg_stat_statements"
                 pg_stat_statements.track: "all"
-                pg_stat_monitor.pgsm_query_max_len: "2048"
-                pg_stat_monitor.pgsm_enable_query_plan: "on"
-                pg_stat_monitor.pgsm_normalized_query: "on"
                 track_activity_query_size: "2048"
                 track_io_timing: "on"
                 log_checkpoints: "on"
@@ -307,6 +274,9 @@
         crVersion: "{{ psmdb_operator_ver }}"
         image: "percona/percona-server-mongodb:8.0"
         imagePullPolicy: IfNotPresent
+        unsafeFlags:
+          replsetSize: "{{ true if tier in ['minimal', 'small'] else false }}"
+          mongosSize: "{{ true if tier in ['minimal', 'small'] else false }}"
         replsets:
           - name: rs0
             size: "{{ mongo_replicas }}"
@@ -327,24 +297,6 @@
                 memory: "2Gi"
             affinity:
               antiAffinityTopologyKey: "kubernetes.io/hostname"
-        pmm:
-          enabled: true
-          image: "percona/pmm-client:2"
-          serverHost: "pmm-server.monitoring.svc.cluster.local"
-          mongodParams: "--enable-all-collectors --query-source=profiler"
-          mongosParams: "--enable-all-collectors"
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 300m
-              memory: 256Mi
-        mongod:
-          operationProfiling:
-            mode: slowOp
-            slowOpThresholdMs: 100
-            rateLimit: 100
         sharding:
           enabled: false
         mongos:
@@ -488,10 +440,6 @@
       - "    MongoDB: 8.0.x"
       - "    Replicas: {{ mongo_replicas }}"
       - "    Cluster: {{ project_name | default('k8s') }}-mongo.{{ db_ns }}"
-      - "  Monitoring:"
-      - "    PMM Server: pmm-server.monitoring.svc.cluster.local"
-      - "    PostgreSQL: pg_stat_statements, pg_stat_monitor, PMM client"
-      - "    MongoDB: PMM client with all collectors"
       - "  Backups:"
       - "    PostgreSQL: pgbackrest (daily full + 6h diff + S3 weekly)"
       - "    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)"
