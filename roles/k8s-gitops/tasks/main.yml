@@ -6,7 +6,7 @@
 - name: Set ArgoCD tier-specific variables
   set_fact:
     argocd_namespace: "argocd"
-    argocd_chart_version: "7.8.5"
+    argocd_chart_version: "9.4.15"
     argocd_version: "v3.2.5"
     argocd_domain: "argocd.{{ domain }}"
     argocd_ha: "{{ true if tier in ['medium', 'production'] else false }}"

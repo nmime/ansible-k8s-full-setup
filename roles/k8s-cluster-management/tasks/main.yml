@@ -1,5 +1,5 @@
 ---
-# K8s Cluster Management - Kubespray (master@341da0e) + Cilium v1.18.6 + Gateway API v1.4.0
+# K8s Cluster Management - Kubespray (master@341da0e) + Cilium v1.18.6 + Gateway API v1.5.1
 # Installs Kubernetes cluster with core addons
 # Components: K8s v1.34.3, etcd v3.5.26, containerd v2.2.1, Hetzner CCM v1.22.0, cert-manager v1.19.2, MetalLB v0.14.9
 
@@ -9,9 +9,9 @@
     k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
     kubespray_version: "341da0e"
     cilium_ver: "{{ cilium_version | default('v1.18.6') }}"
-    gateway_api_ver: "{{ gateway_api_version | default('v1.4.0') }}"
-    certmanager_ver: "v1.19.2"
-    metallb_ver: "v0.14.9"
+    gateway_api_ver: "{{ gateway_api_version | default('v1.5.1') }}"
+    certmanager_ver: "v1.20.0"
+    metallb_ver: "v0.15.3"
     hetzner_ccm_ver: "v1.22.0"
     hetzner_csi_ver: "v2.12.0"
     cluster_tier: "{{ tier | default('medium') }}"

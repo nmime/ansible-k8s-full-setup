@@ -6,7 +6,7 @@
 
 - name: Set GitLab tier-specific variables
   set_fact:
-    gitlab_chart_version: "9.7.1"
+    gitlab_chart_version: "9.10.0"
     gitlab_namespace: "gitlab"
     gitlab_domain: "gitlab.{{ domain }}"
     registry_domain: "registry.{{ domain }}"
@@ -242,7 +242,7 @@
     values:
       global:
         edition: ee
-        gitlabVersion: "18.7.1-ee"
+        gitlabVersion: "18.10.0-ee"
         gitlab:
           license:
             secret: gitlab-license
@@ -629,7 +629,7 @@
   kubernetes.core.helm:
     name: gitlab-runner
     chart_ref: gitlab/gitlab-runner
-    chart_version: "0.84.2"
+    chart_version: "0.87.0"
     release_namespace: "{{ gitlab_namespace }}"
     create_namespace: false
     release_state: present
