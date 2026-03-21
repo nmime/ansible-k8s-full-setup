@@ -658,6 +658,7 @@
   when: gitlab_runner_token is defined and gitlab_runner_token != ''
 
 - name: Create S3 cache secret for GitLab Runner
+  when: gitlab_runner_token is defined and gitlab_runner_token != '' 
   kubernetes.core.k8s:
     state: present
     definition:

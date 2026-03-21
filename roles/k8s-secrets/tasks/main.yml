@@ -221,7 +221,7 @@
       kind: Certificate
       metadata:
         name: vault-tls
-        namespace: "{{ vault_ns }}"
+        namespace: cilium-secrets
       spec:
         secretName: vault-tls
         issuerRef:

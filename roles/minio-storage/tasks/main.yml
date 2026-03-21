@@ -98,13 +98,14 @@
 
 - name: Wait for MinIO to be ready
   kubernetes.core.k8s_info:
-    kind: Deployment
+    kind: Pod
     namespace: "{{ minio_ns }}"
-    name: minio
-  register: minio_deploy
+    label_selectors:
+      - app=minio
+  register: minio_pods
   until: >
-    minio_deploy.resources | length > 0
-    and (minio_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+    minio_pods.resources | length > 0
+    and (minio_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
   retries: 30
   delay: 10
 
