@@ -1,5 +1,5 @@
 ---
-# K8s Cluster Management - Kubespray v2.29.1 + Cilium v1.18.6 + Gateway API v1.4.0
+# K8s Cluster Management - Kubespray (master@341da0e) + Cilium v1.18.6 + Gateway API v1.4.0
 # Installs Kubernetes cluster with core addons
 # Components: K8s v1.34.3, etcd v3.5.26, containerd v2.2.1, Hetzner CCM v1.22.0, cert-manager v1.19.2, MetalLB v0.14.9
 
@@ -7,7 +7,7 @@
   set_fact:
     project: "{{ project_name | default('k8s') }}"
     k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
-    kubespray_version: "v2.29.1"
+    kubespray_version: "341da0e"
     cilium_ver: "{{ cilium_version | default('v1.18.6') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.4.0') }}"
     certmanager_ver: "v1.19.2"
@@ -37,12 +37,20 @@
   delegate_to: localhost
   become: false
 
-- name: Install Kubespray Python requirements
-  pip:
-    requirements: "{{ playbook_dir }}/kubespray/requirements.txt"
-    state: present
+- name: Create isolated venv for Kubespray
+  ansible.builtin.command:
+    cmd: python3 -m venv "{{ playbook_dir }}/kubespray/.venv"
+    creates: "{{ playbook_dir }}/kubespray/.venv/bin/python"
   delegate_to: localhost
   become: false
+
+- name: Install Kubespray Python requirements in isolated venv
+  ansible.builtin.command:
+    cmd: "{{ playbook_dir }}/kubespray/.venv/bin/pip install -r {{ playbook_dir }}/kubespray/requirements.txt"
+  delegate_to: localhost
+  become: false
+  register: kubespray_pip
+  changed_when: "'Successfully installed' in kubespray_pip.stdout"
 
 - name: Create Kubespray inventory directory
   file:
@@ -109,7 +117,7 @@
     content: |
       ---
       # Kubernetes
-      kube_version: {{ k8s_ver }}
+      kube_version: "{{ k8s_ver | regex_replace('^v', '') }}"
       container_manager: containerd
       kube_pods_subnet: {{ k8s_pod_cidr | default('10.233.64.0/18') }}
       kube_service_addresses: {{ k8s_service_cidr | default('10.233.0.0/18') }}
@@ -136,7 +144,7 @@
       etcd_quota_backend_bytes: "8589934592"
       # Cilium CNI
       kube_network_plugin: cilium
-      cilium_version: {{ cilium_ver }}
+      cilium_version: "{{ cilium_ver | regex_replace('^v', '') }}"
       cilium_enable_hubble: true
       cilium_hubble_enabled: true
       cilium_hubble_relay_enabled: true
@@ -145,10 +153,9 @@
       cilium_enable_gateway_api_support: true
       cilium_enable_bpf_masquerade: true
       cilium_kube_proxy_replacement: "true"
-      cilium_tunnel_mode: disabled
-      cilium_auto_direct_node_routes: true
-      cilium_native_routing_cidr: 10.0.0.0/16
-      cilium_enable_endpoint_health_checking: true
+      cilium_tunnel_mode: vxlan
+      cilium_auto_direct_node_routes: false
+            cilium_enable_endpoint_health_checking: true
       cilium_enable_health_checking: true
       cilium_enable_bandwidth_manager: true
       cilium_enable_ipv4_masquerade: true
@@ -159,7 +166,8 @@
 - name: Run Kubespray cluster deployment
   ansible.builtin.command:
     cmd: >
-      ansible-playbook -i inventory/{{ project }}/hosts.yml
+      {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook
+      -i inventory/{{ project }}/hosts.yml
       --become --become-user=root
       cluster.yml
     chdir: "{{ playbook_dir }}/kubespray"
@@ -167,6 +175,17 @@
   become: false
   register: kubespray_result
   changed_when: true
+
+# Fix CNI binary directory permissions (Kubespray creates it owned by kube user)
+- name: Fix /opt/cni/bin ownership for Cilium
+  ansible.builtin.raw: |
+    chown -R root:root /opt/cni/bin 2>/dev/null || true
+    chmod 755 /opt/cni/bin 2>/dev/null || true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ (master_ips | default([])) + (worker_ips | default([])) }}"
+  when: item is defined and item | length > 0
+  ignore_errors: true
 
 # ============================================
 # Post-install: kubeconfig

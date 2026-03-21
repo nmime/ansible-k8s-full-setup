@@ -78,7 +78,7 @@
     grep -q '^MaxAuthTries' /etc/ssh/sshd_config \
       && sed -i 's/^.*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config \
       || echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config
-    systemctl restart sshd
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd
   delegate_to: "{{ bastion_host }}"
   become: true
 
@@ -97,9 +97,20 @@
     # NAT masquerade for private network traffic
     iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
       iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
+    # Allow forwarding for NAT
+    iptables -C FORWARD -i enp7s0 -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i enp7s0 -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$DEFAULT_IF" -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT
     # Persist iptables rules
-    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
-    netfilter-persistent save
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4
+    # Ensure rules restore on boot
+    cat > /etc/network/if-pre-up.d/iptables << "IPTEOF"
+#!/bin/sh
+iptables-restore < /etc/iptables/rules.v4
+IPTEOF
+    chmod +x /etc/network/if-pre-up.d/iptables
   delegate_to: "{{ bastion_host }}"
   become: true
 
@@ -114,6 +125,46 @@
   register: nat_route
   changed_when: nat_route.rc == 0
   failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default('')) and 'route' not in (nat_route.stderr | default(''))
+
+
+- name: Configure DNS on private-only nodes
+  ansible.builtin.raw: |
+    printf "nameserver 185.12.64.1
+nameserver 185.12.64.2
+" > /etc/resolv.conf
+    # Make resolv.conf persistent across reboots
+    mkdir -p /etc/cloud/cloud.cfg.d
+    echo "manage_resolv_conf: false" > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ (groups.get('k8s_nodes', []) | default([])) + (master_ips | default([])) + (worker_ips | default([])) }}"
+  when: item is defined and item | length > 0
+  ignore_errors: true
+
+- name: Add default route on private-only nodes
+  ansible.builtin.raw: |
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
+    ip route show default | grep -q "$PRIV_IF" ||       ip route add default via 10.0.0.1 dev "$PRIV_IF" mtu 1450
+    # Persist via netplan
+    if [ -d /etc/netplan ]; then
+      cat > /etc/netplan/60-private-routes.yaml << NPEOF
+    network:
+      version: 2
+      ethernets:
+        ${PRIV_IF}:
+          routes:
+            - to: default
+              via: 10.0.0.1
+              metric: 100
+              mtu: 1450
+    NPEOF
+    fi
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ (master_ips | default([])) + (worker_ips | default([])) }}"
+  when: item is defined and item | length > 0
+  ignore_errors: true
 
 # ============================================
 # Docker Installation (for Headscale)
