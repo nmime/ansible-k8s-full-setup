@@ -1,22 +1,4 @@
 ---
-# Ansible Workflow Platform
-# Complete automation for Kubernetes platform deployment
-#
-# Deploys full-stack Kubernetes platform including:
-# - Hetzner Cloud Infrastructure
-# - Kubernetes Cluster (via Kubespray)
-# - Network Security (VPN + Firewalls)
-# - Secrets Management (Vault + ESO)
-# - Databases (PostgreSQL + MongoDB)
-# - Storage (MinIO)
-# - GitLab EE (Enterprise with Ultimate license)
-# - ArgoCD (GitOps)
-# - Observability (Monitoring + Logging)
-# - Event-Driven Autoscaling (KEDA)
-# - Brocoders Boilerplate Setup (optional)
-
-# Deployment sequence: infrastructure → network security → cluster → secrets → storage → observability (PMM) → databases → gitlab → gitops → autoscaling
-
 - name: Deploy Kubernetes Platform
   hosts: localhost
   connection: local
@@ -29,7 +11,6 @@
   vars:
     tier: "{{ tier | default('medium') }}"
     project_name: "{{ project_name | default('k8s') }}"
-    # domain and email are required — validated in pre_tasks
 
   pre_tasks:
     - name: Display deployment banner
@@ -105,143 +86,91 @@
       when: kubectl_check.rc != 0
 
   tasks:
-    # Step 0: Generate and persist all platform secrets
     - name: Generate platform secrets
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: generate-secrets
-        tasks_from: main.yml
       tags:
         - always
 
-    # Step 1: Infrastructure
     - name: Deploy Hetzner Cloud Infrastructure
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: hetzner-infra
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        project_name: "{{ project_name }}"
       tags:
         - infrastructure
         - infra
 
-    # Step 2: Network Security
     - name: Deploy Network Security (VPN + Firewalls)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: network-security
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - network
         - security
 
-    # Step 3: Kubernetes Cluster
     - name: Deploy Kubernetes Cluster
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-cluster-management
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - cluster
         - kubernetes
 
-    # Step 4: Secrets Management
     - name: Deploy Secrets Management (Vault + ESO)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-secrets
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - secrets
         - vault
 
-    # Step 5: Storage (MinIO)
-    - name: Deploy MinIO S3 Storage
-      ansible.builtin.include_role:
-        name: minio-storage
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-      tags:
-        - storage
-        - minio
-
-    # Step 6: Observability (before databases — PMM Server must exist for DB monitoring)
     - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana + PMM)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-observability
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       tags:
         - observability
         - monitoring
 
-    # Step 7: Databases (PMM client sidecars connect to PMM Server from step 6)
+    - name: Deploy MinIO S3 Storage
+      ansible.builtin.import_role:
+        name: minio-storage
+      tags:
+        - storage
+        - minio
+
     - name: Deploy Databases (PostgreSQL + MongoDB)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-databases
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - databases
         - postgresql
 
-    # Step 8: GitLab EE
     - name: Deploy GitLab EE Self-Hosted
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: gitlab-selfhosted
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       tags:
         - gitlab
         - cicd
 
-    # Step 9: GitOps (ArgoCD)
     - name: Deploy ArgoCD GitOps
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-gitops
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       tags:
         - gitops
         - argocd
 
-    # Step 10: Autoscaling
     - name: Deploy KEDA Event-Driven Autoscaling
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-autoscaling
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - autoscaling
         - keda
 
-    # Step 11: Brocoders Boilerplate (optional)
     - name: Deploy Brocoders Boilerplate Application
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: brocoders-boilerplate-setup
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       when: deploy_boilerplate | default(false) | bool
       tags:
         - boilerplate
         - application
 
   post_tasks:
-    # Final deployment summary
     - name: Display deployment completion summary
       debug:
         msg:

@@ -285,7 +285,13 @@
       --ip-range 10.0.0.0/24
   register: subnet_infra
   changed_when: subnet_infra.rc == 0
-  failed_when: subnet_infra.rc != 0 and 'already' not in (subnet_infra.stderr | default('')) and 'exists' not in (subnet_infra.stderr | default(''))
+  failed_when: >-
+    subnet_infra.rc != 0
+    and 'already' not in (subnet_infra.stderr | default(''))
+    and 'exists' not in (subnet_infra.stderr | default(''))
+    and 'overlaps' not in (subnet_infra.stderr | default(''))
+    and 'duplicate' not in (subnet_infra.stderr | default(''))
+    and 'uniqueness' not in (subnet_infra.stderr | default(''))
 
 - name: Create control plane subnet
   ansible.builtin.command:
@@ -296,7 +302,13 @@
       --ip-range 10.0.1.0/24
   register: subnet_cp
   changed_when: subnet_cp.rc == 0
-  failed_when: subnet_cp.rc != 0 and 'already' not in (subnet_cp.stderr | default('')) and 'exists' not in (subnet_cp.stderr | default(''))
+  failed_when: >-
+    subnet_cp.rc != 0
+    and 'already' not in (subnet_cp.stderr | default(''))
+    and 'exists' not in (subnet_cp.stderr | default(''))
+    and 'overlaps' not in (subnet_cp.stderr | default(''))
+    and 'duplicate' not in (subnet_cp.stderr | default(''))
+    and 'uniqueness' not in (subnet_cp.stderr | default(''))
 
 - name: Create workers subnet
   ansible.builtin.command:
@@ -307,7 +319,13 @@
       --ip-range 10.0.2.0/24
   register: subnet_workers
   changed_when: subnet_workers.rc == 0
-  failed_when: subnet_workers.rc != 0 and 'already' not in (subnet_workers.stderr | default('')) and 'exists' not in (subnet_workers.stderr | default(''))
+  failed_when: >-
+    subnet_workers.rc != 0
+    and 'already' not in (subnet_workers.stderr | default(''))
+    and 'exists' not in (subnet_workers.stderr | default(''))
+    and 'overlaps' not in (subnet_workers.stderr | default(''))
+    and 'duplicate' not in (subnet_workers.stderr | default(''))
+    and 'uniqueness' not in (subnet_workers.stderr | default(''))
 
 # ============================================
 # Placement Group (for HA)

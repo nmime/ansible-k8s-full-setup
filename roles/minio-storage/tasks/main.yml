@@ -1,6 +1,6 @@
 ---
 # MinIO S3-Compatible Storage Role - Bitnami Helm Chart 17.0.21
-# S3-compatible object storage on Kubernetes using Chainguard image
+# S3-compatible object storage on Kubernetes using official MinIO image
 # Supports standalone (minimal/small) and distributed (medium/production) modes
 
 - name: Set MinIO tier-specific variables
@@ -57,9 +57,12 @@
     wait: true
     timeout: 10m0s
     values:
+      global:
+        security:
+          allowInsecureImages: true
       image:
-        registry: cgr.dev
-        repository: chainguard/minio
+        registry: quay.io
+        repository: minio/minio
         tag: latest
       mode: "{{ minio_mode }}"
       auth:
@@ -89,7 +92,7 @@
       metrics:
         enabled: true
         serviceMonitor:
-          enabled: true
+          enabled: false
       provisioning:
         enabled: true
         buckets:
@@ -275,7 +278,7 @@
       - "  MinIO S3 Storage Deployed"
       - "=========================================="
       - "  Chart: bitnami/minio {{ minio_chart_ver }}"
-      - "  Image: cgr.dev/chainguard/minio"
+      - "  Image: quay.io/minio/minio"
       - "  Mode: {{ minio_mode }}"
       - "  Replicas: {{ minio_replicas_count }}"
       - "  Storage: {{ minio_storage }} per node"
