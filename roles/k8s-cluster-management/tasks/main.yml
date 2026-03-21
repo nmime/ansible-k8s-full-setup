@@ -166,7 +166,12 @@
 - name: Clean stale SSH control sockets before Kubespray
   ansible.builtin.shell: |
     rm -rf /root/.ansible/cp/* 2>/dev/null
+    rm -rf /tmp/outer-ansible-cp/* 2>/dev/null
+    rm -rf /tmp/kubespray-cp/* 2>/dev/null
     find /root/.ssh -name 'ansible-*' -type s -delete 2>/dev/null
+    pkill -f 'ssh.*ControlMaster' 2>/dev/null || true
+    sleep 1
+    mkdir -p /tmp/kubespray-cp /tmp/outer-ansible-cp
     true
   delegate_to: localhost
   become: false
@@ -180,6 +185,9 @@
       --become --become-user=root
       cluster.yml
     chdir: "{{ playbook_dir }}/kubespray"
+  environment:
+    ANSIBLE_SSH_CONTROL_PATH: "/tmp/kubespray-cp/%%r@%%h-%%p"
+    ANSIBLE_SSH_CONTROL_PATH_DIR: "/tmp/kubespray-cp"
   delegate_to: localhost
   become: false
   register: kubespray_result
