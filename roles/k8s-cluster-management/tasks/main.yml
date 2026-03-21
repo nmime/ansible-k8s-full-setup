@@ -136,7 +136,7 @@
         - NodeRestriction
         - PodSecurity
       # SSH
-      ansible_ssh_common_args: '-o ProxyJump=root@{{ bastion_public_ip | default("") }}'
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyJump=root@{{ bastion_public_ip | default("") }}'
       ansible_user: root
       # etcd
       etcd_deployment_type: host

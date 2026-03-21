@@ -186,9 +186,7 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: vault secrets enable -path=secret kv-v2
-    environment:
-      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+    command: sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }} vault secrets enable -path=secret kv-v2"
   when: vault_init is changed
   failed_when: false
 
@@ -196,9 +194,7 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: vault auth enable kubernetes
-    environment:
-      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+    command: sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }} vault auth enable kubernetes"
   when: vault_init is changed
   failed_when: false
 
@@ -206,11 +202,10 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: >
+    command: >-
+      sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }}
       vault write auth/kubernetes/config
-      kubernetes_host="https://kubernetes.default.svc:443"
-    environment:
-      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+      kubernetes_host=https://kubernetes.default.svc:443"
   when: vault_init is changed
   failed_when: false
 
@@ -328,14 +323,13 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: >
+    command: >-
+      sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }}
       vault write auth/kubernetes/role/external-secrets
       bound_service_account_names=external-secrets-vault
       bound_service_account_namespaces={{ eso_ns }}
       policies=default,external-secrets
-      ttl=1h
-    environment:
-      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
+      ttl=1h"
   when: vault_init is changed
   failed_when: false
 
@@ -344,6 +338,7 @@
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
     command: |
+      export VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }}
       vault policy write external-secrets - <<EOF
       path "secret/data/*" {
         capabilities = ["read", "list"]
@@ -352,8 +347,6 @@
         capabilities = ["read", "list"]
       }
       EOF
-    environment:
-      VAULT_TOKEN: "{{ (vault_init.stdout | from_json).root_token }}"
   when: vault_init is changed
   failed_when: false
 
@@ -361,7 +354,7 @@
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: external-secrets.io/v1beta1
+      apiVersion: external-secrets.io/v1
       kind: ClusterSecretStore
       metadata:
         name: vault-backend
@@ -387,7 +380,7 @@
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: external-secrets.io/v1beta1
+      apiVersion: external-secrets.io/v1
       kind: ExternalSecret
       metadata:
         name: example-secret
@@ -403,7 +396,7 @@
         data:
           - secretKey: password
             remoteRef:
-              key: secret/data/example
+              key: example
               property: password
 
 - name: Display secrets management summary

@@ -181,7 +181,7 @@
     wait: true
     timeout: "10m0s"
     values:
-      deploymentMode: SimpleScalable
+      deploymentMode: "{{ 'SingleBinary' if tier in ['minimal', 'small'] else 'SimpleScalable' }}"
       loki:
         auth_enabled: false
         commonConfig:
@@ -247,9 +247,28 @@
           enabled: true
           size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+      singleBinary:
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else 0 }}"
+        resources:
+          requests:
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        persistence:
+          enabled: true
+          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
+          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gateway:
         enabled: true
         replicas: 1
+        nginxConfig:
+          resolver: coredns.kube-system.svc.cluster.local.
+      chunksCache:
+        enabled: false
+      resultsCache:
+        enabled: false
       minio:
         enabled: false
       test:
