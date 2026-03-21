@@ -18,6 +18,14 @@ yq --version           # >= 4.0 (for platform orchestrator)
 hcloud version         # Latest
 ```
 
+### Optional Tools (for GitLab EE license)
+```bash
+# Ruby is needed only for GitLab EE license generation
+# Without Ruby, GitLab deploys as CE (Community Edition)
+ruby --version         # >= 3.0
+gem --version
+```
+
 ### Setup Environment
 ```bash
 export HCLOUD_TOKEN="your-hetzner-api-token"

@@ -85,6 +85,17 @@
         msg: "WARNING: kubectl not installed locally. Install it for post-deployment cluster access."
       when: kubectl_check.rc != 0
 
+    - name: Pre-flight check - required Ansible collections
+      ansible.builtin.command: ansible-galaxy collection list kubernetes.core
+      register: k8s_collection_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if kubernetes.core collection missing
+      fail:
+        msg: "Required Ansible collection 'kubernetes.core' not found. Install: ansible-galaxy collection install -r requirements.yml"
+      when: k8s_collection_check.rc != 0
+
   tasks:
     - name: Generate platform secrets
       ansible.builtin.import_role:
