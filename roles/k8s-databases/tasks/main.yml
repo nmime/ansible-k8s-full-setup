@@ -7,8 +7,8 @@
   set_fact:
     db_ns: "databases"
     pg_operator_ver: "2.8.2"
-    psmdb_operator_ver: "1.21.2"
-    pg_version: "{{ postgresql_version | default(17) }}"
+    psmdb_operator_ver: "1.22.0"
+    pg_version: "{{ postgresql_version | default(18) }}"
     pg_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
     pg_storage: "{{ postgresql_storage | default('20Gi') }}"
     pg_proxy_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
@@ -105,7 +105,7 @@
         namespace: "{{ db_ns }}"
       spec:
         crVersion: "{{ pg_operator_ver }}"
-        image: "percona/percona-distribution-postgresql:{{ pg_version }}.7-2"
+        image: "percona/percona-distribution-postgresql:{{ pg_version }}.3-1"
         postgresVersion: "{{ pg_version }}"
         port: 5432
         instances:
@@ -137,7 +137,7 @@
         proxy:
           pgBouncer:
             replicas: "{{ pg_proxy_replicas }}"
-            image: "percona/percona-pgbouncer:1.25.0-1"
+            image: "percona/percona-pgbouncer:1.25.1-1"
             config:
               global:
                 pool_mode: "transaction"
@@ -161,7 +161,7 @@
                       topologyKey: kubernetes.io/hostname
         backups:
           pgbackrest:
-            image: "percona/percona-pgbackrest:2.57.0-1"
+            image: "percona/percona-pgbackrest:2.58.0-1"
             repos:
               - name: repo1
                 schedules:
@@ -330,7 +330,7 @@
           size: 0
         backup:
           enabled: true
-          image: "percona/percona-backup-mongodb:2.8.0"
+          image: "percona/percona-backup-mongodb:2.13.0"
           storages:
             s3-minio:
               type: s3
