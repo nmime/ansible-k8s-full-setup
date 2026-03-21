@@ -83,9 +83,9 @@
 - name: Check if any auto-selected type is missing in primary region
   set_fact:
     needs_eu_fallback: >-
-      {{ (hetzner_bastion_type | default(auto_bastion_type | default('')) | trim | length == 0)
-         or (hetzner_cp_type | default(auto_cp_type | default('')) | trim | length == 0)
-         or (hetzner_worker_type | default(auto_worker_type | default('')) | trim | length == 0) }}
+      {{ (hetzner_bastion_type | default(auto_bastion_type | default(''), true) | trim | length == 0)
+         or (hetzner_cp_type | default(auto_cp_type | default(''), true) | trim | length == 0)
+         or (hetzner_worker_type | default(auto_worker_type | default(''), true) | trim | length == 0) }}
 
 - name: Find cheapest EU fallback region
   block:
@@ -182,11 +182,11 @@
 - name: Set tier-specific server configuration
   set_fact:
     cp_count: "{{ current_tier_spec.cp_count }}"
-    cp_type: "{{ hetzner_cp_type | default(auto_cp_type) | trim }}"
+    cp_type: "{{ hetzner_cp_type | default(auto_cp_type, true) | trim }}"
     cp_schedulable: "{{ current_tier_spec.cp_schedulable | default(false) }}"
     worker_count: "{{ current_tier_spec.worker_count }}"
-    worker_type: "{{ hetzner_worker_type | default(auto_worker_type) | trim }}"
-    bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type) | trim }}"
+    worker_type: "{{ hetzner_worker_type | default(auto_worker_type, true) | trim }}"
+    bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type, true) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
 
 - name: Validate all server types were found
