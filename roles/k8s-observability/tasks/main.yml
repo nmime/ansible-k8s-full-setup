@@ -6,9 +6,9 @@
 - name: Set observability tier-specific variables
   set_fact:
     monitoring_namespace: "monitoring"
-    vm_operator_version: "0.52.0"
-    loki_chart_version: "6.29.0"
-    grafana_chart_version: "8.10.0"
+    vm_operator_version: "0.59.3"
+    loki_chart_version: "6.55.0"
+    grafana_chart_version: "10.5.15"
     grafana_domain: "grafana.{{ domain }}"
     vm_retention: "{{ metrics_retention | default('30d') }}"
     vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
@@ -278,7 +278,7 @@
   kubernetes.core.helm:
     name: promtail
     chart_ref: grafana/promtail
-    chart_version: "6.16.6"
+    chart_version: "6.17.1"
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present

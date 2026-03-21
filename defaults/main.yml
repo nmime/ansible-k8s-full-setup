@@ -52,7 +52,7 @@ storage_class: hcloud-volumes
 k8s_version: v1.34.3
 k8s_cni: cilium
 cilium_version: v1.18.6
-gateway_api_version: v1.4.0
+gateway_api_version: v1.5.1
 k8s_pod_cidr: 10.233.64.0/18
 k8s_service_cidr: 10.233.0.0/18
 
@@ -75,15 +75,15 @@ eso_enabled: true
 # Databases
 postgresql_replicas: 2
 postgresql_storage: 20Gi
-postgresql_version: 17
+postgresql_version: 18
 mongodb_storage: 20Gi
 
 # GitLab
-gitlab_chart_version: "9.7.1"
+gitlab_chart_version: "9.10.0"
 gitlab_runner_concurrent_jobs: 10
 
 # GitOps (ArgoCD)
-argocd_chart_version: "7.8.5"
+argocd_chart_version: "9.4.15"
 
 # Observability
 metrics_retention: 30d
@@ -92,7 +92,7 @@ logging_retention: 14d
 
 # Autoscaling
 keda_enabled: true
-keda_chart_version: "2.18.2"
+keda_chart_version: "2.19.0"
 
 # Backup
 backup_schedule: "0 2 * * *"
