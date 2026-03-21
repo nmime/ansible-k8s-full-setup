@@ -54,6 +54,14 @@
 
 - name: Configure UFW firewall on bastion
   ansible.builtin.raw: |
+    sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+    sed -i 's/^#net\/ipv4\/ip_forward=1/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
+    sed -i 's/^net\/ipv4\/ip_forward=0/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
+    if ! grep -q '^\*nat' /etc/ufw/before.rules; then
+      printf '*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE\nCOMMIT\n' > /tmp/ufw-nat.tmp
+      cat /etc/ufw/before.rules >> /tmp/ufw-nat.tmp
+      mv /tmp/ufw-nat.tmp /etc/ufw/before.rules
+    fi
     ufw default deny incoming
     ufw default allow outgoing
     ufw allow 22/tcp comment "SSH"
@@ -62,7 +70,9 @@
     ufw allow 3478/udp comment "STUN/DERP"
     ufw allow 41641/udp comment "WireGuard/Tailscale"
     ufw allow from 10.0.0.0/16 comment "Private network"
+    ufw route allow in on enp7s0 out on eth0
     echo "y" | ufw enable
+    ufw reload
   delegate_to: "{{ bastion_host }}"
   become: true
 
@@ -88,24 +98,21 @@
 
 - name: Enable IP forwarding and NAT on bastion
   ansible.builtin.raw: |
-    # Enable IP forwarding
+    sysctl -w net.ipv4.ip_forward=1
     echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
-    sysctl -p /etc/sysctl.d/99-nat.conf
-    # Detect default outbound interface
     DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
     DEFAULT_IF="${DEFAULT_IF:-eth0}"
-    # NAT masquerade for private network traffic
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
     iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
       iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
-    # Allow forwarding for NAT
-    iptables -C FORWARD -i enp7s0 -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || \
-      iptables -A FORWARD -i enp7s0 -o "$DEFAULT_IF" -j ACCEPT
-    iptables -C FORWARD -i "$DEFAULT_IF" -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-      iptables -A FORWARD -i "$DEFAULT_IF" -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-    # Persist iptables rules
+    iptables -C FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
-    # Ensure rules restore on boot
+    mkdir -p /etc/network/if-pre-up.d
     printf '#!/bin/sh\niptables-restore < /etc/iptables/rules.v4\n' > /etc/network/if-pre-up.d/iptables
     chmod +x /etc/network/if-pre-up.d/iptables
   delegate_to: "{{ bastion_host }}"
@@ -116,7 +123,7 @@
     cmd: >
       hcloud network add-route {{ project }}-network
       --destination 0.0.0.0/0
-      --gateway {{ bastion_private_ip | default('10.0.0.2') }}
+      --gateway {{ bastion_private_ip | default('10.0.2.1') }}
   delegate_to: localhost
   become: false
   register: nat_route
@@ -140,7 +147,7 @@
   ansible.builtin.raw: |
     PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
     PRIV_IF="${PRIV_IF:-enp7s0}"
-    ip route show default | grep -q "$PRIV_IF" ||       ip route add default via 10.0.0.1 dev "$PRIV_IF" mtu 1450
+    ip route del default 2>/dev/null; ip route add default via 10.0.0.1 dev "$PRIV_IF" mtu 1450
     # Persist via netplan
     if [ -d /etc/netplan ]; then
       cat > /etc/netplan/60-private-routes.yaml << NPEOF
@@ -172,6 +179,23 @@
       systemctl enable docker
       systemctl start docker
     fi
+  delegate_to: "{{ bastion_host }}"
+  become: true
+
+- name: Re-apply NAT after Docker install
+  ansible.builtin.raw: |
+    sysctl -w net.ipv4.ip_forward=1
+    DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+    DEFAULT_IF="${DEFAULT_IF:-eth0}"
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
+      iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
+    iptables -C FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables-save > /etc/iptables/rules.v4
   delegate_to: "{{ bastion_host }}"
   become: true
 
