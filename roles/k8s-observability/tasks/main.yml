@@ -118,8 +118,8 @@
                   storage: "{{ vm_storage_size }}"
         resources:
           requests:
-            cpu: 100m
-            memory: 256Mi
+            cpu: "{{ '50m' if tier == 'minimal' else '100m' }}"
+            memory: "{{ '128Mi' if tier == 'minimal' else '256Mi' }}"
           limits:
             cpu: 1000m
             memory: 2Gi
@@ -213,39 +213,39 @@
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: "{{ vm_replicas }}"
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: "{{ vm_replicas }}"
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: 10Gi
+          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       backend:
-        replicas: "{{ vm_replicas }}"
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: 10Gi
+          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gateway:
         enabled: true
