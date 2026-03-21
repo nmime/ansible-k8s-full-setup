@@ -65,7 +65,7 @@ all:
     # ----------------------------------------
     postgresql_replicas: 2
     postgresql_storage: 20Gi
-    postgresql_version: 18
+    postgresql_version: 17
 
     # ----------------------------------------
     # GitLab

@@ -52,6 +52,21 @@
   become: false
   when: not gitlab_license_file.stat.exists
 
+- name: Check if Ruby is available for license generation
+  ansible.builtin.command:
+    cmd: ruby --version
+  delegate_to: localhost
+  become: false
+  register: ruby_check
+  changed_when: false
+  failed_when: false
+  when: not gitlab_license_file.stat.exists
+
+- name: Warn if Ruby is not installed
+  ansible.builtin.debug:
+    msg: "WARNING: Ruby is not installed. GitLab EE license generation will be skipped. Install Ruby and gem to enable license generation."
+  when: not gitlab_license_file.stat.exists and ruby_check.rc | default(1) != 0
+
 - name: Install Ruby dependencies for license generation
   ansible.builtin.command:
     cmd: "{{ item }}"
@@ -59,7 +74,7 @@
     - gem install gitlab-license
   delegate_to: localhost
   become: false
-  when: not gitlab_license_file.stat.exists
+  when: not gitlab_license_file.stat.exists and ruby_check.rc | default(1) == 0
   register: gem_install
   changed_when: gem_install.rc == 0
   failed_when: gem_install.rc != 0
@@ -110,7 +125,7 @@
   delegate_to: localhost
   become: false
   register: license_gen
-  when: not gitlab_license_file.stat.exists
+  when: not gitlab_license_file.stat.exists and ruby_check.rc | default(1) == 0
 
 - name: Read generated public key
   slurp:
@@ -118,6 +133,7 @@
   register: gitlab_public_key
   delegate_to: localhost
   become: false
+  failed_when: false
 
 - name: Read generated license file
   slurp:
@@ -125,6 +141,7 @@
   register: gitlab_license_data
   delegate_to: localhost
   become: false
+  failed_when: false
 
 # ============================================
 # Helm Repositories
@@ -192,6 +209,7 @@
       type: Opaque
       data:
         public.key: "{{ gitlab_public_key.content }}"
+  when: gitlab_public_key.content is defined
 
 - name: Create license secret
   kubernetes.core.k8s:
@@ -205,6 +223,7 @@
       type: Opaque
       data:
         gitlab.gitlab-license: "{{ gitlab_license_data.content }}"
+  when: gitlab_license_data.content is defined
 
 # ============================================
 # GitLab EE Helm Installation
@@ -497,6 +516,7 @@
         namespace: "{{ gitlab_namespace }}"
       data:
         gitlab.gitlab-license: "{{ gitlab_license_data.content | b64decode }}"
+  when: gitlab_license_data.content is defined
 
 # ============================================
 # Gateway API Routes
