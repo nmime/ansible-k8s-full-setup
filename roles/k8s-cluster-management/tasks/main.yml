@@ -163,6 +163,15 @@
   delegate_to: localhost
   become: false
 
+- name: Clean stale SSH control sockets before Kubespray
+  ansible.builtin.shell: |
+    rm -rf /root/.ansible/cp/* 2>/dev/null
+    find /root/.ssh -name 'ansible-*' -type s -delete 2>/dev/null
+    true
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Run Kubespray cluster deployment
   ansible.builtin.command:
     cmd: >
