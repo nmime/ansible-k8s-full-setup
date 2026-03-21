@@ -92,6 +92,7 @@
       stringData:
         PMM_SERVER_USER: "admin"
         PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
+        PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
 
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
@@ -361,6 +362,26 @@
           enabled: true
           image: "percona/pmm-client:2"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
+
+- name: Wait for MongoDB users secret to be created by operator
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "percona-server-mongodb-users"
+  register: mongo_users_secret
+  until: mongo_users_secret.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Patch MongoDB users secret with PMM_SERVER_API_KEY
+  kubernetes.core.k8s:
+    state: patched
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "percona-server-mongodb-users"
+    definition:
+      stringData:
+        PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
