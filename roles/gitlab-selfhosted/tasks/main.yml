@@ -413,8 +413,7 @@
         install: false
       grafana:
         install: false
-      certmanager:
-        install: false
+      installCertmanager: false
       nginx-ingress:
         enabled: false
       gitlab-runner:

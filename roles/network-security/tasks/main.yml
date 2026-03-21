@@ -195,7 +195,6 @@ nameserver 185.12.64.2
     server_url: https://{{ vpn_domain }}
     listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 0.0.0.0:9090
-    private_key_path: /var/lib/headscale/private.key
     noise:
       private_key_path: /var/lib/headscale/noise_private.key
     prefixes:
@@ -205,10 +204,10 @@ nameserver 185.12.64.2
       server:
         enabled: true
         region_id: 999
-        region_code: custom
-        region_name: Headscale
         stun_listen_addr: 0.0.0.0:3478
-      urls: []
+        private_key_path: /var/lib/headscale/derp_server_private.key
+      urls:
+          - https://controlplane.tailscale.com/derpmap/default
       auto_update_enabled: true
       update_frequency: 24h
     database:

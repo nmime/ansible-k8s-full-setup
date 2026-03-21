@@ -75,7 +75,7 @@ eso_enabled: true
 # Databases
 postgresql_replicas: 2
 postgresql_storage: 20Gi
-postgresql_version: 18
+postgresql_version: 17
 mongodb_storage: 20Gi
 
 # GitLab
