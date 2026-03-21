@@ -79,6 +79,20 @@
           repo2-s3-key={{ minio_root_user }}
           repo2-s3-key-secret={{ minio_root_password }}
 
+- name: Create PMM credentials secret for databases namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pmm-secret
+        namespace: "{{ db_ns }}"
+      type: Opaque
+      stringData:
+        PMM_SERVER_USER: "admin"
+        PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
+
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
     state: present
@@ -177,6 +191,18 @@
               repo2-s3-uri-style: "path"
               repo2-retention-full: "4"
               repo2-retention-full-type: "count"
+        pmm:
+          enabled: true
+          image: "percona/pmm-client:2"
+          serverHost: "pmm-server.monitoring.svc.cluster.local"
+          secret: pmm-secret
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
         extensions:
           builtin:
             pg_stat_statements: {}
@@ -331,6 +357,10 @@
               storageName: s3-minio
               compressionType: gzip
               type: physical
+        pmm:
+          enabled: true
+          image: "percona/pmm-client:2"
+          serverHost: "pmm-server.monitoring.svc.cluster.local"
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
