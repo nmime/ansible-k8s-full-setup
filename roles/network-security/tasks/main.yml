@@ -371,7 +371,9 @@
 - name: Install hcloud CLI on bastion
   ansible.builtin.raw: |
     if ! command -v hcloud &>/dev/null; then
-      curl -sL https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz | tar xz -C /usr/local/bin/
+      curl -fsSL -o /tmp/hcloud.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
+      tar xzf /tmp/hcloud.tar.gz -C /usr/local/bin/ hcloud
+      rm -f /tmp/hcloud.tar.gz
     fi
   delegate_to: "{{ bastion_host }}"
   become: true
