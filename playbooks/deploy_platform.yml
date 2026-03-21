@@ -120,19 +120,19 @@
         - secrets
         - vault
 
-    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana + PMM)
-      ansible.builtin.import_role:
-        name: k8s-observability
-      tags:
-        - observability
-        - monitoring
-
     - name: Deploy MinIO S3 Storage
       ansible.builtin.import_role:
         name: minio-storage
       tags:
         - storage
         - minio
+
+    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
+      ansible.builtin.import_role:
+        name: k8s-observability
+      tags:
+        - observability
+        - monitoring
 
     - name: Deploy Databases (PostgreSQL + MongoDB)
       ansible.builtin.import_role:

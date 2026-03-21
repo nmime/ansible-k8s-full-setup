@@ -106,10 +106,7 @@
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
     # Ensure rules restore on boot
-    cat > /etc/network/if-pre-up.d/iptables << "IPTEOF"
-#!/bin/sh
-iptables-restore < /etc/iptables/rules.v4
-IPTEOF
+    printf '#!/bin/sh\niptables-restore < /etc/iptables/rules.v4\n' > /etc/network/if-pre-up.d/iptables
     chmod +x /etc/network/if-pre-up.d/iptables
   delegate_to: "{{ bastion_host }}"
   become: true
@@ -129,15 +126,13 @@ IPTEOF
 
 - name: Configure DNS on private-only nodes
   ansible.builtin.raw: |
-    printf "nameserver 185.12.64.1
-nameserver 185.12.64.2
-" > /etc/resolv.conf
+    printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\n' > /etc/resolv.conf
     # Make resolv.conf persistent across reboots
     mkdir -p /etc/cloud/cloud.cfg.d
     echo "manage_resolv_conf: false" > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg
   delegate_to: "{{ item }}"
   become: true
-  loop: "{{ (groups.get('k8s_nodes', []) | default([])) + (master_ips | default([])) + (worker_ips | default([])) }}"
+  loop: "{{ (groups.get('k8s_nodes', []) | default([])) + (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
   when: item is defined and item | length > 0
   ignore_errors: true
 
@@ -162,7 +157,7 @@ nameserver 185.12.64.2
     fi
   delegate_to: "{{ item }}"
   become: true
-  loop: "{{ (master_ips | default([])) + (worker_ips | default([])) }}"
+  loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
   when: item is defined and item | length > 0
   ignore_errors: true
 

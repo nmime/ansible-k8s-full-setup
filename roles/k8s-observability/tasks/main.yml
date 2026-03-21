@@ -335,13 +335,6 @@
               access: proxy
               jsonData:
                 maxLines: 1000
-            - name: PMM
-              type: prometheus
-              uid: pmm
-              url: "http://pmm-server.{{ monitoring_namespace }}.svc.cluster.local/prometheus"
-              access: proxy
-              jsonData:
-                timeInterval: 5s
       dashboardProviders:
         dashboardproviders.yaml:
           apiVersion: 1
@@ -460,6 +453,7 @@
 # ============================================
 
 - name: Create PMM admin password secret
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -473,6 +467,7 @@
         PMM_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
 
 - name: Deploy PMM Server
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -541,6 +536,7 @@
                   claimName: pmm-server-data
 
 - name: Create PMM Server PVC
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -558,6 +554,7 @@
             storage: 20Gi
 
 - name: Create PMM Server Service
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -580,6 +577,7 @@
             targetPort: 443
 
 - name: Wait for PMM Server to be ready
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s_info:
     kind: Deployment
     namespace: "{{ monitoring_namespace }}"
@@ -593,6 +591,7 @@
   failed_when: false
 
 - name: Create PMM HTTPRoute (VPN-only via admin-gateway)
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -618,6 +617,7 @@
                 port: 80
 
 - name: Create TLS Certificate for PMM
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -681,6 +681,7 @@
             interval: 30s
 
 - name: Create VMServiceScrape for PMM Server
+  when: tier in ["medium", "production"]
   kubernetes.core.k8s:
     state: present
     definition:
