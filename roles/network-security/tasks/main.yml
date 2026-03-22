@@ -400,14 +400,14 @@
 
 - name: Wait for DNS to stabilize after fix
   ansible.builtin.shell: |
-    for i in $(seq 1 15); do
-      if getent hosts dl.k8s.io >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1; then
+    for i in $(seq 1 30); do
+      if getent hosts dl.k8s.io >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1 && getent hosts get.helm.sh >/dev/null 2>&1; then
         echo "DNS ready after $i attempts"
         exit 0
       fi
       sleep 2
     done
-    echo "DNS still not ready after 15 attempts, continuing anyway"
+    echo "DNS still not ready after 30 attempts, continuing anyway"
     exit 0
   args:
     executable: /bin/bash
@@ -426,26 +426,30 @@
     ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 {{ bastion_host }} "command -v hcloud" 2>/dev/null && NEED_HCLOUD=false || true
     ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 {{ bastion_host }} "command -v yq" 2>/dev/null && NEED_YQ=false || true
     if $NEED_KUBECTL; then
-      curl -4 --retry 3 --retry-delay 5 -fsSL "https://dl.k8s.io/release/v1.34.3/bin/linux/amd64/kubectl" -o /tmp/bastion-tools/kubectl
+      curl -4 --retry 10 --retry-delay 10 --retry-connrefused --retry-all-errors -fsSL "https://dl.k8s.io/release/v1.34.3/bin/linux/amd64/kubectl" -o /tmp/bastion-tools/kubectl
       chmod +x /tmp/bastion-tools/kubectl
     fi
     if $NEED_HELM; then
-      curl -4 --retry 3 --retry-delay 5 -fsSL "https://get.helm.sh/helm-v3.20.1-linux-amd64.tar.gz" -o /tmp/bastion-tools/helm.tar.gz
+      curl -4 --retry 10 --retry-delay 10 --retry-connrefused --retry-all-errors -fsSL "https://get.helm.sh/helm-v3.20.1-linux-amd64.tar.gz" -o /tmp/bastion-tools/helm.tar.gz
       tar xzf /tmp/bastion-tools/helm.tar.gz -C /tmp/bastion-tools/ linux-amd64/helm --strip-components=1
       rm -f /tmp/bastion-tools/helm.tar.gz
     fi
     if $NEED_HCLOUD; then
-      curl -4 --retry 3 --retry-delay 5 -fsSL "https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz" -o /tmp/bastion-tools/hcloud.tar.gz
+      curl -4 --retry 10 --retry-delay 10 --retry-connrefused --retry-all-errors -fsSL "https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz" -o /tmp/bastion-tools/hcloud.tar.gz
       tar xzf /tmp/bastion-tools/hcloud.tar.gz -C /tmp/bastion-tools/ hcloud
       rm -f /tmp/bastion-tools/hcloud.tar.gz
     fi
     if $NEED_YQ; then
-      curl -4 --retry 3 --retry-delay 5 -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /tmp/bastion-tools/yq
+      curl -4 --retry 10 --retry-delay 10 --retry-connrefused --retry-all-errors -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /tmp/bastion-tools/yq
       chmod +x /tmp/bastion-tools/yq
     fi
     ls -la /tmp/bastion-tools/ 2>/dev/null || echo "All tools already on bastion"
   args:
     executable: /bin/bash
+  register: download_result
+  retries: 3
+  delay: 30
+  until: download_result is success
 
 - name: Copy tools to bastion
   ansible.builtin.shell: |
