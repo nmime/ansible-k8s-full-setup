@@ -213,7 +213,7 @@
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: "{{ 1 if tier in ['minimal', 'small'] else vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -222,7 +222,7 @@
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: "{{ 1 if tier in ['minimal', 'small'] else vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -235,7 +235,7 @@
           size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       backend:
-        replicas: "{{ 1 if tier in ['minimal', 'small'] else vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
