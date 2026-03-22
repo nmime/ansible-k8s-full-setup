@@ -54,48 +54,63 @@
 
 - name: Configure UFW firewall on bastion
   ansible.builtin.raw: |
+    DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+    DEFAULT_IF="${DEFAULT_IF:-eth0}"
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
     sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
     sed -i 's/^#net\/ipv4\/ip_forward=1/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
     sed -i 's/^net\/ipv4\/ip_forward=0/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
     sysctl -w net.ipv4.ip_forward=1
     grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf && sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
     if ! grep -q '^\*nat' /etc/ufw/before.rules; then
-      printf '*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE\nCOMMIT\n' > /tmp/ufw-nat.tmp
+      printf "*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s 10.0.0.0/16 -o $DEFAULT_IF -j MASQUERADE\nCOMMIT\n" > /tmp/ufw-nat.tmp
       cat /etc/ufw/before.rules >> /tmp/ufw-nat.tmp
       mv /tmp/ufw-nat.tmp /etc/ufw/before.rules
     fi
     ufw default deny incoming
     ufw default allow outgoing
-    ufw allow 22/tcp comment "SSH"
-    ufw allow 80/tcp comment "HTTP ACME challenge"
-    ufw allow 443/tcp comment "Headscale HTTPS"
-    ufw allow 3478/udp comment "STUN/DERP"
-    ufw allow 41641/udp comment "WireGuard/Tailscale"
-    ufw allow from 10.0.0.0/16 comment "Private network"
-    ufw route allow in on enp7s0 out on eth0
-    echo "y" | ufw enable
+    ufw allow 22/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw allow 3478/udp
+    ufw allow 41641/udp
+    ufw allow from 10.0.0.0/16
+    ufw route allow in on "$PRIV_IF" out on "$DEFAULT_IF"
+    ufw --force enable
     ufw reload
-    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE
-    iptables -C FORWARD -i enp7s0 -o eth0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i enp7s0 -o eth0 -j ACCEPT
-    iptables -C FORWARD -i eth0 -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i eth0 -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
+    iptables -C FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
   delegate_to: "{{ bastion_host }}"
   become: true
 
 - name: Harden SSH on bastion
   ansible.builtin.raw: |
-    # Ensure settings are present regardless of whether they were commented out
-    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-      && sed -i 's/^.*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
-      || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
-    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
-      && sed -i 's/^.*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
-      || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
-    grep -q '^MaxAuthTries' /etc/ssh/sshd_config \
-      && sed -i 's/^.*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config \
-      || echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config
+    for setting in       'PasswordAuthentication no'       'PermitRootLogin prohibit-password'       'MaxAuthTries 5'       'MaxStartups 100:30:200'       'MaxSessions 50'       'AllowTcpForwarding yes'       'AllowStreamLocalForwarding no'     ; do
+      key=$(echo "$setting" | cut -d' ' -f1)
+      grep -q "^$key" /etc/ssh/sshd_config         && sed -i "s/^.*$key.*/$setting/" /etc/ssh/sshd_config         || echo "$setting" >> /etc/ssh/sshd_config
+    done
     systemctl restart ssh 2>/dev/null || systemctl restart sshd
   delegate_to: "{{ bastion_host }}"
   become: true
+
+- name: Wait for bastion SSH after restart
+  wait_for:
+    host: "{{ bastion_host }}"
+    port: 22
+    delay: 3
+    timeout: 30
+  delegate_to: localhost
+  become: false
+
+- name: Flush SSH control sockets after bastion SSH restart
+  ansible.builtin.shell: |
+    rm -rf /tmp/outer-ansible-cp/root@{{ bastion_host }}* 2>/dev/null
+    true
+  delegate_to: localhost
+  become: false
+  changed_when: false
 
 # ============================================
 # NAT Gateway (bastion routes outbound for private nodes)
