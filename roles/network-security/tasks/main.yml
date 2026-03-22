@@ -390,8 +390,24 @@
       printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\nnameserver 8.8.8.8\n' > "$TARGET" 2>/dev/null || true
       fi
       systemctl restart systemd-resolved 2>/dev/null || true
-      sleep 2
+      sleep 10
     fi
+    exit 0
+  args:
+    executable: /bin/bash
+  ignore_errors: true
+
+
+- name: Wait for DNS to stabilize after fix
+  ansible.builtin.shell: |
+    for i in $(seq 1 15); do
+      if getent hosts dl.k8s.io >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1; then
+        echo "DNS ready after $i attempts"
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "DNS still not ready after 15 attempts, continuing anyway"
     exit 0
   args:
     executable: /bin/bash
