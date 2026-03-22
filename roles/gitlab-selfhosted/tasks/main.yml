@@ -242,11 +242,7 @@
     values:
       global:
         edition: ee
-        gitlabVersion: "18.10.0-ee"
-        gitlab:
-          license:
-            secret: gitlab-license
-            key: gitlab.gitlab-license
+        gitlabVersion: "18.10.0"
         hosts:
           domain: "{{ domain }}"
           gitlab:
@@ -316,6 +312,8 @@
       redis:
         install: true
         architecture: standalone
+        networkPolicy:
+          enabled: false
         primary:
           persistence:
             enabled: true
@@ -334,15 +332,6 @@
               cpu: "{{ '1500m' if gitlab_mode == 'light' else '2000m' }}"
               memory: "{{ '3Gi' if gitlab_mode == 'light' else '5Gi' }}"
           workerProcesses: 2
-          extraVolumes:
-            - name: license-public-key
-              secret:
-                secretName: gitlab-license-public-key
-          extraVolumeMounts:
-            - name: license-public-key
-              mountPath: /srv/gitlab/.license_encryption_key.pub
-              subPath: public.key
-              readOnly: true
         sidekiq:
           replicaCount: "{{ gitlab_sidekiq_replicas }}"
           minReplicas: 1
@@ -354,15 +343,6 @@
             limits:
               cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
               memory: "{{ '2Gi' if gitlab_mode == 'light' else '3Gi' }}"
-          extraVolumes:
-            - name: license-public-key
-              secret:
-                secretName: gitlab-license-public-key
-          extraVolumeMounts:
-            - name: license-public-key
-              mountPath: /srv/gitlab/.license_encryption_key.pub
-              subPath: public.key
-              readOnly: true
         gitlab-shell:
           replicaCount: "{{ gitlab_webservice_replicas }}"
           minReplicas: "{{ gitlab_webservice_replicas }}"
@@ -399,15 +379,6 @@
               config:
                 secret: gitlab-object-storage
                 key: connection
-          extraVolumes:
-            - name: license-public-key
-              secret:
-                secretName: gitlab-license-public-key
-          extraVolumeMounts:
-            - name: license-public-key
-              mountPath: /srv/gitlab/.license_encryption_key.pub
-              subPath: public.key
-              readOnly: true
       registry:
         enabled: true
         replicaCount: "{{ gitlab_webservice_replicas }}"

@@ -183,79 +183,89 @@
   become: false
 
 - name: Run Kubespray cluster deployment
-  ansible.builtin.command:
-    cmd: >
-      {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook
-      -i inventory/{{ project }}/hosts.yml
-      --become --become-user=root
+  ansible.builtin.shell: |
+    export ANSIBLE_SSH_CONTROL_PATH="/tmp/kubespray-cp/%%r@%%h-%%p"
+    export ANSIBLE_SSH_CONTROL_PATH_DIR="/tmp/kubespray-cp"
+    export ANSIBLE_SSH_ARGS="-o ControlMaster=auto -o ControlPersist=30s -o ControlPath=/tmp/kubespray-cp/%r@%h-%p"
+    cd {{ playbook_dir }}/kubespray
+    {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook \
+      -i inventory/{{ project }}/hosts.yml \
+      --become --become-user=root \
       cluster.yml
-    chdir: "{{ playbook_dir }}/kubespray"
-  environment:
-    ANSIBLE_SSH_CONTROL_PATH: "/tmp/kubespray-cp/%%r@%%h-%%p"
-    ANSIBLE_SSH_CONTROL_PATH_DIR: "/tmp/kubespray-cp"
+  args:
+    executable: /bin/bash
   delegate_to: localhost
   become: false
   register: kubespray_result
   changed_when: true
+  when: not (skip_kubespray | default(false) | bool)
 
 # Fix CNI binary directory permissions (Kubespray creates it owned by kube user)
 - name: Fix /opt/cni/bin ownership for Cilium
   ansible.builtin.raw: |
-    chown -R root:root /opt/cni/bin 2>/dev/null || true
-    chmod 755 /opt/cni/bin 2>/dev/null || true
+    chown -R root:root /opt/cni 2>/dev/null || true
+    chmod 755 /opt/cni /opt/cni/bin 2>/dev/null || true
   delegate_to: "{{ item }}"
   become: true
   loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
   when: item is defined and item | length > 0
   ignore_errors: true
 
+- name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop
+  ansible.builtin.shell: |
+    UPSTREAM_DNS=$(ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -o StrictHostKeyChecking=no -W %h:%p root@{{ bastion_public_ip }}" root@{{ first_master_ip | default('10.0.1.1') }} "grep '^nameserver' /etc/resolv.conf | grep -v 169.254 | head -2 | awk '{print \$2}'" | tr '\n' ' ')
+    if [ -z "$UPSTREAM_DNS" ]; then UPSTREAM_DNS="8.8.8.8 8.8.4.4"; fi
+    ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -o StrictHostKeyChecking=no -W %h:%p root@{{ bastion_public_ip }}" root@{{ first_master_ip | default('10.0.1.1') }} "
+      kubectl -n kube-system get cm coredns -o json | python3 -c \"import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('/etc/resolv.conf','$UPSTREAM_DNS'); json.dump(d,sys.stdout)\" | kubectl apply -f -
+      kubectl -n kube-system get cm nodelocaldns -o json | python3 -c \"import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('/etc/resolv.conf','$UPSTREAM_DNS'); json.dump(d,sys.stdout)\" | kubectl apply -f -
+      kubectl -n kube-system delete pods -l k8s-app=kube-dns
+      kubectl -n kube-system delete pods -l k8s-app=node-local-dns
+    "
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  when: bastion_public_ip is defined
+
 # ============================================
 # Post-install: kubeconfig
 # ============================================
 
 - name: Copy kubeconfig to bastion
-  ansible.builtin.raw: |
-    mkdir -p /root/.kube
-    ssh -o StrictHostKeyChecking=accept-new root@{{ first_master_ip | default('10.0.1.1') }} "cat /etc/kubernetes/admin.conf" > /root/.kube/config
-    chmod 600 /root/.kube/config
-    sed -i 's|https://.*:6443|https://{{ first_master_ip | default("10.0.1.1") }}:6443|g' /root/.kube/config
-  delegate_to: "{{ bastion_public_ip | default('') }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no root@{{ bastion_public_ip }} "
+      mkdir -p /root/.kube
+      ssh -o StrictHostKeyChecking=no root@{{ first_master_ip | default('10.0.1.1') }} 'cat /etc/kubernetes/admin.conf' > /root/.kube/config
+      chmod 600 /root/.kube/config
+      sed -i 's|https://.*:6443|https://{{ first_master_ip | default('10.0.1.1') }}:6443|g' /root/.kube/config
+    "
+  delegate_to: localhost
+  become: false
   when: bastion_public_ip is defined
 
-- name: Copy kubeconfig to Ansible controller
-  ansible.builtin.raw: |
-    cat /root/.kube/config
-  delegate_to: "{{ bastion_public_ip | default('') }}"
-  become: true
-  register: kubeconfig_content
+- name: Copy kubeconfig from bastion to controller
+  ansible.builtin.shell: |
+    mkdir -p {{ lookup('env', 'HOME') }}/.kube
+    ssh -o StrictHostKeyChecking=no root@{{ bastion_public_ip }} 'cat /root/.kube/config' > {{ lookup('env', 'HOME') }}/.kube/config
+    chmod 600 {{ lookup('env', 'HOME') }}/.kube/config
+  delegate_to: localhost
+  become: false
   when: bastion_public_ip is defined
 
-- name: Create local .kube directory
-  file:
-    path: "{{ lookup('env', 'HOME') }}/.kube"
-    state: directory
-    mode: '0700'
+- name: Ensure SSH tunnel to k8s API is active
+  ansible.builtin.shell: |
+    if ! ss -tlnp | grep -q ':6443'; then
+      nohup ssh -o StrictHostKeyChecking=no -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+      sleep 2
+    fi
+    sed -i 's|https://{{ first_master_ip | default("10.0.1.1") }}:6443|https://127.0.0.1:6443|g' {{ lookup('env', 'HOME') }}/.kube/config
+    kubectl get nodes
+  args:
+    executable: /bin/bash
   delegate_to: localhost
   become: false
-
-- name: Write kubeconfig locally
-  copy:
-    content: "{{ kubeconfig_content.stdout }}"
-    dest: "{{ lookup('env', 'HOME') }}/.kube/config"
-    mode: '0600'
-  delegate_to: localhost
-  become: false
-  when: kubeconfig_content is defined and kubeconfig_content.stdout is defined
-
-- name: Update local kubeconfig API server endpoint
-  ansible.builtin.replace:
-    path: "{{ lookup('env', 'HOME') }}/.kube/config"
-    regexp: 'https://.*:6443'
-    replace: "https://{{ first_master_ip | default('10.0.1.1') }}:6443"
-  delegate_to: localhost
-  become: false
-  when: kubeconfig_content is defined
+  when: bastion_public_ip is defined
 
 # ============================================
 # Hetzner Cloud Controller Manager v1.22.0
@@ -278,6 +288,26 @@
   kubernetes.core.k8s:
     state: present
     src: "https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/{{ hetzner_ccm_ver }}/ccm-networks.yaml"
+
+- name: Patch CCM DNS to use upstream DNS (hostNetwork pods can't use nodelocaldns IPv6)
+  kubernetes.core.k8s_json_patch:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+    patch:
+      - op: replace
+        path: /spec/template/spec/dnsPolicy
+        value: "None"
+      - op: add
+        path: /spec/template/spec/dnsConfig
+        value:
+          nameservers:
+            - "185.12.64.1"
+            - "185.12.64.2"
+          searches:
+            - "kube-system.svc.cluster.local"
+            - "svc.cluster.local"
+            - "cluster.local"
 
 - name: Wait for Hetzner CCM to be ready
   kubernetes.core.k8s_info:
@@ -321,10 +351,45 @@
     state: present
     src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/standard-install.yaml"
 
+- name: Remove Gateway API safe-upgrades policy to allow experimental CRDs
+  kubernetes.core.k8s:
+    state: absent
+    api_version: admissionregistration.k8s.io/v1
+    kind: "{{ item.kind }}"
+    name: safe-upgrades.gateway.networking.k8s.io
+  loop:
+    - { kind: ValidatingAdmissionPolicyBinding }
+    - { kind: ValidatingAdmissionPolicy }
+  ignore_errors: true
+
 - name: Install Gateway API CRDs (experimental - TCPRoute, TLSRoute, GRPCRoute)
   kubernetes.core.k8s:
     state: present
     src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/experimental-install.yaml"
+
+- name: Create Cilium GatewayClass
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: GatewayClass
+      metadata:
+        name: cilium
+      spec:
+        controllerName: io.cilium/gateway-controller
+
+- name: Restart Cilium operator to pick up Gateway API CRDs
+  kubernetes.core.k8s:
+    state: present
+    kind: Deployment
+    namespace: kube-system
+    name: cilium-operator
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
 
 - name: Create cilium-system namespace
   kubernetes.core.k8s:
@@ -462,10 +527,11 @@
       - "io.cilium.gateway/owning-gateway=admin-gateway"
   register: admin_gw_svc
   until: admin_gw_svc.resources | length > 0
-  retries: 30
+  retries: 6
   delay: 10
+  ignore_errors: true
 
-- name: Patch admin Gateway service to use NodePort 30443 on internal only
+- name: Patch admin Gateway service to use NodePort 31443
   kubernetes.core.k8s:
     state: present
     definition:
@@ -481,7 +547,7 @@
             targetPort: 8443
             nodePort: 31443
             protocol: TCP
-  when: admin_gw_svc.resources | length > 0
+  when: admin_gw_svc.resources | default([]) | length > 0
 
 - name: Create NetworkPolicy to restrict admin-gateway to VPN and private network
   kubernetes.core.k8s:
@@ -537,7 +603,7 @@
   kubernetes.core.helm:
     name: cert-manager-webhook-hetzner
     chart_ref: hcloud/cert-manager-webhook-hetzner
-    chart_version: "1.4.1"
+    chart_version: "0.6.7"
     release_namespace: cert-manager
     release_state: present
     wait: true
