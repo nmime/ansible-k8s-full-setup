@@ -206,7 +206,7 @@
               memory: 256Mi
         extensions:
           builtin:
-            pg_stat_statements: {}
+            pg_stat_statements: true
         patroni:
           dynamicConfiguration:
             postgresql:
@@ -232,6 +232,7 @@
 
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
+    api_version: pgv2.percona.com/v2
     kind: PerconaPGCluster
     namespace: "{{ db_ns }}"
     name: "{{ project_name | default('k8s') }}-pg"
@@ -367,7 +368,7 @@
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: "{{ db_ns }}"
-    name: "percona-server-mongodb-users"
+    name: "internal-{{ project_name | default('k8s') }}-mongo-users"
   register: mongo_users_secret
   until: mongo_users_secret.resources | length > 0
   retries: 30
@@ -378,13 +379,14 @@
     state: patched
     kind: Secret
     namespace: "{{ db_ns }}"
-    name: "percona-server-mongodb-users"
+    name: "internal-{{ project_name | default('k8s') }}-mongo-users"
     definition:
       stringData:
         PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
+    api_version: psmdb.percona.com/v1
     kind: PerconaServerMongoDB
     namespace: "{{ db_ns }}"
     name: "{{ project_name | default('k8s') }}-mongo"

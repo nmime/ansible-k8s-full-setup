@@ -30,13 +30,13 @@
 
 - name: Add official MinIO Helm repository
   kubernetes.core.helm_repository:
-    name: minio-official
+    name: minio-charts
     repo_url: "https://charts.min.io/"
 
 - name: Install MinIO via official Helm chart
   kubernetes.core.helm:
     name: minio
-    chart_ref: minio-official/minio
+    chart_ref: minio-charts/minio
     chart_version: "{{ minio_chart_ver }}"
     release_namespace: "{{ minio_ns }}"
     create_namespace: true
@@ -243,7 +243,7 @@
       - "=========================================="
       - "  MinIO S3 Storage Deployed"
       - "=========================================="
-      - "  Chart: minio-official/minio {{ minio_chart_ver }}"
+      - "  Chart: minio-charts/minio {{ minio_chart_ver }}"
       - "  Image: quay.io/minio/minio (official chart)"
       - "  Mode: {{ minio_mode }}"
       - "  Replicas: {{ minio_replicas_count }}"
