@@ -389,7 +389,7 @@
 - name: Install Helm on bastion
   ansible.builtin.raw: |
     if ! command -v helm &>/dev/null; then
-      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      curl -4 --retry 3 --retry-delay 5 -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
     fi
   delegate_to: "{{ bastion_host }}"
   become: true
@@ -397,7 +397,7 @@
 - name: Install hcloud CLI on bastion
   ansible.builtin.raw: |
     if ! command -v hcloud &>/dev/null; then
-      curl -fsSL -o /tmp/hcloud.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
+      curl -4 --retry 3 --retry-delay 5 -fsSL -o /tmp/hcloud.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
       tar xzf /tmp/hcloud.tar.gz -C /usr/local/bin/ hcloud
       rm -f /tmp/hcloud.tar.gz
     fi
@@ -407,7 +407,7 @@
 - name: Install yq on bastion
   ansible.builtin.raw: |
     if ! command -v yq &>/dev/null; then
-      curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+      curl -4 --retry 3 --retry-delay 5 -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
       chmod +x /usr/local/bin/yq
     fi
   delegate_to: "{{ bastion_host }}"
