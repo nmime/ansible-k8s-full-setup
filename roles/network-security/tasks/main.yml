@@ -387,9 +387,7 @@
     if ! getent hosts github.com >/dev/null 2>&1; then
       if [ -L /etc/resolv.conf ]; then
         TARGET=$(readlink -f /etc/resolv.conf)
-        echo -e "nameserver 185.12.64.1
-nameserver 185.12.64.2
-nameserver 8.8.8.8" > "$TARGET" 2>/dev/null || true
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\nnameserver 8.8.8.8\n' > "$TARGET" 2>/dev/null || true
       fi
       systemctl restart systemd-resolved 2>/dev/null || true
       sleep 2
@@ -454,9 +452,7 @@ nameserver 8.8.8.8" > "$TARGET" 2>/dev/null || true
     if ! getent hosts github.com >/dev/null 2>&1; then
       if [ -L /etc/resolv.conf ]; then
         TARGET=$(readlink -f /etc/resolv.conf)
-        echo -e "nameserver 185.12.64.1
-nameserver 185.12.64.2
-nameserver 8.8.8.8" > "$TARGET" 2>/dev/null || true
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\nnameserver 8.8.8.8\n' > "$TARGET" 2>/dev/null || true
       fi
       systemctl restart systemd-resolved 2>/dev/null || true
     fi
