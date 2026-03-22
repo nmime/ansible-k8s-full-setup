@@ -173,6 +173,15 @@
   become: false
   changed_when: false
 
+- name: Ensure Kubespray ansible.cfg has control_path_dir for auto-creation
+  ansible.builtin.lineinfile:
+    path: "{{ playbook_dir }}/kubespray/ansible.cfg"
+    insertafter: '^\[ssh_connection\]'
+    regexp: '^control_path_dir'
+    line: 'control_path_dir = /tmp/kubespray-cp'
+  delegate_to: localhost
+  become: false
+
 - name: Run Kubespray cluster deployment
   ansible.builtin.command:
     cmd: >
