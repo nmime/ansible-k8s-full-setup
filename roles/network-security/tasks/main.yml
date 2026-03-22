@@ -379,6 +379,26 @@
 # Download locally first (GitHub may be unreachable from Hetzner bastion IPs), then SCP
 # ============================================
 
+- name: Fix controller DNS if broken by raw delegate side-effects
+  ansible.builtin.shell: |
+    set +e
+    ufw disable 2>/dev/null
+    sed -i 's/ENABLED=yes/ENABLED=no/' /etc/ufw/ufw.conf 2>/dev/null
+    if ! getent hosts github.com >/dev/null 2>&1; then
+      if [ -L /etc/resolv.conf ]; then
+        TARGET=$(readlink -f /etc/resolv.conf)
+        echo -e "nameserver 185.12.64.1
+nameserver 185.12.64.2
+nameserver 8.8.8.8" > "$TARGET" 2>/dev/null || true
+      fi
+      systemctl restart systemd-resolved 2>/dev/null || true
+      sleep 2
+    fi
+    exit 0
+  args:
+    executable: /bin/bash
+  ignore_errors: true
+
 - name: Download tools locally for bastion
   ansible.builtin.shell: |
     set -e
@@ -426,11 +446,22 @@
   args:
     executable: /bin/bash
 
-- name: Restore controller SSH access after raw delegate tasks
+- name: Restore controller state after raw delegate side-effects
   ansible.builtin.shell: |
-    ufw disable 2>/dev/null || true
-    sed -i 's/ENABLED=yes/ENABLED=no/' /etc/ufw/ufw.conf 2>/dev/null || true
-    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
+    set +e
+    ufw disable 2>/dev/null
+    sed -i 's/ENABLED=yes/ENABLED=no/' /etc/ufw/ufw.conf 2>/dev/null
+    if ! getent hosts github.com >/dev/null 2>&1; then
+      if [ -L /etc/resolv.conf ]; then
+        TARGET=$(readlink -f /etc/resolv.conf)
+        echo -e "nameserver 185.12.64.1
+nameserver 185.12.64.2
+nameserver 8.8.8.8" > "$TARGET" 2>/dev/null || true
+      fi
+      systemctl restart systemd-resolved 2>/dev/null || true
+    fi
+    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null
+    exit 0
   args:
     executable: /bin/bash
   ignore_errors: true
