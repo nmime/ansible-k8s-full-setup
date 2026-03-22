@@ -57,6 +57,8 @@
     sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
     sed -i 's/^#net\/ipv4\/ip_forward=1/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
     sed -i 's/^net\/ipv4\/ip_forward=0/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
+    sysctl -w net.ipv4.ip_forward=1
+    grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf && sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
     if ! grep -q '^\*nat' /etc/ufw/before.rules; then
       printf '*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE\nCOMMIT\n' > /tmp/ufw-nat.tmp
       cat /etc/ufw/before.rules >> /tmp/ufw-nat.tmp
@@ -73,6 +75,9 @@
     ufw route allow in on enp7s0 out on eth0
     echo "y" | ufw enable
     ufw reload
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o eth0 -j MASQUERADE
+    iptables -C FORWARD -i enp7s0 -o eth0 -j ACCEPT 2>/dev/null || iptables -A FORWARD -i enp7s0 -o eth0 -j ACCEPT
+    iptables -C FORWARD -i eth0 -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i eth0 -o enp7s0 -m state --state RELATED,ESTABLISHED -j ACCEPT
   delegate_to: "{{ bastion_host }}"
   become: true
 
@@ -133,8 +138,14 @@
 
 - name: Configure DNS on private-only nodes
   ansible.builtin.raw: |
-    printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\n' > /etc/resolv.conf
-    # Make resolv.conf persistent across reboots
+    mkdir -p /etc/systemd/resolved.conf.d
+    printf '[Resolve]\nDNS=185.12.64.1 185.12.64.2\n' > /etc/systemd/resolved.conf.d/dns.conf
+    systemctl restart systemd-resolved 2>/dev/null || true
+    if [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -q stub; then
+      true
+    else
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\n' > /etc/resolv.conf
+    fi
     mkdir -p /etc/cloud/cloud.cfg.d
     echo "manage_resolv_conf: false" > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg
   delegate_to: "{{ item }}"

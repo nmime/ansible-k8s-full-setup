@@ -4,6 +4,8 @@
   connection: local
   gather_facts: true
   any_errors_fatal: true
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
 
   vars_files:
     - ../defaults/main.yml
