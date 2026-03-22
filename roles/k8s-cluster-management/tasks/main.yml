@@ -184,9 +184,6 @@
 
 - name: Run Kubespray cluster deployment
   ansible.builtin.shell: |
-    export ANSIBLE_SSH_CONTROL_PATH="/tmp/kubespray-cp/%%r@%%h-%%p"
-    export ANSIBLE_SSH_CONTROL_PATH_DIR="/tmp/kubespray-cp"
-    export ANSIBLE_SSH_ARGS="-o ControlMaster=auto -o ControlPersist=30s -o ControlPath=/tmp/kubespray-cp/%r@%h-%p"
     cd {{ playbook_dir }}/kubespray
     {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook \
       -i inventory/{{ project }}/hosts.yml \
@@ -211,44 +208,21 @@
   when: item is defined and item | length > 0
   ignore_errors: true
 
-- name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop
-  ansible.builtin.shell: |
-    UPSTREAM_DNS=$(ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -o StrictHostKeyChecking=no -W %h:%p root@{{ bastion_public_ip }}" root@{{ first_master_ip | default('10.0.1.1') }} "grep '^nameserver' /etc/resolv.conf | grep -v 169.254 | head -2 | awk '{print \$2}'" | tr '\n' ' ')
-    if [ -z "$UPSTREAM_DNS" ]; then UPSTREAM_DNS="8.8.8.8 8.8.4.4"; fi
-    ssh -o StrictHostKeyChecking=no -o ProxyCommand="ssh -o StrictHostKeyChecking=no -W %h:%p root@{{ bastion_public_ip }}" root@{{ first_master_ip | default('10.0.1.1') }} "
-      kubectl -n kube-system get cm coredns -o json | python3 -c \"import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('/etc/resolv.conf','$UPSTREAM_DNS'); json.dump(d,sys.stdout)\" | kubectl apply -f -
-      kubectl -n kube-system get cm nodelocaldns -o json | python3 -c \"import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('/etc/resolv.conf','$UPSTREAM_DNS'); json.dump(d,sys.stdout)\" | kubectl apply -f -
-      kubectl -n kube-system delete pods -l k8s-app=kube-dns
-      kubectl -n kube-system delete pods -l k8s-app=node-local-dns
-    "
-  args:
-    executable: /bin/bash
-  delegate_to: localhost
-  become: false
-  changed_when: true
-  when: bastion_public_ip is defined
 
 # ============================================
 # Post-install: kubeconfig
 # ============================================
 
-- name: Copy kubeconfig to bastion
-  ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=no root@{{ bastion_public_ip }} "
-      mkdir -p /root/.kube
-      ssh -o StrictHostKeyChecking=no root@{{ first_master_ip | default('10.0.1.1') }} 'cat /etc/kubernetes/admin.conf' > /root/.kube/config
-      chmod 600 /root/.kube/config
-      sed -i 's|https://.*:6443|https://{{ first_master_ip | default('10.0.1.1') }}:6443|g' /root/.kube/config
-    "
-  delegate_to: localhost
-  become: false
-  when: bastion_public_ip is defined
-
-- name: Copy kubeconfig from bastion to controller
+- name: Copy kubeconfig from master via ProxyCommand
   ansible.builtin.shell: |
     mkdir -p {{ lookup('env', 'HOME') }}/.kube
-    ssh -o StrictHostKeyChecking=no root@{{ bastion_public_ip }} 'cat /root/.kube/config' > {{ lookup('env', 'HOME') }}/.kube/config
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@{{ bastion_public_ip }}' \
+      root@{{ first_master_ip | default('10.0.1.1') }} 'cat /etc/kubernetes/admin.conf' \
+      > {{ lookup('env', 'HOME') }}/.kube/config
     chmod 600 {{ lookup('env', 'HOME') }}/.kube/config
+  args:
+    executable: /bin/bash
   delegate_to: localhost
   become: false
   when: bastion_public_ip is defined
@@ -256,11 +230,11 @@
 - name: Ensure SSH tunnel to k8s API is active
   ansible.builtin.shell: |
     if ! ss -tlnp | grep -q ':6443'; then
-      nohup ssh -o StrictHostKeyChecking=no -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+      nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
       sleep 2
     fi
     sed -i 's|https://{{ first_master_ip | default("10.0.1.1") }}:6443|https://127.0.0.1:6443|g' {{ lookup('env', 'HOME') }}/.kube/config
-    kubectl get nodes
+    KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes
   args:
     executable: /bin/bash
   delegate_to: localhost
@@ -268,7 +242,26 @@
   when: bastion_public_ip is defined
 
 # ============================================
-# Hetzner Cloud Controller Manager v1.22.0
+# Hetzner Cloud Controller Manager
+
+- name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop
+  ansible.builtin.shell: |
+    kubectl -n kube-system get cm coredns -o json | \
+      python3 -c "import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('127.0.0.53','1.1.1.1 8.8.8.8').replace('/etc/resolv.conf','1.1.1.1 8.8.8.8'); json.dump(d,sys.stdout)" | \
+      kubectl apply -f -
+    kubectl -n kube-system get cm nodelocaldns -o json | \
+      python3 -c "import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('/etc/resolv.conf','1.1.1.1 8.8.8.8'); json.dump(d,sys.stdout)" | \
+      kubectl apply -f - 2>/dev/null || true
+    kubectl -n kube-system rollout restart deployment coredns
+    kubectl -n kube-system delete pods -l k8s-app=node-local-dns 2>/dev/null || true
+    sleep 10
+    kubectl run dns-test --rm -i --restart=Never --image=busybox -- nslookup kubernetes.default.svc.cluster.local
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: true
+
 # ============================================
 
 - name: Create hcloud-token secret for CCM

@@ -4,6 +4,8 @@
   connection: local
   gather_facts: true
   any_errors_fatal: true
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
 
   vars_files:
     - ../defaults/main.yml
@@ -24,10 +26,11 @@
     - name: Ensure SSH tunnel to k8s API is active
       ansible.builtin.shell: |
         if ! ss -tlnp | grep -q ':6443'; then
-          nohup ssh -o StrictHostKeyChecking=no -N -L 6443:{{ first_master_ip }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+          nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
           sleep 2
         fi
-        kubectl get nodes
+        sed -i 's|https://{{ first_master_ip }}:6443|https://127.0.0.1:6443|g' $HOME/.kube/config
+        KUBECONFIG=$HOME/.kube/config kubectl get nodes
       args:
         executable: /bin/bash
       changed_when: false
