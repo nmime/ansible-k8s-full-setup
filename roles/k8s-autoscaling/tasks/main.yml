@@ -21,11 +21,21 @@
         name: "{{ keda_namespace }}"
         labels:
           app.kubernetes.io/part-of: keda
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_keda_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_keda_namespace is not failed
 
 - name: Add KEDA Helm repository
   kubernetes.core.helm_repository:
     name: kedacore
     repo_url: "https://kedacore.github.io/charts"
+  register: _r_add_keda_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_keda_helm_repository is not failed
 
 - name: Install KEDA with Helm
   kubernetes.core.helm:
@@ -44,6 +54,16 @@
         replicaCount: "{{ keda_replicas }}"
       webhooks:
         replicaCount: "{{ keda_replicas }}"
+      podSecurityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
       resources:
         operator:
           requests:
@@ -73,8 +93,14 @@
         operator:
           enabled: true
           port: 8080
+      serviceAccount:
+        create: true
 
 # Create example ScaledObject for CPU-based autoscaling
+  register: _r_install_keda_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_keda_with_helm is not failed
 - name: Create example CPU ScaledObject
   kubernetes.core.k8s:
     state: present
@@ -103,6 +129,10 @@
   when: false  # Example only, deploy manually when needed
 
 # Create Prometheus-based ScaledObject template
+  register: _r_create_example_cpu_scaledobject
+  retries: 3
+  delay: 10
+  until: _r_create_example_cpu_scaledobject is not failed
 - name: Create example Prometheus ScaledObject
   kubernetes.core.k8s:
     state: present
@@ -133,6 +163,10 @@
   when: false  # Example only, deploy manually when needed
 
 # Create TriggerAuthentication for Prometheus
+  register: _r_create_example_prometheus_scaledobject
+  retries: 3
+  delay: 10
+  until: _r_create_example_prometheus_scaledobject is not failed
 - name: Create KEDA TriggerAuthentication for VictoriaMetrics
   kubernetes.core.k8s:
     state: present
@@ -146,6 +180,10 @@
           provider: none
 
 # Deploy ServiceMonitor for KEDA metrics
+  register: _r_create_keda_triggerauthentication_for_vi
+  retries: 3
+  delay: 10
+  until: _r_create_keda_triggerauthentication_for_vi is not failed
 - name: Check if VMServiceScrape CRD exists
   kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
@@ -171,6 +209,10 @@
           - port: metrics
             interval: 30s
   when: vmscrape_crd.resources | default([]) | length > 0
+  register: _r_create_vmservicescrape_for_keda_metrics
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_keda_metrics is not failed
 
 - name: Display KEDA deployment info
   debug:

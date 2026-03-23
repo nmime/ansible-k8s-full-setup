@@ -26,14 +26,24 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ db_ns }}"
+        name: databases
         labels:
           app.kubernetes.io/part-of: databases
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_databases_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_databases_namespace is not failed
 
 - name: Add Percona Helm repository
   kubernetes.core.helm_repository:
     name: percona
     repo_url: "https://percona.github.io/percona-helm-charts"
+  register: _r_add_percona_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_percona_helm_repository is not failed
 
 - name: Install Percona PG Operator
   kubernetes.core.helm:
@@ -45,6 +55,10 @@
     release_state: present
     wait: true
     timeout: 5m0s
+  register: _r_install_percona_pg_operator
+  retries: 3
+  delay: 10
+  until: _r_install_percona_pg_operator is not failed
 
 - name: Wait for PG Operator to be ready
   kubernetes.core.k8s_info:
@@ -78,6 +92,11 @@
           [global]
           repo2-s3-key={{ minio_root_user }}
           repo2-s3-key-secret={{ minio_root_password }}
+  register: _r_create_pgbackrest_s3_credentials_secret
+  retries: 3
+  delay: 10
+  until: _r_create_pgbackrest_s3_credentials_secret is not failed
+  no_log: true
 
 - name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
@@ -93,6 +112,11 @@
         PMM_SERVER_USER: "admin"
         PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
         PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+  register: _r_create_pmm_credentials_secret_for_databa
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_credentials_secret_for_databa is not failed
+  no_log: true
 
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
@@ -229,6 +253,10 @@
           - name: "{{ app_name | default('myapp') }}"
             databases:
               - "{{ app_name | default('myapp') }}"
+  register: _r_create_postgresql_cluster
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_cluster is not failed
 
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
@@ -258,6 +286,10 @@
     release_state: present
     wait: true
     timeout: 5m0s
+  register: _r_install_percona_mongodb_operator
+  retries: 3
+  delay: 10
+  until: _r_install_percona_mongodb_operator is not failed
 
 - name: Wait for MongoDB Operator to be ready
   kubernetes.core.k8s_info:
@@ -288,6 +320,11 @@
       stringData:
         AWS_ACCESS_KEY_ID: "{{ minio_root_user }}"
         AWS_SECRET_ACCESS_KEY: "{{ minio_root_password }}"
+  register: _r_create_mongodb_backup_credentials_for_mi
+  retries: 3
+  delay: 10
+  until: _r_create_mongodb_backup_credentials_for_mi is not failed
+  no_log: true
 
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
@@ -363,6 +400,10 @@
           enabled: true
           image: "percona/pmm-client:2"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
+  register: _r_create_mongodb_cluster
+  retries: 3
+  delay: 10
+  until: _r_create_mongodb_cluster is not failed
 
 - name: Wait for MongoDB users secret to be created by operator
   kubernetes.core.k8s_info:
@@ -383,6 +424,7 @@
     definition:
       stringData:
         PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+  no_log: true
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
@@ -425,6 +467,10 @@
       kind: Namespace
       metadata:
         name: gitlab
+  register: _r_ensure_gitlab_namespace_exists_for_cross
+  retries: 3
+  delay: 10
+  until: _r_ensure_gitlab_namespace_exists_for_cross is not failed
 
 - name: Create PostgreSQL connection secret for GitLab
   kubernetes.core.k8s:
@@ -442,6 +488,11 @@
         port: "5432"
         database: gitlabhq_production
         username: gitlab
+  register: _r_create_postgresql_connection_secret_for_
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_connection_secret_for_ is not failed
+  no_log: true
 
 - name: Retrieve Percona-generated app PG password
   kubernetes.core.k8s_info:
@@ -475,6 +526,11 @@
         database: "{{ app_name | default('myapp') }}"
         username: "{{ app_name | default('myapp') }}"
   when: app_pg_password | length > 0
+  register: _r_create_postgresql_connection_secret_for_
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_connection_secret_for_ is not failed
+  no_log: true
 
 - name: Display databases summary
   debug:
