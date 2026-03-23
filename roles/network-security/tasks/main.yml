@@ -413,6 +413,52 @@
     executable: /bin/bash
   ignore_errors: true
 
+- name: NUCLEAR connectivity fix before downloads
+  ansible.builtin.shell: |
+    set +e
+    echo "=== Pre-download connectivity fix starting ==="
+    ufw disable 2>/dev/null
+    sed -i 's/ENABLED=yes/ENABLED=no/' /etc/ufw/ufw.conf 2>/dev/null
+    iptables -F OUTPUT 2>/dev/null
+    iptables -P OUTPUT ACCEPT 2>/dev/null
+    ip route del default via 10.0.0.1 2>/dev/null
+    ip route del default dev enp7s0 2>/dev/null
+    ip route del default dev ens10 2>/dev/null
+    ip route replace default via 172.31.1.1 dev eth0 2>/dev/null
+    if [ -L /etc/resolv.conf ]; then
+      TARGET=$(readlink -f /etc/resolv.conf)
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\nnameserver 8.8.8.8\n' > "$TARGET" 2>/dev/null || true
+    else
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\nnameserver 8.8.8.8\n' > /etc/resolv.conf 2>/dev/null || true
+    fi
+    systemctl restart systemd-resolved 2>/dev/null || true
+    sleep 3
+    rm -f /etc/netplan/60-private-routes.yaml 2>/dev/null
+    for i in $(seq 1 10); do
+      if curl -4 -sI --max-time 5 https://dl.k8s.io/ >/dev/null 2>&1; then
+        echo "Connectivity OK after $i attempts"
+        exit 0
+      fi
+      echo "Attempt $i failed, retrying..."
+      iptables -F 2>/dev/null
+      iptables -X 2>/dev/null
+      iptables -t nat -F 2>/dev/null
+      iptables -t nat -X 2>/dev/null
+      iptables -P INPUT ACCEPT 2>/dev/null
+      iptables -P FORWARD ACCEPT 2>/dev/null
+      iptables -P OUTPUT ACCEPT 2>/dev/null
+      ip route replace default via 172.31.1.1 dev eth0 2>/dev/null
+      sleep 3
+    done
+    echo "WARNING: Connectivity not restored after 10 attempts"
+    ip route show
+    iptables -L -n
+    curl -4 -v --max-time 5 https://dl.k8s.io/ 2>&1 || true
+    exit 0
+  args:
+    executable: /bin/bash
+  ignore_errors: true
+
 - name: Download tools locally for bastion
   ansible.builtin.shell: |
     set -e
