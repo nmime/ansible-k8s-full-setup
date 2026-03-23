@@ -356,7 +356,7 @@
       spec:
         parentRefs:
           - name: main-gateway
-            namespace: cilium-system
+            namespace: gateway-system
             sectionName: https
         hostnames:
           - "api.{{ domain }}"
@@ -385,7 +385,7 @@
       spec:
         parentRefs:
           - name: main-gateway
-            namespace: cilium-system
+            namespace: gateway-system
             sectionName: https
         hostnames:
           - "app.{{ domain }}"
@@ -410,7 +410,7 @@
       kind: Certificate
       metadata:
         name: "{{ app_name }}-tls"
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: "{{ app_name }}-tls"
         issuerRef:
