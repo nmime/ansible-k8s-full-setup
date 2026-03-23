@@ -145,7 +145,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: cilium-system
+            namespace: gateway-system
             sectionName: https
         hostnames:
           - "{{ argocd_domain }}"
@@ -170,7 +170,7 @@
       kind: Certificate
       metadata:
         name: argocd-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: argocd-tls
         issuerRef:

@@ -50,7 +50,7 @@ storage_class: hcloud-volumes
 
 # Kubernetes
 k8s_version: v1.34.3
-k8s_cni: cilium
+k8s_cni: calico
 cilium_version: v1.18.6
 gateway_api_version: v1.5.1
 k8s_pod_cidr: 10.233.64.0/18
