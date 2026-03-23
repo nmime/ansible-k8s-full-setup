@@ -472,7 +472,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ grafana_domain }}"
@@ -731,7 +731,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "pmm.{{ domain }}"
