@@ -892,6 +892,7 @@
     - databases
     - vault
     - keda
+    - temporal
     - production
   register: _r_create_platform_namespaces
   retries: 3
@@ -929,6 +930,7 @@
     - databases
     - vault
     - keda
+    - temporal
     - production
   register: _r_create_default_deny_netpol
   retries: 3
@@ -963,6 +965,7 @@
     - databases
     - vault
     - keda
+    - temporal
     - production
   register: _r_create_intra_ns_netpol
   retries: 3
@@ -995,6 +998,7 @@
     - argocd
     - monitoring
     - storage
+    - temporal
     - production
   register: _r_create_gw_netpol
   retries: 3
@@ -1035,6 +1039,7 @@
     - databases
     - vault
     - keda
+    - temporal
     - production
   register: _r_create_mon_netpol
   retries: 3
@@ -1074,6 +1079,7 @@
     - argocd
     - monitoring
     - vault
+    - temporal
     - production
   register: _r_create_egress_netpol
   retries: 3
@@ -1104,6 +1110,9 @@
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: monitoring
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: temporal
             ports:
               - protocol: TCP
                 port: 5432

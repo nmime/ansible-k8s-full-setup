@@ -253,6 +253,10 @@
           - name: "{{ app_name | default('myapp') }}"
             databases:
               - "{{ app_name | default('myapp') }}"
+          - name: temporal
+            databases:
+              - temporal
+              - temporal_visibility
   register: _r_create_postgresql_cluster
   retries: 3
   delay: 10

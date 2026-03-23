@@ -175,6 +175,13 @@
         - autoscaling
         - keda
 
+    - name: Deploy Temporal Workflow Engine
+      ansible.builtin.import_role:
+        name: temporal
+      tags:
+        - temporal
+        - workflows
+
     - name: Deploy Brocoders Boilerplate Application
       ansible.builtin.import_role:
         name: brocoders-boilerplate-setup
@@ -204,6 +211,7 @@
           - "  - Vault: https://vault.{{ domain }}"
           - "  - PostgreSQL HA Cluster"
           - "  - KEDA (Event Autoscaling)"
+          - "  - Temporal: https://temporal.{{ domain }}"
           - "  - Headscale VPN"
           - ""
           - "Get credentials:"
