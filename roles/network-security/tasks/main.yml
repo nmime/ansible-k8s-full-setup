@@ -299,6 +299,16 @@
           - /etc/headscale:/etc/headscale:ro
         environment:
           - TZ=UTC
+        security_opt:
+          - no-new-privileges:true
+        read_only: true
+        tmpfs:
+          - /tmp
+          - /run
+        cap_drop:
+          - ALL
+        cap_add:
+          - NET_BIND_SERVICE
       caddy:
         container_name: caddy
         image: caddy:2-alpine
@@ -312,6 +322,12 @@
           - caddy_config:/config
         depends_on:
           - headscale
+        security_opt:
+          - no-new-privileges:true
+        cap_drop:
+          - ALL
+        cap_add:
+          - NET_BIND_SERVICE
     volumes:
       caddy_data:
       caddy_config:

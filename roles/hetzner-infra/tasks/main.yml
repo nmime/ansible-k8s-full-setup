@@ -834,7 +834,7 @@
       master_ips: {{ master_ips | to_json }}
       worker_ips: {{ worker_ips | to_json }}
       first_master_ip: "{{ first_master_ip }}"
-    mode: '0644'
+    mode: '0600'
 
 - name: Display infrastructure summary
   debug:
