@@ -7,7 +7,7 @@
   set_fact:
     project: "{{ project_name | default('k8s') }}"
     k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
-    kubespray_version: "341da0e"
+    kubespray_version: "v2.30.0"
     cilium_ver: "{{ cilium_version | default('v1.18.6') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.5.1') }}"
     certmanager_ver: "v1.20.0"
