@@ -91,6 +91,16 @@
     mode: '0600'
   delegate_to: localhost
   become: false
+  no_log: true
+
+- name: Ensure secrets file is in .gitignore
+  ansible.builtin.lineinfile:
+    path: "{{ playbook_dir }}/../.gitignore"
+    line: ".platform-secrets.yml"
+    create: true
+    mode: '0644'
+  delegate_to: localhost
+  become: false
 
 - name: Display generated credentials summary
   debug:
@@ -100,11 +110,11 @@
       - "============================================"
       - "  Secrets file: {{ secrets_file }}"
       - "  MinIO user: {{ minio_root_user }}"
-      - "  MinIO password: {{ minio_root_password[:4] }}****"
+      - "  MinIO password: ****"
       - "  Grafana user: {{ grafana_admin_user }}"
-      - "  Grafana password: {{ grafana_admin_password[:4] }}****"
-      - "  App DB password: {{ app_db_password[:4] }}****"
-      - "  ArgoCD password: {{ argocd_admin_password[:4] }}****"
+      - "  Grafana password: ****"
+      - "  App DB password: ****"
+      - "  ArgoCD password: ****"
       - "============================================"
       - "  IMPORTANT: Back up {{ secrets_file }} securely!"
       - "============================================"

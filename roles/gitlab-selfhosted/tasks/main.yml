@@ -29,12 +29,18 @@
         name: "{{ gitlab_namespace }}"
         labels:
           app.kubernetes.io/part-of: gitlab
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
 
 # ============================================
 # GitLab License Generation
 # Generates an Ultimate license using GitLab-License-Generator
 # Runs on the Ansible controller (localhost)
 # ============================================
+  register: _r_create_gitlab_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_gitlab_namespace is not failed
 
 - name: Check if license already generated
   stat:
@@ -155,6 +161,10 @@
 # ============================================
 # Pre-requisite Secrets
 # ============================================
+  register: _r_add_gitlab_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_gitlab_helm_repository is not failed
 
 - name: Create S3 object storage secret for GitLab
   kubernetes.core.k8s:
@@ -174,6 +184,11 @@
           aws_secret_access_key: "{{ minio_root_password }}"
           endpoint: "http://minio.storage.svc.cluster.local:9000"
           path_style: true
+  register: _r_create_s3_object_storage_secret_for_gitl
+  retries: 3
+  delay: 10
+  until: _r_create_s3_object_storage_secret_for_gitl is not failed
+  no_log: true
 
 - name: Create registry storage secret
   kubernetes.core.k8s:
@@ -196,6 +211,11 @@
             v4auth: true
             pathstyle: true
             rootdirectory: /registry
+  register: _r_create_registry_storage_secret
+  retries: 3
+  delay: 10
+  until: _r_create_registry_storage_secret is not failed
+  no_log: true
 
 - name: Create license public key secret
   kubernetes.core.k8s:
@@ -210,6 +230,11 @@
       data:
         public.key: "{{ gitlab_public_key.content }}"
   when: gitlab_public_key.content is defined
+  register: _r_create_license_public_key_secret
+  retries: 3
+  delay: 10
+  until: _r_create_license_public_key_secret is not failed
+  no_log: true
 
 - name: Create license secret
   kubernetes.core.k8s:
@@ -228,6 +253,11 @@
 # ============================================
 # GitLab EE Helm Installation
 # ============================================
+  register: _r_create_license_secret
+  retries: 3
+  delay: 10
+  until: _r_create_license_secret is not failed
+  no_log: true
 
 - name: Install GitLab EE with Helm
   kubernetes.core.helm:
@@ -419,6 +449,10 @@
 # ============================================
 # Apply License to GitLab EE
 # ============================================
+  register: _r_install_gitlab_ee_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_gitlab_ee_with_helm is not failed
 
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
@@ -492,6 +526,10 @@
 # ============================================
 # Gateway API Routes
 # ============================================
+  register: _r_mount_license_file_in_toolbox_for_activa
+  retries: 3
+  delay: 10
+  until: _r_mount_license_file_in_toolbox_for_activa is not failed
 
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -517,6 +555,10 @@
             backendRefs:
               - name: gitlab-webservice-default
                 port: 8181
+  register: _r_create_gitlab_gateway_api_httproute_vpn_
+  retries: 3
+  delay: 10
+  until: _r_create_gitlab_gateway_api_httproute_vpn_ is not failed
 
 - name: Create GitLab Registry HTTPRoute
   kubernetes.core.k8s:
@@ -542,6 +584,10 @@
             backendRefs:
               - name: gitlab-registry
                 port: 5000
+  register: _r_create_gitlab_registry_httproute
+  retries: 3
+  delay: 10
+  until: _r_create_gitlab_registry_httproute is not failed
 
 - name: Create GitLab KAS HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -567,6 +613,10 @@
             backendRefs:
               - name: gitlab-kas
                 port: 8150
+  register: _r_create_gitlab_kas_httproute_vpn_only_via
+  retries: 3
+  delay: 10
+  until: _r_create_gitlab_kas_httproute_vpn_only_via is not failed
 
 - name: Create TLS Certificate for GitLab
   kubernetes.core.k8s:
@@ -590,11 +640,19 @@
 # ============================================
 # GitLab Runner
 # ============================================
+  register: _r_create_tls_certificate_for_gitlab
+  retries: 3
+  delay: 10
+  until: _r_create_tls_certificate_for_gitlab is not failed
 
 - name: Add GitLab Runner Helm repository
   kubernetes.core.helm_repository:
     name: gitlab-runner
     repo_url: "https://charts.gitlab.io/"
+  register: _r_add_gitlab_runner_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_gitlab_runner_helm_repository is not failed
 
 - name: Install GitLab Runner with Helm
   kubernetes.core.helm:
@@ -647,6 +705,10 @@
           cpu: 500m
           memory: 256Mi
   when: gitlab_runner_token is defined and gitlab_runner_token != ''
+  register: _r_install_gitlab_runner_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_gitlab_runner_with_helm is not failed
 
 - name: Create S3 cache secret for GitLab Runner
   when: gitlab_runner_token is defined and gitlab_runner_token != '' 
@@ -662,6 +724,11 @@
       stringData:
         accesskey: "{{ minio_root_user }}"
         secretkey: "{{ minio_root_password }}"
+  register: _r_create_s3_cache_secret_for_gitlab_runner
+  retries: 3
+  delay: 10
+  until: _r_create_s3_cache_secret_for_gitlab_runner is not failed
+  no_log: true
 
 - name: Display GitLab EE deployment info
   debug:

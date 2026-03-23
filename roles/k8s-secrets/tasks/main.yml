@@ -25,36 +25,52 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ vault_ns }}"
+        name: vault
         labels:
           app.kubernetes.io/part-of: vault
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_vault_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_vault_namespace is not failed
 
 - name: Add HashiCorp Helm repository
   kubernetes.core.helm_repository:
     name: hashicorp
     repo_url: "https://helm.releases.hashicorp.com"
+  register: _r_add_hashicorp_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_hashicorp_helm_repository is not failed
 
 - name: Install Vault via Helm
   kubernetes.core.helm:
     name: vault
     chart_ref: hashicorp/vault
-    chart_version: "{{ vault_chart_ver }}"
-    release_namespace: "{{ vault_ns }}"
+    chart_version: "{{ vault_chart_version }}"
+    release_namespace: vault
     create_namespace: true
     release_state: present
     wait: true
-    timeout: 10m0s
+    timeout: "10m0s"
     values:
       global:
-        enabled: true
+        tlsDisable: false
       injector:
-        enabled: true
-        replicas: "{{ 2 if vault_ha else 1 }}"
+        enabled: false
       server:
-        image:
-          tag: "1.21.2"
-        replicas: "{{ vault_replicas }}"
-        dataStorage:
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 100
+          runAsGroup: 1000
+          fsGroup: 1000
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+        resources:
           enabled: true
           size: "{{ vault_storage }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
@@ -97,6 +113,10 @@
           enabled: true
       csi:
         enabled: true
+  register: _r_install_vault_via_helm
+  retries: 3
+  delay: 10
+  until: _r_install_vault_via_helm is not failed
 
 - name: Wait for Vault pods to be running
   kubernetes.core.k8s_info:
@@ -154,6 +174,11 @@
       stringData:
         init-output: "{{ vault_init.stdout }}"
   when: vault_init is changed
+  register: _r_store_vault_init_keys_as_k8s_secret
+  retries: 3
+  delay: 10
+  until: _r_store_vault_init_keys_as_k8s_secret is not failed
+  no_log: true
 
 - name: Unseal Vault (primary)
   kubernetes.core.k8s_exec:
@@ -189,6 +214,7 @@
     command: sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }} vault secrets enable -path=secret kv-v2"
   when: vault_init is changed
   failed_when: false
+  no_log: true
 
 - name: Enable Kubernetes auth method
   kubernetes.core.k8s_exec:
@@ -197,6 +223,7 @@
     command: sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }} vault auth enable kubernetes"
   when: vault_init is changed
   failed_when: false
+  no_log: true
 
 - name: Configure Kubernetes auth method
   kubernetes.core.k8s_exec:
@@ -208,6 +235,7 @@
       kubernetes_host=https://kubernetes.default.svc:443"
   when: vault_init is changed
   failed_when: false
+  no_log: true
 
 # ============================================
 # Vault Gateway API Route
@@ -229,6 +257,10 @@
           kind: ClusterIssuer
         dnsNames:
           - "{{ vault_domain }}"
+  register: _r_create_vault_tls_certificate
+  retries: 3
+  delay: 10
+  until: _r_create_vault_tls_certificate is not failed
 
 - name: Create Vault HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -258,6 +290,10 @@
 # ============================================
 # External Secrets Operator v1.2.1
 # ============================================
+  register: _r_create_vault_httproute_vpn_only_via_admi
+  retries: 3
+  delay: 10
+  until: _r_create_vault_httproute_vpn_only_via_admi is not failed
 
 - name: Create ESO namespace
   kubernetes.core.k8s:
@@ -269,11 +305,19 @@
         name: "{{ eso_ns }}"
         labels:
           app.kubernetes.io/part-of: external-secrets
+  register: _r_create_eso_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_eso_namespace is not failed
 
 - name: Add External Secrets Helm repository
   kubernetes.core.helm_repository:
     name: external-secrets
     repo_url: "https://charts.external-secrets.io"
+  register: _r_add_external_secrets_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_external_secrets_helm_repository is not failed
 
 - name: Install External Secrets Operator via Helm
   kubernetes.core.helm:
@@ -292,6 +336,10 @@
         replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
       serviceMonitor:
         enabled: true
+  register: _r_install_external_secrets_operator_via_he
+  retries: 3
+  delay: 10
+  until: _r_install_external_secrets_operator_via_he is not failed
 
 - name: Wait for ESO to be ready
   kubernetes.core.k8s_info:
@@ -318,6 +366,10 @@
       metadata:
         name: external-secrets-vault
         namespace: "{{ eso_ns }}"
+  register: _r_create_vault_eso_service_account
+  retries: 3
+  delay: 10
+  until: _r_create_vault_eso_service_account is not failed
 
 - name: Create Vault ESO auth role
   kubernetes.core.k8s_exec:
@@ -332,6 +384,7 @@
       ttl=1h"
   when: vault_init is changed
   failed_when: false
+  no_log: true
 
 - name: Create Vault policy for ESO
   kubernetes.core.k8s_exec:
@@ -349,6 +402,7 @@
       EOF
   when: vault_init is changed
   failed_when: false
+  no_log: true
 
 - name: Create ClusterSecretStore for Vault
   kubernetes.core.k8s:
@@ -375,6 +429,10 @@
 # ============================================
 # Example ExternalSecret
 # ============================================
+  register: _r_create_clustersecretstore_for_vault
+  retries: 3
+  delay: 10
+  until: _r_create_clustersecretstore_for_vault is not failed
 
 - name: Create example ExternalSecret
   kubernetes.core.k8s:
@@ -398,6 +456,10 @@
             remoteRef:
               key: example
               property: password
+  register: _r_create_example_externalsecret
+  retries: 3
+  delay: 10
+  until: _r_create_example_externalsecret is not failed
 
 - name: Display secrets management summary
   debug:

@@ -292,11 +292,20 @@
       stringData:
         token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
         network: "{{ project }}-network"
+  register: _r_create_hcloud_token_secret_for_ccm
+  retries: 3
+  delay: 10
+  until: _r_create_hcloud_token_secret_for_ccm is not failed
+  no_log: true
 
 - name: Install Hetzner Cloud Controller Manager
   kubernetes.core.k8s:
     state: present
     src: "https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/{{ hetzner_ccm_ver }}/ccm-networks.yaml"
+  register: _r_install_hetzner_cloud_controller_manager
+  retries: 3
+  delay: 10
+  until: _r_install_hetzner_cloud_controller_manager is not failed
 
 - name: Patch CCM DNS to use upstream DNS (hostNetwork pods can't use nodelocaldns IPv6)
   kubernetes.core.k8s_json_patch:
@@ -317,6 +326,10 @@
             - "kube-system.svc.cluster.local"
             - "svc.cluster.local"
             - "cluster.local"
+  register: _r_patch_ccm_dns_to_use_upstream_dns_hostne
+  retries: 3
+  delay: 10
+  until: _r_patch_ccm_dns_to_use_upstream_dns_hostne is not failed
 
 - name: Wait for Hetzner CCM to be ready
   kubernetes.core.k8s_info:
@@ -338,6 +351,10 @@
   kubernetes.core.k8s:
     state: present
     src: "https://raw.githubusercontent.com/hetznercloud/csi-driver/{{ hetzner_csi_ver }}/deploy/kubernetes/hcloud-csi.yml"
+  register: _r_install_hetzner_csi_driver
+  retries: 3
+  delay: 10
+  until: _r_install_hetzner_csi_driver is not failed
 
 - name: Wait for Hetzner CSI controller to be ready
   kubernetes.core.k8s_info:
@@ -359,6 +376,10 @@
   kubernetes.core.k8s:
     state: present
     src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/standard-install.yaml"
+  register: _r_install_gateway_api_crds_standard
+  retries: 3
+  delay: 10
+  until: _r_install_gateway_api_crds_standard is not failed
 
 - name: Remove Gateway API safe-upgrades policy to allow experimental CRDs
   kubernetes.core.k8s:
@@ -370,11 +391,19 @@
     - { kind: ValidatingAdmissionPolicyBinding }
     - { kind: ValidatingAdmissionPolicy }
   ignore_errors: true
+  register: _r_remove_gateway_api_safe_upgrades_policy_
+  retries: 3
+  delay: 10
+  until: _r_remove_gateway_api_safe_upgrades_policy_ is not failed
 
 - name: Install Gateway API CRDs (experimental - TCPRoute, TLSRoute, GRPCRoute)
   kubernetes.core.k8s:
     state: present
     src: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/experimental-install.yaml"
+  register: _r_install_gateway_api_crds_experimental_tc
+  retries: 3
+  delay: 10
+  until: _r_install_gateway_api_crds_experimental_tc is not failed
 
 - name: Create Cilium GatewayClass
   kubernetes.core.k8s:
@@ -386,6 +415,10 @@
         name: cilium
       spec:
         controllerName: io.cilium/gateway-controller
+  register: _r_create_cilium_gatewayclass
+  retries: 3
+  delay: 10
+  until: _r_create_cilium_gatewayclass is not failed
 
 - name: Restart Cilium operator to pick up Gateway API CRDs
   kubernetes.core.k8s:
@@ -399,6 +432,10 @@
           metadata:
             annotations:
               kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+  register: _r_restart_cilium_operator_to_pick_up_gatew
+  retries: 3
+  delay: 10
+  until: _r_restart_cilium_operator_to_pick_up_gatew is not failed
 
 - name: Create cilium-system namespace
   kubernetes.core.k8s:
@@ -408,6 +445,10 @@
       kind: Namespace
       metadata:
         name: cilium-system
+  register: _r_create_cilium_system_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_cilium_system_namespace is not failed
 
 - name: Create cilium-secrets namespace
   kubernetes.core.k8s:
@@ -417,6 +458,10 @@
       kind: Namespace
       metadata:
         name: cilium-secrets
+  register: _r_create_cilium_secrets_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_cilium_secrets_namespace is not failed
 
 - name: Create ReferenceGrant for Gateway to access TLS secrets
   kubernetes.core.k8s:
@@ -435,6 +480,11 @@
         to:
           - group: ""
             kind: Secret
+  register: _r_create_referencegrant_for_gateway_to_acc
+  retries: 3
+  delay: 10
+  until: _r_create_referencegrant_for_gateway_to_acc is not failed
+  no_log: true
 
 - name: Create Cilium main Gateway
   kubernetes.core.k8s:
@@ -465,6 +515,10 @@
             allowedRoutes:
               namespaces:
                 from: All
+  register: _r_create_cilium_main_gateway
+  retries: 3
+  delay: 10
+  until: _r_create_cilium_main_gateway is not failed
 
 - name: Wait for Cilium to create Gateway service
   kubernetes.core.k8s_info:
@@ -499,10 +553,10 @@
             nodePort: 30443
             protocol: TCP
   when: gw_svc.resources | length > 0
-
-# ============================================
-# Admin Gateway (VPN-only access for admin services)
-# ============================================
+  register: _r_patch_gateway_service_to_use_fixed_nodep
+  retries: 3
+  delay: 10
+  until: _r_patch_gateway_service_to_use_fixed_nodep is not failed
 
 - name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
   kubernetes.core.k8s:
@@ -527,6 +581,10 @@
             allowedRoutes:
               namespaces:
                 from: All
+  register: _r_create_admin_gateway_vpn_only_for_gitlab
+  retries: 3
+  delay: 10
+  until: _r_create_admin_gateway_vpn_only_for_gitlab is not failed
 
 - name: Wait for admin Gateway service
   kubernetes.core.k8s_info:
@@ -557,6 +615,10 @@
             nodePort: 31443
             protocol: TCP
   when: admin_gw_svc.resources | default([]) | length > 0
+  register: _r_patch_admin_gateway_service_to_use_nodep
+  retries: 3
+  delay: 10
+  until: _r_patch_admin_gateway_service_to_use_nodep is not failed
 
 - name: Create NetworkPolicy to restrict admin-gateway to VPN and private network
   kubernetes.core.k8s:
@@ -575,6 +637,10 @@
           - fromCIDR:
               - 10.0.0.0/16
               - 100.64.0.0/10
+  register: _r_create_networkpolicy_to_restrict_admin_g
+  retries: 3
+  delay: 10
+  until: _r_create_networkpolicy_to_restrict_admin_g is not failed
 
 # ============================================
 # cert-manager v1.19.2
@@ -584,6 +650,10 @@
   kubernetes.core.helm_repository:
     name: jetstack
     repo_url: "https://charts.jetstack.io"
+  register: _r_add_jetstack_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_jetstack_helm_repository is not failed
 
 - name: Install cert-manager
   kubernetes.core.helm:
@@ -597,16 +667,34 @@
     values:
       crds:
         enabled: true
-      replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
-      webhook:
-        replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
-      cainjector:
-        replicaCount: "{{ 2 if cluster_tier in ['medium', 'production'] else 1 }}"
+      global:
+        podSecurityPolicy:
+          enabled: false
+      securityContext:
+        runAsNonRoot: true
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+    set_values:
+      - value: "replicaCount={{ certmanager_replicas }}"
+      - value: "webhook.replicaCount={{ certmanager_replicas }}"
+      - value: "cainjector.replicaCount={{ certmanager_replicas }}"
+  register: _r_install_cert_manager
+  retries: 3
+  delay: 10
+  until: _r_install_cert_manager is not failed
 
 - name: Add Hetzner Cloud Helm repository
   kubernetes.core.helm_repository:
     name: hcloud
     repo_url: "https://charts.hetzner.cloud"
+  register: _r_add_hetzner_cloud_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_hetzner_cloud_helm_repository is not failed
 
 - name: Install official Hetzner Cloud DNS webhook for cert-manager
   kubernetes.core.helm:
@@ -616,6 +704,10 @@
     release_namespace: cert-manager
     release_state: present
     wait: true
+  register: _r_install_official_hetzner_cloud_dns_webho
+  retries: 3
+  delay: 10
+  until: _r_install_official_hetzner_cloud_dns_webho is not failed
 
 - name: Create Hetzner Cloud API token secret for cert-manager
   kubernetes.core.k8s:
@@ -628,6 +720,11 @@
         namespace: cert-manager
       stringData:
         api-token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+  register: _r_create_hetzner_cloud_api_token_secret_fo
+  retries: 3
+  delay: 10
+  until: _r_create_hetzner_cloud_api_token_secret_fo is not failed
+  no_log: true
 
 - name: Create Let's Encrypt ClusterIssuer (staging)
   kubernetes.core.k8s:
@@ -652,6 +749,10 @@
                     tokenSecretKeyRef:
                       name: hetzner-secret
                       key: api-token
+  register: _r_create_let_s_encrypt_clusterissuer_stagi
+  retries: 3
+  delay: 10
+  until: _r_create_let_s_encrypt_clusterissuer_stagi is not failed
 
 - name: Create Let's Encrypt ClusterIssuer (production)
   kubernetes.core.k8s:
@@ -676,6 +777,10 @@
                     tokenSecretKeyRef:
                       name: hetzner-secret
                       key: api-token
+  register: _r_create_let_s_encrypt_clusterissuer_produ
+  retries: 3
+  delay: 10
+  until: _r_create_let_s_encrypt_clusterissuer_produ is not failed
 
 - name: Create wildcard TLS certificate
   kubernetes.core.k8s:
@@ -694,6 +799,10 @@
         dnsNames:
           - "{{ domain }}"
           - "*.{{ domain }}"
+  register: _r_create_wildcard_tls_certificate
+  retries: 3
+  delay: 10
+  until: _r_create_wildcard_tls_certificate is not failed
 
 # ============================================
 # MetalLB v0.14.9
@@ -703,6 +812,10 @@
   kubernetes.core.helm_repository:
     name: metallb
     repo_url: "https://metallb.github.io/metallb"
+  register: _r_add_metallb_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_metallb_helm_repository is not failed
 
 - name: Install MetalLB
   kubernetes.core.helm:
@@ -713,6 +826,10 @@
     create_namespace: true
     release_state: present
     wait: true
+  register: _r_install_metallb
+  retries: 3
+  delay: 10
+  until: _r_install_metallb is not failed
 
 - name: Configure MetalLB IPAddressPool
   kubernetes.core.k8s:
@@ -726,6 +843,10 @@
       spec:
         addresses:
           - "10.0.10.1-10.0.10.254"
+  register: _r_configure_metallb_ipaddresspool
+  retries: 3
+  delay: 10
+  until: _r_configure_metallb_ipaddresspool is not failed
 
 - name: Configure MetalLB L2Advertisement
   kubernetes.core.k8s:
@@ -739,12 +860,16 @@
       spec:
         ipAddressPools:
           - default-pool
+  register: _r_configure_metallb_l2advertisement
+  retries: 3
+  delay: 10
+  until: _r_configure_metallb_l2advertisement is not failed
 
 # ============================================
 # Core Namespaces
 # ============================================
 
-- name: Create platform namespaces
+- name: Create platform namespaces with Pod Security Standards
   kubernetes.core.k8s:
     state: present
     definition:
@@ -752,6 +877,13 @@
       kind: Namespace
       metadata:
         name: "{{ item }}"
+        labels:
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/enforce-version: latest
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/warn-version: latest
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/audit-version: latest
   loop:
     - gitlab
     - argocd
@@ -761,6 +893,291 @@
     - vault
     - keda
     - production
+  register: _r_create_platform_namespaces
+  retries: 3
+  delay: 10
+  until: _r_create_platform_namespaces is not failed
+
+- name: Create default-deny NetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny-all
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+          - Egress
+        ingress: []
+        egress:
+          - to:
+              - namespaceSelector: {}
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - production
+  register: _r_create_default_deny_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_default_deny_netpol is not failed
+
+- name: Create allow-intra-namespace NetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-intra-namespace
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+          - Egress
+        ingress:
+          - from:
+              - podSelector: {}
+        egress:
+          - to:
+              - podSelector: {}
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - production
+  register: _r_create_intra_ns_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_intra_ns_netpol is not failed
+
+- name: Create allow-from-gateway NetworkPolicy for service namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-gateway
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: envoy-gateway-system
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: gateway-system
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - production
+  register: _r_create_gw_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_gw_netpol is not failed
+
+- name: Create allow-monitoring-scrape NetworkPolicy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-monitoring-scrape
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+            ports:
+              - protocol: TCP
+                port: 9090
+              - protocol: TCP
+                port: 9100
+              - protocol: TCP
+                port: 8080
+              - protocol: TCP
+                port: 8443
+  loop:
+    - gitlab
+    - argocd
+    - storage
+    - databases
+    - vault
+    - keda
+    - production
+  register: _r_create_mon_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_mon_netpol is not failed
+
+- name: Create allow-internet-egress NetworkPolicy for namespaces needing external access
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-internet-egress
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Egress
+        egress:
+          - to:
+              - ipBlock:
+                  cidr: 0.0.0.0/0
+                  except:
+                    - 10.0.0.0/8
+                    - 172.16.0.0/12
+                    - 192.168.0.0/16
+          - to:
+              - namespaceSelector: {}
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - vault
+    - production
+  register: _r_create_egress_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_egress_netpol is not failed
+
+- name: Create allow-databases-from-apps NetworkPolicy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-apps
+        namespace: databases
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: gitlab
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: production
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+            ports:
+              - protocol: TCP
+                port: 5432
+              - protocol: TCP
+                port: 6432
+              - protocol: TCP
+                port: 27017
+  register: _r_create_db_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_db_netpol is not failed
+
+- name: Create allow-storage-from-apps NetworkPolicy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-apps
+        namespace: storage
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: gitlab
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: databases
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: production
+            ports:
+              - protocol: TCP
+                port: 9000
+              - protocol: TCP
+                port: 9001
+  register: _r_create_storage_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_storage_netpol is not failed
+
+- name: Create allow-vault-from-apps NetworkPolicy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-apps
+        namespace: vault
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector: {}
+            ports:
+              - protocol: TCP
+                port: 8200
+              - protocol: TCP
+                port: 8201
+  register: _r_create_vault_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_vault_netpol is not failed
 
 - name: Display cluster management summary
   debug:
