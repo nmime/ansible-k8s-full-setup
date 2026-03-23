@@ -195,7 +195,7 @@
           - "=========================================="
           - ""
           - "Services deployed:"
-          - "  - Kubernetes Cluster with Calico CNI"
+          - "  - Kubernetes Cluster with Cilium CNI"
           - "  - GitLab EE: https://gitlab.{{ domain }}"
           - "  - ArgoCD: https://argocd.{{ domain }}"
           - "  - Grafana: https://grafana.{{ domain }}"

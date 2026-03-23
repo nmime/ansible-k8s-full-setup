@@ -274,7 +274,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ vault_domain }}"

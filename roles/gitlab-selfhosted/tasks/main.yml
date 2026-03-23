@@ -543,7 +543,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ gitlab_domain }}"
@@ -572,7 +572,7 @@
       spec:
         parentRefs:
           - name: main-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ registry_domain }}"
@@ -601,7 +601,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ kas_domain }}"

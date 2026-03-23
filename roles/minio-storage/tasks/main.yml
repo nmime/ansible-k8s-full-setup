@@ -194,7 +194,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ minio_console_domain }}"
@@ -223,7 +223,7 @@
       spec:
         parentRefs:
           - name: main-gateway
-            namespace: gateway-system
+            namespace: cilium-system
             sectionName: https
         hostnames:
           - "{{ minio_api_domain }}"
