@@ -94,6 +94,10 @@ logging_retention: 14d
 keda_enabled: true
 keda_chart_version: "2.19.0"
 
+# Temporal
+temporal_chart_version: "0.73.2"
+temporal_num_history_shards: 512
+
 # Backup
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30
