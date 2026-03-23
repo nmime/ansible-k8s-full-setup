@@ -526,10 +526,10 @@
         database: "{{ app_name | default('myapp') }}"
         username: "{{ app_name | default('myapp') }}"
   when: app_pg_password | length > 0
-  register: _r_create_postgresql_connection_secret_for_
+  register: _r_create_postgresql_connection_secret_for_app
   retries: 3
   delay: 10
-  until: _r_create_postgresql_connection_secret_for_ is not failed
+  until: _r_create_postgresql_connection_secret_for_app is not failed
   no_log: true
 
 - name: Display databases summary

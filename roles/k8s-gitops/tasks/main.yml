@@ -53,6 +53,10 @@
     values:
       global:
         domain: "{{ argocd_domain }}"
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
       server:
         replicas: "{{ argocd_server_replicas }}"
         ingress:
@@ -123,11 +127,6 @@
           policy.default: role:readonly
           policy.csv: |
             g, admin, role:admin
-      global:
-        securityContext:
-          runAsNonRoot: true
-          seccompProfile:
-            type: RuntimeDefault
   register: _r_install_argocd_with_helm
   retries: 3
   delay: 10
