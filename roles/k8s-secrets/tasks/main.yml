@@ -249,7 +249,7 @@
       kind: Certificate
       metadata:
         name: vault-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: vault-tls
         issuerRef:
@@ -274,7 +274,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: cilium-system
+            namespace: gateway-system
             sectionName: https
         hostnames:
           - "{{ vault_domain }}"

@@ -472,7 +472,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: cilium-system
+            namespace: gateway-system
             sectionName: https
         hostnames:
           - "{{ grafana_domain }}"
@@ -497,7 +497,7 @@
       kind: Certificate
       metadata:
         name: grafana-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: grafana-tls
         issuerRef:
@@ -704,7 +704,7 @@
     kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- \
       curl -s -X POST \
       -H 'Content-Type: application/json' \
-      -u admin:admin \
+      -u admin:{{ grafana_admin_password }} \
       http://localhost/graph/api/auth/keys \
       -d '{"name":"percona-db-key-{{ ansible_date_time.epoch }}","role":"Admin"}'
   register: pmm_api_key_result
@@ -731,7 +731,7 @@
       spec:
         parentRefs:
           - name: admin-gateway
-            namespace: cilium-system
+            namespace: gateway-system
             sectionName: https
         hostnames:
           - "pmm.{{ domain }}"
@@ -756,7 +756,7 @@
       kind: Certificate
       metadata:
         name: pmm-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: pmm-tls
         issuerRef:
