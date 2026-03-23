@@ -424,6 +424,10 @@
     definition:
       stringData:
         PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+  register: _r_patch_mongo_pmm_secret
+  retries: 3
+  delay: 10
+  until: _r_patch_mongo_pmm_secret is not failed
   no_log: true
 
 - name: Wait for MongoDB cluster to be ready
