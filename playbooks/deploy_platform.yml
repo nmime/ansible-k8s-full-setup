@@ -119,6 +119,53 @@
         - network
         - security
 
+    - name: Restore controller connectivity after network-security role
+      ansible.builtin.shell: |
+        set +e
+        rm -rf /tmp/outer-ansible-cp 2>/dev/null
+        iptables -P INPUT ACCEPT 2>/dev/null
+        iptables -P FORWARD ACCEPT 2>/dev/null
+        iptables -P OUTPUT ACCEPT 2>/dev/null
+        iptables -F 2>/dev/null
+        iptables -X 2>/dev/null
+        iptables -t nat -F 2>/dev/null
+        iptables -t mangle -F 2>/dev/null
+        ip6tables -P INPUT ACCEPT 2>/dev/null
+        ip6tables -P FORWARD ACCEPT 2>/dev/null
+        ip6tables -P OUTPUT ACCEPT 2>/dev/null
+        ip6tables -F 2>/dev/null
+        ip6tables -X 2>/dev/null
+        systemctl stop docker docker.socket 2>/dev/null
+        for br in $(ip link show 2>/dev/null | grep -oP 'br-[a-f0-9]+'); do
+          ip link set "$br" down 2>/dev/null
+          ip link delete "$br" 2>/dev/null
+        done
+        ip link delete docker0 2>/dev/null
+        ip link delete tailscale0 2>/dev/null
+        GW=$(ip route show default | awk '{print $3}' | head -1)
+        if [ -n "$GW" ]; then
+          ip route replace default via "$GW"
+        else
+          ip route replace default via 172.31.1.1 dev eth0
+        fi
+        echo 'nameserver 185.12.64.1' > /etc/resolv.conf && echo 'nameserver 185.12.64.2' >> /etc/resolv.conf
+        for i in $(seq 1 10); do
+          if curl -4 -sI --max-time 5 https://github.com >/dev/null 2>&1; then
+            echo "Controller connectivity restored after $i attempts"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "WARNING: Controller connectivity not restored after 10 attempts"
+        ip link show
+        ip route show
+        iptables -L -n
+        ss -s
+        exit 0
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+
     - name: Deploy Kubernetes Cluster
       ansible.builtin.import_role:
         name: k8s-cluster-management

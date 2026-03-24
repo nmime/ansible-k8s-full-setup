@@ -6,7 +6,7 @@
 - name: Set cluster management variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
-    k8s_ver: "{{ k8s_version | default('v1.35.3') }}"
+    k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
     kubespray_version: "v2.30.0"
     cilium_ver: "{{ cilium_version | default('v1.19.2') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.5.1') }}"
@@ -107,6 +107,10 @@
             children:
               kube_control_plane: {}
               kube_node: {}
+          bastion:
+            hosts: {}
+          calico_rr:
+            hosts: {}
     mode: '0644'
   delegate_to: localhost
   become: false
