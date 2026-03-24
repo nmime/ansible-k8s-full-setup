@@ -241,6 +241,20 @@
   changed_when: false
   failed_when: false
 
+- name: Get local SSH public key fingerprint in MD5 hex format
+  ansible.builtin.shell: |
+    ssh-keygen -l -E md5 -f {{ ssh_key_path | default('~/.ssh/id_ed25519') }}.pub | awk '{print $2}' | sed 's/^MD5://'
+  register: local_key_fingerprint
+  changed_when: false
+  when: ssh_key_check.rc != 0
+
+- name: Find existing SSH key by fingerprint
+  ansible.builtin.shell: |
+    hcloud ssh-key list -o json | python3 -c "import sys,json; keys=json.load(sys.stdin); matches=[k['name'] for k in keys if k['fingerprint']=='{{ local_key_fingerprint.stdout | trim }}']; print(matches[0] if matches else '')"
+  register: existing_key_by_fp
+  changed_when: false
+  when: ssh_key_check.rc != 0
+
 - name: Upload SSH public key to Hetzner
   ansible.builtin.command:
     cmd: >
@@ -250,11 +264,11 @@
   register: ssh_key_create
   changed_when: ssh_key_create.rc == 0
   failed_when: ssh_key_create.rc != 0
-  when: ssh_key_check.rc != 0
+  when: ssh_key_check.rc != 0 and (existing_key_by_fp.stdout | default('') | trim | length == 0)
 
 - name: Set SSH key name fact
   set_fact:
-    hcloud_ssh_key: "{{ project }}-key"
+    hcloud_ssh_key: "{{ (ssh_key_check.rc == 0) | ternary(project + '-key', (existing_key_by_fp.stdout | default('') | trim | length > 0) | ternary(existing_key_by_fp.stdout | default('') | trim, project + '-key')) }}"
 
 # ============================================
 # Network

@@ -49,7 +49,7 @@ ssh_key_path: ~/.ssh/id_ed25519
 storage_class: hcloud-volumes
 
 # Kubernetes
-k8s_version: v1.35.3
+k8s_version: v1.34.3
 k8s_cni: cilium
 cilium_version: v1.19.2
 gateway_api_version: v1.5.1
