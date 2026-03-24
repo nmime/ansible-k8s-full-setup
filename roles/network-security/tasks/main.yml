@@ -26,19 +26,51 @@
   delegate_to: localhost
   become: false
 
-# ============================================
-# Bastion Hardening
-# ============================================
-
 - name: Update and install required packages on bastion
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     apt-get update -q
     apt-get install -y curl wget unzip jq ufw fail2ban apt-transport-https ca-certificates gnupg
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
+  register: bastion_pkg_result
+  retries: 3
+  delay: 10
+  until: bastion_pkg_result is success
+
+- name: Install tools directly on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    set -e
+    if ! command -v kubectl &>/dev/null; then
+      curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL "https://dl.k8s.io/release/v1.35.3/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl
+      chmod +x /usr/local/bin/kubectl
+    fi
+    if ! command -v helm &>/dev/null; then
+      curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL "https://get.helm.sh/helm-v3.20.1-linux-amd64.tar.gz" | tar xz -C /usr/local/bin/ linux-amd64/helm --strip-components=1
+      chmod +x /usr/local/bin/helm
+    fi
+    if ! command -v hcloud &>/dev/null; then
+      curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL "https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz" | tar xz -C /usr/local/bin/ hcloud
+      chmod +x /usr/local/bin/hcloud
+    fi
+    if ! command -v yq &>/dev/null; then
+      curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+      chmod +x /usr/local/bin/yq
+    fi
+    echo "Tools installed:"
+    kubectl version --client 2>&1 | head -1
+    helm version --short 2>&1 | head -1
+    hcloud version 2>&1 | head -1
+    yq --version 2>&1 | head -1
+    REMOTECMD
+  register: tools_result
+  retries: 3
+  delay: 30
+  until: tools_result is success
 
 - name: Configure fail2ban on bastion
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     cat > /etc/fail2ban/jail.local << 'EOF'
     [sshd]
     enabled = true
@@ -49,102 +81,215 @@
     EOF
     systemctl enable fail2ban
     systemctl restart fail2ban
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
 
 - name: Configure UFW firewall on bastion
-  ansible.builtin.raw: |
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow 22/tcp comment "SSH"
-    ufw allow 80/tcp comment "HTTP ACME challenge"
-    ufw allow 443/tcp comment "Headscale HTTPS"
-    ufw allow 3478/udp comment "STUN/DERP"
-    ufw allow 41641/udp comment "WireGuard/Tailscale"
-    ufw allow from 10.0.0.0/16 comment "Private network"
-    echo "y" | ufw enable
-  delegate_to: "{{ bastion_host }}"
-  become: true
-
-- name: Harden SSH on bastion
-  ansible.builtin.raw: |
-    # Ensure settings are present regardless of whether they were commented out
-    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-      && sed -i 's/^.*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
-      || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
-    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
-      && sed -i 's/^.*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
-      || echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config
-    grep -q '^MaxAuthTries' /etc/ssh/sshd_config \
-      && sed -i 's/^.*MaxAuthTries.*/MaxAuthTries 3/' /etc/ssh/sshd_config \
-      || echo 'MaxAuthTries 3' >> /etc/ssh/sshd_config
-    systemctl restart sshd
-  delegate_to: "{{ bastion_host }}"
-  become: true
-
-# ============================================
-# NAT Gateway (bastion routes outbound for private nodes)
-# ============================================
-
-- name: Enable IP forwarding and NAT on bastion
-  ansible.builtin.raw: |
-    # Enable IP forwarding
-    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
-    sysctl -p /etc/sysctl.d/99-nat.conf
-    # Detect default outbound interface
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
     DEFAULT_IF="${DEFAULT_IF:-eth0}"
-    # NAT masquerade for private network traffic
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
+    sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+    sed -i 's/^#net\/ipv4\/ip_forward=1/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
+    sed -i 's/^net\/ipv4\/ip_forward=0/net\/ipv4\/ip_forward=1/' /etc/ufw/sysctl.conf
+    sysctl -w net.ipv4.ip_forward=1
+    grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf && sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+    if ! grep -q '^\*nat' /etc/ufw/before.rules; then
+      printf "*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s 10.0.0.0/16 -o $DEFAULT_IF -j MASQUERADE\nCOMMIT\n" > /tmp/ufw-nat.tmp
+      cat /etc/ufw/before.rules >> /tmp/ufw-nat.tmp
+      mv /tmp/ufw-nat.tmp /etc/ufw/before.rules
+    fi
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw allow 3478/udp
+    ufw allow 41641/udp
+    ufw allow from 10.0.0.0/16
+    ufw route allow in on "$PRIV_IF" out on "$DEFAULT_IF"
+    ufw --force enable
+    ufw reload
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
+    iptables -C FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    REMOTECMD
+
+- name: Harden SSH on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    for setting in \
+      'PasswordAuthentication no' \
+      'PermitRootLogin prohibit-password' \
+      'MaxAuthTries 5' \
+      'MaxStartups 100:30:200' \
+      'MaxSessions 50' \
+      'AllowTcpForwarding yes' \
+      'AllowStreamLocalForwarding no' \
+    ; do
+      key=$(echo "$setting" | cut -d' ' -f1)
+      grep -q "^$key" /etc/ssh/sshd_config \
+        && sed -i "s/^.*$key.*/$setting/" /etc/ssh/sshd_config \
+        || echo "$setting" >> /etc/ssh/sshd_config
+    done
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd
+    REMOTECMD
+
+- name: Wait for bastion SSH after restart
+  wait_for:
+    host: "{{ bastion_host }}"
+    port: 22
+    delay: 3
+    timeout: 30
+  delegate_to: localhost
+  become: false
+
+- name: Flush SSH control sockets after bastion SSH restart
+  ansible.builtin.shell: |
+    rm -rf /tmp/outer-ansible-cp/root@{{ bastion_host }}* 2>/dev/null
+    true
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Enable IP forwarding and NAT on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    sysctl -w net.ipv4.ip_forward=1
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-nat.conf
+    DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+    DEFAULT_IF="${DEFAULT_IF:-eth0}"
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
     iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
       iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
-    # Persist iptables rules
-    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
-    netfilter-persistent save
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    iptables -C FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4
+    mkdir -p /etc/network/if-pre-up.d
+    printf '#!/bin/sh\niptables-restore < /etc/iptables/rules.v4\n' > /etc/network/if-pre-up.d/iptables
+    chmod +x /etc/network/if-pre-up.d/iptables
+    REMOTECMD
 
 - name: Add bastion as default route on private network
   ansible.builtin.command:
     cmd: >
       hcloud network add-route {{ project }}-network
       --destination 0.0.0.0/0
-      --gateway {{ bastion_private_ip | default('10.0.0.2') }}
+      --gateway {{ bastion_private_ip | default('10.0.2.1') }}
   delegate_to: localhost
   become: false
   register: nat_route
   changed_when: nat_route.rc == 0
   failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default('')) and 'route' not in (nat_route.stderr | default(''))
 
-# ============================================
-# Docker Installation (for Headscale)
-# ============================================
+- name: Wait for private nodes to be SSH-reachable via bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -W %h:%p root@{{ bastion_host }}' \
+      root@{{ item }} 'echo ok'
+  loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
+  when: item is defined and item | length > 0
+  register: ssh_check
+  retries: 10
+  delay: 15
+  until: ssh_check.rc == 0
+
+- name: Configure DNS on private-only nodes
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -W %h:%p root@{{ bastion_host }}' \
+      root@{{ item }} 'bash -s' << 'REMOTECMD'
+    mkdir -p /etc/systemd/resolved.conf.d
+    printf '[Resolve]\nDNS=185.12.64.1 185.12.64.2\n' > /etc/systemd/resolved.conf.d/dns.conf
+    systemctl restart systemd-resolved 2>/dev/null || true
+    if [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -q stub; then
+      true
+    else
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\n' > /etc/resolv.conf
+    fi
+    mkdir -p /etc/cloud/cloud.cfg.d
+    echo "manage_resolv_conf: false" > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg
+    REMOTECMD
+  loop: "{{ (groups.get('k8s_nodes', []) | default([])) + (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
+  when: item is defined and item | length > 0
+  register: dns_result
+  retries: 5
+  delay: 30
+  until: dns_result.rc == 0
+
+- name: Add default route on private-only nodes
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@{{ bastion_host }}' \
+      root@{{ item }} 'bash -s' << 'REMOTECMD'
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
+    ip route del default 2>/dev/null; ip route add default via 10.0.0.1 dev "$PRIV_IF" mtu 1450
+    if [ -d /etc/netplan ]; then
+      cat > /etc/netplan/60-private-routes.yaml << NPEOF
+    network:
+      version: 2
+      ethernets:
+        ${PRIV_IF}:
+          routes:
+            - to: default
+              via: 10.0.0.1
+              metric: 100
+              mtu: 1450
+    NPEOF
+    fi
+    REMOTECMD
+  loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
+  when: item is defined and item | length > 0
+  register: route_result
+  retries: 3
+  delay: 15
+  until: route_result.rc == 0
 
 - name: Install Docker on bastion
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     if ! command -v docker &>/dev/null; then
       curl -fsSL https://get.docker.com | sh
       systemctl enable docker
       systemctl start docker
     fi
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
 
-# ============================================
-# Headscale VPN v0.28.0
-# ============================================
+- name: Re-apply NAT after Docker install
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    sysctl -w net.ipv4.ip_forward=1
+    DEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)
+    DEFAULT_IF="${DEFAULT_IF:-eth0}"
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
+    iptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE 2>/dev/null || \
+      iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o "$DEFAULT_IF" -j MASQUERADE
+    iptables -C FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$PRIV_IF" -o "$DEFAULT_IF" -j ACCEPT
+    iptables -C FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -A FORWARD -i "$DEFAULT_IF" -o "$PRIV_IF" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables-save > /etc/iptables/rules.v4
+    REMOTECMD
 
 - name: Create Headscale directories
-  ansible.builtin.raw: mkdir -p /etc/headscale /var/lib/headscale /opt/headscale
-  delegate_to: "{{ bastion_host }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
+      'mkdir -p /etc/headscale /var/lib/headscale /opt/headscale'
 
 - name: Deploy Headscale configuration
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << REMOTECMD
     cat > /etc/headscale/config.yaml << 'EOF'
     server_url: https://{{ vpn_domain }}
     listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 0.0.0.0:9090
-    private_key_path: /var/lib/headscale/private.key
     noise:
       private_key_path: /var/lib/headscale/noise_private.key
     prefixes:
@@ -154,10 +299,10 @@
       server:
         enabled: true
         region_id: 999
-        region_code: custom
-        region_name: Headscale
         stun_listen_addr: 0.0.0.0:3478
-      urls: []
+        private_key_path: /var/lib/headscale/derp_server_private.key
+      urls:
+          - https://controlplane.tailscale.com/derpmap/default
       auto_update_enabled: true
       update_frequency: 24h
     database:
@@ -174,21 +319,21 @@
     log:
       level: info
     EOF
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
 
 - name: Create Caddyfile for Headscale TLS termination
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << REMOTECMD
     cat > /opt/headscale/Caddyfile << 'EOF'
     {{ vpn_domain }} {
       reverse_proxy headscale:8080
     }
     EOF
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
 
 - name: Deploy Headscale Docker Compose
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << REMOTECMD
     cat > /opt/headscale/docker-compose.yml << 'EOF'
     services:
       headscale:
@@ -204,6 +349,16 @@
           - /etc/headscale:/etc/headscale:ro
         environment:
           - TZ=UTC
+        security_opt:
+          - no-new-privileges:true
+        read_only: true
+        tmpfs:
+          - /tmp
+          - /run
+        cap_drop:
+          - ALL
+        cap_add:
+          - NET_BIND_SERVICE
       caddy:
         container_name: caddy
         image: caddy:2-alpine
@@ -217,104 +372,61 @@
           - caddy_config:/config
         depends_on:
           - headscale
+        security_opt:
+          - no-new-privileges:true
+        cap_drop:
+          - ALL
+        cap_add:
+          - NET_BIND_SERVICE
     volumes:
       caddy_data:
       caddy_config:
     EOF
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
 
 - name: Start Headscale container
-  ansible.builtin.raw: cd /opt/headscale && docker compose up -d
-  delegate_to: "{{ bastion_host }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
+      'cd /opt/headscale && docker compose up -d'
 
 - name: Wait for Headscale to be ready
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     for i in $(seq 1 30); do
       docker exec headscale headscale version 2>/dev/null && break
       sleep 2
     done
-  delegate_to: "{{ bastion_host }}"
-  become: true
-
-# ============================================
-# Headscale User/Namespace Setup
-# ============================================
+    REMOTECMD
 
 - name: Create Headscale admin user
-  ansible.builtin.raw: docker exec headscale headscale users create admin 2>/dev/null || true
-  delegate_to: "{{ bastion_host }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
+      'docker exec headscale headscale users create admin 2>/dev/null || true'
 
 - name: Create Headscale dev user
-  ansible.builtin.raw: docker exec headscale headscale users create dev 2>/dev/null || true
-  delegate_to: "{{ bastion_host }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
+      'docker exec headscale headscale users create dev 2>/dev/null || true'
 
 - name: Create pre-auth key for admin
-  ansible.builtin.raw: |
-    docker exec headscale headscale preauthkeys create --user admin --reusable --expiration 720h 2>/dev/null | tail -1
-  delegate_to: "{{ bastion_host }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
+      'docker exec headscale headscale preauthkeys create --user admin --reusable --expiration 720h 2>/dev/null | tail -1'
   register: admin_preauth_key
 
-# ============================================
-# Install Tailscale on bastion (self-connect)
-# ============================================
-
 - name: Install Tailscale client on bastion
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     if ! command -v tailscale &>/dev/null; then
       curl -fsSL https://tailscale.com/install.sh | sh
     fi
-  delegate_to: "{{ bastion_host }}"
-  become: true
+    REMOTECMD
 
 - name: Connect bastion to Headscale VPN
-  ansible.builtin.raw: |
-    tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout | trim }} --hostname {{ project }}-bastion 2>/dev/null || true
-  delegate_to: "{{ bastion_host }}"
-  become: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
+      "tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout | trim }} --hostname {{ project }}-bastion 2>/dev/null || true"
   when: admin_preauth_key.stdout is defined and admin_preauth_key.stdout | trim | length > 0
-
-# ============================================
-# Install tools on bastion
-# ============================================
-
-- name: Install kubectl on bastion
-  ansible.builtin.raw: |
-    if ! command -v kubectl &>/dev/null; then
-      curl -fsSL "https://dl.k8s.io/release/v1.34.3/bin/linux/amd64/kubectl" -o /usr/local/bin/kubectl
-      chmod +x /usr/local/bin/kubectl
-    fi
-  delegate_to: "{{ bastion_host }}"
-  become: true
-
-- name: Install Helm on bastion
-  ansible.builtin.raw: |
-    if ! command -v helm &>/dev/null; then
-      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-    fi
-  delegate_to: "{{ bastion_host }}"
-  become: true
-
-- name: Install hcloud CLI on bastion
-  ansible.builtin.raw: |
-    if ! command -v hcloud &>/dev/null; then
-      curl -sL https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz | tar xz -C /usr/local/bin/
-    fi
-  delegate_to: "{{ bastion_host }}"
-  become: true
-
-- name: Install yq on bastion
-  ansible.builtin.raw: |
-    if ! command -v yq &>/dev/null; then
-      curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
-      chmod +x /usr/local/bin/yq
-    fi
-  delegate_to: "{{ bastion_host }}"
-  become: true
 
 - name: Display network security summary
   debug:

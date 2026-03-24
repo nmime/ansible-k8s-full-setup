@@ -6,9 +6,9 @@
 - name: Set observability tier-specific variables
   set_fact:
     monitoring_namespace: "monitoring"
-    vm_operator_version: "0.52.0"
-    loki_chart_version: "6.29.0"
-    grafana_chart_version: "8.10.0"
+    vm_operator_version: "0.59.3"
+    loki_chart_version: "6.55.0"
+    grafana_chart_version: "11.3.4"
     grafana_domain: "grafana.{{ domain }}"
     vm_retention: "{{ metrics_retention | default('30d') }}"
     vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
@@ -23,18 +23,28 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ monitoring_namespace }}"
+        name: monitoring
         labels:
           app.kubernetes.io/part-of: observability
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
 
 # ============================================
 # VictoriaMetrics
 # ============================================
+  register: _r_create_monitoring_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_monitoring_namespace is not failed
 
 - name: Add VictoriaMetrics Helm repository
   kubernetes.core.helm_repository:
     name: vm
     repo_url: "https://victoriametrics.github.io/helm-charts/"
+  register: _r_add_victoriametrics_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_victoriametrics_helm_repository is not failed
 
 - name: Install VictoriaMetrics Operator
   kubernetes.core.helm:
@@ -48,6 +58,10 @@
     values:
       operator:
         enable_converter_ownership: true
+  register: _r_install_victoriametrics_operator
+  retries: 3
+  delay: 10
+  until: _r_install_victoriametrics_operator is not failed
 
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
@@ -97,6 +111,10 @@
               cpu: 500m
               memory: 512Mi
   when: tier in ['medium', 'production']
+  register: _r_deploy_vmcluster_distributed_mode
+  retries: 3
+  delay: 10
+  until: _r_deploy_vmcluster_distributed_mode is not failed
 
 - name: Deploy VMSingle (standalone mode for minimal/small)
   kubernetes.core.k8s:
@@ -118,12 +136,16 @@
                   storage: "{{ vm_storage_size }}"
         resources:
           requests:
-            cpu: 100m
-            memory: 256Mi
+            cpu: "{{ '50m' if tier == 'minimal' else '100m' }}"
+            memory: "{{ '128Mi' if tier == 'minimal' else '256Mi' }}"
           limits:
             cpu: 1000m
             memory: 2Gi
   when: tier in ['minimal', 'small']
+  register: _r_deploy_vmsingle_standalone_mode_for_mini
+  retries: 3
+  delay: 10
+  until: _r_deploy_vmsingle_standalone_mode_for_mini is not failed
 
 - name: Deploy VMAgent for scraping
   kubernetes.core.k8s:
@@ -150,11 +172,19 @@
 # ============================================
 # Loki (Log Aggregation)
 # ============================================
+  register: _r_deploy_vmagent_for_scraping
+  retries: 3
+  delay: 10
+  until: _r_deploy_vmagent_for_scraping is not failed
 
 - name: Add Grafana Helm repository
   kubernetes.core.helm_repository:
     name: grafana
     repo_url: "https://grafana.github.io/helm-charts"
+  register: _r_add_grafana_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_grafana_helm_repository is not failed
 
 - name: Create Loki S3 credentials secret
   kubernetes.core.k8s:
@@ -169,6 +199,11 @@
       stringData:
         S3_ACCESS_KEY: "{{ minio_root_user }}"
         S3_SECRET_KEY: "{{ minio_root_password }}"
+  register: _r_create_loki_s3_credentials_secret
+  retries: 3
+  delay: 10
+  until: _r_create_loki_s3_credentials_secret is not failed
+  no_log: true
 
 - name: Install Loki with Helm
   kubernetes.core.helm:
@@ -181,7 +216,7 @@
     wait: true
     timeout: "10m0s"
     values:
-      deploymentMode: SimpleScalable
+      deploymentMode: "{{ 'SingleBinary' if tier in ['minimal', 'small'] else 'SimpleScalable' }}"
       loki:
         auth_enabled: false
         commonConfig:
@@ -213,53 +248,76 @@
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: "{{ vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: "{{ vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: 10Gi
+          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       backend:
-        replicas: "{{ vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: 10Gi
+          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
+          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+      singleBinary:
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else 0 }}"
+        resources:
+          requests:
+            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
+            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        persistence:
+          enabled: true
+          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gateway:
         enabled: true
         replicas: 1
+        nginxConfig:
+          resolver: coredns.kube-system.svc.cluster.local.
+      chunksCache:
+        enabled: false
+      resultsCache:
+        enabled: false
       minio:
         enabled: false
       test:
         enabled: false
+  register: _r_install_loki_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_loki_with_helm is not failed
 
 - name: Install Promtail for log collection
   kubernetes.core.helm:
     name: promtail
     chart_ref: grafana/promtail
-    chart_version: "6.16.6"
+    chart_version: "6.17.1"
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
@@ -279,6 +337,10 @@
 # ============================================
 # Grafana
 # ============================================
+  register: _r_install_promtail_for_log_collection
+  retries: 3
+  delay: 10
+  until: _r_install_promtail_for_log_collection is not failed
 
 - name: Install Grafana with Helm
   kubernetes.core.helm:
@@ -393,6 +455,10 @@
           enabled: true
         datasources:
           enabled: true
+  register: _r_install_grafana_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_grafana_with_helm is not failed
 
 - name: Create Grafana Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -418,6 +484,10 @@
             backendRefs:
               - name: grafana
                 port: 80
+  register: _r_create_grafana_gateway_api_httproute_vpn
+  retries: 3
+  delay: 10
+  until: _r_create_grafana_gateway_api_httproute_vpn is not failed
 
 - name: Create TLS Certificate for Grafana
   kubernetes.core.k8s:
@@ -427,7 +497,7 @@
       kind: Certificate
       metadata:
         name: grafana-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: grafana-tls
         issuerRef:
@@ -439,6 +509,10 @@
 # ============================================
 # Percona Monitoring and Management (PMM) Server
 # ============================================
+  register: _r_create_tls_certificate_for_grafana
+  retries: 3
+  delay: 10
+  until: _r_create_tls_certificate_for_grafana is not failed
 
 - name: Create PMM admin password secret
   kubernetes.core.k8s:
@@ -452,6 +526,28 @@
       type: Opaque
       stringData:
         PMM_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+  register: _r_create_pmm_admin_password_secret
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_admin_password_secret is not failed
+  no_log: true
+
+- name: Create PMM ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: pmm-server
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          app: pmm-server
+      automountServiceAccountToken: false
+  register: _r_create_pmm_sa
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_sa is not failed
 
 - name: Deploy PMM Server
   kubernetes.core.k8s:
@@ -474,14 +570,26 @@
             labels:
               app: pmm-server
           spec:
+            securityContext:
+              runAsNonRoot: false
+              seccompProfile:
+                type: RuntimeDefault
+            serviceAccountName: pmm-server
             containers:
               - name: pmm-server
-                image: "percona/pmm-server:2"
+                image: "percona/pmm-server:3"
                 ports:
                   - containerPort: 443
                     name: https
                   - containerPort: 80
                     name: http
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                    add:
+                      - NET_BIND_SERVICE
                 env:
                   - name: DISABLE_UPDATES
                     value: "1"
@@ -520,6 +628,10 @@
               - name: pmm-data
                 persistentVolumeClaim:
                   claimName: pmm-server-data
+  register: _r_deploy_pmm_server
+  retries: 3
+  delay: 10
+  until: _r_deploy_pmm_server is not failed
 
 - name: Create PMM Server PVC
   kubernetes.core.k8s:
@@ -537,6 +649,10 @@
         resources:
           requests:
             storage: 20Gi
+  register: _r_create_pmm_server_pvc
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_server_pvc is not failed
 
 - name: Create PMM Server Service
   kubernetes.core.k8s:
@@ -559,6 +675,10 @@
           - name: https
             port: 443
             targetPort: 443
+  register: _r_create_pmm_server_service
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_server_service is not failed
 
 - name: Wait for PMM Server to be ready
   kubernetes.core.k8s_info:
@@ -571,6 +691,32 @@
     and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 30
   delay: 15
+  failed_when: false
+
+- name: Get PMM Server pod name
+  shell: kubectl get pod -n {{ monitoring_namespace }} -l app=pmm-server -o jsonpath='{.items[0].metadata.name}'
+  register: pmm_pod_name
+  changed_when: false
+  failed_when: false
+
+- name: Generate PMM API key for database monitoring
+  shell: |
+    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- \
+      curl -s -X POST \
+      -H 'Content-Type: application/json' \
+      -u admin:{{ grafana_admin_password }} \
+      http://localhost/graph/api/auth/keys \
+      -d '{"name":"percona-db-key-{{ ansible_date_time.epoch }}","role":"Admin"}'
+  register: pmm_api_key_result
+  failed_when: false
+  changed_when: false
+  no_log: true
+  when: pmm_pod_name.stdout | default('') | length > 0
+
+- name: Set PMM API key fact
+  set_fact:
+    pmm_api_key: "{{ (pmm_api_key_result.stdout | default('{}') | from_json).key | default('') }}"
+  when: pmm_api_key_result.rc | default(1) == 0
   failed_when: false
 
 - name: Create PMM HTTPRoute (VPN-only via admin-gateway)
@@ -597,6 +743,10 @@
             backendRefs:
               - name: pmm-server
                 port: 80
+  register: _r_create_pmm_httproute_vpn_only_via_admin_
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_httproute_vpn_only_via_admin_ is not failed
 
 - name: Create TLS Certificate for PMM
   kubernetes.core.k8s:
@@ -606,7 +756,7 @@
       kind: Certificate
       metadata:
         name: pmm-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: pmm-tls
         issuerRef:
@@ -618,6 +768,10 @@
 # ============================================
 # VMServiceScrape for Percona exporters
 # ============================================
+  register: _r_create_tls_certificate_for_pmm
+  retries: 3
+  delay: 10
+  until: _r_create_tls_certificate_for_pmm is not failed
 
 - name: Create VMServiceScrape for PostgreSQL exporter
   kubernetes.core.k8s:
@@ -639,6 +793,10 @@
           - port: exporter
             path: /metrics
             interval: 30s
+  register: _r_create_vmservicescrape_for_postgresql_ex
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_postgresql_ex is not failed
 
 - name: Create VMServiceScrape for MongoDB exporter
   kubernetes.core.k8s:
@@ -660,6 +818,10 @@
           - port: metrics
             path: /metrics
             interval: 30s
+  register: _r_create_vmservicescrape_for_mongodb_expor
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_mongodb_expor is not failed
 
 - name: Create VMServiceScrape for PMM Server
   kubernetes.core.k8s:
@@ -682,6 +844,10 @@
 # ============================================
 # Alerting Rules
 # ============================================
+  register: _r_create_vmservicescrape_for_pmm_server
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_pmm_server is not failed
 
 - name: Deploy VMRule for alerting
   kubernetes.core.k8s:
@@ -782,6 +948,10 @@
                   severity: warning
                 annotations:
                   summary: "pgbackrest backup is older than 48h"
+  register: _r_deploy_vmrule_for_alerting
+  retries: 3
+  delay: 10
+  until: _r_deploy_vmrule_for_alerting is not failed
 
 - name: Display observability deployment info
   debug:
@@ -790,11 +960,11 @@
       - "  Observability Stack Deployed"
       - "=========================================="
       - "  Grafana: https://{{ grafana_domain }}"
-      - "    User: {{ grafana_admin_user }} / {{ grafana_admin_password[:4] }}****"
+      - "    User: {{ grafana_admin_user }} / ****"
       - "  VictoriaMetrics: {{ 'Cluster' if tier in ['medium', 'production'] else 'Single' }} mode"
       - "  Loki: SimpleScalable mode"
       - "  PMM Server: https://pmm.{{ domain }}"
-      - "    User: admin / {{ grafana_admin_password[:4] }}****"
+      - "    User: admin / ****"
       - "  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}"
       - "  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM"
       - "=========================================="

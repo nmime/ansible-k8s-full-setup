@@ -1,12 +1,12 @@
 ---
-# MinIO S3-Compatible Storage Role - Bitnami Helm Chart 17.0.21
-# S3-compatible object storage on Kubernetes using Chainguard image
+# MinIO S3-Compatible Storage Role - Official MinIO Helm Chart 5.4.0
+# S3-compatible object storage on Kubernetes using official MinIO chart from charts.min.io
 # Supports standalone (minimal/small) and distributed (medium/production) modes
 
 - name: Set MinIO tier-specific variables
   set_fact:
     minio_ns: "storage"
-    minio_chart_ver: "17.0.21"
+    minio_chart_ver: "5.4.0"
     minio_mode: "{{ 'distributed' if tier in ['medium', 'production'] else 'standalone' }}"
     minio_replicas_count: "{{ minio_replicas | default(4) if tier in ['medium', 'production'] else 1 }}"
     minio_storage: "{{ minio_storage_size | default('50Gi') }}"
@@ -27,29 +27,26 @@
         name: "{{ minio_ns }}"
         labels:
           app.kubernetes.io/part-of: minio
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_storage_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_storage_namespace is not failed
 
-- name: Add Bitnami Helm repository
+- name: Add official MinIO Helm repository
   kubernetes.core.helm_repository:
-    name: bitnami
-    repo_url: "https://charts.bitnami.com/bitnami"
+    name: minio-charts
+    repo_url: "https://charts.min.io/"
+  register: _r_add_official_minio_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_official_minio_helm_repository is not failed
 
-- name: Create MinIO credentials secret
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: minio-credentials
-        namespace: "{{ minio_ns }}"
-      stringData:
-        root-user: "{{ minio_root_user }}"
-        root-password: "{{ minio_root_password }}"
-
-- name: Install MinIO via Bitnami Helm chart
+- name: Install MinIO via official Helm chart
   kubernetes.core.helm:
     name: minio
-    chart_ref: bitnami/minio
+    chart_ref: minio-charts/minio
     chart_version: "{{ minio_chart_ver }}"
     release_namespace: "{{ minio_ns }}"
     create_namespace: true
@@ -57,42 +54,36 @@
     wait: true
     timeout: 10m0s
     values:
-      image:
-        registry: cgr.dev
-        repository: chainguard/minio
-        tag: latest
       mode: "{{ minio_mode }}"
-      auth:
-        existingSecret: minio-credentials
-      statefulset:
-        replicaCount: "{{ minio_replicas_count }}"
+      replicas: "{{ minio_replicas_count }}"
+      rootUser: "{{ minio_root_user }}"
+      rootPassword: "{{ minio_root_password }}"
       persistence:
         enabled: true
         size: "{{ minio_storage }}"
         storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: false
       resources:
         requests:
           memory: "512Mi"
           cpu: "250m"
-        limits:
-          memory: "2Gi"
-          cpu: "1"
       service:
         type: ClusterIP
-        ports:
-          api: 9000
-          console: 9001
-      ingress:
-        enabled: false
-      apiIngress:
-        enabled: false
-      metrics:
-        enabled: true
-        serviceMonitor:
-          enabled: true
-      provisioning:
-        enabled: true
-        buckets:
+      consoleService:
+        type: ClusterIP
+      serviceAccount:
+        create: true
+      buckets:
           - name: gitlab-artifacts
             policy: none
           - name: gitlab-uploads
@@ -127,16 +118,21 @@
             policy: none
           - name: "{{ app_name | default('myapp') }}-uploads"
             policy: none
+  register: _r_install_minio_via_official_helm_chart
+  retries: 3
+  delay: 10
+  until: _r_install_minio_via_official_helm_chart is not failed
 
 - name: Wait for MinIO to be ready
   kubernetes.core.k8s_info:
-    kind: StatefulSet
+    kind: Pod
     namespace: "{{ minio_ns }}"
-    name: minio
-  register: minio_sts
+    label_selectors:
+      - app=minio
+  register: minio_pods
   until: >
-    minio_sts.resources | length > 0
-    and (minio_sts.resources[0].status.readyReplicas | default(0)) >= 1
+    minio_pods.resources | length > 0
+    and (minio_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
   retries: 30
   delay: 10
 
@@ -160,6 +156,10 @@
           kind: ClusterIssuer
         dnsNames:
           - "{{ minio_console_domain }}"
+  register: _r_create_minio_console_tls_certificate
+  retries: 3
+  delay: 10
+  until: _r_create_minio_console_tls_certificate is not failed
 
 - name: Create MinIO API TLS certificate
   kubernetes.core.k8s:
@@ -177,6 +177,10 @@
           kind: ClusterIssuer
         dnsNames:
           - "{{ minio_api_domain }}"
+  register: _r_create_minio_api_tls_certificate
+  retries: 3
+  delay: 10
+  until: _r_create_minio_api_tls_certificate is not failed
 
 - name: Create MinIO Console HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -202,6 +206,10 @@
             backendRefs:
               - name: minio
                 port: 9001
+  register: _r_create_minio_console_httproute_vpn_only_
+  retries: 3
+  delay: 10
+  until: _r_create_minio_console_httproute_vpn_only_ is not failed
 
 - name: Create MinIO API HTTPRoute (public S3)
   kubernetes.core.k8s:
@@ -231,6 +239,10 @@
 # ============================================
 # Cross-namespace access secrets
 # ============================================
+  register: _r_create_minio_api_httproute_public_s3
+  retries: 3
+  delay: 10
+  until: _r_create_minio_api_httproute_public_s3 is not failed
 
 - name: Create MinIO credentials in GitLab namespace
   kubernetes.core.k8s:
@@ -253,6 +265,11 @@
           host: minio.{{ minio_ns }}.svc.cluster.local
           endpoint: http://minio.{{ minio_ns }}.svc.cluster.local:9000
           path_style: true
+  register: _r_create_minio_credentials_in_gitlab_names
+  retries: 3
+  delay: 10
+  until: _r_create_minio_credentials_in_gitlab_names is not failed
+  no_log: true
 
 - name: Create MinIO credentials in monitoring namespace
   kubernetes.core.k8s:
@@ -267,6 +284,11 @@
         accesskey: "{{ minio_root_user }}"
         secretkey: "{{ minio_root_password }}"
         endpoint: "http://minio.{{ minio_ns }}.svc.cluster.local:9000"
+  register: _r_create_minio_credentials_in_monitoring_n
+  retries: 3
+  delay: 10
+  until: _r_create_minio_credentials_in_monitoring_n is not failed
+  no_log: true
 
 - name: Display MinIO storage summary
   debug:
@@ -274,8 +296,8 @@
       - "=========================================="
       - "  MinIO S3 Storage Deployed"
       - "=========================================="
-      - "  Chart: bitnami/minio {{ minio_chart_ver }}"
-      - "  Image: cgr.dev/chainguard/minio"
+      - "  Chart: minio-charts/minio {{ minio_chart_ver }}"
+      - "  Image: quay.io/minio/minio (official chart)"
       - "  Mode: {{ minio_mode }}"
       - "  Replicas: {{ minio_replicas_count }}"
       - "  Storage: {{ minio_storage }} per node"

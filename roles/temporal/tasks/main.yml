@@ -1,0 +1,388 @@
+---
+# Temporal Workflow Engine Role - Temporal Server v1.30.1 + Web UI v2.44.0
+# Self-hosted workflow orchestration on Kubernetes via official Helm chart
+# Uses existing Percona PG cluster for persistence (default + visibility stores)
+
+- name: Set Temporal tier-specific variables
+  set_fact:
+    temporal_ns: "temporal"
+    temporal_chart_ver: "0.73.2"
+    temporal_server_ver: "1.30.1"
+    temporal_ui_ver: "2.44.0"
+    temporal_admin_tools_ver: "1.30.1-tctl-1.18.4-cli-1.5.0"
+    temporal_domain: "temporal.{{ domain }}"
+    temporal_num_history_shards: 512
+    temporal_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    temporal_history_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    temporal_matching_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    temporal_frontend_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    temporal_worker_replicas: 1
+    temporal_web_replicas: 1
+    db_ns: "databases"
+    pg_host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
+    pg_host_direct: "{{ project_name | default('k8s') }}-pg-primary.databases.svc.cluster.local"
+
+- name: Create Temporal namespace with Pod Security Standards
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ temporal_ns }}"
+        labels:
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/enforce-version: latest
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/warn-version: latest
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/audit-version: latest
+  register: _r_create_temporal_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_namespace is not failed
+
+- name: Retrieve Percona-generated Temporal PG password
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "{{ project_name | default('k8s') }}-pg-pguser-temporal"
+  register: temporal_pg_secret
+  until: temporal_pg_secret.resources | length > 0
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Set Temporal PG password fact
+  set_fact:
+    temporal_pg_password: "{{ (temporal_pg_secret.resources[0].data.password | b64decode) if temporal_pg_secret.resources | length > 0 else '' }}"
+  no_log: true
+
+- name: Fail if Temporal PG user not found
+  fail:
+    msg: "Temporal PG user secret not found. Ensure 'temporal' user is defined in the PerconaPGCluster spec (k8s-databases role)."
+  when: temporal_pg_password | length == 0
+
+- name: Create Temporal DB credentials secret in temporal namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: temporal-db-credentials
+        namespace: "{{ temporal_ns }}"
+      type: Opaque
+      stringData:
+        password: "{{ temporal_pg_password }}"
+  register: _r_create_temporal_db_credentials_secret
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_db_credentials_secret is not failed
+  no_log: true
+
+- name: Add Temporal Helm repository
+  kubernetes.core.helm_repository:
+    name: temporal
+    repo_url: "https://go.temporal.io/helm-charts"
+  register: _r_add_temporal_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_temporal_helm_repository is not failed
+
+- name: Install Temporal server via Helm
+  kubernetes.core.helm:
+    name: temporal
+    chart_ref: temporal/temporal
+    chart_version: "{{ temporal_chart_ver }}"
+    release_namespace: "{{ temporal_ns }}"
+    create_namespace: false
+    release_state: present
+    wait: true
+    timeout: "15m0s"
+    values:
+      cassandra:
+        enabled: false
+      elasticsearch:
+        enabled: false
+      prometheus:
+        enabled: false
+      grafana:
+        enabled: false
+      mysql:
+        enabled: false
+      server:
+        enabled: true
+        image:
+          repository: temporalio/server
+          tag: "{{ temporal_server_ver }}"
+          pullPolicy: IfNotPresent
+        config:
+          logLevel: "info"
+          numHistoryShards: "{{ temporal_num_history_shards }}"
+          persistence:
+            defaultStore: default
+            additionalStores: {}
+            default:
+              driver: "sql"
+              sql:
+                driver: "postgres12"
+                host: "{{ pg_host_direct }}"
+                port: 5432
+                database: temporal
+                user: temporal
+                password: "will-be-overridden"
+                existingSecret: temporal-db-credentials
+                maxConns: 20
+                maxIdleConns: 20
+                maxConnLifetime: "1h"
+            visibility:
+              driver: "sql"
+              sql:
+                driver: "postgres12"
+                host: "{{ pg_host_direct }}"
+                port: 5432
+                database: temporal_visibility
+                user: temporal
+                password: "will-be-overridden"
+                existingSecret: temporal-db-credentials
+                maxConns: 20
+                maxIdleConns: 20
+                maxConnLifetime: "1h"
+          namespaces:
+            create: true
+            namespace:
+              - name: default
+                retention: 3d
+        frontend:
+          replicaCount: "{{ temporal_frontend_replicas }}"
+          service:
+            type: ClusterIP
+            port: 7233
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          podSecurityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containerSecurityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        history:
+          replicaCount: "{{ temporal_history_replicas }}"
+          service:
+            port: 7234
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          podSecurityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containerSecurityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        matching:
+          replicaCount: "{{ temporal_matching_replicas }}"
+          service:
+            port: 7235
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          podSecurityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containerSecurityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        worker:
+          replicaCount: "{{ temporal_worker_replicas }}"
+          service:
+            port: 7239
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          podSecurityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containerSecurityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        metrics:
+          annotations:
+            enabled: true
+          serviceMonitor:
+            enabled: false
+      schema:
+        createDatabase:
+          enabled: true
+        setup:
+          enabled: true
+          backoffLimit: 100
+        update:
+          enabled: true
+          backoffLimit: 100
+      admintools:
+        enabled: true
+        image:
+          repository: temporalio/admin-tools
+          tag: "{{ temporal_admin_tools_ver }}"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      web:
+        enabled: true
+        replicaCount: "{{ temporal_web_replicas }}"
+        image:
+          repository: temporalio/ui
+          tag: "{{ temporal_ui_ver }}"
+        service:
+          type: ClusterIP
+          port: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+  register: _r_install_temporal_server_via_helm
+  retries: 3
+  delay: 10
+  until: _r_install_temporal_server_via_helm is not failed
+  no_log: true
+
+- name: Wait for Temporal frontend to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ temporal_ns }}"
+    name: temporal-frontend
+  register: temporal_frontend_status
+  until: >
+    temporal_frontend_status.resources | length > 0
+    and (temporal_frontend_status.resources[0].status.readyReplicas | default(0) | int) >= 1
+  retries: 30
+  delay: 15
+
+- name: Wait for Temporal history to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ temporal_ns }}"
+    name: temporal-history
+  register: temporal_history_status
+  until: >
+    temporal_history_status.resources | length > 0
+    and (temporal_history_status.resources[0].status.readyReplicas | default(0) | int) >= 1
+  retries: 30
+  delay: 15
+
+- name: Wait for Temporal web UI to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ temporal_ns }}"
+    name: temporal-web
+  register: temporal_web_status
+  until: >
+    temporal_web_status.resources | length > 0
+    and (temporal_web_status.resources[0].status.readyReplicas | default(0) | int) >= 1
+  retries: 30
+  delay: 15
+
+- name: Create Temporal Web UI HTTPRoute (VPN-only via admin-gateway)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: temporal-web
+        namespace: "{{ temporal_ns }}"
+      spec:
+        parentRefs:
+          - name: admin-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "{{ temporal_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: temporal-web
+                port: 8080
+  register: _r_create_temporal_web_ui_httproute
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_web_ui_httproute is not failed
+
+- name: Create TLS Certificate for Temporal domain
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: temporal-tls
+        namespace: "{{ temporal_ns }}"
+      spec:
+        secretName: temporal-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ temporal_domain }}"
+  register: _r_create_temporal_tls_certificate
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_tls_certificate is not failed
+
+- name: Display Temporal deployment summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Temporal Workflow Engine Deployed"
+      - "=========================================="
+      - "  Chart: {{ temporal_chart_ver }}"
+      - "  Server: {{ temporal_server_ver }}"
+      - "  Web UI: {{ temporal_ui_ver }}"
+      - "  Namespace: {{ temporal_ns }}"
+      - "  Frontend replicas: {{ temporal_frontend_replicas }}"
+      - "  History replicas: {{ temporal_history_replicas }}"
+      - "  History shards: {{ temporal_num_history_shards }}"
+      - "  Database: PostgreSQL (Percona PG Operator)"
+      - "  Web UI: https://{{ temporal_domain }} (VPN-only)"
+      - "  gRPC endpoint: temporal-frontend.{{ temporal_ns }}.svc.cluster.local:7233"
+      - "=========================================="

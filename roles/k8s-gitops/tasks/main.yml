@@ -1,13 +1,13 @@
 ---
 # GitOps (ArgoCD) Role - Complete Implementation
-# Deploys ArgoCD v3.2.5 for GitOps continuous delivery
+# Deploys ArgoCD v3.3.4 for GitOps continuous delivery
 # Supports standalone and HA modes based on tier
 
 - name: Set ArgoCD tier-specific variables
   set_fact:
     argocd_namespace: "argocd"
-    argocd_chart_version: "7.8.5"
-    argocd_version: "v3.2.5"
+    argocd_chart_version: "9.4.15"
+    argocd_version: "v3.3.4"
     argocd_domain: "argocd.{{ domain }}"
     argocd_ha: "{{ true if tier in ['medium', 'production'] else false }}"
     argocd_server_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
@@ -21,14 +21,24 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ argocd_namespace }}"
+        name: argocd
         labels:
           app.kubernetes.io/part-of: argocd
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_argocd_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_argocd_namespace is not failed
 
 - name: Add Argo Helm repository
   kubernetes.core.helm_repository:
     name: argo
     repo_url: "https://argoproj.github.io/argo-helm"
+  register: _r_add_argo_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_argo_helm_repository is not failed
 
 - name: Install ArgoCD with Helm
   kubernetes.core.helm:
@@ -43,6 +53,10 @@
     values:
       global:
         domain: "{{ argocd_domain }}"
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
       server:
         replicas: "{{ argocd_server_replicas }}"
         ingress:
@@ -105,7 +119,7 @@
         cm:
           url: "https://{{ argocd_domain }}"
           admin.enabled: "true"
-          exec.enabled: "true"
+          exec.enabled: "false"
           application.resourceTrackingMethod: annotation
         params:
           server.insecure: true
@@ -113,6 +127,10 @@
           policy.default: role:readonly
           policy.csv: |
             g, admin, role:admin
+  register: _r_install_argocd_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_argocd_with_helm is not failed
 
 - name: Create ArgoCD Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
@@ -138,6 +156,10 @@
             backendRefs:
               - name: argocd-server
                 port: 80
+  register: _r_create_argocd_gateway_api_httproute_vpn_
+  retries: 3
+  delay: 10
+  until: _r_create_argocd_gateway_api_httproute_vpn_ is not failed
 
 - name: Create TLS Certificate for ArgoCD
   kubernetes.core.k8s:
@@ -147,7 +169,7 @@
       kind: Certificate
       metadata:
         name: argocd-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: argocd-tls
         issuerRef:
@@ -157,6 +179,10 @@
           - "{{ argocd_domain }}"
 
 # Create default ArgoCD project
+  register: _r_create_tls_certificate_for_argocd
+  retries: 3
+  delay: 10
+  until: _r_create_tls_certificate_for_argocd is not failed
 - name: Create default ArgoCD AppProject
   kubernetes.core.k8s:
     state: present
@@ -181,6 +207,10 @@
             kind: '*'
 
 # Create ApplicationSet for multi-environment deployment
+  register: _r_create_default_argocd_appproject
+  retries: 3
+  delay: 10
+  until: _r_create_default_argocd_appproject is not failed
 - name: Create ApplicationSet for environments
   kubernetes.core.k8s:
     state: present
@@ -220,6 +250,10 @@
               syncOptions:
                 - CreateNamespace=true
   when: tier in ['medium', 'production']
+  register: _r_create_applicationset_for_environments
+  retries: 3
+  delay: 10
+  until: _r_create_applicationset_for_environments is not failed
 
 - name: Display ArgoCD deployment info
   debug:
