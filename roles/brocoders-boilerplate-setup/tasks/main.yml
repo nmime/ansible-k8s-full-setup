@@ -28,6 +28,10 @@
 # ============================================
 # Kubernetes Manifests for Backend (NestJS)
 # ============================================
+  register: _r_create_application_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_application_namespace is not failed
 
 - name: Create backend ConfigMap
   kubernetes.core.k8s:
@@ -54,6 +58,10 @@
         AWS_S3_REGION: us-east-1
         AWS_DEFAULT_S3_BUCKET: "{{ app_name }}-uploads"
         AWS_S3_ENDPOINT: "http://minio.storage.svc.cluster.local:9000"
+  register: _r_create_backend_configmap
+  retries: 3
+  delay: 10
+  until: _r_create_backend_configmap is not failed
 
 - name: Retrieve app database password from cross-namespace secret
   kubernetes.core.k8s_info:
@@ -61,6 +69,9 @@
     namespace: "{{ app_namespace }}"
     name: "{{ app_name }}-postgresql-password"
   register: app_pg_conn_secret
+  retries: 3
+  delay: 10
+  until: app_pg_conn_secret is not failed
   failed_when: false
 
 - name: Set app database password from Percona-generated secret
@@ -86,6 +97,11 @@
         AUTH_REFRESH_TOKEN_EXPIRES_IN: "7d"
         ACCESS_KEY_ID: "{{ minio_root_user }}"
         SECRET_ACCESS_KEY: "{{ minio_root_password }}"
+  register: _r_create_backend_secret
+  retries: 3
+  delay: 10
+  until: _r_create_backend_secret is not failed
+  no_log: true
 
 - name: Deploy backend Deployment
   kubernetes.core.k8s:
@@ -147,6 +163,13 @@
                 securityContext:
                   readOnlyRootFilesystem: true
                   allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+  register: _r_deploy_backend_deployment
+  retries: 3
+  delay: 10
+  until: _r_deploy_backend_deployment is not failed
 
 - name: Create backend Service
   kubernetes.core.k8s:
@@ -170,6 +193,10 @@
         selector:
           app: "{{ app_name }}"
           component: backend
+  register: _r_create_backend_service
+  retries: 3
+  delay: 10
+  until: _r_create_backend_service is not failed
 
 - name: Create backend HPA
   kubernetes.core.k8s:
@@ -221,6 +248,10 @@
 # ============================================
 # Kubernetes Manifests for Frontend (React)
 # ============================================
+  register: _r_create_backend_hpa
+  retries: 3
+  delay: 10
+  until: _r_create_backend_hpa is not failed
 
 - name: Deploy frontend Deployment
   kubernetes.core.k8s:
@@ -277,6 +308,13 @@
                 securityContext:
                   readOnlyRootFilesystem: true
                   allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+  register: _r_deploy_frontend_deployment
+  retries: 3
+  delay: 10
+  until: _r_deploy_frontend_deployment is not failed
 
 - name: Create frontend Service
   kubernetes.core.k8s:
@@ -304,6 +342,10 @@
 # ============================================
 # Gateway API Routes
 # ============================================
+  register: _r_create_frontend_service
+  retries: 3
+  delay: 10
+  until: _r_create_frontend_service is not failed
 
 - name: Create backend HTTPRoute
   kubernetes.core.k8s:
@@ -329,6 +371,10 @@
             backendRefs:
               - name: "{{ app_name }}-backend"
                 port: 8080
+  register: _r_create_backend_httproute
+  retries: 3
+  delay: 10
+  until: _r_create_backend_httproute is not failed
 
 - name: Create frontend HTTPRoute
   kubernetes.core.k8s:
@@ -354,6 +400,10 @@
             backendRefs:
               - name: "{{ app_name }}-frontend"
                 port: 80
+  register: _r_create_frontend_httproute
+  retries: 3
+  delay: 10
+  until: _r_create_frontend_httproute is not failed
 
 - name: Create TLS Certificate for application
   kubernetes.core.k8s:
@@ -363,7 +413,7 @@
       kind: Certificate
       metadata:
         name: "{{ app_name }}-tls"
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: "{{ app_name }}-tls"
         issuerRef:
@@ -376,6 +426,10 @@
 # ============================================
 # ArgoCD Application for GitOps
 # ============================================
+  register: _r_create_tls_certificate_for_application
+  retries: 3
+  delay: 10
+  until: _r_create_tls_certificate_for_application is not failed
 
 - name: Create ArgoCD Application for backend
   kubernetes.core.k8s:
@@ -402,6 +456,10 @@
           syncOptions:
             - CreateNamespace=true
   when: git_provider == 'gitlab-selfhosted'
+  register: _r_create_argocd_application_for_backend
+  retries: 3
+  delay: 10
+  until: _r_create_argocd_application_for_backend is not failed
 
 - name: Create ArgoCD Application for frontend
   kubernetes.core.k8s:
@@ -428,6 +486,10 @@
           syncOptions:
             - CreateNamespace=true
   when: git_provider == 'gitlab-selfhosted'
+  register: _r_create_argocd_application_for_frontend
+  retries: 3
+  delay: 10
+  until: _r_create_argocd_application_for_frontend is not failed
 
 - name: Display boilerplate setup info
   debug:

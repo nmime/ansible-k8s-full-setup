@@ -1,5 +1,5 @@
 ---
-# K8s Databases Role - Percona PG Operator v2.8.2 + Percona MongoDB v1.21.2
+# K8s Databases Role - Percona PG Operator v2.8.2 + Percona MongoDB v1.22.0
 # PostgreSQL 18.x via Percona PG Operator, MongoDB 8.0.x via Percona Server for MongoDB
 # Tier-aware HA configuration
 
@@ -7,7 +7,7 @@
   set_fact:
     db_ns: "databases"
     pg_operator_ver: "2.8.2"
-    psmdb_operator_ver: "1.21.2"
+    psmdb_operator_ver: "1.22.0"
     pg_version: "{{ postgresql_version | default(18) }}"
     pg_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
     pg_storage: "{{ postgresql_storage | default('20Gi') }}"
@@ -26,14 +26,24 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ db_ns }}"
+        name: databases
         labels:
           app.kubernetes.io/part-of: databases
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_databases_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_databases_namespace is not failed
 
 - name: Add Percona Helm repository
   kubernetes.core.helm_repository:
     name: percona
     repo_url: "https://percona.github.io/percona-helm-charts"
+  register: _r_add_percona_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_percona_helm_repository is not failed
 
 - name: Install Percona PG Operator
   kubernetes.core.helm:
@@ -45,6 +55,10 @@
     release_state: present
     wait: true
     timeout: 5m0s
+  register: _r_install_percona_pg_operator
+  retries: 3
+  delay: 10
+  until: _r_install_percona_pg_operator is not failed
 
 - name: Wait for PG Operator to be ready
   kubernetes.core.k8s_info:
@@ -78,6 +92,11 @@
           [global]
           repo2-s3-key={{ minio_root_user }}
           repo2-s3-key-secret={{ minio_root_password }}
+  register: _r_create_pgbackrest_s3_credentials_secret
+  retries: 3
+  delay: 10
+  until: _r_create_pgbackrest_s3_credentials_secret is not failed
+  no_log: true
 
 - name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
@@ -92,6 +111,12 @@
       stringData:
         PMM_SERVER_USER: "admin"
         PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
+        PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+  register: _r_create_pmm_credentials_secret_for_databa
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_credentials_secret_for_databa is not failed
+  no_log: true
 
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
@@ -104,7 +129,7 @@
         namespace: "{{ db_ns }}"
       spec:
         crVersion: "{{ pg_operator_ver }}"
-        image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-postgres"
+        image: "percona/percona-distribution-postgresql:{{ pg_version }}.3-1"
         postgresVersion: "{{ pg_version }}"
         port: 5432
         instances:
@@ -136,7 +161,7 @@
         proxy:
           pgBouncer:
             replicas: "{{ pg_proxy_replicas }}"
-            image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-pgbouncer"
+            image: "percona/percona-pgbouncer:1.25.1-1"
             config:
               global:
                 pool_mode: "transaction"
@@ -160,7 +185,7 @@
                       topologyKey: kubernetes.io/hostname
         backups:
           pgbackrest:
-            image: "percona/percona-postgresql-operator:{{ pg_operator_ver }}-ppg{{ pg_version }}-pgbackrest"
+            image: "percona/percona-pgbackrest:2.58.0-1"
             repos:
               - name: repo1
                 schedules:
@@ -191,34 +216,27 @@
               repo2-s3-uri-style: "path"
               repo2-retention-full: "4"
               repo2-retention-full-type: "count"
-            restore:
-              enabled: true
         pmm:
           enabled: true
-          image: "percona/pmm-client:2"
+          image: "percona/pmm-client:3"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
           secret: pmm-secret
-          pmmParams: "--query-source=pgstatmonitor"
           resources:
             requests:
               cpu: 50m
               memory: 64Mi
             limits:
-              cpu: 300m
+              cpu: 200m
               memory: 256Mi
         extensions:
           builtin:
-            pg_stat_statements: {}
-            pg_stat_monitor: {}
+            pg_stat_statements: true
         patroni:
           dynamicConfiguration:
             postgresql:
               parameters:
-                shared_preload_libraries: "pg_stat_statements,pg_stat_monitor"
+                shared_preload_libraries: "pg_stat_statements"
                 pg_stat_statements.track: "all"
-                pg_stat_monitor.pgsm_query_max_len: "2048"
-                pg_stat_monitor.pgsm_enable_query_plan: "on"
-                pg_stat_monitor.pgsm_normalized_query: "on"
                 track_activity_query_size: "2048"
                 track_io_timing: "on"
                 log_checkpoints: "on"
@@ -235,9 +253,18 @@
           - name: "{{ app_name | default('myapp') }}"
             databases:
               - "{{ app_name | default('myapp') }}"
+          - name: temporal
+            databases:
+              - temporal
+              - temporal_visibility
+  register: _r_create_postgresql_cluster
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_cluster is not failed
 
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
+    api_version: pgv2.percona.com/v2
     kind: PerconaPGCluster
     namespace: "{{ db_ns }}"
     name: "{{ project_name | default('k8s') }}-pg"
@@ -263,6 +290,10 @@
     release_state: present
     wait: true
     timeout: 5m0s
+  register: _r_install_percona_mongodb_operator
+  retries: 3
+  delay: 10
+  until: _r_install_percona_mongodb_operator is not failed
 
 - name: Wait for MongoDB Operator to be ready
   kubernetes.core.k8s_info:
@@ -293,6 +324,11 @@
       stringData:
         AWS_ACCESS_KEY_ID: "{{ minio_root_user }}"
         AWS_SECRET_ACCESS_KEY: "{{ minio_root_password }}"
+  register: _r_create_mongodb_backup_credentials_for_mi
+  retries: 3
+  delay: 10
+  until: _r_create_mongodb_backup_credentials_for_mi is not failed
+  no_log: true
 
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
@@ -307,6 +343,9 @@
         crVersion: "{{ psmdb_operator_ver }}"
         image: "percona/percona-server-mongodb:8.0"
         imagePullPolicy: IfNotPresent
+        unsafeFlags:
+          replsetSize: "{{ true if tier in ['minimal', 'small'] else false }}"
+          mongosSize: "{{ true if tier in ['minimal', 'small'] else false }}"
         replsets:
           - name: rs0
             size: "{{ mongo_replicas }}"
@@ -327,31 +366,13 @@
                 memory: "2Gi"
             affinity:
               antiAffinityTopologyKey: "kubernetes.io/hostname"
-        pmm:
-          enabled: true
-          image: "percona/pmm-client:2"
-          serverHost: "pmm-server.monitoring.svc.cluster.local"
-          mongodParams: "--enable-all-collectors --query-source=profiler"
-          mongosParams: "--enable-all-collectors"
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: 300m
-              memory: 256Mi
-        mongod:
-          operationProfiling:
-            mode: slowOp
-            slowOpThresholdMs: 100
-            rateLimit: 100
         sharding:
           enabled: false
         mongos:
           size: 0
         backup:
           enabled: true
-          image: "percona/percona-backup-mongodb:2.8.0"
+          image: "percona/percona-backup-mongodb:2.13.0"
           storages:
             s3-minio:
               type: s3
@@ -379,9 +400,43 @@
               storageName: s3-minio
               compressionType: gzip
               type: physical
+        pmm:
+          enabled: true
+          image: "percona/pmm-client:3"
+          serverHost: "pmm-server.monitoring.svc.cluster.local"
+  register: _r_create_mongodb_cluster
+  retries: 3
+  delay: 10
+  until: _r_create_mongodb_cluster is not failed
+
+- name: Wait for MongoDB users secret to be created by operator
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "internal-{{ project_name | default('k8s') }}-mongo-users"
+  register: mongo_users_secret
+  until: mongo_users_secret.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Patch MongoDB users secret with PMM_SERVER_API_KEY
+  kubernetes.core.k8s:
+    state: patched
+    kind: Secret
+    namespace: "{{ db_ns }}"
+    name: "internal-{{ project_name | default('k8s') }}-mongo-users"
+    definition:
+      stringData:
+        PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+  register: _r_patch_mongo_pmm_secret
+  retries: 3
+  delay: 10
+  until: _r_patch_mongo_pmm_secret is not failed
+  no_log: true
 
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
+    api_version: psmdb.percona.com/v1
     kind: PerconaServerMongoDB
     namespace: "{{ db_ns }}"
     name: "{{ project_name | default('k8s') }}-mongo"
@@ -412,6 +467,19 @@
   set_fact:
     gitlab_pg_password: "{{ (gitlab_pg_secret.resources[0].data.password | b64decode) if gitlab_pg_secret.resources | length > 0 else '' }}"
 
+- name: Ensure GitLab namespace exists for cross-namespace secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gitlab
+  register: _r_ensure_gitlab_namespace_exists_for_cross
+  retries: 3
+  delay: 10
+  until: _r_ensure_gitlab_namespace_exists_for_cross is not failed
+
 - name: Create PostgreSQL connection secret for GitLab
   kubernetes.core.k8s:
     state: present
@@ -428,6 +496,11 @@
         port: "5432"
         database: gitlabhq_production
         username: gitlab
+  register: _r_create_postgresql_connection_secret_for_
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_connection_secret_for_ is not failed
+  no_log: true
 
 - name: Retrieve Percona-generated app PG password
   kubernetes.core.k8s_info:
@@ -461,6 +534,11 @@
         database: "{{ app_name | default('myapp') }}"
         username: "{{ app_name | default('myapp') }}"
   when: app_pg_password | length > 0
+  register: _r_create_postgresql_connection_secret_for_app
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_connection_secret_for_app is not failed
+  no_log: true
 
 - name: Display databases summary
   debug:
@@ -479,10 +557,6 @@
       - "    MongoDB: 8.0.x"
       - "    Replicas: {{ mongo_replicas }}"
       - "    Cluster: {{ project_name | default('k8s') }}-mongo.{{ db_ns }}"
-      - "  Monitoring:"
-      - "    PMM Server: pmm-server.monitoring.svc.cluster.local"
-      - "    PostgreSQL: pg_stat_statements, pg_stat_monitor, PMM client"
-      - "    MongoDB: PMM client with all collectors"
       - "  Backups:"
       - "    PostgreSQL: pgbackrest (daily full + 6h diff + S3 weekly)"
       - "    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)"

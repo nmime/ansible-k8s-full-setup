@@ -1,0 +1,74 @@
+---
+- name: Continue Platform Deployment (Post-Kubespray)
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  any_errors_fatal: true
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
+
+  vars_files:
+    - ../defaults/main.yml
+
+  vars:
+    tier: "{{ tier | default('minimal') }}"
+    project_name: "{{ project_name | default('k8s') }}"
+
+  pre_tasks:
+    - name: Load infrastructure facts
+      include_vars:
+        file: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
+
+    - name: Generate platform secrets
+      ansible.builtin.import_role:
+        name: generate-secrets
+
+    - name: Ensure SSH tunnel to k8s API is active
+      ansible.builtin.shell: |
+        if ! ss -tlnp | grep -q ':6443'; then
+          nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+          sleep 2
+        fi
+        sed -i 's|https://{{ first_master_ip }}:6443|https://127.0.0.1:6443|g' $HOME/.kube/config
+        KUBECONFIG=$HOME/.kube/config kubectl get nodes
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+  tasks:
+    - name: Deploy Kubernetes Cluster (post-kubespray)
+      ansible.builtin.import_role:
+        name: k8s-cluster-management
+
+    - name: Deploy Secrets Management (Vault + ESO)
+      ansible.builtin.import_role:
+        name: k8s-secrets
+
+    - name: Deploy MinIO S3 Storage
+      ansible.builtin.import_role:
+        name: minio-storage
+
+    - name: Deploy Observability Stack
+      ansible.builtin.import_role:
+        name: k8s-observability
+
+    - name: Deploy Databases
+      ansible.builtin.import_role:
+        name: k8s-databases
+
+    - name: Deploy GitLab EE
+      ansible.builtin.import_role:
+        name: gitlab-selfhosted
+
+    - name: Deploy ArgoCD
+      ansible.builtin.import_role:
+        name: k8s-gitops
+
+    - name: Deploy KEDA Autoscaling
+      ansible.builtin.import_role:
+        name: k8s-autoscaling
+
+  post_tasks:
+    - name: Display deployment completion
+      debug:
+        msg: "Platform deployment complete!"

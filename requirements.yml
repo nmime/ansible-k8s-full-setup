@@ -6,7 +6,3 @@ collections:
     version: ">=9.0.0"
   - name: kubernetes.core
     version: ">=4.0.0"
-  - name: community.hetzner
-    version: ">=3.0.0"
-  - name: ansible.posix
-    version: ">=1.6.0"

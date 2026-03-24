@@ -83,9 +83,9 @@
 - name: Check if any auto-selected type is missing in primary region
   set_fact:
     needs_eu_fallback: >-
-      {{ (hetzner_bastion_type | default(auto_bastion_type | default('')) | trim | length == 0)
-         or (hetzner_cp_type | default(auto_cp_type | default('')) | trim | length == 0)
-         or (hetzner_worker_type | default(auto_worker_type | default('')) | trim | length == 0) }}
+      {{ (hetzner_bastion_type | default(auto_bastion_type | default(''), true) | trim | length == 0)
+         or (hetzner_cp_type | default(auto_cp_type | default(''), true) | trim | length == 0)
+         or (hetzner_worker_type | default(auto_worker_type | default(''), true) | trim | length == 0) }}
 
 - name: Find cheapest EU fallback region
   block:
@@ -182,11 +182,11 @@
 - name: Set tier-specific server configuration
   set_fact:
     cp_count: "{{ current_tier_spec.cp_count }}"
-    cp_type: "{{ hetzner_cp_type | default(auto_cp_type) | trim }}"
+    cp_type: "{{ hetzner_cp_type | default(auto_cp_type, true) | trim }}"
     cp_schedulable: "{{ current_tier_spec.cp_schedulable | default(false) }}"
     worker_count: "{{ current_tier_spec.worker_count }}"
-    worker_type: "{{ hetzner_worker_type | default(auto_worker_type) | trim }}"
-    bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type) | trim }}"
+    worker_type: "{{ hetzner_worker_type | default(auto_worker_type, true) | trim }}"
+    bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type, true) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
 
 - name: Validate all server types were found
@@ -241,6 +241,20 @@
   changed_when: false
   failed_when: false
 
+- name: Get local SSH public key fingerprint in MD5 hex format
+  ansible.builtin.shell: |
+    ssh-keygen -l -E md5 -f {{ ssh_key_path | default('~/.ssh/id_ed25519') }}.pub | awk '{print $2}' | sed 's/^MD5://'
+  register: local_key_fingerprint
+  changed_when: false
+  when: ssh_key_check.rc != 0
+
+- name: Find existing SSH key by fingerprint
+  ansible.builtin.shell: |
+    hcloud ssh-key list -o json | python3 -c "import sys,json; keys=json.load(sys.stdin); matches=[k['name'] for k in keys if k['fingerprint']=='{{ local_key_fingerprint.stdout | trim }}']; print(matches[0] if matches else '')"
+  register: existing_key_by_fp
+  changed_when: false
+  when: ssh_key_check.rc != 0
+
 - name: Upload SSH public key to Hetzner
   ansible.builtin.command:
     cmd: >
@@ -250,11 +264,11 @@
   register: ssh_key_create
   changed_when: ssh_key_create.rc == 0
   failed_when: ssh_key_create.rc != 0
-  when: ssh_key_check.rc != 0
+  when: ssh_key_check.rc != 0 and (existing_key_by_fp.stdout | default('') | trim | length == 0)
 
 - name: Set SSH key name fact
   set_fact:
-    hcloud_ssh_key: "{{ project }}-key"
+    hcloud_ssh_key: "{{ (ssh_key_check.rc == 0) | ternary(project + '-key', (existing_key_by_fp.stdout | default('') | trim | length > 0) | ternary(existing_key_by_fp.stdout | default('') | trim, project + '-key')) }}"
 
 # ============================================
 # Network
@@ -285,7 +299,13 @@
       --ip-range 10.0.0.0/24
   register: subnet_infra
   changed_when: subnet_infra.rc == 0
-  failed_when: subnet_infra.rc != 0 and 'already' not in (subnet_infra.stderr | default('')) and 'exists' not in (subnet_infra.stderr | default(''))
+  failed_when: >-
+    subnet_infra.rc != 0
+    and 'already' not in (subnet_infra.stderr | default(''))
+    and 'exists' not in (subnet_infra.stderr | default(''))
+    and 'overlaps' not in (subnet_infra.stderr | default(''))
+    and 'duplicate' not in (subnet_infra.stderr | default(''))
+    and 'uniqueness' not in (subnet_infra.stderr | default(''))
 
 - name: Create control plane subnet
   ansible.builtin.command:
@@ -296,7 +316,13 @@
       --ip-range 10.0.1.0/24
   register: subnet_cp
   changed_when: subnet_cp.rc == 0
-  failed_when: subnet_cp.rc != 0 and 'already' not in (subnet_cp.stderr | default('')) and 'exists' not in (subnet_cp.stderr | default(''))
+  failed_when: >-
+    subnet_cp.rc != 0
+    and 'already' not in (subnet_cp.stderr | default(''))
+    and 'exists' not in (subnet_cp.stderr | default(''))
+    and 'overlaps' not in (subnet_cp.stderr | default(''))
+    and 'duplicate' not in (subnet_cp.stderr | default(''))
+    and 'uniqueness' not in (subnet_cp.stderr | default(''))
 
 - name: Create workers subnet
   ansible.builtin.command:
@@ -307,7 +333,13 @@
       --ip-range 10.0.2.0/24
   register: subnet_workers
   changed_when: subnet_workers.rc == 0
-  failed_when: subnet_workers.rc != 0 and 'already' not in (subnet_workers.stderr | default('')) and 'exists' not in (subnet_workers.stderr | default(''))
+  failed_when: >-
+    subnet_workers.rc != 0
+    and 'already' not in (subnet_workers.stderr | default(''))
+    and 'exists' not in (subnet_workers.stderr | default(''))
+    and 'overlaps' not in (subnet_workers.stderr | default(''))
+    and 'duplicate' not in (subnet_workers.stderr | default(''))
+    and 'uniqueness' not in (subnet_workers.stderr | default(''))
 
 # ============================================
 # Placement Group (for HA)
@@ -747,7 +779,16 @@
       --mode primary
   register: dns_zone_create
   when: dns_zone_check.rc != 0
-  failed_when: dns_zone_create.rc != 0 and 'already' not in (dns_zone_create.stderr | default('')) and 'exists' not in (dns_zone_create.stderr | default(''))
+  failed_when: false
+
+- name: Set DNS zone available flag
+  set_fact:
+    dns_zone_available: "{{ dns_zone_check.rc == 0 or (dns_zone_create.rc | default(1) == 0) }}"
+
+- name: Warn if DNS zone creation failed
+  debug:
+    msg: "WARNING: Could not create Hetzner DNS zone for {{ domain }} ({{ dns_zone_create.stderr | default('skipped') | regex_replace('\n', ' ') }}). Configure DNS manually."
+  when: not dns_zone_available | bool
 
 - name: Create DNS wildcard A record (*.domain -> LB)
   ansible.builtin.command:
@@ -759,6 +800,7 @@
   register: dns_wildcard
   changed_when: dns_wildcard.rc == 0
   failed_when: dns_wildcard.rc != 0 and 'already' not in (dns_wildcard.stderr | default('')) and 'exists' not in (dns_wildcard.stderr | default(''))
+  when: dns_zone_available | bool
 
 - name: Create DNS root A record (domain -> LB)
   ansible.builtin.command:
@@ -770,6 +812,7 @@
   register: dns_root
   changed_when: dns_root.rc == 0
   failed_when: dns_root.rc != 0 and 'already' not in (dns_root.stderr | default('')) and 'exists' not in (dns_root.stderr | default(''))
+  when: dns_zone_available | bool
 
 - name: Create DNS VPN A record (vpn.domain -> bastion)
   ansible.builtin.command:
@@ -781,6 +824,7 @@
   register: dns_vpn
   changed_when: dns_vpn.rc == 0
   failed_when: dns_vpn.rc != 0 and 'already' not in (dns_vpn.stderr | default('')) and 'exists' not in (dns_vpn.stderr | default(''))
+  when: dns_zone_available | bool
 
 # ============================================
 # Write infrastructure state
@@ -804,7 +848,7 @@
       master_ips: {{ master_ips | to_json }}
       worker_ips: {{ worker_ips | to_json }}
       first_master_ip: "{{ first_master_ip }}"
-    mode: '0644'
+    mode: '0600'
 
 - name: Display infrastructure summary
   debug:

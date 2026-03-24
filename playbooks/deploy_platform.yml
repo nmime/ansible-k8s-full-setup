@@ -1,27 +1,11 @@
 ---
-# Ansible Workflow Platform
-# Complete automation for Kubernetes platform deployment
-#
-# Deploys full-stack Kubernetes platform including:
-# - Hetzner Cloud Infrastructure
-# - Kubernetes Cluster (via Kubespray)
-# - Network Security (VPN + Firewalls)
-# - Secrets Management (Vault + ESO)
-# - Databases (PostgreSQL + MongoDB)
-# - Storage (MinIO)
-# - GitLab EE (Enterprise with Ultimate license)
-# - ArgoCD (GitOps)
-# - Observability (Monitoring + Logging)
-# - Event-Driven Autoscaling (KEDA)
-# - Brocoders Boilerplate Setup (optional)
-
-# Deployment sequence: infrastructure → network security → cluster → secrets → storage → observability (PMM) → databases → gitlab → gitops → autoscaling
-
 - name: Deploy Kubernetes Platform
   hosts: localhost
   connection: local
   gather_facts: true
   any_errors_fatal: true
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
 
   vars_files:
     - ../defaults/main.yml
@@ -29,7 +13,6 @@
   vars:
     tier: "{{ tier | default('medium') }}"
     project_name: "{{ project_name | default('k8s') }}"
-    # domain and email are required — validated in pre_tasks
 
   pre_tasks:
     - name: Display deployment banner
@@ -104,144 +87,157 @@
         msg: "WARNING: kubectl not installed locally. Install it for post-deployment cluster access."
       when: kubectl_check.rc != 0
 
+    - name: Pre-flight check - required Ansible collections
+      ansible.builtin.command: ansible-galaxy collection list kubernetes.core
+      register: k8s_collection_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if kubernetes.core collection missing
+      fail:
+        msg: "Required Ansible collection 'kubernetes.core' not found. Install: ansible-galaxy collection install -r requirements.yml"
+      when: k8s_collection_check.rc != 0
+
   tasks:
-    # Step 0: Generate and persist all platform secrets
     - name: Generate platform secrets
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: generate-secrets
-        tasks_from: main.yml
       tags:
         - always
 
-    # Step 1: Infrastructure
     - name: Deploy Hetzner Cloud Infrastructure
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: hetzner-infra
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        project_name: "{{ project_name }}"
       tags:
         - infrastructure
         - infra
 
-    # Step 2: Network Security
     - name: Deploy Network Security (VPN + Firewalls)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: network-security
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - network
         - security
 
-    # Step 3: Kubernetes Cluster
+    - name: Restore controller connectivity after network-security role
+      ansible.builtin.shell: |
+        set +e
+        rm -rf /tmp/outer-ansible-cp 2>/dev/null
+        iptables -P INPUT ACCEPT 2>/dev/null
+        iptables -P FORWARD ACCEPT 2>/dev/null
+        iptables -P OUTPUT ACCEPT 2>/dev/null
+        iptables -F 2>/dev/null
+        iptables -X 2>/dev/null
+        iptables -t nat -F 2>/dev/null
+        iptables -t mangle -F 2>/dev/null
+        ip6tables -P INPUT ACCEPT 2>/dev/null
+        ip6tables -P FORWARD ACCEPT 2>/dev/null
+        ip6tables -P OUTPUT ACCEPT 2>/dev/null
+        ip6tables -F 2>/dev/null
+        ip6tables -X 2>/dev/null
+        systemctl stop docker docker.socket 2>/dev/null
+        for br in $(ip link show 2>/dev/null | grep -oP 'br-[a-f0-9]+'); do
+          ip link set "$br" down 2>/dev/null
+          ip link delete "$br" 2>/dev/null
+        done
+        ip link delete docker0 2>/dev/null
+        ip link delete tailscale0 2>/dev/null
+        GW=$(ip route show default | awk '{print $3}' | head -1)
+        if [ -n "$GW" ]; then
+          ip route replace default via "$GW"
+        else
+          ip route replace default via 172.31.1.1 dev eth0
+        fi
+        echo 'nameserver 185.12.64.1' > /etc/resolv.conf && echo 'nameserver 185.12.64.2' >> /etc/resolv.conf
+        for i in $(seq 1 10); do
+          if curl -4 -sI --max-time 5 https://github.com >/dev/null 2>&1; then
+            echo "Controller connectivity restored after $i attempts"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "WARNING: Controller connectivity not restored after 10 attempts"
+        ip link show
+        ip route show
+        iptables -L -n
+        ss -s
+        exit 0
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+
     - name: Deploy Kubernetes Cluster
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-cluster-management
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - cluster
         - kubernetes
 
-    # Step 4: Secrets Management
     - name: Deploy Secrets Management (Vault + ESO)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-secrets
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - secrets
         - vault
 
-    # Step 5: Storage (MinIO)
     - name: Deploy MinIO S3 Storage
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: minio-storage
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - storage
         - minio
 
-    # Step 6: Observability (before databases — PMM Server must exist for DB monitoring)
-    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana + PMM)
-      ansible.builtin.include_role:
+    - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
+      ansible.builtin.import_role:
         name: k8s-observability
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       tags:
         - observability
         - monitoring
 
-    # Step 7: Databases (PMM client sidecars connect to PMM Server from step 6)
     - name: Deploy Databases (PostgreSQL + MongoDB)
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-databases
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - databases
         - postgresql
 
-    # Step 8: GitLab EE
     - name: Deploy GitLab EE Self-Hosted
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: gitlab-selfhosted
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       tags:
         - gitlab
         - cicd
 
-    # Step 9: GitOps (ArgoCD)
     - name: Deploy ArgoCD GitOps
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-gitops
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       tags:
         - gitops
         - argocd
 
-    # Step 10: Autoscaling
     - name: Deploy KEDA Event-Driven Autoscaling
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: k8s-autoscaling
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
       tags:
         - autoscaling
         - keda
 
-    # Step 11: Brocoders Boilerplate (optional)
+    - name: Deploy Temporal Workflow Engine
+      ansible.builtin.import_role:
+        name: temporal
+      tags:
+        - temporal
+        - workflows
+
     - name: Deploy Brocoders Boilerplate Application
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: brocoders-boilerplate-setup
-        tasks_from: main.yml
-      vars:
-        tier: "{{ tier }}"
-        domain: "{{ domain }}"
       when: deploy_boilerplate | default(false) | bool
       tags:
         - boilerplate
         - application
 
   post_tasks:
-    # Final deployment summary
     - name: Display deployment completion summary
       debug:
         msg:
@@ -262,6 +258,7 @@
           - "  - Vault: https://vault.{{ domain }}"
           - "  - PostgreSQL HA Cluster"
           - "  - KEDA (Event Autoscaling)"
+          - "  - Temporal: https://temporal.{{ domain }}"
           - "  - Headscale VPN"
           - ""
           - "Get credentials:"
