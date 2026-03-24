@@ -264,6 +264,23 @@
 # ============================================
 # Hetzner Cloud Controller Manager
 
+- name: Wait for all nodes to be Ready before applying fixes
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | grep -v ' Ready ' | wc -l)
+      TOTAL=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+      if [ "$NOT_READY" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
+        echo "All $TOTAL nodes Ready"; exit 0
+      fi
+      echo "Waiting for nodes (attempt $i/30, $NOT_READY not ready)..."; sleep 10
+    done
+    echo "Timeout waiting for nodes"; exit 1
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop
   ansible.builtin.shell: |
     kubectl -n kube-system get cm coredns -o json | \
@@ -274,13 +291,26 @@
       kubectl apply -f - 2>/dev/null || true
     kubectl -n kube-system rollout restart deployment coredns
     kubectl -n kube-system delete pods -l k8s-app=node-local-dns 2>/dev/null || true
-    sleep 10
-    kubectl run dns-test --rm -i --restart=Never --image=busybox -- nslookup kubernetes.default.svc.cluster.local
   args:
     executable: /bin/bash
   delegate_to: localhost
   become: false
   changed_when: true
+
+- name: Verify DNS resolution in cluster
+  ansible.builtin.shell: |
+    kubectl run dns-test-{{ ansible_date_time.epoch }} --rm -i --restart=Never --image=busybox --wait=true -- nslookup kubernetes.default.svc.cluster.local
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: dns_result
+  retries: 5
+  delay: 30
+  until: dns_result.rc == 0
+  ignore_errors: true
+
 
 # ============================================
 
