@@ -1,19 +1,19 @@
 ---
-# K8s Cluster Management - Kubespray (master@341da0e) + Cilium v1.18.6 + Gateway API v1.5.1
+# K8s Cluster Management - Kubespray v2.30.0 + Cilium v1.19.2 + Gateway API v1.5.1
 # Installs Kubernetes cluster with core addons
-# Components: K8s v1.34.3, etcd v3.5.26, containerd v2.2.1, Hetzner CCM v1.22.0, cert-manager v1.19.2, MetalLB v0.14.9
+# Components: K8s v1.35.3, Hetzner CCM v1.30.1, Hetzner CSI v2.20.0, cert-manager v1.20.0, MetalLB v0.15.3
 
 - name: Set cluster management variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
-    k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
+    k8s_ver: "{{ k8s_version | default('v1.35.3') }}"
     kubespray_version: "v2.30.0"
-    cilium_ver: "{{ cilium_version | default('v1.18.6') }}"
+    cilium_ver: "{{ cilium_version | default('v1.19.2') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.5.1') }}"
     certmanager_ver: "v1.20.0"
     metallb_ver: "v0.15.3"
-    hetzner_ccm_ver: "v1.22.0"
-    hetzner_csi_ver: "v2.12.0"
+    hetzner_ccm_ver: "v1.30.1"
+    hetzner_csi_ver: "v2.20.0"
     cluster_tier: "{{ tier | default('medium') }}"
 
 # ============================================
@@ -700,7 +700,7 @@
   kubernetes.core.helm:
     name: cert-manager-webhook-hetzner
     chart_ref: hcloud/cert-manager-webhook-hetzner
-    chart_version: "0.6.7"
+    chart_version: "1.4.2"
     release_namespace: cert-manager
     release_state: present
     wait: true

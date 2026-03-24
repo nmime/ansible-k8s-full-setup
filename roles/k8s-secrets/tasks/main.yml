@@ -1,7 +1,7 @@
 ---
-# K8s Secrets Role - Vault v1.21.2 + ESO v0.15.0
+# K8s Secrets Role - Vault (Helm 0.32.0) + ESO (Helm 2.2.0)
 # HashiCorp Vault for secret storage + External Secrets Operator for K8s integration
-# Components: Vault (Helm chart 0.29.0), ESO (Helm chart 0.15.0)
+# Components: Vault (Helm chart 0.32.0), ESO (Helm chart 2.2.0)
 
 - name: Set secrets tier-specific variables
   set_fact:
@@ -142,6 +142,9 @@
     pod: "vault-0"
     command: vault status -format=json
   register: vault_status_raw
+  retries: 3
+  delay: 10
+  until: vault_status_raw is not failed
   failed_when: false
   changed_when: false
 
@@ -157,6 +160,9 @@
     pod: "vault-0"
     command: vault operator init -key-shares=5 -key-threshold=3 -format=json
   register: vault_init
+  retries: 3
+  delay: 10
+  until: vault_init is not failed
   when: not (vault_initialized | default(false) | bool)
   failed_when: vault_init.rc is defined and vault_init.rc != 0
 
@@ -188,6 +194,10 @@
   loop: [0, 1, 2]
   when: vault_init is changed
   no_log: true
+  register: _r_unseal_vault__primary_
+  retries: 3
+  delay: 10
+  until: _r_unseal_vault__primary_ is not failed
 
 - name: Join raft peers (HA mode)
   kubernetes.core.k8s_exec:
@@ -197,6 +207,10 @@
   loop: "{{ range(1, vault_replicas | int) | list }}"
   when: vault_ha and vault_init is changed
   failed_when: false
+  register: _r_join_raft_peers__ha_mode_
+  retries: 3
+  delay: 10
+  until: _r_join_raft_peers__ha_mode_ is not failed
 
 - name: Unseal raft peers (HA mode)
   kubernetes.core.k8s_exec:
@@ -206,6 +220,10 @@
   loop: "{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}"
   when: vault_ha and vault_init is changed
   no_log: true
+  register: _r_unseal_raft_peers__ha_mode_
+  retries: 3
+  delay: 10
+  until: _r_unseal_raft_peers__ha_mode_ is not failed
 
 - name: Enable KV v2 secrets engine
   kubernetes.core.k8s_exec:
@@ -215,6 +233,10 @@
   when: vault_init is changed
   failed_when: false
   no_log: true
+  register: _r_enable_kv_v2_secrets_engine
+  retries: 3
+  delay: 10
+  until: _r_enable_kv_v2_secrets_engine is not failed
 
 - name: Enable Kubernetes auth method
   kubernetes.core.k8s_exec:
@@ -224,6 +246,10 @@
   when: vault_init is changed
   failed_when: false
   no_log: true
+  register: _r_enable_kubernetes_auth_method
+  retries: 3
+  delay: 10
+  until: _r_enable_kubernetes_auth_method is not failed
 
 - name: Configure Kubernetes auth method
   kubernetes.core.k8s_exec:
@@ -240,6 +266,10 @@
 # ============================================
 # Vault Gateway API Route
 # ============================================
+  register: _r_configure_kubernetes_auth_method
+  retries: 3
+  delay: 10
+  until: _r_configure_kubernetes_auth_method is not failed
 
 - name: Create Vault TLS certificate
   kubernetes.core.k8s:
@@ -385,6 +415,10 @@
   when: vault_init is changed
   failed_when: false
   no_log: true
+  register: _r_create_vault_eso_auth_role
+  retries: 3
+  delay: 10
+  until: _r_create_vault_eso_auth_role is not failed
 
 - name: Create Vault policy for ESO
   kubernetes.core.k8s_exec:
@@ -403,6 +437,10 @@
   when: vault_init is changed
   failed_when: false
   no_log: true
+  register: _r_create_vault_policy_for_eso
+  retries: 3
+  delay: 10
+  until: _r_create_vault_policy_for_eso is not failed
 
 - name: Create ClusterSecretStore for Vault
   kubernetes.core.k8s:

@@ -1,5 +1,5 @@
 ---
-# K8s Databases Role - Percona PG Operator v2.8.2 + Percona MongoDB v1.21.2
+# K8s Databases Role - Percona PG Operator v2.8.2 + Percona MongoDB v1.22.0
 # PostgreSQL 18.x via Percona PG Operator, MongoDB 8.0.x via Percona Server for MongoDB
 # Tier-aware HA configuration
 
@@ -218,7 +218,7 @@
               repo2-retention-full-type: "count"
         pmm:
           enabled: true
-          image: "percona/pmm-client:2"
+          image: "percona/pmm-client:3"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
           secret: pmm-secret
           resources:
@@ -402,7 +402,7 @@
               type: physical
         pmm:
           enabled: true
-          image: "percona/pmm-client:2"
+          image: "percona/pmm-client:3"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
   register: _r_create_mongodb_cluster
   retries: 3

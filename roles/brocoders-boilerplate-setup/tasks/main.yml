@@ -69,6 +69,9 @@
     namespace: "{{ app_namespace }}"
     name: "{{ app_name }}-postgresql-password"
   register: app_pg_conn_secret
+  retries: 3
+  delay: 10
+  until: app_pg_conn_secret is not failed
   failed_when: false
 
 - name: Set app database password from Percona-generated secret
