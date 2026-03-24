@@ -1,5 +1,4 @@
 #!/bin/bash
-set -eo pipefail
 TIER=${1:?"Usage: $0 <minimal|medium|production>"}
 PROJECT="k8s-${TIER}"
 DOMAIN="${TIER}.k8s-test.example.com"
@@ -11,6 +10,7 @@ set -a; . ${HOME}/.env; set +a
 export HCLOUD_TOKEN
 
 cd /root/ansible-k8s-full-setup-fix
+set +e
 ansible-playbook playbooks/deploy_platform.yml \
   -e tier="$TIER" \
   -e domain="$DOMAIN" \
@@ -18,6 +18,7 @@ ansible-playbook playbooks/deploy_platform.yml \
   -e project_name="$PROJECT" \
   -v 2>&1 | tee -a "$LOGFILE"
 RETCODE=${PIPESTATUS[0]}
+set -e
 
 if [ $RETCODE -eq 0 ]; then
   echo "=== $TIER SUCCEEDED at $(date) ===" | tee -a "$LOGFILE"
