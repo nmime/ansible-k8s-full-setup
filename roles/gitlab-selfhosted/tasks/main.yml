@@ -474,6 +474,9 @@
     label_selectors:
       - app=toolbox
   register: toolbox_pods
+  retries: 3
+  delay: 10
+  until: toolbox_pods is not failed
 
 - name: Apply license via GitLab Rails console
   kubernetes.core.k8s_exec:
@@ -507,6 +510,9 @@
           end
         "
   register: license_apply
+  retries: 3
+  delay: 10
+  until: license_apply is not failed
   when: toolbox_pods.resources | length > 0
   failed_when: false
 

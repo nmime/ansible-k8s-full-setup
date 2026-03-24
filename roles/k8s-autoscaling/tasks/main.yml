@@ -190,6 +190,9 @@
     kind: CustomResourceDefinition
     name: vmservicescrapes.operator.victoriametrics.com
   register: vmscrape_crd
+  retries: 3
+  delay: 10
+  until: vmscrape_crd is not failed
   ignore_errors: true
 
 - name: Create VMServiceScrape for KEDA metrics
