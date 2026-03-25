@@ -351,8 +351,8 @@
             storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gitlab:
         webservice:
-          replicaCount: {{ gitlab_webservice_replicas | int }}
-          minReplicas: {{ gitlab_webservice_replicas | int }}
+          replicaCount: "{{ gitlab_webservice_replicas | int }}"
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
           maxReplicas: 10
           resources:
             requests:
@@ -363,7 +363,7 @@
               memory: "{{ '3Gi' if gitlab_mode == 'light' else '5Gi' }}"
           workerProcesses: 2
         sidekiq:
-          replicaCount: {{ gitlab_sidekiq_replicas | int }}
+          replicaCount: "{{ gitlab_sidekiq_replicas | int }}"
           minReplicas: 1
           maxReplicas: 10
           resources:
@@ -374,8 +374,8 @@
               cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
               memory: "{{ '2Gi' if gitlab_mode == 'light' else '3Gi' }}"
         gitlab-shell:
-          replicaCount: {{ gitlab_webservice_replicas | int }}
-          minReplicas: {{ gitlab_webservice_replicas | int }}
+          replicaCount: "{{ gitlab_webservice_replicas | int }}"
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
           resources:
             requests:
               cpu: 50m
@@ -397,7 +397,7 @@
               memory: "{{ '1Gi' if gitlab_mode == 'light' else '2Gi' }}"
         kas:
           enabled: true
-          minReplicas: {{ gitlab_webservice_replicas | int }}
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
         toolbox:
           enabled: true
           backups:
@@ -411,9 +411,9 @@
                 key: connection
       registry:
         enabled: true
-        replicaCount: {{ gitlab_webservice_replicas | int }}
+        replicaCount: "{{ gitlab_webservice_replicas | int }}"
         hpa:
-          minReplicas: {{ gitlab_webservice_replicas | int }}
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
           maxReplicas: 5
         storage:
           secret: gitlab-registry-storage
