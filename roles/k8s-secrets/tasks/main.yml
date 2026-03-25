@@ -79,10 +79,10 @@
           size: "10Gi"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
         ha:
-          enabled: "{{ vault_ha }}"
-          replicas: "{{ vault_replicas }}"
+          enabled: {{ vault_ha | bool }}
+          replicas: {{ vault_replicas | int }}
           raft:
-            enabled: "{{ vault_ha }}"
+            enabled: {{ vault_ha | bool }}
             setNodeId: true
             config: |
               ui = true
@@ -96,7 +96,7 @@
               }
               service_registration "kubernetes" {}
         standalone:
-          enabled: "{{ not vault_ha }}"
+          enabled: {{ not (vault_ha | bool) }}
           config: |
             ui = true
             listener "tcp" {

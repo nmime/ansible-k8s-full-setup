@@ -134,7 +134,7 @@
         port: 5432
         instances:
           - name: instance1
-            replicas: "{{ pg_replicas }}"
+            replicas: {{ pg_replicas | int }}
             dataVolumeClaimSpec:
               accessModes:
                 - ReadWriteOnce
@@ -160,7 +160,7 @@
                       topologyKey: kubernetes.io/hostname
         proxy:
           pgBouncer:
-            replicas: "{{ pg_proxy_replicas }}"
+            replicas: {{ pg_proxy_replicas | int }}
             image: "percona/percona-pgbouncer:1.25.1-1"
             config:
               global:
