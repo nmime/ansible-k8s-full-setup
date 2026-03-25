@@ -75,7 +75,7 @@
           capabilities:
             drop:
               - ALL
-        resources:
+        dataStorage:
           enabled: true
           size: "{{ vault_storage }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
