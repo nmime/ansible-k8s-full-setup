@@ -54,6 +54,11 @@
     release_state: present
     wait: true
     timeout: "10m0s"
+    set_values:
+      - value: "server.ha.replicas={{ vault_replicas }}"
+      - value: "server.ha.enabled={{ (vault_ha | bool) | lower }}"
+      - value: "server.ha.raft.enabled={{ (vault_ha | bool) | lower }}"
+      - value: "server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}"
     values:
       global:
         tlsDisable: false
@@ -79,10 +84,7 @@
           size: "10Gi"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
         ha:
-          enabled: "{{ vault_ha | bool }}"
-          replicas: "{{ vault_replicas | int }}"
           raft:
-            enabled: "{{ vault_ha | bool }}"
             setNodeId: true
             config: |
               ui = true
@@ -96,7 +98,6 @@
               }
               service_registration "kubernetes" {}
         standalone:
-          enabled: "{{ not (vault_ha | bool) }}"
           config: |
             ui = true
             listener "tcp" {
