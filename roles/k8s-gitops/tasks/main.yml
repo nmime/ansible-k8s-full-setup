@@ -58,7 +58,7 @@
           seccompProfile:
             type: RuntimeDefault
       server:
-        replicas: {{ argocd_server_replicas | int }}
+        replicas: "{{ argocd_server_replicas | int }}"
         ingress:
           enabled: false
         extraArgs:
@@ -71,7 +71,7 @@
             cpu: 500m
             memory: 512Mi
       controller:
-        replicas: {{ argocd_controller_replicas | int }}
+        replicas: "{{ argocd_controller_replicas | int }}"
         resources:
           requests:
             cpu: 100m
@@ -80,7 +80,7 @@
             cpu: 1000m
             memory: 1Gi
       repoServer:
-        replicas: {{ argocd_repo_replicas | int }}
+        replicas: "{{ argocd_repo_replicas | int }}"
         resources:
           requests:
             cpu: 50m
@@ -89,7 +89,7 @@
             cpu: 500m
             memory: 512Mi
       applicationSet:
-        replicas: {{ 2 if argocd_ha else 1 | int }}
+        replicas: "{{ 2 if argocd_ha else 1 | int }}"
         resources:
           requests:
             cpu: 50m

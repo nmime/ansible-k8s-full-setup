@@ -248,7 +248,7 @@
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: {{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -257,7 +257,7 @@
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: {{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -270,7 +270,7 @@
           size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       backend:
-        replicas: {{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -283,7 +283,7 @@
           size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       singleBinary:
-        replicas: {{ 1 if tier in ['minimal', 'small'] else 0 | int }}
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else 0 | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -352,7 +352,7 @@
     release_state: present
     wait: true
     values:
-      replicas: {{ grafana_replicas | int }}
+      replicas: "{{ grafana_replicas | int }}"
       adminUser: "{{ grafana_admin_user | default('admin') }}"
       adminPassword: "{{ grafana_admin_password }}"
       persistence:
