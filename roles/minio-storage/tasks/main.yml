@@ -55,7 +55,7 @@
     timeout: 10m0s
     values:
       mode: "{{ minio_mode }}"
-      replicas: {{ minio_replicas_count | int }}
+      replicas: "{{ minio_replicas_count | int }}"
       rootUser: "{{ minio_root_user }}"
       rootPassword: "{{ minio_root_password }}"
       persistence:

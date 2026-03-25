@@ -119,7 +119,7 @@
           pullPolicy: IfNotPresent
         config:
           logLevel: "info"
-          numHistoryShards: {{ temporal_num_history_shards | int }}
+          numHistoryShards: "{{ temporal_num_history_shards | int }}"
           persistence:
             defaultStore: default
             additionalStores: {}
@@ -155,7 +155,7 @@
               - name: default
                 retention: 3d
         frontend:
-          replicaCount: {{ temporal_frontend_replicas | int }}
+          replicaCount: "{{ temporal_frontend_replicas | int }}"
           service:
             type: ClusterIP
             port: 7233
@@ -176,7 +176,7 @@
               drop:
                 - ALL
         history:
-          replicaCount: {{ temporal_history_replicas | int }}
+          replicaCount: "{{ temporal_history_replicas | int }}"
           service:
             port: 7234
           resources:
@@ -196,7 +196,7 @@
               drop:
                 - ALL
         matching:
-          replicaCount: {{ temporal_matching_replicas | int }}
+          replicaCount: "{{ temporal_matching_replicas | int }}"
           service:
             port: 7235
           resources:
@@ -216,7 +216,7 @@
               drop:
                 - ALL
         worker:
-          replicaCount: {{ temporal_worker_replicas | int }}
+          replicaCount: "{{ temporal_worker_replicas | int }}"
           service:
             port: 7239
           resources:
@@ -263,7 +263,7 @@
             memory: 256Mi
       web:
         enabled: true
-        replicaCount: {{ temporal_web_replicas | int }}
+        replicaCount: "{{ temporal_web_replicas | int }}"
         image:
           repository: temporalio/ui
           tag: "{{ temporal_ui_ver }}"
