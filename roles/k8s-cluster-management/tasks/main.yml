@@ -15,6 +15,7 @@
     hetzner_ccm_ver: "v1.30.1"
     hetzner_csi_ver: "v2.20.0"
     cluster_tier: "{{ tier | default('medium') }}"
+    certmanager_replicas: "{{ (tier | default('medium')=='minimal')|ternary(1, (tier | default('medium')=='production')|ternary(3, 2)) }}"
 
 # ============================================
 # Kubespray Setup
@@ -643,7 +644,7 @@
       - "io.cilium.gateway/owning-gateway=admin-gateway"
   register: admin_gw_svc
   until: admin_gw_svc.resources | length > 0
-  retries: 6
+  retries: 18
   delay: 10
   ignore_errors: true
 
