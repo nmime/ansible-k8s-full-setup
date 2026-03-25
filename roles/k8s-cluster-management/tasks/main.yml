@@ -257,7 +257,7 @@
 
 - name: Ensure SSH tunnel to k8s API is active
   ansible.builtin.shell: |
-    pkill -f 'ssh.*-L 6443' || true
+    fuser -k 6443/tcp 2>/dev/null || true
     sleep 1
     nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
     for attempt in $(seq 1 30); do
