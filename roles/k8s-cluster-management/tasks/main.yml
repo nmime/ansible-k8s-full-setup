@@ -257,17 +257,24 @@
 
 - name: Ensure SSH tunnel to k8s API is active
   ansible.builtin.shell: |
-    if ! ss -tlnp | grep -q ':6443'; then
-      nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
-      for attempt in $(seq 1 30); do
-        if ss -tlnp | grep -q ':6443'; then
-          echo "SSH tunnel ready after ${attempt}s"
-          break
-        fi
-        sleep 1
-      done
-    fi
+    pkill -f 'ssh.*-L 6443' || true
+    sleep 1
+    nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+    for attempt in $(seq 1 30); do
+      if ss -tlnp | grep -q ':6443'; then
+        echo "SSH tunnel ready after ${attempt}s"
+        break
+      fi
+      sleep 1
+    done
     sed -i 's|https://{{ first_master_ip | default("10.0.1.1") }}:6443|https://127.0.0.1:6443|g' {{ lookup('env', 'HOME') }}/.kube/config
+    for verify in $(seq 1 5); do
+      if KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes 2>/dev/null; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "kubectl failed after 5 retries"
     KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes
   args:
     executable: /bin/bash
