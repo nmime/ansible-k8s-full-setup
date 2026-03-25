@@ -219,11 +219,18 @@
 
 # Fix CNI binary directory permissions (Kubespray creates it owned by kube user)
 - name: Fix /opt/cni/bin ownership for Cilium
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@{{ bastion_public_ip }}' \
+      root@{{ item }} 'bash -s' << 'REMOTECMD'
     chown -R root:root /opt/cni 2>/dev/null || true
     chmod 755 /opt/cni /opt/cni/bin 2>/dev/null || true
-  delegate_to: "{{ item }}"
-  become: true
+    ls -la /opt/cni/bin/ 2>/dev/null | head -5
+    REMOTECMD
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
   loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
   when: item is defined and item | length > 0
   ignore_errors: true
@@ -266,15 +273,23 @@
 
 - name: Wait for all nodes to be Ready before applying fixes
   ansible.builtin.shell: |
-    for i in $(seq 1 30); do
+    for i in $(seq 1 60); do
       NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | grep -v ' Ready ' | wc -l)
       TOTAL=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
       if [ "$NOT_READY" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
         echo "All $TOTAL nodes Ready"; exit 0
       fi
-      echo "Waiting for nodes (attempt $i/30, $NOT_READY not ready)..."; sleep 10
+      if [ "$((i % 10))" -eq 0 ]; then
+        echo "--- Diagnostic at attempt $i ---"
+        kubectl get nodes 2>/dev/null
+        kubectl get pods -A --no-headers 2>/dev/null | grep -v Running | grep -v Completed || true
+      fi
+      echo "Waiting for nodes (attempt $i/60, $NOT_READY not ready)..."; sleep 15
     done
-    echo "Timeout waiting for nodes"; exit 1
+    echo "FINAL STATE:"
+    kubectl get nodes 2>/dev/null
+    kubectl get pods -A 2>/dev/null | head -30
+    echo "Timeout waiting for nodes after 15 minutes"; exit 1
   args:
     executable: /bin/bash
   delegate_to: localhost
