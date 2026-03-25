@@ -750,7 +750,7 @@
   kubernetes.core.helm:
     name: cert-manager-webhook-hetzner
     chart_ref: hcloud/cert-manager-webhook-hetzner
-    chart_version: "1.4.2"
+    chart_version: "0.6.7"
     release_namespace: cert-manager
     release_state: present
     wait: true
