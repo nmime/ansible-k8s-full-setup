@@ -1,8 +1,8 @@
 #!/bin/bash
 TIER=${1:?"Usage: $0 <minimal|medium|production>"}
 PROJECT="k8s-${TIER}"
-DOMAIN="${TIER}.k8s-test.example.com"
-EMAIL="test@k8s-test.example.com"
+DOMAIN="${TIER}.n0xeid.xyz"
+EMAIL="admin@n0xeid.xyz"
 LOGFILE="/root/run-${TIER}.log"
 
 echo "=== Starting $TIER at $(date) ===" | tee "$LOGFILE"
