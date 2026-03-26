@@ -232,6 +232,21 @@
   delay: 10
   until: _r_join_raft_peers__ha_mode_ is not failed
 
+- name: Wait for raft peers to recognize initialization
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-{{ item }}"
+    command: vault status -format=json
+  loop: "{{ range(1, vault_replicas | int) | list }}"
+  when: vault_ha and vault_init is changed
+  register: _r_wait_raft_init
+  retries: 30
+  delay: 5
+  until: >-
+    _r_wait_raft_init.stdout is defined
+    and (_r_wait_raft_init.stdout | from_json).initialized | default(false)
+  failed_when: false
+
 - name: Unseal raft peers (HA mode)
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
@@ -241,7 +256,7 @@
   when: vault_ha and vault_init is changed
   no_log: true
   register: _r_unseal_raft_peers__ha_mode_
-  retries: 3
+  retries: 5
   delay: 10
   until: _r_unseal_raft_peers__ha_mode_ is not failed
 
