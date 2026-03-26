@@ -1138,17 +1138,13 @@
               - protocol: TCP
                 port: 53
           - to:
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: default
+              - ipBlock:
+                  cidr: "{{ k8s_service_cidr }}"
+              - ipBlock:
+                  cidr: "{{ k8s_pod_cidr }}"
             ports:
               - protocol: TCP
                 port: 443
-          - to:
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: kube-system
-            ports:
               - protocol: TCP
                 port: 6443
   loop:

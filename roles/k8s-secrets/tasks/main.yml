@@ -110,7 +110,6 @@
               storage "raft" {
                 path = "/vault/data"
               }
-              service_registration "kubernetes" {}
         standalone:
           config: |
             ui = true
