@@ -113,7 +113,7 @@
         ui:
           enabled: true
       csi:
-        enabled: true
+        enabled: false
   register: _r_install_vault_via_helm
   retries: 3
   delay: 10
