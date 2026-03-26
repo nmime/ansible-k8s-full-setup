@@ -192,7 +192,7 @@
         labels:
           app: vault
       stringData:
-        init-output: "{{ vault_init.stdout }}"
+        init-output: "{{ vault_init.stdout | string }}"
   when: vault_init is changed
   register: _r_store_vault_init_keys_as_k8s_secret
   retries: 3
