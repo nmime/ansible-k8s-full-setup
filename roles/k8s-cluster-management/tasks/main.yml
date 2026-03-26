@@ -622,6 +622,100 @@
   until: _r_patch_gateway_service_to_use_fixed_nodep is not failed
 
 
+- name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: admin-gateway
+        namespace: cilium-system
+      spec:
+        gatewayClassName: cilium
+        listeners:
+          - name: http
+            protocol: HTTP
+            port: 8080
+            allowedRoutes:
+              namespaces:
+                from: All
+          - name: https
+            protocol: HTTPS
+            port: 8443
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: wildcard-tls
+                  namespace: cilium-secrets
+            allowedRoutes:
+              namespaces:
+                from: All
+  register: _r_create_admin_gateway_vpn_only_for_gitlab
+  retries: 3
+  delay: 10
+  until: _r_create_admin_gateway_vpn_only_for_gitlab is not failed
+
+- name: Wait for admin Gateway service
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: cilium-system
+    label_selectors:
+      - "io.cilium.gateway/owning-gateway=admin-gateway"
+  register: admin_gw_svc
+  until: admin_gw_svc.resources | length > 0
+  retries: 30
+  delay: 10
+  ignore_errors: true
+
+- name: Patch admin Gateway service to use NodePort 31443
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ admin_gw_svc.resources[0].metadata.name }}"
+        namespace: cilium-system
+      spec:
+        ports:
+          - name: port-8080
+            port: 8080
+            targetPort: 8080
+            protocol: TCP
+          - name: port-8443
+            port: 8443
+            targetPort: 8443
+            nodePort: 31443
+            protocol: TCP
+  when: admin_gw_svc.resources | default([]) | length > 0
+  register: _r_patch_admin_gateway_service_to_use_nodep
+  retries: 3
+  delay: 10
+  until: _r_patch_admin_gateway_service_to_use_nodep is not failed
+
+- name: Create NetworkPolicy to restrict admin-gateway to VPN and private network
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: admin-gateway-vpn-only
+        namespace: cilium-system
+      spec:
+        endpointSelector:
+          matchLabels:
+            io.cilium.gateway/owning-gateway: admin-gateway
+        ingress:
+          - fromCIDR:
+              - 10.0.0.0/16
+              - 100.64.0.0/10
+  register: _r_create_networkpolicy_to_restrict_admin_g
+  retries: 3
+  delay: 10
+  until: _r_create_networkpolicy_to_restrict_admin_g is not failed
+
 # ============================================
 # cert-manager v1.19.2
 # ============================================
@@ -784,99 +878,6 @@
   delay: 10
   until: _r_create_wildcard_tls_certificate is not failed
 
-- name: Wait for wildcard TLS secret to be created by cert-manager
-  kubernetes.core.k8s_info:
-    kind: Secret
-    namespace: cilium-secrets
-    name: wildcard-tls
-  register: wildcard_tls_secret
-  until: wildcard_tls_secret.resources | length > 0
-  retries: 60
-  delay: 10
-
-- name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: Gateway
-      metadata:
-        name: admin-gateway
-        namespace: cilium-system
-      spec:
-        gatewayClassName: cilium
-        listeners:
-          - name: https
-            protocol: HTTPS
-            port: 8443
-            tls:
-              mode: Terminate
-              certificateRefs:
-                - name: wildcard-tls
-                  namespace: cilium-secrets
-            allowedRoutes:
-              namespaces:
-                from: All
-  register: _r_create_admin_gateway_vpn_only_for_gitlab
-  retries: 3
-  delay: 10
-  until: _r_create_admin_gateway_vpn_only_for_gitlab is not failed
-
-- name: Wait for admin Gateway service
-  kubernetes.core.k8s_info:
-    kind: Service
-    namespace: cilium-system
-    label_selectors:
-      - "io.cilium.gateway/owning-gateway=admin-gateway"
-  register: admin_gw_svc
-  until: admin_gw_svc.resources | length > 0
-  retries: 30
-  delay: 10
-  ignore_errors: true
-
-- name: Patch admin Gateway service to use NodePort 31443
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: "{{ admin_gw_svc.resources[0].metadata.name }}"
-        namespace: cilium-system
-      spec:
-        ports:
-          - name: https
-            port: 8443
-            targetPort: 8443
-            nodePort: 31443
-            protocol: TCP
-  when: admin_gw_svc.resources | default([]) | length > 0
-  register: _r_patch_admin_gateway_service_to_use_nodep
-  retries: 3
-  delay: 10
-  until: _r_patch_admin_gateway_service_to_use_nodep is not failed
-
-- name: Create NetworkPolicy to restrict admin-gateway to VPN and private network
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cilium.io/v2
-      kind: CiliumNetworkPolicy
-      metadata:
-        name: admin-gateway-vpn-only
-        namespace: cilium-system
-      spec:
-        endpointSelector:
-          matchLabels:
-            io.cilium.gateway/owning-gateway: admin-gateway
-        ingress:
-          - fromCIDR:
-              - 10.0.0.0/16
-              - 100.64.0.0/10
-  register: _r_create_networkpolicy_to_restrict_admin_g
-  retries: 3
-  delay: 10
-  until: _r_create_networkpolicy_to_restrict_admin_g is not failed
 
 # ============================================
 # MetalLB v0.14.9
