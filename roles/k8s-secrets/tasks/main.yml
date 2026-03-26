@@ -61,7 +61,7 @@
       - value: "server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}"
     values:
       global:
-        tlsDisable: false
+        tlsDisable: true
       injector:
         enabled: false
       server:
@@ -75,6 +75,20 @@
           capabilities:
             drop:
               - ALL
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: vault
+                      component: server
+                  topologyKey: kubernetes.io/hostname
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
         dataStorage:
           enabled: true
           size: "{{ vault_storage }}"
