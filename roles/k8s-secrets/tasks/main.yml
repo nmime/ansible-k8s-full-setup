@@ -180,6 +180,12 @@
   when: not (vault_initialized | default(false) | bool)
   failed_when: vault_init.rc is defined and vault_init.rc != 0
 
+- name: Normalize vault init output
+  set_fact:
+    vault_init_data: "{{ vault_init.stdout if vault_init.stdout is mapping else vault_init.stdout | from_json }}"
+  when: vault_init is changed
+  no_log: true
+
 - name: Store Vault init keys as K8s secret
   kubernetes.core.k8s:
     state: present
@@ -192,7 +198,7 @@
         labels:
           app: vault
       stringData:
-        init-output: "{{ vault_init.stdout | string }}"
+        init-output: "{{ vault_init_data | to_json }}"
   when: vault_init is changed
   register: _r_store_vault_init_keys_as_k8s_secret
   retries: 3
@@ -204,7 +210,7 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: "vault operator unseal {{ (vault_init.stdout | from_json).unseal_keys_b64[item] }}"
+    command: "vault operator unseal {{ vault_init_data.unseal_keys_b64[item] }}"
   loop: [0, 1, 2]
   when: vault_init is changed
   no_log: true
@@ -230,7 +236,7 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-{{ item.0 }}"
-    command: "vault operator unseal {{ (vault_init.stdout | from_json).unseal_keys_b64[item.1] }}"
+    command: "vault operator unseal {{ vault_init_data.unseal_keys_b64[item.1] }}"
   loop: "{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}"
   when: vault_ha and vault_init is changed
   no_log: true
@@ -243,7 +249,7 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }} vault secrets enable -path=secret kv-v2"
+    command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault secrets enable -path=secret kv-v2"
   when: vault_init is changed
   failed_when: false
   no_log: true
@@ -256,7 +262,7 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
-    command: sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }} vault auth enable kubernetes"
+    command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault auth enable kubernetes"
   when: vault_init is changed
   failed_when: false
   no_log: true
@@ -270,7 +276,7 @@
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
     command: >-
-      sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }}
+      sh -c "VAULT_TOKEN={{ vault_init_data.root_token }}
       vault write auth/kubernetes/config
       kubernetes_host=https://kubernetes.default.svc:443"
   when: vault_init is changed
@@ -420,7 +426,7 @@
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
     command: >-
-      sh -c "VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }}
+      sh -c "VAULT_TOKEN={{ vault_init_data.root_token }}
       vault write auth/kubernetes/role/external-secrets
       bound_service_account_names=external-secrets-vault
       bound_service_account_namespaces={{ eso_ns }}
@@ -439,7 +445,7 @@
     namespace: "{{ vault_ns }}"
     pod: "vault-0"
     command: |
-      export VAULT_TOKEN={{ (vault_init.stdout | from_json).root_token }}
+      export VAULT_TOKEN={{ vault_init_data.root_token }}
       vault policy write external-secrets - <<EOF
       path "secret/data/*" {
         capabilities = ["read", "list"]
