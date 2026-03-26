@@ -219,6 +219,20 @@
   delay: 10
   until: _r_unseal_vault__primary_ is not failed
 
+- name: Wait for Vault leader to be ready for raft
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: vault status -format=json
+  when: vault_ha and vault_init is changed
+  register: _r_vault_leader_status
+  retries: 12
+  delay: 5
+  until: >-
+    _r_vault_leader_status.stdout is defined
+    and (_r_vault_leader_status.stdout | from_json).sealed == false
+  failed_when: false
+
 - name: Join raft peers (HA mode)
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
@@ -226,11 +240,10 @@
     command: vault operator raft join http://vault-0.vault-internal:8200
   loop: "{{ range(1, vault_replicas | int) | list }}"
   when: vault_ha and vault_init is changed
-  failed_when: false
   register: _r_join_raft_peers__ha_mode_
-  retries: 3
+  retries: 10
   delay: 10
-  until: _r_join_raft_peers__ha_mode_ is not failed
+  until: _r_join_raft_peers__ha_mode_.rc | default(1) == 0
 
 - name: Wait for raft peers to recognize initialization
   kubernetes.core.k8s_exec:
