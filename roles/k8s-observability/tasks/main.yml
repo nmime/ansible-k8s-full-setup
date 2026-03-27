@@ -13,7 +13,7 @@
     vm_retention: "{{ metrics_retention | default('30d') }}"
     vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
     loki_retention: "{{ logging_retention | default('14d') }}"
-    vm_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    vm_replicas: "{{ (2 if tier in ['medium', 'production'] else 1) | int }}"
     grafana_replicas: "{{ 2 if tier == 'production' else 1 }}"
 
 - name: Create monitoring namespace
@@ -85,9 +85,9 @@
         namespace: "{{ monitoring_namespace }}"
       spec:
         retentionPeriod: "{{ vm_retention }}"
-        replicationFactor: {{ 2 if tier in ['medium', 'production'] else 1 }}
+        replicationFactor: "{{ (2 if tier in ['medium', 'production'] else 1) | int }}"
         vmstorage:
-          replicaCount: {{ vm_replicas | int }}
+          replicaCount: "{{ vm_replicas | int }}"
           storage:
             volumeClaimTemplate:
               spec:
@@ -103,7 +103,7 @@
               cpu: 1000m
               memory: 2Gi
         vmselect:
-          replicaCount: {{ vm_replicas | int }}
+          replicaCount: "{{ vm_replicas | int }}"
           cacheMountPath: /cache
           resources:
             requests:
@@ -113,7 +113,7 @@
               cpu: 500m
               memory: 1Gi
         vminsert:
-          replicaCount: {{ vm_replicas | int }}
+          replicaCount: "{{ vm_replicas | int }}"
           resources:
             requests:
               cpu: 50m
@@ -168,7 +168,7 @@
         name: vmagent
         namespace: "{{ monitoring_namespace }}"
       spec:
-        replicaCount: {{ vm_replicas | int }}
+        replicaCount: "{{ vm_replicas | int }}"
         selectAllByDefault: true
         remoteWrite:
           - url: "{{ 'http://vminsert-vmcluster.' + monitoring_namespace + '.svc:8480/insert/0/prometheus/api/v1/write' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429/api/v1/write' }}"
