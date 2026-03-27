@@ -508,7 +508,7 @@
       kind: Certificate
       metadata:
         name: grafana-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: grafana-tls
         issuerRef:
@@ -767,7 +767,7 @@
       kind: Certificate
       metadata:
         name: pmm-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: pmm-tls
         issuerRef:

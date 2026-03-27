@@ -169,7 +169,7 @@
       kind: Certificate
       metadata:
         name: argocd-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: argocd-tls
         issuerRef:
