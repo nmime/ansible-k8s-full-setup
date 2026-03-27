@@ -81,6 +81,27 @@
   until: _r_create_temporal_db_credentials_secret is not failed
   no_log: true
 
+- name: Get PG primary pod for CREATEDB grant
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ db_ns }}"
+    label_selectors:
+      - "postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg"
+      - "postgres-operator.crunchydata.com/role=master"
+  register: pg_primary_pods
+
+- name: Grant CREATEDB to Temporal PG user for schema init
+  kubernetes.core.k8s_exec:
+    namespace: "{{ db_ns }}"
+    pod: "{{ pg_primary_pods.resources[0].metadata.name }}"
+    container: database
+    command: psql -U postgres -c "ALTER USER temporal CREATEDB;"
+  register: _r_grant_createdb
+  retries: 3
+  delay: 10
+  until: _r_grant_createdb is not failed
+  when: pg_primary_pods.resources | length > 0
+
 - name: Add Temporal Helm repository
   kubernetes.core.helm_repository:
     name: temporal
