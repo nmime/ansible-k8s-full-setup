@@ -413,7 +413,7 @@
       kind: Certificate
       metadata:
         name: "{{ app_name }}-tls"
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: "{{ app_name }}-tls"
         issuerRef:

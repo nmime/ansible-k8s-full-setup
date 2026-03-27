@@ -632,7 +632,7 @@
       kind: Certificate
       metadata:
         name: gitlab-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: gitlab-tls
         issuerRef:
