@@ -87,7 +87,7 @@
     namespace: "{{ db_ns }}"
     label_selectors:
       - "postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg"
-      - "postgres-operator.crunchydata.com/role=master"
+      - "postgres-operator.crunchydata.com/role=primary"
   register: pg_primary_pods
 
 - name: Grant CREATEDB to Temporal PG user for schema init
