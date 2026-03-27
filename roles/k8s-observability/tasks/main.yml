@@ -586,6 +586,15 @@
               seccompProfile:
                 type: RuntimeDefault
             serviceAccountName: pmm-server
+            initContainers:
+              - name: fix-perms
+                image: busybox:1.36
+                command: ["sh", "-c", "chown -R 1000:0 /srv"]
+                volumeMounts:
+                  - name: pmm-data
+                    mountPath: /srv
+                securityContext:
+                  runAsUser: 0
             containers:
               - name: pmm-server
                 image: "percona/pmm-server:3"
