@@ -97,6 +97,9 @@
           enabled: true
           size: "10Gi"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+        extraEnvironmentVars:
+          VAULT_API_ADDR: "http://$(HOSTNAME).vault-internal:8200"
+          VAULT_CLUSTER_ADDR: "http://$(HOSTNAME).vault-internal:8201"
         ha:
           raft:
             setNodeId: true
@@ -109,6 +112,15 @@
               }
               storage "raft" {
                 path = "/vault/data"
+                retry_join {
+                  leader_api_addr = "http://vault-0.vault-internal:8200"
+                }
+                retry_join {
+                  leader_api_addr = "http://vault-1.vault-internal:8200"
+                }
+                retry_join {
+                  leader_api_addr = "http://vault-2.vault-internal:8200"
+                }
               }
         standalone:
           config: |
@@ -145,6 +157,54 @@
     and vault_pods.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
   retries: 30
   delay: 10
+
+- name: Patch Vault StatefulSet DNS to bypass nodelocaldns
+  kubernetes.core.k8s:
+    state: patched
+    kind: StatefulSet
+    name: vault
+    namespace: "{{ vault_ns }}"
+    definition:
+      spec:
+        template:
+          spec:
+            dnsPolicy: "None"
+            dnsConfig:
+              nameservers:
+                - "10.233.0.3"
+              searches:
+                - "{{ vault_ns }}.svc.cluster.local"
+                - "svc.cluster.local"
+                - "cluster.local"
+              options:
+                - name: ndots
+                  value: "5"
+  when: vault_ha | bool
+
+- name: Delete Vault pods to apply DNS patch
+  kubernetes.core.k8s:
+    state: absent
+    kind: Pod
+    namespace: "{{ vault_ns }}"
+    label_selectors:
+      - app.kubernetes.io/name=vault
+      - component=server
+  when: vault_ha | bool
+
+- name: Wait for Vault pods to be running after DNS patch
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ vault_ns }}"
+    label_selectors:
+      - app.kubernetes.io/name=vault
+      - component=server
+  register: vault_pods_dns
+  until: >
+    vault_pods_dns.resources | length >= (vault_replicas | int)
+    and vault_pods_dns.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  retries: 30
+  delay: 10
+  when: vault_ha | bool
 
 # ============================================
 # Vault Initialization & Configuration
@@ -327,7 +387,7 @@
       kind: Certificate
       metadata:
         name: vault-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: vault-tls
         issuerRef:
@@ -406,14 +466,11 @@
     create_namespace: true
     release_state: present
     wait: true
-    values:
-      replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-      webhook:
-        replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-      certController:
-        replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-      serviceMonitor:
-        enabled: true
+    set_values:
+      - value: "replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}"
+      - value: "webhook.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}"
+      - value: "certController.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}"
+      - value: "serviceMonitor.enabled=true"
   register: _r_install_external_secrets_operator_via_he
   retries: 3
   delay: 10

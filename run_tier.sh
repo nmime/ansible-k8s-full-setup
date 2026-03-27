@@ -26,7 +26,7 @@ else
   echo "=== $TIER FAILED (rc=$RETCODE) at $(date) ===" | tee -a "$LOGFILE"
 fi
 
-echo "=== Teardown $TIER at $(date) ===" | tee -a "$LOGFILE"
-bash /root/ansible-k8s-full-setup-fix/teardown.sh "$PROJECT" 2>&1 | tee -a "$LOGFILE"
+#echo "=== Teardown $TIER at $(date) ===" | tee -a "$LOGFILE"
+#bash /root/ansible-k8s-full-setup-fix/teardown.sh "$PROJECT" 2>&1 | tee -a "$LOGFILE"
 echo "=== Done $TIER at $(date) ===" | tee -a "$LOGFILE"
 exit $RETCODE

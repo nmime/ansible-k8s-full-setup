@@ -201,6 +201,17 @@
   delegate_to: localhost
   become: false
 
+- name: Adopt GatewayClass cilium for Helm (idempotent)
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null       root@{{ bastion_public_ip }} '
+        kubectl get gatewayclass cilium 2>/dev/null &&         kubectl annotate gatewayclass cilium meta.helm.sh/release-name=cilium meta.helm.sh/release-namespace=kube-system --overwrite &&         kubectl label gatewayclass cilium app.kubernetes.io/managed-by=Helm --overwrite || true
+      '
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  ignore_errors: true
+
 - name: Run Kubespray cluster deployment
   ansible.builtin.shell: |
     unset ANSIBLE_CONFIG ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS
@@ -476,6 +487,11 @@
       kind: GatewayClass
       metadata:
         name: cilium
+        labels:
+          app.kubernetes.io/managed-by: Helm
+        annotations:
+          meta.helm.sh/release-name: cilium
+          meta.helm.sh/release-namespace: kube-system
       spec:
         controllerName: io.cilium/gateway-controller
   register: _r_create_cilium_gatewayclass
@@ -997,6 +1013,14 @@
                 port: 53
               - protocol: TCP
                 port: 53
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
   loop:
     - gitlab
     - argocd
@@ -1011,6 +1035,162 @@
   retries: 3
   delay: 10
   until: _r_create_default_deny_netpol is not failed
+
+- name: Create allow-apiserver-webhooks NetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-apiserver-webhooks
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - ipBlock:
+                  cidr: "{{ kube_pods_subnet | default('10.233.64.0/18') }}"
+              - ipBlock:
+                  cidr: "{{ kube_service_addresses | default('10.233.0.0/18') }}"
+              - ipBlock:
+                  cidr: 10.0.0.0/8
+            ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
+              - protocol: TCP
+                port: 8443
+              - protocol: TCP
+                port: 9443
+              - protocol: TCP
+                port: 10250
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_apiserver_webhooks_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_allow_apiserver_webhooks_netpol is not failed
+
+- name: Create allow-dns-to-host CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-dns-to-host
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEntities:
+              - host
+            toPorts:
+              - ports:
+                  - port: "53"
+                    protocol: UDP
+                  - port: "53"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_dns_to_host_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_allow_dns_to_host_cnp is not failed
+
+- name: Create allow-kube-apiserver CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-kube-apiserver
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEntities:
+              - kube-apiserver
+            toPorts:
+              - ports:
+                  - port: "443"
+                    protocol: TCP
+                  - port: "6443"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_kube_apiserver_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_allow_kube_apiserver_cnp is not failed
+
+- name: Create allow-apiserver-webhook-ingress CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-apiserver-webhook-ingress
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        ingress:
+          - fromEntities:
+              - kube-apiserver
+              - host
+              - remote-node
+            toPorts:
+              - ports:
+                  - port: "9443"
+                    protocol: TCP
+                  - port: "443"
+                    protocol: TCP
+                  - port: "8080"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_webhook_ingress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_allow_webhook_ingress_cnp is not failed
 
 - name: Create allow-intra-namespace NetworkPolicy for each platform namespace
   kubernetes.core.k8s:
@@ -1032,6 +1212,21 @@
         egress:
           - to:
               - podSelector: {}
+          - to:
+              - namespaceSelector: {}
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
   loop:
     - gitlab
     - argocd
