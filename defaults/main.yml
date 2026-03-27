@@ -30,7 +30,7 @@ medium:
   nodes: 5
   ha: true
   control_plane_count: 3
-  control_plane_schedulable: false
+  control_plane_schedulable: true
   worker_count: 2
 
 production:
