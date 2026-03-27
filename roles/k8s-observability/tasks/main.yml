@@ -63,6 +63,17 @@
   delay: 10
   until: _r_install_victoriametrics_operator is not failed
 
+- name: Wait for VictoriaMetrics Operator webhook to be ready
+  kubernetes.core.k8s_info:
+    api_version: admissionregistration.k8s.io/v1
+    kind: ValidatingWebhookConfiguration
+    name: vm-operator-victoria-metrics-operator-admission
+  register: _r_vm_webhook
+  retries: 30
+  delay: 10
+  until:
+    - _r_vm_webhook.resources | length > 0
+    - _r_vm_webhook.resources[0].webhooks | default([]) | length > 0
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
     state: present
@@ -74,9 +85,9 @@
         namespace: "{{ monitoring_namespace }}"
       spec:
         retentionPeriod: "{{ vm_retention }}"
-        replicationFactor: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+        replicationFactor: {{ 2 if tier in ['medium', 'production'] else 1 }}
         vmstorage:
-          replicaCount: "{{ vm_replicas }}"
+          replicaCount: {{ vm_replicas | int }}
           storage:
             volumeClaimTemplate:
               spec:
@@ -92,7 +103,7 @@
               cpu: 1000m
               memory: 2Gi
         vmselect:
-          replicaCount: "{{ vm_replicas }}"
+          replicaCount: {{ vm_replicas | int }}
           cacheMountPath: /cache
           resources:
             requests:
@@ -102,7 +113,7 @@
               cpu: 500m
               memory: 1Gi
         vminsert:
-          replicaCount: "{{ vm_replicas }}"
+          replicaCount: {{ vm_replicas | int }}
           resources:
             requests:
               cpu: 50m
@@ -112,8 +123,8 @@
               memory: 512Mi
   when: tier in ['medium', 'production']
   register: _r_deploy_vmcluster_distributed_mode
-  retries: 3
-  delay: 10
+  retries: 6
+  delay: 15
   until: _r_deploy_vmcluster_distributed_mode is not failed
 
 - name: Deploy VMSingle (standalone mode for minimal/small)
@@ -157,7 +168,7 @@
         name: vmagent
         namespace: "{{ monitoring_namespace }}"
       spec:
-        replicaCount: "{{ vm_replicas }}"
+        replicaCount: {{ vm_replicas | int }}
         selectAllByDefault: true
         remoteWrite:
           - url: "{{ 'http://vminsert-vmcluster.' + monitoring_namespace + '.svc:8480/insert/0/prometheus/api/v1/write' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429/api/v1/write' }}"
