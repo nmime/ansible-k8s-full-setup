@@ -136,6 +136,8 @@
                 maxConns: 20
                 maxIdleConns: 20
                 maxConnLifetime: "1h"
+                connectAttributes:
+                  sslmode: require
             visibility:
               driver: "sql"
               sql:
@@ -149,6 +151,8 @@
                 maxConns: 20
                 maxIdleConns: 20
                 maxConnLifetime: "1h"
+                connectAttributes:
+                  sslmode: require
           namespaces:
             create: true
             namespace:
