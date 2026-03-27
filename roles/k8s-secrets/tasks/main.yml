@@ -228,6 +228,41 @@
   when: vault_status_raw.rc == 0 or vault_status_raw.rc == 2
   failed_when: false
 
+- name: Clear stale Raft data on all vault pods
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-{{ item }}"
+    command: sh -c "rm -rf /vault/data/*"
+  loop: "{{ range(0, vault_replicas | int) | list }}"
+  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
+  failed_when: false
+
+- name: Restart vault pods after clearing Raft data
+  kubernetes.core.k8s:
+    state: absent
+    kind: Pod
+    namespace: "{{ vault_ns }}"
+    label_selectors:
+      - app.kubernetes.io/name=vault
+      - component=server
+  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
+
+- name: Wait for Vault pods to be running after Raft cleanup
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ vault_ns }}"
+    label_selectors:
+      - app.kubernetes.io/name=vault
+      - component=server
+  register: vault_pods_raft_cleanup
+  retries: 30
+  delay: 10
+  until: >-
+    vault_pods_raft_cleanup.resources | length >= (vault_replicas | int)
+    and vault_pods_raft_cleanup.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
+
+
 - name: Initialize Vault (if not initialized)
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
