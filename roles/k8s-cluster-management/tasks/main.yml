@@ -1192,6 +1192,192 @@
   delay: 10
   until: _r_create_allow_webhook_ingress_cnp is not failed
 
+
+- name: Create allow-intra-namespace CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-intra-namespace
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: "{{ item }}"
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: "{{ item }}"
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_intra_ns_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_intra_ns_cnp is not failed
+
+- name: Create allow-egress-to-internet CiliumNetworkPolicy for namespaces needing external access
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-internet
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toCIDR:
+              - 0.0.0.0/0
+            toPorts:
+              - ports:
+                  - port: "443"
+                    protocol: TCP
+                  - port: "80"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - monitoring
+    - databases
+    - temporal
+    - production
+  register: _r_create_internet_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_internet_egress_cnp is not failed
+
+- name: Create allow-egress-to-databases CiliumNetworkPolicy for app namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-databases
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: databases
+            toPorts:
+              - ports:
+                  - port: "5432"
+                    protocol: TCP
+                  - port: "6432"
+                    protocol: TCP
+                  - port: "27017"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - production
+    - temporal
+    - monitoring
+  register: _r_create_db_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_db_egress_cnp is not failed
+
+- name: Create allow-egress-to-storage CiliumNetworkPolicy for app namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-storage
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: storage
+            toPorts:
+              - ports:
+                  - port: "9000"
+                    protocol: TCP
+                  - port: "9001"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - databases
+    - production
+    - temporal
+  register: _r_create_storage_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_storage_egress_cnp is not failed
+
+- name: Create allow-egress-to-all-namespaces CiliumNetworkPolicy for monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-all-namespaces
+        namespace: monitoring
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: gitlab
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: databases
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: storage
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: temporal
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: production
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: vault-secrets
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: cilium-secrets
+  register: _r_create_monitoring_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_monitoring_egress_cnp is not failed
+
+- name: Create allow-egress-to-temporal CiliumNetworkPolicy for production
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-temporal
+        namespace: production
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: temporal
+            toPorts:
+              - ports:
+                  - port: "7233"
+                    protocol: TCP
+  register: _r_create_temporal_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_egress_cnp is not failed
+
 - name: Create allow-intra-namespace NetworkPolicy for each platform namespace
   kubernetes.core.k8s:
     state: present
