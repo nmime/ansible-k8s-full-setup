@@ -462,7 +462,8 @@
       - app=webservice
   register: gitlab_webservice_deploy
   until: >
-    gitlab_webservice_deploy.resources | length > 0
+    gitlab_webservice_deploy.resources is defined
+    and gitlab_webservice_deploy.resources | length > 0
     and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 60
   delay: 15
