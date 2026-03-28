@@ -259,6 +259,22 @@
   until: _r_create_license_secret is not failed
   no_log: true
 
+- name: Check GitLab Helm release status
+  ansible.builtin.command: helm status gitlab -n {{ gitlab_namespace }} -o json
+  register: _gitlab_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: Remove failed GitLab Helm release before reinstall
+  kubernetes.core.helm:
+    name: gitlab
+    release_namespace: "{{ gitlab_namespace }}"
+    release_state: absent
+    wait: true
+  when:
+    - _gitlab_helm_status.rc == 0
+    - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
+
 - name: Install GitLab EE with Helm
   kubernetes.core.helm:
     name: gitlab
@@ -268,7 +284,7 @@
     create_namespace: true
     release_state: present
     timeout: "30m0s"
-    wait: true
+    wait: false
     values:
       global:
         edition: ee
