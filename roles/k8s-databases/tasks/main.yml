@@ -242,6 +242,19 @@
                 log_checkpoints: "on"
                 log_lock_waits: "on"
                 log_temp_files: "0"
+              pg_hba:
+                - local all all md5
+                - local all "postgres" peer
+                - hostssl replication "_crunchyrepl" all cert
+                - hostssl "postgres" "_crunchyrepl" all cert
+                - host all "_crunchyrepl" all reject
+                - host all "monitor" "127.0.0.0/8" scram-sha-256
+                - host all "monitor" "::1/128" scram-sha-256
+                - host all "monitor" all reject
+                - hostssl all "_crunchypgbouncer" all scram-sha-256
+                - host all "_crunchypgbouncer" all reject
+                - hostssl all all all md5
+                - host all all all md5
         users:
           - name: "{{ project_name | default('k8s') }}"
             databases:
