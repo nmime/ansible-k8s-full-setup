@@ -586,6 +586,7 @@
               seccompProfile:
                 type: RuntimeDefault
             serviceAccountName: pmm-server
+            enableServiceLinks: false
             initContainers:
               - name: fix-perms
                 image: busybox:1.36
@@ -631,19 +632,22 @@
                     memory: 512Mi
                   limits:
                     cpu: "2"
-                    memory: 2Gi
+                    memory: 4Gi
                 readinessProbe:
                   httpGet:
                     path: /v1/readyz
-                    port: 80
-                  initialDelaySeconds: 30
+                    port: 8080
+                  initialDelaySeconds: 60
                   periodSeconds: 10
+                  timeoutSeconds: 5
                 livenessProbe:
                   httpGet:
                     path: /v1/readyz
-                    port: 80
-                  initialDelaySeconds: 60
+                    port: 8080
+                  initialDelaySeconds: 300
                   periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 10
             volumes:
               - name: pmm-data
                 persistentVolumeClaim:
@@ -690,11 +694,11 @@
           app: pmm-server
         ports:
           - name: http
-            port: 80
-            targetPort: 80
+            port: 8080
+            targetPort: 8080
           - name: https
-            port: 443
-            targetPort: 443
+            port: 8443
+            targetPort: 8443
   register: _r_create_pmm_server_service
   retries: 3
   delay: 10
@@ -762,7 +766,7 @@
                   value: /
             backendRefs:
               - name: pmm-server
-                port: 80
+                port: 8080
   register: _r_create_pmm_httproute_vpn_only_via_admin_
   retries: 3
   delay: 10
