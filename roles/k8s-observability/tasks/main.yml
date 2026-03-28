@@ -560,6 +560,27 @@
   delay: 10
   until: _r_create_pmm_sa is not failed
 
+- name: Create PMM Server PVC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: pmm-server-data
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
+        resources:
+          requests:
+            storage: 20Gi
+  register: _r_create_pmm_server_pvc
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_server_pvc is not failed
+
 - name: Deploy PMM Server
   kubernetes.core.k8s:
     state: present
@@ -600,17 +621,15 @@
               - name: pmm-server
                 image: "percona/pmm-server:3"
                 ports:
-                  - containerPort: 443
+                  - containerPort: 8443
                     name: https
-                  - containerPort: 80
+                  - containerPort: 8080
                     name: http
                 securityContext:
                   allowPrivilegeEscalation: false
                   capabilities:
                     drop:
                       - ALL
-                    add:
-                      - NET_BIND_SERVICE
                 env:
                   - name: DISABLE_UPDATES
                     value: "1"
@@ -657,27 +676,6 @@
   delay: 10
   until: _r_deploy_pmm_server is not failed
 
-- name: Create PMM Server PVC
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: PersistentVolumeClaim
-      metadata:
-        name: pmm-server-data
-        namespace: "{{ monitoring_namespace }}"
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
-        resources:
-          requests:
-            storage: 20Gi
-  register: _r_create_pmm_server_pvc
-  retries: 3
-  delay: 10
-  until: _r_create_pmm_server_pvc is not failed
-
 - name: Create PMM Server Service
   kubernetes.core.k8s:
     state: present
@@ -698,6 +696,9 @@
             targetPort: 8080
           - name: https
             port: 8443
+            targetPort: 8443
+          - name: https-compat
+            port: 443
             targetPort: 8443
   register: _r_create_pmm_server_service
   retries: 3
@@ -725,12 +726,22 @@
 
 - name: Generate PMM API key for database monitoring
   shell: |
-    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- \
-      curl -s -X POST \
-      -H 'Content-Type: application/json' \
-      -u admin:{{ grafana_admin_password }} \
-      http://localhost/graph/api/auth/keys \
-      -d '{"name":"percona-db-key-{{ ansible_date_time.epoch }}","role":"Admin"}'
+    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash -c '
+      supervisorctl stop pmm-managed 2>/dev/null; sleep 3;
+      SA_ID=$(curl -sf -X POST -H "Content-Type: application/json" \
+        -u "admin:{{ grafana_admin_password }}" \
+        http://127.0.0.1:8080/graph/api/serviceaccounts \
+        -d "{\"name\":\"percona-db-sa\",\"role\":\"Admin\"}" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get(\"id\",\"\"))" 2>/dev/null);
+      if [ -z "$SA_ID" ]; then
+        SA_ID=$(curl -sf -u "admin:{{ grafana_admin_password }}" \
+          "http://127.0.0.1:8080/graph/api/serviceaccounts/search?query=percona-db-sa" 2>/dev/null | python3 -c "import sys,json;sa=json.load(sys.stdin).get(\"serviceAccounts\",[]);print(sa[0][\"id\"] if sa else \"\")" 2>/dev/null);
+      fi;
+      KEY=$(curl -sf -X POST -H "Content-Type: application/json" \
+        -u "admin:{{ grafana_admin_password }}" \
+        "http://127.0.0.1:8080/graph/api/serviceaccounts/${SA_ID}/tokens" \
+        -d "{\"name\":\"percona-db-key-{{ ansible_date_time.epoch }}\"}" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get(\"key\",\"\"))" 2>/dev/null);
+      supervisorctl start pmm-managed 2>/dev/null;
+      echo "$KEY"'
   register: pmm_api_key_result
   failed_when: false
   changed_when: false
@@ -739,7 +750,7 @@
 
 - name: Set PMM API key fact
   set_fact:
-    pmm_api_key: "{{ (pmm_api_key_result.stdout | default('{}') | from_json).key | default('') }}"
+    pmm_api_key: "{{ pmm_api_key_result.stdout_lines | default([]) | last | default('') }}"
   when: pmm_api_key_result.rc | default(1) == 0
   failed_when: false
 
