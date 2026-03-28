@@ -218,7 +218,7 @@
               repo2-retention-full-type: "count"
         pmm:
           enabled: true
-          image: "percona/pmm-client:3"
+          image: "percona/pmm-client:2.44.0"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
           secret: pmm-secret
           resources:
@@ -415,7 +415,7 @@
               type: physical
         pmm:
           enabled: true
-          image: "percona/pmm-client:3"
+          image: "percona/pmm-client:2.44.0"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
   register: _r_create_mongodb_cluster
   retries: 3
