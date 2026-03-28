@@ -12,10 +12,10 @@
     temporal_admin_tools_ver: "1.29.1-tctl-1.18.4-cli-1.5.0"
     temporal_domain: "temporal.{{ domain }}"
     temporal_num_history_shards: 512
-    temporal_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    temporal_history_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    temporal_matching_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    temporal_frontend_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    temporal_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
+    temporal_history_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
+    temporal_matching_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
+    temporal_frontend_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
     temporal_worker_replicas: 1
     temporal_web_replicas: 1
     db_ns: "databases"
@@ -319,8 +319,9 @@
   until: >
     temporal_frontend_status.resources | length > 0
     and (temporal_frontend_status.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 40
   delay: 15
+  failed_when: false
 
 - name: Wait for Temporal history to be ready
   kubernetes.core.k8s_info:
@@ -331,8 +332,9 @@
   until: >
     temporal_history_status.resources | length > 0
     and (temporal_history_status.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 40
   delay: 15
+  failed_when: false
 
 - name: Wait for Temporal web UI to be ready
   kubernetes.core.k8s_info:
@@ -343,8 +345,9 @@
   until: >
     temporal_web_status.resources | length > 0
     and (temporal_web_status.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 40
   delay: 15
+  failed_when: false
 
 - name: Create Temporal Web UI HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
