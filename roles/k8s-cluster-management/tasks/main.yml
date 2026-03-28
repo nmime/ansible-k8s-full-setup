@@ -381,6 +381,32 @@
   delay: 10
   until: _r_install_hetzner_cloud_controller_manager is not failed
 
+- name: Increase CCM progressDeadlineSeconds for slow image pulls
+  kubernetes.core.k8s_json_patch:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+    patch:
+      - op: replace
+        path: /spec/progressDeadlineSeconds
+        value: 1800
+  register: _r_patch_ccm_progress_deadline
+  retries: 3
+  delay: 10
+  until: _r_patch_ccm_progress_deadline is not failed
+
+- name: Wait for initial CCM deployment to be ready before patching
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+  register: ccm_pre_patch
+  until: >
+    ccm_pre_patch.resources | length > 0
+    and (ccm_pre_patch.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 120
+  delay: 15
+
 - name: Patch CCM DNS to use upstream DNS (hostNetwork pods can't use nodelocaldns IPv6)
   kubernetes.core.k8s_json_patch:
     kind: Deployment
@@ -414,8 +440,9 @@
   until: >
     ccm_deploy.resources | length > 0
     and (ccm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 60
+  delay: 15
+
 
 # ============================================
 # Hetzner CSI Driver (for hcloud-volumes StorageClass)
@@ -430,6 +457,20 @@
   delay: 10
   until: _r_install_hetzner_csi_driver is not failed
 
+- name: Increase CSI progressDeadlineSeconds for slow image pulls
+  kubernetes.core.k8s_json_patch:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-csi-controller
+    patch:
+      - op: replace
+        path: /spec/progressDeadlineSeconds
+        value: 1800
+  register: _r_patch_csi_progress_deadline
+  retries: 3
+  delay: 10
+  until: _r_patch_csi_progress_deadline is not failed
+
 - name: Wait for Hetzner CSI controller to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -439,8 +480,8 @@
   until: >
     csi_deploy.resources | length > 0
     and (csi_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
 
 # ============================================
 # Gateway API CRDs + Cilium Gateway
