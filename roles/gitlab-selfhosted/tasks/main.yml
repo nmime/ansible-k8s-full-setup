@@ -2,7 +2,7 @@
 # GitLab Self-Hosted Role - Enterprise Edition with License
 # Deploys GitLab EE on Kubernetes using Helm
 # Generates and applies Ultimate license via GitLab-License-Generator
-# Supports light mode (minimal/small) and full mode (medium/production)
+# Supports light mode (minimal/small/medium) and full mode (production)
 
 - name: Set GitLab tier-specific variables
   set_fact:
@@ -11,9 +11,9 @@
     gitlab_domain: "gitlab.{{ domain }}"
     registry_domain: "registry.{{ domain }}"
     kas_domain: "kas.{{ domain }}"
-    gitlab_mode: "{{ 'light' if tier in ['minimal', 'small'] else 'full' }}"
-    gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
-    gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
+    gitlab_mode: "{{ 'light' if tier in ['minimal', 'small', 'medium'] else 'full' }}"
+    gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
+    gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
     gitlab_runner_concurrent: "{{ gitlab_runner_concurrent_jobs | default(10) }}"
     gitlab_license_name: "{{ gitlab_license_holder_name | default('Platform Admin') }}"
     gitlab_license_company: "{{ gitlab_license_holder_company | default('Platform Team') }}"
