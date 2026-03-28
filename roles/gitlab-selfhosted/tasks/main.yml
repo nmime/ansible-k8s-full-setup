@@ -373,10 +373,10 @@
           resources:
             requests:
               cpu: "{{ '200m' if gitlab_mode == 'light' else '300m' }}"
-              memory: "{{ '1.5Gi' if gitlab_mode == 'light' else '2.5Gi' }}"
+              memory: "{{ '1Gi' if gitlab_mode == 'light' else '2.5Gi' }}"
             limits:
               cpu: "{{ '1500m' if gitlab_mode == 'light' else '2000m' }}"
-              memory: "{{ '3Gi' if gitlab_mode == 'light' else '5Gi' }}"
+              memory: "{{ '2Gi' if gitlab_mode == 'light' else '5Gi' }}"
           workerProcesses: 2
         sidekiq:
           replicaCount: "{{ gitlab_sidekiq_replicas | int }}"
