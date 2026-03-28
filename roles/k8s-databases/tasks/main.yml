@@ -45,6 +45,22 @@
   delay: 10
   until: _r_add_percona_helm_repository is not failed
 
+- name: Check PG Operator Helm release status
+  ansible.builtin.command: helm status percona-pg-operator -n {{ db_ns }} -o json
+  register: _pg_operator_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: Remove failed PG Operator Helm release before reinstall
+  kubernetes.core.helm:
+    name: percona-pg-operator
+    release_namespace: "{{ db_ns }}"
+    release_state: absent
+    wait: true
+  when:
+    - _pg_operator_helm_status.rc == 0
+    - (_pg_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
+
 - name: Install Percona PG Operator
   kubernetes.core.helm:
     name: percona-pg-operator
@@ -54,10 +70,10 @@
     create_namespace: true
     release_state: present
     wait: true
-    timeout: 5m0s
+    timeout: 10m0s
   register: _r_install_percona_pg_operator
   retries: 3
-  delay: 10
+  delay: 30
   until: _r_install_percona_pg_operator is not failed
 
 - name: Wait for PG Operator to be ready
@@ -293,6 +309,22 @@
 # Percona Server for MongoDB Operator
 # ============================================
 
+- name: Check MongoDB Operator Helm release status
+  ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
+  register: _mongo_operator_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: Remove failed MongoDB Operator Helm release before reinstall
+  kubernetes.core.helm:
+    name: percona-server-mongodb-operator
+    release_namespace: "{{ db_ns }}"
+    release_state: absent
+    wait: true
+  when:
+    - _mongo_operator_helm_status.rc == 0
+    - (_mongo_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
+
 - name: Install Percona MongoDB Operator
   kubernetes.core.helm:
     name: percona-server-mongodb-operator
@@ -302,10 +334,10 @@
     create_namespace: true
     release_state: present
     wait: true
-    timeout: 5m0s
+    timeout: 10m0s
   register: _r_install_percona_mongodb_operator
   retries: 3
-  delay: 10
+  delay: 30
   until: _r_install_percona_mongodb_operator is not failed
 
 - name: Wait for MongoDB Operator to be ready
