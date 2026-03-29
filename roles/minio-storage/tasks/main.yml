@@ -133,8 +133,8 @@
   until: >
     minio_pods.resources | length > 0
     and (minio_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
 
 # ============================================
 # Gateway API Routes

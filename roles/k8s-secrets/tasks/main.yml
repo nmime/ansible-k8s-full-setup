@@ -32,7 +32,7 @@
           pod-security.kubernetes.io/warn: restricted
   register: _r_create_vault_namespace
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_vault_namespace is not failed
 
 - name: Add HashiCorp Helm repository
@@ -41,7 +41,7 @@
     repo_url: "https://helm.releases.hashicorp.com"
   register: _r_add_hashicorp_helm_repository
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_add_hashicorp_helm_repository is not failed
 
 - name: Install Vault via Helm
@@ -141,7 +141,7 @@
         enabled: false
   register: _r_install_vault_via_helm
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_install_vault_via_helm is not failed
 
 - name: Wait for Vault pods to be running
@@ -155,8 +155,8 @@
   until: >
     vault_pods.resources | length >= (vault_replicas | int)
     and vault_pods.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
 
 - name: Patch Vault StatefulSet DNS to bypass nodelocaldns
   kubernetes.core.k8s:
@@ -202,8 +202,8 @@
   until: >
     vault_pods_dns.resources | length >= (vault_replicas | int)
     and vault_pods_dns.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
   when: vault_ha | bool
 
 # ============================================
@@ -217,7 +217,7 @@
     command: vault status -format=json
   register: vault_status_raw
   retries: 3
-  delay: 10
+  delay: 15
   until: vault_status_raw is not failed
   failed_when: false
   changed_when: false
@@ -254,12 +254,12 @@
     label_selectors:
       - app.kubernetes.io/name=vault
       - component=server
-  register: vault_pods_raft_cleanup
-  retries: 30
-  delay: 10
-  until: >-
-    vault_pods_raft_cleanup.resources | length >= (vault_replicas | int)
-    and vault_pods_raft_cleanup.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  register: vault_pods_raft
+  until: >
+    vault_pods_raft.resources | length >= (vault_replicas | int)
+    and vault_pods_raft.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  retries: 120
+  delay: 15
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
 
 
@@ -270,7 +270,7 @@
     command: vault operator init -key-shares=5 -key-threshold=3 -format=json
   register: vault_init
   retries: 3
-  delay: 10
+  delay: 15
   until: vault_init is not failed
   when: not (vault_initialized | default(false) | bool)
   failed_when: vault_init.rc is defined and vault_init.rc != 0
@@ -297,7 +297,7 @@
   when: vault_init is changed
   register: _r_store_vault_init_keys_as_k8s_secret
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_store_vault_init_keys_as_k8s_secret is not failed
   no_log: true
 
@@ -311,7 +311,7 @@
   no_log: true
   register: _r_unseal_vault__primary_
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_unseal_vault__primary_ is not failed
 
 - name: Wait for Vault leader to be ready for raft
@@ -337,7 +337,7 @@
   when: vault_ha and vault_init is changed
   register: _r_join_raft_peers__ha_mode_
   retries: 10
-  delay: 10
+  delay: 15
   until: _r_join_raft_peers__ha_mode_.rc | default(1) == 0
 
 - name: Wait for raft peers to recognize initialization
@@ -348,7 +348,7 @@
   loop: "{{ range(1, vault_replicas | int) | list }}"
   when: vault_ha and vault_init is changed
   register: _r_wait_raft_init
-  retries: 30
+  retries: 120
   delay: 5
   until: >-
     _r_wait_raft_init.stdout is defined
@@ -365,7 +365,7 @@
   no_log: true
   register: _r_unseal_raft_peers__ha_mode_
   retries: 5
-  delay: 10
+  delay: 15
   until: _r_unseal_raft_peers__ha_mode_ is not failed
 
 - name: Enable KV v2 secrets engine
@@ -378,7 +378,7 @@
   no_log: true
   register: _r_enable_kv_v2_secrets_engine
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_enable_kv_v2_secrets_engine is not failed
 
 - name: Enable Kubernetes auth method
@@ -391,7 +391,7 @@
   no_log: true
   register: _r_enable_kubernetes_auth_method
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_enable_kubernetes_auth_method is not failed
 
 - name: Configure Kubernetes auth method
@@ -411,7 +411,7 @@
 # ============================================
   register: _r_configure_kubernetes_auth_method
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_configure_kubernetes_auth_method is not failed
 
 - name: Create Vault TLS certificate
@@ -432,7 +432,7 @@
           - "{{ vault_domain }}"
   register: _r_create_vault_tls_certificate
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_vault_tls_certificate is not failed
 
 - name: Create Vault HTTPRoute (VPN-only via admin-gateway)
@@ -465,7 +465,7 @@
 # ============================================
   register: _r_create_vault_httproute_vpn_only_via_admi
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_vault_httproute_vpn_only_via_admi is not failed
 
 - name: Create ESO namespace
@@ -480,7 +480,7 @@
           app.kubernetes.io/part-of: external-secrets
   register: _r_create_eso_namespace
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_eso_namespace is not failed
 
 - name: Add External Secrets Helm repository
@@ -489,7 +489,7 @@
     repo_url: "https://charts.external-secrets.io"
   register: _r_add_external_secrets_helm_repository
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_add_external_secrets_helm_repository is not failed
 
 - name: Install External Secrets Operator via Helm
@@ -508,7 +508,7 @@
       - value: "serviceMonitor.enabled=true"
   register: _r_install_external_secrets_operator_via_he
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_install_external_secrets_operator_via_he is not failed
 
 - name: Wait for ESO to be ready
@@ -520,8 +520,8 @@
   until: >
     eso_deploy.resources | length > 0
     and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
 
 # ============================================
 # ClusterSecretStore (Vault Backend)
@@ -538,7 +538,7 @@
         namespace: "{{ eso_ns }}"
   register: _r_create_vault_eso_service_account
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_vault_eso_service_account is not failed
 
 - name: Create Vault ESO auth role
@@ -557,7 +557,7 @@
   no_log: true
   register: _r_create_vault_eso_auth_role
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_vault_eso_auth_role is not failed
 
 - name: Create Vault policy for ESO
@@ -579,7 +579,7 @@
   no_log: true
   register: _r_create_vault_policy_for_eso
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_vault_policy_for_eso is not failed
 
 - name: Create ClusterSecretStore for Vault
@@ -609,7 +609,7 @@
 # ============================================
   register: _r_create_clustersecretstore_for_vault
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_clustersecretstore_for_vault is not failed
 
 - name: Create example ExternalSecret
@@ -636,7 +636,7 @@
               property: password
   register: _r_create_example_externalsecret
   retries: 3
-  delay: 10
+  delay: 15
   until: _r_create_example_externalsecret is not failed
 
 - name: Display secrets management summary
