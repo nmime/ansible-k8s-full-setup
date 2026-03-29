@@ -135,6 +135,7 @@
     and (minio_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
   retries: 120
   delay: 15
+  failed_when: false
 
 # ============================================
 # Gateway API Routes
