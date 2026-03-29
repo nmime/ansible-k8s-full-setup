@@ -483,6 +483,18 @@
   retries: 120
   delay: 15
 
+- name: Wait for Hetzner CSI node DaemonSet to be ready on all nodes
+  kubernetes.core.k8s_info:
+    kind: DaemonSet
+    namespace: kube-system
+    name: hcloud-csi-node
+  register: csi_node_ds
+  until: >
+    csi_node_ds.resources | length > 0
+    and (csi_node_ds.resources[0].status.numberReady | default(0)) >= (csi_node_ds.resources[0].status.desiredNumberScheduled | default(1))
+  retries: 120
+  delay: 15
+
 # ============================================
 # Gateway API CRDs + Cilium Gateway
 # ============================================
