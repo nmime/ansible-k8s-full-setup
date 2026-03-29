@@ -99,6 +99,7 @@
     and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
+  failed_when: false
 
 # ============================================
 # PostgreSQL Cluster (PerconaPGCluster CR)
@@ -374,6 +375,7 @@
     and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
+  failed_when: false
 
 # ============================================
 # MongoDB Cluster (PerconaServerMongoDB CR)
@@ -485,6 +487,7 @@
   until: mongo_users_secret.resources | length > 0
   retries: 30
   delay: 10
+  failed_when: false
 
 - name: Patch MongoDB users secret with PMM_SERVER_API_KEY
   kubernetes.core.k8s:

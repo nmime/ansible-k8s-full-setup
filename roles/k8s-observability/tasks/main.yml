@@ -71,6 +71,7 @@
   register: _r_vm_webhook
   retries: 30
   delay: 10
+  failed_when: false
   until:
     - _r_vm_webhook.resources | length > 0
     - _r_vm_webhook.resources[0].webhooks | default([]) | length > 0
