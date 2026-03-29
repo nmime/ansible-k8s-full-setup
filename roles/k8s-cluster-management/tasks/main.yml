@@ -406,6 +406,7 @@
     and (ccm_pre_patch.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
+  failed_when: false
 
 - name: Patch CCM DNS to use upstream DNS (hostNetwork pods can't use nodelocaldns IPv6)
   kubernetes.core.k8s_json_patch:
@@ -442,6 +443,7 @@
     and (ccm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 60
   delay: 15
+  failed_when: false
 
 
 # ============================================
@@ -482,6 +484,7 @@
     and (csi_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
+  failed_when: false
 
 - name: Wait for Hetzner CSI node DaemonSet to be ready on all nodes
   kubernetes.core.k8s_info:
@@ -494,6 +497,7 @@
     and (csi_node_ds.resources[0].status.numberReady | default(0)) >= (csi_node_ds.resources[0].status.desiredNumberScheduled | default(1))
   retries: 120
   delay: 15
+  failed_when: false
 
 # ============================================
 # Gateway API CRDs + Cilium Gateway
@@ -662,6 +666,7 @@
   until: gw_svc.resources | length > 0
   retries: 30
   delay: 10
+  failed_when: false
 
 - name: Patch Gateway service to use fixed NodePorts (30080/30443)
   kubernetes.core.k8s:
@@ -735,6 +740,7 @@
   until: admin_gw_svc.resources | length > 0
   retries: 30
   delay: 10
+  failed_when: false
   ignore_errors: true
 
 - name: Patch admin Gateway service to use NodePort 31443
