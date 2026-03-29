@@ -77,18 +77,15 @@
   until: _r_install_percona_pg_operator is not failed
 
 - name: Increase PG Operator progressDeadlineSeconds for slow image pulls
-  kubernetes.core.k8s_json_patch:
-    kind: Deployment
-    namespace: "{{ db_ns }}"
-    name: percona-pg-operator
-    patch:
-      - op: replace
-        path: /spec/progressDeadlineSeconds
-        value: 1800
+  shell: |
+    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$DEPLOY" ]; then DEPLOY="percona-pg-operator"; fi
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
   register: _r_patch_pg_operator_progress_deadline
-  retries: 3
-  delay: 10
-  until: _r_patch_pg_operator_progress_deadline is not failed
+  retries: 10
+  delay: 15
+  until: _r_patch_pg_operator_progress_deadline.rc == 0
+  changed_when: _r_patch_pg_operator_progress_deadline.rc == 0
 
 - name: Wait for PG Operator to be ready
   kubernetes.core.k8s_info:
@@ -355,18 +352,15 @@
   until: _r_install_percona_mongodb_operator is not failed
 
 - name: Increase MongoDB Operator progressDeadlineSeconds for slow image pulls
-  kubernetes.core.k8s_json_patch:
-    kind: Deployment
-    namespace: "{{ db_ns }}"
-    name: percona-server-mongodb-operator
-    patch:
-      - op: replace
-        path: /spec/progressDeadlineSeconds
-        value: 1800
+  shell: |
+    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$DEPLOY" ]; then DEPLOY="percona-server-mongodb-operator"; fi
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
   register: _r_patch_mongo_operator_progress_deadline
-  retries: 3
-  delay: 10
-  until: _r_patch_mongo_operator_progress_deadline is not failed
+  retries: 10
+  delay: 15
+  until: _r_patch_mongo_operator_progress_deadline.rc == 0
+  changed_when: _r_patch_mongo_operator_progress_deadline.rc == 0
 
 - name: Wait for MongoDB Operator to be ready
   kubernetes.core.k8s_info:
