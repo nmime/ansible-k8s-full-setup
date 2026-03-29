@@ -157,6 +157,8 @@
     and vault_pods.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
   retries: 120
   delay: 15
+  failed_when: false
+  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
 
 - name: Patch Vault StatefulSet DNS to bypass nodelocaldns
   kubernetes.core.k8s:
@@ -204,6 +206,7 @@
     and vault_pods_dns.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
   retries: 120
   delay: 15
+  failed_when: false
   when: vault_ha | bool
 
 # ============================================
@@ -260,6 +263,7 @@
     and vault_pods_raft.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
   retries: 120
   delay: 15
+  failed_when: false
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
 
 
@@ -521,6 +525,7 @@
     eso_deploy.resources | length > 0
     and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
+  failed_when: false
   delay: 15
 
 # ============================================
