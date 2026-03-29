@@ -470,6 +470,18 @@
   delay: 10
   until: _r_install_gitlab_ee_with_helm is not failed
 
+- name: Increase GitLab deployment progressDeadlineSeconds for slow image pulls
+  shell: |
+    for DEPLOY in $(kubectl get deployment -n {{ gitlab_namespace }} -l release=gitlab -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      kubectl patch deployment "$DEPLOY" -n {{ gitlab_namespace }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge 2>/dev/null || true
+    done
+    echo "patched"
+  register: _r_patch_gitlab_progress_deadline
+  retries: 10
+  delay: 15
+  until: _r_patch_gitlab_progress_deadline.rc == 0
+  changed_when: true
+
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -481,7 +493,7 @@
     gitlab_webservice_deploy.resources is defined
     and gitlab_webservice_deploy.resources | length > 0
     and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 60
+  retries: 120
   delay: 15
 
 - name: Get GitLab toolbox pod name
