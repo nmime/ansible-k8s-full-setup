@@ -54,7 +54,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     values:
       operator:
         enable_converter_ownership: true
@@ -224,7 +224,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     timeout: "10m0s"
     values:
       deploymentMode: "{{ 'SingleBinary' if tier in ['minimal', 'small'] else 'SimpleScalable' }}"
@@ -332,7 +332,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     values:
       config:
         clients:
@@ -361,7 +361,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     values:
       replicas: "{{ grafana_replicas | int }}"
       adminUser: "{{ grafana_admin_user | default('admin') }}"
