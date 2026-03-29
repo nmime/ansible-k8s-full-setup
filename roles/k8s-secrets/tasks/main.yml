@@ -228,7 +228,7 @@
 - name: Parse Vault status
   set_fact:
     vault_initialized: "{{ (vault_status_raw.stdout | from_json).initialized | default(false) }}"
-  when: (vault_status_raw.rc | default(-1)) == 0 or (vault_status_raw.rc | default(-1)) == 2
+  when: vault_status_raw.rc is defined and (vault_status_raw.rc == 0 or vault_status_raw.rc == 2)
   failed_when: false
 
 - name: Clear stale Raft data on all vault pods
