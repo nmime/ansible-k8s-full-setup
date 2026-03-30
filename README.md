@@ -53,7 +53,7 @@ One Ansible playbook provisions **everything** — cloud infrastructure, Kuberne
 
 ### Traffic Flow
 
-**Public traffic (MinIO S3 API):**
+**Public traffic (Registry, MinIO S3 API):**
 
 ```
 Internet → Hetzner LB (:80/:443)
@@ -345,7 +345,7 @@ After deployment, services are available at:
 | Service | URL | Access |
 |---------|-----|--------|
 | **GitLab** | `https://gitlab.<domain>` | VPN only |
-| **GitLab Registry** | `https://registry.<domain>` | VPN only |
+| **GitLab Registry** | `https://registry.<domain>` | Public (LB) |
 | **GitLab KAS** | `https://kas.<domain>` | VPN only |
 | **ArgoCD** | `https://argocd.<domain>` | VPN only |
 | **Grafana** | `https://grafana.<domain>` | VPN only |
