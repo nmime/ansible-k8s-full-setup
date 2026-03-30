@@ -53,7 +53,7 @@ One Ansible playbook provisions **everything** — cloud infrastructure, Kuberne
 
 ### Traffic Flow
 
-**Public traffic (Registry, MinIO S3 API):**
+**Public traffic (Boilerplate app, MinIO S3 API):**
 
 ```
 Internet → Hetzner LB (:80/:443)
@@ -63,7 +63,7 @@ Internet → Hetzner LB (:80/:443)
          → Backend service pods
 ```
 
-**Admin traffic (Grafana, ArgoCD, Vault, PMM, MinIO Console):**
+**Admin traffic (GitLab, Registry, KAS, Grafana, ArgoCD, Vault, PMM, MinIO Console):**
 
 ```
 VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
@@ -73,6 +73,7 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 
 - **Hetzner LB** (lb11) listens on ports 80/443, forwards via TCP passthrough to fixed NodePorts 30080/30443 on all worker nodes through the private network
 - **Cilium Gateway API** (`main-gateway`) terminates TLS using the wildcard Let's Encrypt certificate and routes requests to backend services via HTTPRoutes
+- **GitLab Registry** is behind VPN (`admin-gateway`) — kubelet pulls images via containerd registry mirror configured to use the in-cluster service (`gitlab-registry.gitlab.svc.cluster.local:5000`) instead of the public domain
 - **Admin gateway** uses a separate `admin-gateway` on NodePort 31443, protected by CiliumNetworkPolicy restricting access to VPN (`100.64.0.0/10`) and private network (`10.0.0.0/16`) only
 - **MetalLB** (`v0.15.3`) assigns private VIPs from `10.0.10.0/24` (L2 mode) for internal/VPN access — it does **not** handle internet traffic
 - **Minimal tier exception:** no Hetzner LB is created (saves ~€6/mo) — the bastion proxies public traffic directly
@@ -345,7 +346,7 @@ After deployment, services are available at:
 | Service | URL | Access |
 |---------|-----|--------|
 | **GitLab** | `https://gitlab.<domain>` | VPN only |
-| **GitLab Registry** | `https://registry.<domain>` | Public (LB) |
+| **GitLab Registry** | `https://registry.<domain>` | VPN only |
 | **GitLab KAS** | `https://kas.<domain>` | VPN only |
 | **ArgoCD** | `https://argocd.<domain>` | VPN only |
 | **Grafana** | `https://grafana.<domain>` | VPN only |
