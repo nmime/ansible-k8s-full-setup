@@ -17,6 +17,7 @@ This directory contains 13 Ansible roles for each platform component:
 | `k8s-autoscaling/` | Event-driven autoscaling | KEDA (70+ scalers) | Chart 2.19.0 |
 | `temporal/` | Workflow orchestration engine | Temporal Server, Web UI, Admin Tools | v1.29.1, Chart 0.73.2 |
 | `brocoders-boilerplate-setup/` | Full-stack application setup (optional) | NestJS, React, ArgoCD | - |
+| `opwerf-deployment/` | AI-powered workflow orchestration (optional) | OpenWerf Dashboard, API, Worker, Elasticsearch | - |
 
 ## Deployment Order
 
@@ -36,6 +37,7 @@ Roles are deployed sequentially to respect dependencies:
 11. k8s-autoscaling         KEDA event-driven autoscaler
 12. temporal                Temporal workflow engine + Web UI
 13. brocoders-boilerplate   Sample NestJS+React app (optional, deploy_boilerplate=true)
+14. opwerf-deployment       OpenWerf AI workflow platform (optional, deploy_opwerf=true)
 ```
 
 ## Tier Support

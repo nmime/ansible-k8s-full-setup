@@ -1,0 +1,74 @@
+---
+# OpenWerf Deployment Role - Default Variables
+# AI-powered workflow orchestration platform
+
+# Application settings
+opwerf_namespace: "{{ opwerf_namespace | default('opwerf') }}"
+opwerf_app_name: "{{ opwerf_app_name | default('opwerf') }}"
+opwerf_domain: "app.{{ domain }}"
+opwerf_api_domain: "api.{{ domain }}"
+
+# Replication based on tier
+opwerf_api_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+opwerf_dashboard_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+opwerf_worker_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+opwerf_credential_proxy_replicas: 1
+
+# Database settings (uses existing Percona PostgreSQL cluster)
+opwerf_db_name: "{{ opwerf_app_name }}"
+opwerf_db_user: "{{ opwerf_app_name }}"
+opwerf_pg_host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
+opwerf_pg_port: 5432
+
+# Redis settings (standalone or cluster)
+opwerf_redis_standalone: true
+opwerf_redis_replicas: 1
+opwerf_redis_storage_size: 5Gi
+
+# Elasticsearch settings
+opwerf_elasticsearch_replicas: 1
+opwerf_elasticsearch_storage_size: 10Gi
+
+# Temporal integration (uses existing Temporal deployment)
+opwerf_temporal_address: "temporal-frontend.temporal.svc.cluster.local:7233"
+opwerf_temporal_namespace: "opwerf"
+
+# MinIO integration (uses existing MinIO deployment)
+opwerf_minio_endpoint: "minio.storage.svc.cluster.local"
+opwerf_minio_port: 9000
+opwerf_minio_bucket: "{{ opwerf_app_name }}-artifacts"
+opwerf_minio_use_ssl: false
+
+# External API keys (must be provided via secrets or environment)
+opwerf_e2b_api_key: ""
+opwerf_anthropic_api_key: ""
+
+# Security
+opwerf_credential_proxy_internal_token: ""
+opwerf_encryption_key: ""
+opwerf_encryption_salt: ""
+opwerf_session_signing_key: ""
+
+# Node environment
+opwerf_node_env: "{{ 'production' if tier in ['medium', 'production'] else 'development' }}"
+opwerf_allow_dev_auth_bypass: "{{ 'false' if tier in ['medium', 'production'] else 'true' }}"
+
+# Image registry
+opwerf_image_registry: "registry.{{ domain }}"
+opwerf_image_tag: "latest"
+
+# Resource limits
+opwerf_api_cpu_request: "{{ '200m' if tier in ['medium', 'production'] else '100m' }}"
+opwerf_api_memory_request: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+opwerf_api_cpu_limit: "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
+opwerf_api_memory_limit: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+
+opwerf_worker_cpu_request: "{{ '200m' if tier in ['medium', 'production'] else '100m' }}"
+opwerf_worker_memory_request: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+opwerf_worker_cpu_limit: "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
+opwerf_worker_memory_limit: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+
+opwerf_dashboard_cpu_request: 50m
+opwerf_dashboard_memory_request: 64Mi
+opwerf_dashboard_cpu_limit: 200m
+opwerf_dashboard_memory_limit: 256Mi
