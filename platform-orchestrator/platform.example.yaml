@@ -221,3 +221,23 @@ backup:
   enabled: true
   schedule: "0 2 * * *"
   retention_days: 30
+
+# ---------------------------------------------
+# Optional Applications
+# ---------------------------------------------
+applications:
+  boilerplate:
+    enabled: false
+    name: myapp
+    namespace: production
+    git_provider: gitlab-selfhosted
+
+  opwerf:
+    enabled: false
+    namespace: opwerf
+    dashboard_domain: app.example.com
+    api_domain: api.example.com
+    image_registry: registry.example.com
+    image_tag: latest
+    e2b_api_key: ""
+    anthropic_api_key: ""

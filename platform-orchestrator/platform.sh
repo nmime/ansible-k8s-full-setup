@@ -118,6 +118,7 @@ deploy_component() {
     "gitops")       deploy_gitops ;;
     "observability") deploy_observability ;;
     "autoscaling")  deploy_autoscaling ;;
+    "opwerf")       deploy_opwerf ;;
     "all")          deploy_all ;;
     *) error "Unknown: $component"; exit 1 ;;
   esac

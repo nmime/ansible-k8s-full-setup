@@ -99,3 +99,14 @@ all:
     # app_name: myapp
     # app_namespace: production
     # git_provider: gitlab-selfhosted
+
+    # ----------------------------------------
+    # OpenWerf Platform (optional)
+    # ----------------------------------------
+    deploy_opwerf: false
+    # opwerf_namespace: opwerf
+    # opwerf_app_name: opwerf
+    # opwerf_e2b_api_key: ""
+    # opwerf_anthropic_api_key: ""
+    # opwerf_image_registry: "registry.{{ domain }}"
+    # opwerf_image_tag: "latest"

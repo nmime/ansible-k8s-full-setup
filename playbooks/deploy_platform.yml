@@ -237,6 +237,14 @@
         - boilerplate
         - application
 
+    - name: Deploy OpenWerf Platform
+      ansible.builtin.import_role:
+        name: opwerf-deployment
+      when: deploy_opwerf | default(false) | bool
+      tags:
+        - opwerf
+        - application
+
   post_tasks:
     - name: Display deployment completion summary
       debug:
@@ -260,6 +268,8 @@
           - "  - KEDA (Event Autoscaling)"
           - "  - Temporal: https://temporal.{{ domain }}"
           - "  - Headscale VPN"
+          - "  - OpenWerf Dashboard: https://app.{{ domain }} (if deploy_opwerf=true)"
+          - "  - OpenWerf API: https://api.{{ domain }} (if deploy_opwerf=true)"
           - ""
           - "Get credentials:"
           - "  ./platform-orchestrator/platform.sh credentials"

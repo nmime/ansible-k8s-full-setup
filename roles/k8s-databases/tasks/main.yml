@@ -298,6 +298,9 @@
             databases:
               - temporal
               - temporal_visibility
+          - name: "{{ opwerf_app_name | default('opwerf') }}"
+            databases:
+              - "{{ opwerf_app_name | default('opwerf') }}"
   register: _r_create_postgresql_cluster
   retries: 3
   delay: 10
