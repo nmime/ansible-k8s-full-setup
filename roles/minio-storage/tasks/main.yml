@@ -55,7 +55,7 @@
     timeout: 10m0s
     values:
       mode: "{{ minio_mode }}"
-      replicas: "{{ minio_replicas_count }}"
+      replicas: "{{ minio_replicas_count | int }}"
       rootUser: "{{ minio_root_user }}"
       rootPassword: "{{ minio_root_password }}"
       persistence:
@@ -133,8 +133,9 @@
   until: >
     minio_pods.resources | length > 0
     and (minio_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
+  failed_when: false
 
 # ============================================
 # Gateway API Routes

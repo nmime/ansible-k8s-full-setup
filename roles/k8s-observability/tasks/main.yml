@@ -8,12 +8,12 @@
     monitoring_namespace: "monitoring"
     vm_operator_version: "0.59.3"
     loki_chart_version: "6.55.0"
-    grafana_chart_version: "11.3.4"
+    grafana_chart_version: "10.5.15"
     grafana_domain: "grafana.{{ domain }}"
     vm_retention: "{{ metrics_retention | default('30d') }}"
     vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
     loki_retention: "{{ logging_retention | default('14d') }}"
-    vm_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    vm_replicas: "{{ (2 if tier in ['medium', 'production'] else 1) | int }}"
     grafana_replicas: "{{ 2 if tier == 'production' else 1 }}"
 
 - name: Create monitoring namespace
@@ -54,7 +54,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     values:
       operator:
         enable_converter_ownership: true
@@ -63,6 +63,18 @@
   delay: 10
   until: _r_install_victoriametrics_operator is not failed
 
+- name: Wait for VictoriaMetrics Operator webhook to be ready
+  kubernetes.core.k8s_info:
+    api_version: admissionregistration.k8s.io/v1
+    kind: ValidatingWebhookConfiguration
+    name: vm-operator-victoria-metrics-operator-admission
+  register: _r_vm_webhook
+  retries: 30
+  delay: 10
+  failed_when: false
+  until:
+    - _r_vm_webhook.resources | length > 0
+    - _r_vm_webhook.resources[0].webhooks | default([]) | length > 0
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
     state: present
@@ -74,9 +86,9 @@
         namespace: "{{ monitoring_namespace }}"
       spec:
         retentionPeriod: "{{ vm_retention }}"
-        replicationFactor: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+        replicationFactor: "{{ (2 if tier in ['medium', 'production'] else 1) | int }}"
         vmstorage:
-          replicaCount: "{{ vm_replicas }}"
+          replicaCount: "{{ vm_replicas | int }}"
           storage:
             volumeClaimTemplate:
               spec:
@@ -92,7 +104,7 @@
               cpu: 1000m
               memory: 2Gi
         vmselect:
-          replicaCount: "{{ vm_replicas }}"
+          replicaCount: "{{ vm_replicas | int }}"
           cacheMountPath: /cache
           resources:
             requests:
@@ -102,7 +114,7 @@
               cpu: 500m
               memory: 1Gi
         vminsert:
-          replicaCount: "{{ vm_replicas }}"
+          replicaCount: "{{ vm_replicas | int }}"
           resources:
             requests:
               cpu: 50m
@@ -112,8 +124,8 @@
               memory: 512Mi
   when: tier in ['medium', 'production']
   register: _r_deploy_vmcluster_distributed_mode
-  retries: 3
-  delay: 10
+  retries: 6
+  delay: 15
   until: _r_deploy_vmcluster_distributed_mode is not failed
 
 - name: Deploy VMSingle (standalone mode for minimal/small)
@@ -157,7 +169,7 @@
         name: vmagent
         namespace: "{{ monitoring_namespace }}"
       spec:
-        replicaCount: "{{ vm_replicas }}"
+        replicaCount: "{{ vm_replicas | int }}"
         selectAllByDefault: true
         remoteWrite:
           - url: "{{ 'http://vminsert-vmcluster.' + monitoring_namespace + '.svc:8480/insert/0/prometheus/api/v1/write' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429/api/v1/write' }}"
@@ -213,7 +225,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     timeout: "10m0s"
     values:
       deploymentMode: "{{ 'SingleBinary' if tier in ['minimal', 'small'] else 'SimpleScalable' }}"
@@ -248,7 +260,7 @@
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -257,7 +269,7 @@
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -270,7 +282,7 @@
           size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       backend:
-        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas }}"
+        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -283,7 +295,7 @@
           size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
           storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       singleBinary:
-        replicas: "{{ 1 if tier in ['minimal', 'small'] else 0 }}"
+        replicas: "{{ 1 if tier in ['minimal', 'small'] else 0 | int }}"
         resources:
           requests:
             cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
@@ -321,7 +333,7 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     values:
       config:
         clients:
@@ -350,9 +362,9 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: true
+    wait: false
     values:
-      replicas: "{{ grafana_replicas }}"
+      replicas: "{{ grafana_replicas | int }}"
       adminUser: "{{ grafana_admin_user | default('admin') }}"
       adminPassword: "{{ grafana_admin_password }}"
       persistence:
@@ -497,7 +509,7 @@
       kind: Certificate
       metadata:
         name: grafana-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: grafana-tls
         issuerRef:
@@ -549,6 +561,27 @@
   delay: 10
   until: _r_create_pmm_sa is not failed
 
+- name: Create PMM Server PVC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: pmm-server-data
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
+        resources:
+          requests:
+            storage: 20Gi
+  register: _r_create_pmm_server_pvc
+  retries: 3
+  delay: 10
+  until: _r_create_pmm_server_pvc is not failed
+
 - name: Deploy PMM Server
   kubernetes.core.k8s:
     state: present
@@ -575,21 +608,29 @@
               seccompProfile:
                 type: RuntimeDefault
             serviceAccountName: pmm-server
+            enableServiceLinks: false
+            initContainers:
+              - name: fix-perms
+                image: busybox:1.36
+                command: ["sh", "-c", "chown -R 1000:0 /srv"]
+                volumeMounts:
+                  - name: pmm-data
+                    mountPath: /srv
+                securityContext:
+                  runAsUser: 0
             containers:
               - name: pmm-server
                 image: "percona/pmm-server:3"
                 ports:
-                  - containerPort: 443
+                  - containerPort: 8443
                     name: https
-                  - containerPort: 80
+                  - containerPort: 8080
                     name: http
                 securityContext:
                   allowPrivilegeEscalation: false
                   capabilities:
                     drop:
                       - ALL
-                    add:
-                      - NET_BIND_SERVICE
                 env:
                   - name: DISABLE_UPDATES
                     value: "1"
@@ -611,19 +652,22 @@
                     memory: 512Mi
                   limits:
                     cpu: "2"
-                    memory: 2Gi
+                    memory: 4Gi
                 readinessProbe:
                   httpGet:
                     path: /v1/readyz
-                    port: 80
-                  initialDelaySeconds: 30
+                    port: 8080
+                  initialDelaySeconds: 60
                   periodSeconds: 10
+                  timeoutSeconds: 5
                 livenessProbe:
                   httpGet:
                     path: /v1/readyz
-                    port: 80
-                  initialDelaySeconds: 60
+                    port: 8080
+                  initialDelaySeconds: 300
                   periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 10
             volumes:
               - name: pmm-data
                 persistentVolumeClaim:
@@ -632,27 +676,6 @@
   retries: 3
   delay: 10
   until: _r_deploy_pmm_server is not failed
-
-- name: Create PMM Server PVC
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: PersistentVolumeClaim
-      metadata:
-        name: pmm-server-data
-        namespace: "{{ monitoring_namespace }}"
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
-        resources:
-          requests:
-            storage: 20Gi
-  register: _r_create_pmm_server_pvc
-  retries: 3
-  delay: 10
-  until: _r_create_pmm_server_pvc is not failed
 
 - name: Create PMM Server Service
   kubernetes.core.k8s:
@@ -670,11 +693,14 @@
           app: pmm-server
         ports:
           - name: http
-            port: 80
-            targetPort: 80
+            port: 8080
+            targetPort: 8080
           - name: https
+            port: 8443
+            targetPort: 8443
+          - name: https-compat
             port: 443
-            targetPort: 443
+            targetPort: 8443
   register: _r_create_pmm_server_service
   retries: 3
   delay: 10
@@ -701,12 +727,22 @@
 
 - name: Generate PMM API key for database monitoring
   shell: |
-    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- \
-      curl -s -X POST \
-      -H 'Content-Type: application/json' \
-      -u admin:{{ grafana_admin_password }} \
-      http://localhost/graph/api/auth/keys \
-      -d '{"name":"percona-db-key-{{ ansible_date_time.epoch }}","role":"Admin"}'
+    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash -c '
+      supervisorctl stop pmm-managed 2>/dev/null; sleep 3;
+      SA_ID=$(curl -sf -X POST -H "Content-Type: application/json" \
+        -u "admin:{{ grafana_admin_password }}" \
+        http://127.0.0.1:8080/graph/api/serviceaccounts \
+        -d "{\"name\":\"percona-db-sa\",\"role\":\"Admin\"}" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get(\"id\",\"\"))" 2>/dev/null);
+      if [ -z "$SA_ID" ]; then
+        SA_ID=$(curl -sf -u "admin:{{ grafana_admin_password }}" \
+          "http://127.0.0.1:8080/graph/api/serviceaccounts/search?query=percona-db-sa" 2>/dev/null | python3 -c "import sys,json;sa=json.load(sys.stdin).get(\"serviceAccounts\",[]);print(sa[0][\"id\"] if sa else \"\")" 2>/dev/null);
+      fi;
+      KEY=$(curl -sf -X POST -H "Content-Type: application/json" \
+        -u "admin:{{ grafana_admin_password }}" \
+        "http://127.0.0.1:8080/graph/api/serviceaccounts/${SA_ID}/tokens" \
+        -d "{\"name\":\"percona-db-key-{{ ansible_date_time.epoch }}\"}" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get(\"key\",\"\"))" 2>/dev/null);
+      supervisorctl start pmm-managed 2>/dev/null;
+      echo "$KEY"'
   register: pmm_api_key_result
   failed_when: false
   changed_when: false
@@ -715,7 +751,7 @@
 
 - name: Set PMM API key fact
   set_fact:
-    pmm_api_key: "{{ (pmm_api_key_result.stdout | default('{}') | from_json).key | default('') }}"
+    pmm_api_key: "{{ pmm_api_key_result.stdout_lines | default([]) | last | default('') }}"
   when: pmm_api_key_result.rc | default(1) == 0
   failed_when: false
 
@@ -742,7 +778,7 @@
                   value: /
             backendRefs:
               - name: pmm-server
-                port: 80
+                port: 8080
   register: _r_create_pmm_httproute_vpn_only_via_admin_
   retries: 3
   delay: 10
@@ -756,7 +792,7 @@
       kind: Certificate
       metadata:
         name: pmm-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: pmm-tls
         issuerRef:

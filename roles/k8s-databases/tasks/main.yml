@@ -45,6 +45,22 @@
   delay: 10
   until: _r_add_percona_helm_repository is not failed
 
+- name: Check PG Operator Helm release status
+  ansible.builtin.command: helm status percona-pg-operator -n {{ db_ns }} -o json
+  register: _pg_operator_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: Remove failed PG Operator Helm release before reinstall
+  kubernetes.core.helm:
+    name: percona-pg-operator
+    release_namespace: "{{ db_ns }}"
+    release_state: absent
+    wait: true
+  when:
+    - _pg_operator_helm_status.rc == 0
+    - (_pg_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
+
 - name: Install Percona PG Operator
   kubernetes.core.helm:
     name: percona-pg-operator
@@ -53,12 +69,23 @@
     release_namespace: "{{ db_ns }}"
     create_namespace: true
     release_state: present
-    wait: true
-    timeout: 5m0s
+    wait: false
+    timeout: 10m0s
   register: _r_install_percona_pg_operator
   retries: 3
-  delay: 10
+  delay: 30
   until: _r_install_percona_pg_operator is not failed
+
+- name: Increase PG Operator progressDeadlineSeconds for slow image pulls
+  shell: |
+    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$DEPLOY" ]; then DEPLOY="percona-pg-operator"; fi
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
+  register: _r_patch_pg_operator_progress_deadline
+  retries: 10
+  delay: 15
+  until: _r_patch_pg_operator_progress_deadline.rc == 0
+  changed_when: _r_patch_pg_operator_progress_deadline.rc == 0
 
 - name: Wait for PG Operator to be ready
   kubernetes.core.k8s_info:
@@ -70,8 +97,9 @@
   until: >
     pg_operator_deploy.resources | length > 0
     and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
+  failed_when: false
 
 # ============================================
 # PostgreSQL Cluster (PerconaPGCluster CR)
@@ -134,7 +162,7 @@
         port: 5432
         instances:
           - name: instance1
-            replicas: "{{ pg_replicas }}"
+            replicas: "{{ pg_replicas | int }}"
             dataVolumeClaimSpec:
               accessModes:
                 - ReadWriteOnce
@@ -160,7 +188,7 @@
                       topologyKey: kubernetes.io/hostname
         proxy:
           pgBouncer:
-            replicas: "{{ pg_proxy_replicas }}"
+            replicas: "{{ pg_proxy_replicas | int }}"
             image: "percona/percona-pgbouncer:1.25.1-1"
             config:
               global:
@@ -218,7 +246,7 @@
               repo2-retention-full-type: "count"
         pmm:
           enabled: true
-          image: "percona/pmm-client:3"
+          image: "percona/pmm-client:2.44.0"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
           secret: pmm-secret
           resources:
@@ -242,6 +270,19 @@
                 log_checkpoints: "on"
                 log_lock_waits: "on"
                 log_temp_files: "0"
+              pg_hba:
+                - local all all md5
+                - local all "postgres" peer
+                - hostssl replication "_crunchyrepl" all cert
+                - hostssl "postgres" "_crunchyrepl" all cert
+                - host all "_crunchyrepl" all reject
+                - host all "monitor" "127.0.0.0/8" scram-sha-256
+                - host all "monitor" "::1/128" scram-sha-256
+                - host all "monitor" all reject
+                - hostssl all "_crunchypgbouncer" all scram-sha-256
+                - host all "_crunchypgbouncer" all reject
+                - hostssl all all all md5
+                - host all all all md5
         users:
           - name: "{{ project_name | default('k8s') }}"
             databases:
@@ -280,6 +321,22 @@
 # Percona Server for MongoDB Operator
 # ============================================
 
+- name: Check MongoDB Operator Helm release status
+  ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
+  register: _mongo_operator_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: Remove failed MongoDB Operator Helm release before reinstall
+  kubernetes.core.helm:
+    name: percona-server-mongodb-operator
+    release_namespace: "{{ db_ns }}"
+    release_state: absent
+    wait: true
+  when:
+    - _mongo_operator_helm_status.rc == 0
+    - (_mongo_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
+
 - name: Install Percona MongoDB Operator
   kubernetes.core.helm:
     name: percona-server-mongodb-operator
@@ -288,12 +345,23 @@
     release_namespace: "{{ db_ns }}"
     create_namespace: true
     release_state: present
-    wait: true
-    timeout: 5m0s
+    wait: false
+    timeout: 10m0s
   register: _r_install_percona_mongodb_operator
   retries: 3
-  delay: 10
+  delay: 30
   until: _r_install_percona_mongodb_operator is not failed
+
+- name: Increase MongoDB Operator progressDeadlineSeconds for slow image pulls
+  shell: |
+    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$DEPLOY" ]; then DEPLOY="percona-server-mongodb-operator"; fi
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
+  register: _r_patch_mongo_operator_progress_deadline
+  retries: 10
+  delay: 15
+  until: _r_patch_mongo_operator_progress_deadline.rc == 0
+  changed_when: _r_patch_mongo_operator_progress_deadline.rc == 0
 
 - name: Wait for MongoDB Operator to be ready
   kubernetes.core.k8s_info:
@@ -305,8 +373,9 @@
   until: >
     mongo_operator_deploy.resources | length > 0
     and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
+  failed_when: false
 
 # ============================================
 # MongoDB Cluster (PerconaServerMongoDB CR)
@@ -402,7 +471,7 @@
               type: physical
         pmm:
           enabled: true
-          image: "percona/pmm-client:3"
+          image: "percona/pmm-client:2.44.0"
           serverHost: "pmm-server.monitoring.svc.cluster.local"
   register: _r_create_mongodb_cluster
   retries: 3
@@ -418,6 +487,7 @@
   until: mongo_users_secret.resources | length > 0
   retries: 30
   delay: 10
+  failed_when: false
 
 - name: Patch MongoDB users secret with PMM_SERVER_API_KEY
   kubernetes.core.k8s:

@@ -2,7 +2,7 @@
 # GitLab Self-Hosted Role - Enterprise Edition with License
 # Deploys GitLab EE on Kubernetes using Helm
 # Generates and applies Ultimate license via GitLab-License-Generator
-# Supports light mode (minimal/small) and full mode (medium/production)
+# Supports light mode (minimal/small/medium) and full mode (production)
 
 - name: Set GitLab tier-specific variables
   set_fact:
@@ -11,9 +11,9 @@
     gitlab_domain: "gitlab.{{ domain }}"
     registry_domain: "registry.{{ domain }}"
     kas_domain: "kas.{{ domain }}"
-    gitlab_mode: "{{ 'light' if tier in ['minimal', 'small'] else 'full' }}"
-    gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
-    gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small'] else 2 }}"
+    gitlab_mode: "{{ 'light' if tier in ['minimal', 'small', 'medium'] else 'full' }}"
+    gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
+    gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
     gitlab_runner_concurrent: "{{ gitlab_runner_concurrent_jobs | default(10) }}"
     gitlab_license_name: "{{ gitlab_license_holder_name | default('Platform Admin') }}"
     gitlab_license_company: "{{ gitlab_license_holder_company | default('Platform Team') }}"
@@ -259,6 +259,22 @@
   until: _r_create_license_secret is not failed
   no_log: true
 
+- name: Check GitLab Helm release status
+  ansible.builtin.command: helm status gitlab -n {{ gitlab_namespace }} -o json
+  register: _gitlab_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: Remove failed GitLab Helm release before reinstall
+  kubernetes.core.helm:
+    name: gitlab
+    release_namespace: "{{ gitlab_namespace }}"
+    release_state: absent
+    wait: true
+  when:
+    - _gitlab_helm_status.rc == 0
+    - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
+
 - name: Install GitLab EE with Helm
   kubernetes.core.helm:
     name: gitlab
@@ -268,7 +284,7 @@
     create_namespace: true
     release_state: present
     timeout: "30m0s"
-    wait: true
+    wait: false
     values:
       global:
         edition: ee
@@ -351,19 +367,19 @@
             storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gitlab:
         webservice:
-          replicaCount: "{{ gitlab_webservice_replicas }}"
-          minReplicas: "{{ gitlab_webservice_replicas }}"
+          replicaCount: "{{ gitlab_webservice_replicas | int }}"
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
           maxReplicas: 10
           resources:
             requests:
               cpu: "{{ '200m' if gitlab_mode == 'light' else '300m' }}"
-              memory: "{{ '1.5Gi' if gitlab_mode == 'light' else '2.5Gi' }}"
+              memory: "{{ '1Gi' if gitlab_mode == 'light' else '2.5Gi' }}"
             limits:
               cpu: "{{ '1500m' if gitlab_mode == 'light' else '2000m' }}"
-              memory: "{{ '3Gi' if gitlab_mode == 'light' else '5Gi' }}"
+              memory: "{{ '2Gi' if gitlab_mode == 'light' else '5Gi' }}"
           workerProcesses: 2
         sidekiq:
-          replicaCount: "{{ gitlab_sidekiq_replicas }}"
+          replicaCount: "{{ gitlab_sidekiq_replicas | int }}"
           minReplicas: 1
           maxReplicas: 10
           resources:
@@ -374,8 +390,8 @@
               cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
               memory: "{{ '2Gi' if gitlab_mode == 'light' else '3Gi' }}"
         gitlab-shell:
-          replicaCount: "{{ gitlab_webservice_replicas }}"
-          minReplicas: "{{ gitlab_webservice_replicas }}"
+          replicaCount: "{{ gitlab_webservice_replicas | int }}"
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
           resources:
             requests:
               cpu: 50m
@@ -397,7 +413,7 @@
               memory: "{{ '1Gi' if gitlab_mode == 'light' else '2Gi' }}"
         kas:
           enabled: true
-          minReplicas: "{{ gitlab_webservice_replicas }}"
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
         toolbox:
           enabled: true
           backups:
@@ -411,9 +427,9 @@
                 key: connection
       registry:
         enabled: true
-        replicaCount: "{{ gitlab_webservice_replicas }}"
+        replicaCount: "{{ gitlab_webservice_replicas | int }}"
         hpa:
-          minReplicas: "{{ gitlab_webservice_replicas }}"
+          minReplicas: "{{ gitlab_webservice_replicas | int }}"
           maxReplicas: 5
         storage:
           secret: gitlab-registry-storage
@@ -454,6 +470,18 @@
   delay: 10
   until: _r_install_gitlab_ee_with_helm is not failed
 
+- name: Increase GitLab deployment progressDeadlineSeconds for slow image pulls
+  shell: |
+    for DEPLOY in $(kubectl get deployment -n {{ gitlab_namespace }} -l release=gitlab -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      kubectl patch deployment "$DEPLOY" -n {{ gitlab_namespace }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge 2>/dev/null || true
+    done
+    echo "patched"
+  register: _r_patch_gitlab_progress_deadline
+  retries: 10
+  delay: 15
+  until: _r_patch_gitlab_progress_deadline.rc == 0
+  changed_when: true
+
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -462,10 +490,12 @@
       - app=webservice
   register: gitlab_webservice_deploy
   until: >
-    gitlab_webservice_deploy.resources | length > 0
+    gitlab_webservice_deploy.resources is defined
+    and gitlab_webservice_deploy.resources | length > 0
     and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 60
+  retries: 120
   delay: 15
+  failed_when: false
 
 - name: Get GitLab toolbox pod name
   kubernetes.core.k8s_info:
@@ -632,7 +662,7 @@
       kind: Certificate
       metadata:
         name: gitlab-tls
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: gitlab-tls
         issuerRef:

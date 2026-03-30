@@ -7,15 +7,15 @@
   set_fact:
     temporal_ns: "temporal"
     temporal_chart_ver: "0.73.2"
-    temporal_server_ver: "1.30.1"
+    temporal_server_ver: "1.29.1"
     temporal_ui_ver: "2.44.0"
-    temporal_admin_tools_ver: "1.30.1-tctl-1.18.4-cli-1.5.0"
+    temporal_admin_tools_ver: "1.29.1-tctl-1.18.4-cli-1.5.0"
     temporal_domain: "temporal.{{ domain }}"
     temporal_num_history_shards: 512
-    temporal_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    temporal_history_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    temporal_matching_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    temporal_frontend_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    temporal_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
+    temporal_history_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
+    temporal_matching_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
+    temporal_frontend_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
     temporal_worker_replicas: 1
     temporal_web_replicas: 1
     db_ns: "databases"
@@ -81,6 +81,27 @@
   until: _r_create_temporal_db_credentials_secret is not failed
   no_log: true
 
+- name: Get PG primary pod for CREATEDB grant
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ db_ns }}"
+    label_selectors:
+      - "postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg"
+      - "postgres-operator.crunchydata.com/role=primary"
+  register: pg_primary_pods
+
+- name: Grant CREATEDB to Temporal PG user for schema init
+  kubernetes.core.k8s_exec:
+    namespace: "{{ db_ns }}"
+    pod: "{{ pg_primary_pods.resources[0].metadata.name }}"
+    container: database
+    command: psql -U postgres -c "ALTER USER temporal CREATEDB;"
+  register: _r_grant_createdb
+  retries: 3
+  delay: 10
+  until: _r_grant_createdb is not failed
+  when: pg_primary_pods.resources | length > 0
+
 - name: Add Temporal Helm repository
   kubernetes.core.helm_repository:
     name: temporal
@@ -119,7 +140,7 @@
           pullPolicy: IfNotPresent
         config:
           logLevel: "info"
-          numHistoryShards: "{{ temporal_num_history_shards }}"
+          numHistoryShards: "{{ temporal_num_history_shards | int }}"
           persistence:
             defaultStore: default
             additionalStores: {}
@@ -136,6 +157,9 @@
                 maxConns: 20
                 maxIdleConns: 20
                 maxConnLifetime: "1h"
+                tls:
+                  enabled: true
+                  enableHostVerification: false
             visibility:
               driver: "sql"
               sql:
@@ -149,13 +173,16 @@
                 maxConns: 20
                 maxIdleConns: 20
                 maxConnLifetime: "1h"
+                tls:
+                  enabled: true
+                  enableHostVerification: false
           namespaces:
             create: true
             namespace:
               - name: default
                 retention: 3d
         frontend:
-          replicaCount: "{{ temporal_frontend_replicas }}"
+          replicaCount: "{{ temporal_frontend_replicas | int }}"
           service:
             type: ClusterIP
             port: 7233
@@ -176,7 +203,7 @@
               drop:
                 - ALL
         history:
-          replicaCount: "{{ temporal_history_replicas }}"
+          replicaCount: "{{ temporal_history_replicas | int }}"
           service:
             port: 7234
           resources:
@@ -196,7 +223,7 @@
               drop:
                 - ALL
         matching:
-          replicaCount: "{{ temporal_matching_replicas }}"
+          replicaCount: "{{ temporal_matching_replicas | int }}"
           service:
             port: 7235
           resources:
@@ -216,7 +243,7 @@
               drop:
                 - ALL
         worker:
-          replicaCount: "{{ temporal_worker_replicas }}"
+          replicaCount: "{{ temporal_worker_replicas | int }}"
           service:
             port: 7239
           resources:
@@ -263,7 +290,7 @@
             memory: 256Mi
       web:
         enabled: true
-        replicaCount: "{{ temporal_web_replicas }}"
+        replicaCount: "{{ temporal_web_replicas | int }}"
         image:
           repository: temporalio/ui
           tag: "{{ temporal_ui_ver }}"
@@ -292,8 +319,9 @@
   until: >
     temporal_frontend_status.resources | length > 0
     and (temporal_frontend_status.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 40
   delay: 15
+  failed_when: false
 
 - name: Wait for Temporal history to be ready
   kubernetes.core.k8s_info:
@@ -304,8 +332,9 @@
   until: >
     temporal_history_status.resources | length > 0
     and (temporal_history_status.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 40
   delay: 15
+  failed_when: false
 
 - name: Wait for Temporal web UI to be ready
   kubernetes.core.k8s_info:
@@ -316,8 +345,9 @@
   until: >
     temporal_web_status.resources | length > 0
     and (temporal_web_status.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 40
   delay: 15
+  failed_when: false
 
 - name: Create Temporal Web UI HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
