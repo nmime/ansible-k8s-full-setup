@@ -116,7 +116,7 @@
           app: "{{ app_name }}"
           component: backend
       spec:
-        replicas: "{{ backend_replicas }}"
+        replicas: "{{ backend_replicas | int }}"
         selector:
           matchLabels:
             app: "{{ app_name }}"
@@ -266,7 +266,7 @@
           app: "{{ app_name }}"
           component: frontend
       spec:
-        replicas: "{{ frontend_replicas }}"
+        replicas: "{{ frontend_replicas | int }}"
         selector:
           matchLabels:
             app: "{{ app_name }}"
@@ -413,7 +413,7 @@
       kind: Certificate
       metadata:
         name: "{{ app_name }}-tls"
-        namespace: gateway-secrets
+        namespace: cilium-secrets
       spec:
         secretName: "{{ app_name }}-tls"
         issuerRef:

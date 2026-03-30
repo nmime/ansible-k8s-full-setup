@@ -15,6 +15,7 @@
     hetzner_ccm_ver: "v1.30.1"
     hetzner_csi_ver: "v2.20.0"
     cluster_tier: "{{ tier | default('medium') }}"
+    certmanager_replicas: "{{ (tier | default('medium')=='minimal')|ternary(1, (tier | default('medium')=='production')|ternary(3, 2)) }}"
 
 # ============================================
 # Kubespray Setup
@@ -200,6 +201,17 @@
   delegate_to: localhost
   become: false
 
+- name: Adopt GatewayClass cilium for Helm (idempotent)
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null       root@{{ bastion_public_ip }} '
+        kubectl get gatewayclass cilium 2>/dev/null &&         kubectl annotate gatewayclass cilium meta.helm.sh/release-name=cilium meta.helm.sh/release-namespace=kube-system --overwrite &&         kubectl label gatewayclass cilium app.kubernetes.io/managed-by=Helm --overwrite || true
+      '
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  ignore_errors: true
+
 - name: Run Kubespray cluster deployment
   ansible.builtin.shell: |
     unset ANSIBLE_CONFIG ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS
@@ -219,11 +231,18 @@
 
 # Fix CNI binary directory permissions (Kubespray creates it owned by kube user)
 - name: Fix /opt/cni/bin ownership for Cilium
-  ansible.builtin.raw: |
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@{{ bastion_public_ip }}' \
+      root@{{ item }} 'bash -s' << 'REMOTECMD'
     chown -R root:root /opt/cni 2>/dev/null || true
     chmod 755 /opt/cni /opt/cni/bin 2>/dev/null || true
-  delegate_to: "{{ item }}"
-  become: true
+    ls -la /opt/cni/bin/ 2>/dev/null | head -5
+    REMOTECMD
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
   loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
   when: item is defined and item | length > 0
   ignore_errors: true
@@ -249,11 +268,24 @@
 
 - name: Ensure SSH tunnel to k8s API is active
   ansible.builtin.shell: |
-    if ! ss -tlnp | grep -q ':6443'; then
-      nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
-      sleep 2
-    fi
+    fuser -k 6443/tcp 2>/dev/null || true
+    sleep 1
+    nohup ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+    for attempt in $(seq 1 30); do
+      if ss -tlnp | grep -q ':6443'; then
+        echo "SSH tunnel ready after ${attempt}s"
+        break
+      fi
+      sleep 1
+    done
     sed -i 's|https://{{ first_master_ip | default("10.0.1.1") }}:6443|https://127.0.0.1:6443|g' {{ lookup('env', 'HOME') }}/.kube/config
+    for verify in $(seq 1 5); do
+      if KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes 2>/dev/null; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "kubectl failed after 5 retries"
     KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes
   args:
     executable: /bin/bash
@@ -266,15 +298,23 @@
 
 - name: Wait for all nodes to be Ready before applying fixes
   ansible.builtin.shell: |
-    for i in $(seq 1 30); do
+    for i in $(seq 1 60); do
       NOT_READY=$(kubectl get nodes --no-headers 2>/dev/null | grep -v ' Ready ' | wc -l)
       TOTAL=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
       if [ "$NOT_READY" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
         echo "All $TOTAL nodes Ready"; exit 0
       fi
-      echo "Waiting for nodes (attempt $i/30, $NOT_READY not ready)..."; sleep 10
+      if [ "$((i % 10))" -eq 0 ]; then
+        echo "--- Diagnostic at attempt $i ---"
+        kubectl get nodes 2>/dev/null
+        kubectl get pods -A --no-headers 2>/dev/null | grep -v Running | grep -v Completed || true
+      fi
+      echo "Waiting for nodes (attempt $i/60, $NOT_READY not ready)..."; sleep 15
     done
-    echo "Timeout waiting for nodes"; exit 1
+    echo "FINAL STATE:"
+    kubectl get nodes 2>/dev/null
+    kubectl get pods -A 2>/dev/null | head -30
+    echo "Timeout waiting for nodes after 15 minutes"; exit 1
   args:
     executable: /bin/bash
   delegate_to: localhost
@@ -341,6 +381,33 @@
   delay: 10
   until: _r_install_hetzner_cloud_controller_manager is not failed
 
+- name: Increase CCM progressDeadlineSeconds for slow image pulls
+  kubernetes.core.k8s_json_patch:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+    patch:
+      - op: replace
+        path: /spec/progressDeadlineSeconds
+        value: 1800
+  register: _r_patch_ccm_progress_deadline
+  retries: 3
+  delay: 10
+  until: _r_patch_ccm_progress_deadline is not failed
+
+- name: Wait for initial CCM deployment to be ready before patching
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+  register: ccm_pre_patch
+  until: >
+    ccm_pre_patch.resources | length > 0
+    and (ccm_pre_patch.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 120
+  delay: 15
+  failed_when: false
+
 - name: Patch CCM DNS to use upstream DNS (hostNetwork pods can't use nodelocaldns IPv6)
   kubernetes.core.k8s_json_patch:
     kind: Deployment
@@ -374,8 +441,10 @@
   until: >
     ccm_deploy.resources | length > 0
     and (ccm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 60
+  delay: 15
+  failed_when: false
+
 
 # ============================================
 # Hetzner CSI Driver (for hcloud-volumes StorageClass)
@@ -390,6 +459,20 @@
   delay: 10
   until: _r_install_hetzner_csi_driver is not failed
 
+- name: Increase CSI progressDeadlineSeconds for slow image pulls
+  kubernetes.core.k8s_json_patch:
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-csi-controller
+    patch:
+      - op: replace
+        path: /spec/progressDeadlineSeconds
+        value: 1800
+  register: _r_patch_csi_progress_deadline
+  retries: 3
+  delay: 10
+  until: _r_patch_csi_progress_deadline is not failed
+
 - name: Wait for Hetzner CSI controller to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -399,8 +482,22 @@
   until: >
     csi_deploy.resources | length > 0
     and (csi_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+  retries: 120
+  delay: 15
+  failed_when: false
+
+- name: Wait for Hetzner CSI node DaemonSet to be ready on all nodes
+  kubernetes.core.k8s_info:
+    kind: DaemonSet
+    namespace: kube-system
+    name: hcloud-csi-node
+  register: csi_node_ds
+  until: >
+    csi_node_ds.resources | length > 0
+    and (csi_node_ds.resources[0].status.numberReady | default(0)) >= (csi_node_ds.resources[0].status.desiredNumberScheduled | default(1))
+  retries: 120
+  delay: 15
+  failed_when: false
 
 # ============================================
 # Gateway API CRDs + Cilium Gateway
@@ -447,6 +544,11 @@
       kind: GatewayClass
       metadata:
         name: cilium
+        labels:
+          app.kubernetes.io/managed-by: Helm
+        annotations:
+          meta.helm.sh/release-name: cilium
+          meta.helm.sh/release-namespace: kube-system
       spec:
         controllerName: io.cilium/gateway-controller
   register: _r_create_cilium_gatewayclass
@@ -564,6 +666,7 @@
   until: gw_svc.resources | length > 0
   retries: 30
   delay: 10
+  failed_when: false
 
 - name: Patch Gateway service to use fixed NodePorts (30080/30443)
   kubernetes.core.k8s:
@@ -592,6 +695,7 @@
   delay: 10
   until: _r_patch_gateway_service_to_use_fixed_nodep is not failed
 
+
 - name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
   kubernetes.core.k8s:
     state: present
@@ -604,6 +708,12 @@
       spec:
         gatewayClassName: cilium
         listeners:
+          - name: http
+            protocol: HTTP
+            port: 8080
+            allowedRoutes:
+              namespaces:
+                from: All
           - name: https
             protocol: HTTPS
             port: 8443
@@ -628,8 +738,9 @@
       - "io.cilium.gateway/owning-gateway=admin-gateway"
   register: admin_gw_svc
   until: admin_gw_svc.resources | length > 0
-  retries: 6
+  retries: 30
   delay: 10
+  failed_when: false
   ignore_errors: true
 
 - name: Patch admin Gateway service to use NodePort 31443
@@ -643,7 +754,11 @@
         namespace: cilium-system
       spec:
         ports:
-          - name: https
+          - name: port-8080
+            port: 8080
+            targetPort: 8080
+            protocol: TCP
+          - name: port-8443
             port: 8443
             targetPort: 8443
             nodePort: 31443
@@ -734,7 +849,7 @@
   kubernetes.core.helm:
     name: cert-manager-webhook-hetzner
     chart_ref: hcloud/cert-manager-webhook-hetzner
-    chart_version: "1.4.2"
+    chart_version: "0.6.7"
     release_namespace: cert-manager
     release_state: present
     wait: true
@@ -837,6 +952,7 @@
   retries: 3
   delay: 10
   until: _r_create_wildcard_tls_certificate is not failed
+
 
 # ============================================
 # MetalLB v0.14.9
@@ -956,6 +1072,14 @@
                 port: 53
               - protocol: TCP
                 port: 53
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
   loop:
     - gitlab
     - argocd
@@ -970,6 +1094,348 @@
   retries: 3
   delay: 10
   until: _r_create_default_deny_netpol is not failed
+
+- name: Create allow-apiserver-webhooks NetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-apiserver-webhooks
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - ipBlock:
+                  cidr: "{{ kube_pods_subnet | default('10.233.64.0/18') }}"
+              - ipBlock:
+                  cidr: "{{ kube_service_addresses | default('10.233.0.0/18') }}"
+              - ipBlock:
+                  cidr: 10.0.0.0/8
+            ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
+              - protocol: TCP
+                port: 8443
+              - protocol: TCP
+                port: 9443
+              - protocol: TCP
+                port: 10250
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_apiserver_webhooks_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_allow_apiserver_webhooks_netpol is not failed
+
+- name: Create allow-dns-to-host CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-dns-to-host
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEntities:
+              - host
+            toPorts:
+              - ports:
+                  - port: "53"
+                    protocol: UDP
+                  - port: "53"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_dns_to_host_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_allow_dns_to_host_cnp is not failed
+
+- name: Create allow-kube-apiserver CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-kube-apiserver
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEntities:
+              - kube-apiserver
+            toPorts:
+              - ports:
+                  - port: "443"
+                    protocol: TCP
+                  - port: "6443"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_kube_apiserver_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_allow_kube_apiserver_cnp is not failed
+
+- name: Create allow-apiserver-webhook-ingress CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-apiserver-webhook-ingress
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        ingress:
+          - fromEntities:
+              - kube-apiserver
+              - host
+              - remote-node
+            toPorts:
+              - ports:
+                  - port: "9443"
+                    protocol: TCP
+                  - port: "443"
+                    protocol: TCP
+                  - port: "8080"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_allow_webhook_ingress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_allow_webhook_ingress_cnp is not failed
+
+
+- name: Create allow-intra-namespace CiliumNetworkPolicy for each platform namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-intra-namespace
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: "{{ item }}"
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: "{{ item }}"
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - databases
+    - vault
+    - keda
+    - temporal
+    - production
+  register: _r_create_intra_ns_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_intra_ns_cnp is not failed
+
+- name: Create allow-egress-to-internet CiliumNetworkPolicy for namespaces needing external access
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-internet
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toCIDR:
+              - 0.0.0.0/0
+            toPorts:
+              - ports:
+                  - port: "443"
+                    protocol: TCP
+                  - port: "80"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - monitoring
+    - databases
+    - temporal
+    - production
+  register: _r_create_internet_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_internet_egress_cnp is not failed
+
+- name: Create allow-egress-to-databases CiliumNetworkPolicy for app namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-databases
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: databases
+            toPorts:
+              - ports:
+                  - port: "5432"
+                    protocol: TCP
+                  - port: "6432"
+                    protocol: TCP
+                  - port: "27017"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - production
+    - temporal
+    - monitoring
+  register: _r_create_db_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_db_egress_cnp is not failed
+
+- name: Create allow-egress-to-storage CiliumNetworkPolicy for app namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-storage
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: storage
+            toPorts:
+              - ports:
+                  - port: "9000"
+                    protocol: TCP
+                  - port: "9001"
+                    protocol: TCP
+  loop:
+    - gitlab
+    - databases
+    - production
+    - temporal
+  register: _r_create_storage_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_storage_egress_cnp is not failed
+
+- name: Create allow-egress-to-all-namespaces CiliumNetworkPolicy for monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-all-namespaces
+        namespace: monitoring
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: gitlab
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: databases
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: storage
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: temporal
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: production
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: vault-secrets
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: cilium-secrets
+  register: _r_create_monitoring_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_monitoring_egress_cnp is not failed
+
+- name: Create allow-egress-to-temporal CiliumNetworkPolicy for production
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-egress-to-temporal
+        namespace: production
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: temporal
+            toPorts:
+              - ports:
+                  - port: "7233"
+                    protocol: TCP
+  register: _r_create_temporal_egress_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_egress_cnp is not failed
 
 - name: Create allow-intra-namespace NetworkPolicy for each platform namespace
   kubernetes.core.k8s:
@@ -991,6 +1457,21 @@
         egress:
           - to:
               - podSelector: {}
+          - to:
+              - namespaceSelector: {}
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
   loop:
     - gitlab
     - argocd
@@ -1108,6 +1589,16 @@
                 port: 53
               - protocol: TCP
                 port: 53
+          - to:
+              - ipBlock:
+                  cidr: "{{ k8s_service_cidr }}"
+              - ipBlock:
+                  cidr: "{{ k8s_pod_cidr }}"
+            ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
   loop:
     - gitlab
     - argocd

@@ -49,11 +49,11 @@
     timeout: "10m0s"
     values:
       operator:
-        replicaCount: "{{ keda_replicas }}"
+        replicaCount: "{{ keda_replicas | int }}"
       metricsServer:
-        replicaCount: "{{ keda_replicas }}"
+        replicaCount: "{{ keda_replicas | int }}"
       webhooks:
-        replicaCount: "{{ keda_replicas }}"
+        replicaCount: "{{ keda_replicas | int }}"
       podSecurityContext:
         runAsNonRoot: true
         seccompProfile:
