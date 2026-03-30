@@ -596,7 +596,7 @@
   delay: 10
   until: _r_create_gitlab_gateway_api_httproute_vpn_ is not failed
 
-- name: Create GitLab Registry HTTPRoute (VPN-only via admin-gateway)
+- name: Create GitLab Registry HTTPRoute
   kubernetes.core.k8s:
     state: present
     definition:
@@ -607,7 +607,7 @@
         namespace: "{{ gitlab_namespace }}"
       spec:
         parentRefs:
-          - name: admin-gateway
+          - name: main-gateway
             namespace: cilium-system
             sectionName: https
         hostnames:
