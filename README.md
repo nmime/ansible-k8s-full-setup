@@ -51,6 +51,32 @@ One Ansible playbook provisions **everything** — cloud infrastructure, Kuberne
     fw-nodes:   All traffic restricted to private+VPN ranges only
 ```
 
+### Traffic Flow
+
+**Public traffic (GitLab, Registry, etc.):**
+
+```
+Internet → Hetzner LB (:80/:443)
+         → TCP passthrough to NodePort :30080/:30443 on worker nodes (private network)
+         → Cilium Gateway (envoy proxy, TLS termination with wildcard cert)
+         → HTTPRoute matching (hostname/path based)
+         → Backend service pods
+```
+
+**Admin traffic (Grafana, ArgoCD, Vault, PMM, MinIO Console):**
+
+```
+VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
+                           → Cilium Gateway (TLS termination)
+                           → HTTPRoute → admin service pods
+```
+
+- **Hetzner LB** (lb11) listens on ports 80/443, forwards via TCP passthrough to fixed NodePorts 30080/30443 on all worker nodes through the private network
+- **Cilium Gateway API** (`main-gateway`) terminates TLS using the wildcard Let's Encrypt certificate and routes requests to backend services via HTTPRoutes
+- **Admin gateway** uses a separate `admin-gateway` on NodePort 31443, protected by CiliumNetworkPolicy restricting access to VPN (`100.64.0.0/10`) and private network (`10.0.0.0/16`) only
+- **MetalLB** (`v0.15.3`) assigns private VIPs from `10.0.10.0/24` (L2 mode) for internal/VPN access — it does **not** handle internet traffic
+- **Minimal tier exception:** no Hetzner LB is created (saves ~€6/mo) — the bastion proxies public traffic directly
+
 ---
 
 ## Tech Stack
