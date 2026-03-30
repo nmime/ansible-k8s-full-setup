@@ -1,0 +1,74 @@
+{{- if .Values.elasticsearch.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "opwerf.name" . }}-elasticsearch
+  labels:
+    {{- include "opwerf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: elasticsearch
+spec:
+  serviceName: {{ include "opwerf.name" . }}-elasticsearch
+  replicas: {{ .Values.elasticsearch.replicas }}
+  selector:
+    matchLabels:
+      app: {{ include "opwerf.name" . }}-elasticsearch
+  template:
+    metadata:
+      labels:
+        app: {{ include "opwerf.name" . }}-elasticsearch
+        {{- include "opwerf.labels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: increase-vm-max-map
+          image: busybox:latest
+          command: ['sysctl', '-w', 'vm.max_map_count=262144']
+          securityContext:
+            privileged: true
+      containers:
+        - name: elasticsearch
+          image: elasticsearch:8.16.1
+          env:
+            - name: discovery.type
+              value: single-node
+            - name: xpack.security.enabled
+              value: "false"
+            - name: ES_JAVA_OPTS
+              value: {{ .Values.elasticsearch.javaOpts | quote }}
+          ports:
+            - containerPort: 9200
+              name: http
+            - containerPort: 9300
+              name: transport
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+          resources:
+            {{- toYaml .Values.resources.elasticsearch | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.elasticsearch.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.elasticsearch.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opwerf.name" . }}-elasticsearch
+  labels:
+    {{- include "opwerf.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - port: 9200
+      targetPort: 9200
+      name: http
+    - port: 9300
+      targetPort: 9300
+      name: transport
+  selector:
+    app: {{ include "opwerf.name" . }}-elasticsearch
+{{- end }}

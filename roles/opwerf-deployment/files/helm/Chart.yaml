@@ -1,0 +1,14 @@
+apiVersion: v2
+name: opwerf
+description: OpenWerf AI-powered workflow orchestration platform
+type: application
+version: 1.0.0
+appVersion: "latest"
+keywords:
+  - workflow
+  - orchestration
+  - ai
+  - temporal
+maintainers:
+  - name: OpenWerf Team
+    email: admin@opwerf.io
