@@ -1,0 +1,79 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "opwerf.name" . }}-redis-config
+  labels:
+    {{- include "opwerf.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    requirepass {{ .Values.security.redisPassword | default "changeme" }}
+    appendonly yes
+    appendfsync everysec
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "opwerf.name" . }}-redis
+  labels:
+    {{- include "opwerf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ include "opwerf.name" . }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "opwerf.name" . }}-redis
+  template:
+    metadata:
+      labels:
+        app: {{ include "opwerf.name" . }}-redis
+        {{- include "opwerf.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/redis
+          resources:
+            {{- toYaml .Values.resources.redis | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "opwerf.name" . }}-redis-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.redis.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opwerf.name" . }}-redis
+  labels:
+    {{- include "opwerf.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+  selector:
+    app: {{ include "opwerf.name" . }}-redis
+{{- end }}

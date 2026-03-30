@@ -1,18 +1,42 @@
 ---
-# OpenWerf Deployment Role - Complete K8s deployment
-# Deploys AI-powered workflow orchestration platform on existing K8s infrastructure
+# OpenWerf Deployment Role - ArgoCD + Helm GitOps delivery
+# Delivers OpenWerf via ArgoCD using a Helm chart stored in GitLab.
+# Flow:
+#   1. Generate secrets
+#   2. Create namespace + ExternalSecret (or K8s Secret directly if Vault not configured)
+#   3. Create GitLab project and push Helm chart
+#   4. Create ArgoCD AppProject + Application pointing to GitLab Helm chart
+#   5. ArgoCD reconciles the full deployment
 
 - name: Set OpenWerf variables
   set_fact:
     opwerf_ns: "{{ opwerf_namespace }}"
-    db_ns: "databases"
-    storage_ns: "storage"
-    temporal_ns: "temporal"
+    opwerf_argocd_ns: "argocd"
+    opwerf_gitlab_ns: "gitlab"
     pg_host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
-    pg_host_direct: "{{ project_name | default('k8s') }}-pg-primary.databases.svc.cluster.local"
+    opwerf_helm_repo_name: "opwerf"
+    opwerf_helm_project: "platform/opwerf"
+    opwerf_helm_repo_url: "https://gitlab.{{ domain }}/platform/opwerf.git"
+    opwerf_api_replicas_val: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    opwerf_worker_replicas_val: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+    opwerf_dashboard_replicas_val: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 
 # ============================================
-# Namespace Creation
+# Secret Generation
+# ============================================
+
+- name: Generate OpenWerf secrets
+  set_fact:
+    opwerf_db_password_resolved: "{{ saved_secrets.opwerf_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
+    opwerf_redis_password_resolved: "{{ saved_secrets.opwerf_redis_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
+    opwerf_credential_proxy_token_resolved: "{{ opwerf_credential_proxy_internal_token | default(saved_secrets.opwerf_credential_proxy_token | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48'))) }}"
+    opwerf_enc_key_resolved: "{{ opwerf_encryption_key | default(saved_secrets.opwerf_encryption_key | default(lookup('password', '/dev/null chars=hex_digits length=32'))) }}"
+    opwerf_enc_salt_resolved: "{{ opwerf_encryption_salt | default(saved_secrets.opwerf_encryption_salt | default(lookup('password', '/dev/null chars=hex_digits length=16'))) }}"
+    opwerf_session_key_resolved: "{{ opwerf_session_signing_key | default(saved_secrets.opwerf_session_signing_key | default(lookup('password', '/dev/null chars=hex_digits length=64'))) }}"
+  no_log: true
+
+# ============================================
+# Namespace
 # ============================================
 
 - name: Create OpenWerf namespace
@@ -27,33 +51,20 @@
           app.kubernetes.io/part-of: opwerf
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/enforce-version: latest
+          argocd.argoproj.io/managed-by: "{{ opwerf_argocd_ns }}"
   register: _r_create_opwerf_namespace
   retries: 3
   delay: 10
   until: _r_create_opwerf_namespace is not failed
 
 # ============================================
-# Secret Generation
-# ============================================
-
-- name: Generate OpenWerf secrets
-  set_fact:
-    opwerf_db_password: "{{ saved_secrets.opwerf_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-    opwerf_redis_password: "{{ saved_secrets.opwerf_redis_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-    opwerf_credential_proxy_token: "{{ opwerf_credential_proxy_internal_token | default(saved_secrets.opwerf_credential_proxy_token | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48'))) }}"
-    opwerf_enc_key: "{{ opwerf_encryption_key | default(saved_secrets.opwerf_encryption_key | default(lookup('password', '/dev/null chars=hex_digits length=32'))) }}"
-    opwerf_enc_salt: "{{ opwerf_encryption_salt | default(saved_secrets.opwerf_encryption_salt | default(lookup('password', '/dev/null chars=hex_digits length=16'))) }}"
-    opwerf_session_key: "{{ opwerf_session_signing_key | default(saved_secrets.opwerf_session_signing_key | default(lookup('password', '/dev/null chars=hex_digits length=64'))) }}"
-  no_log: true
-
-# ============================================
-# Database Setup
+# Pre-populate secrets so ArgoCD can deploy
 # ============================================
 
 - name: Retrieve Percona-generated OpenWerf PG password
   kubernetes.core.k8s_info:
     kind: Secret
-    namespace: "{{ db_ns }}"
+    namespace: databases
     name: "{{ project_name | default('k8s') }}-pg-pguser-{{ opwerf_db_user }}"
   register: opwerf_pg_secret
   until: opwerf_pg_secret.resources | length > 0
@@ -61,197 +72,12 @@
   delay: 10
   failed_when: false
 
-- name: Set OpenWerf PG password from Percona
+- name: Set resolved PG password
   set_fact:
-    resolved_opwerf_db_password: "{{ (opwerf_pg_secret.resources[0].data.password | b64decode) if opwerf_pg_secret.resources | length > 0 else opwerf_db_password }}"
+    opwerf_pg_password_final: "{{ (opwerf_pg_secret.resources[0].data.password | b64decode) if opwerf_pg_secret.resources | length > 0 else opwerf_db_password_resolved }}"
   no_log: true
 
-# ============================================
-# Redis Deployment
-# ============================================
-
-- name: Create Redis ConfigMap
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: opwerf-redis-config
-        namespace: "{{ opwerf_ns }}"
-      data:
-        redis.conf: |
-          requirepass {{ opwerf_redis_password }}
-          appendonly yes
-          appendfsync everysec
-          maxmemory 1gb
-          maxmemory-policy allkeys-lru
-  no_log: true
-
-- name: Deploy Redis StatefulSet
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: StatefulSet
-      metadata:
-        name: opwerf-redis
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        serviceName: opwerf-redis
-        replicas: 1
-        selector:
-          matchLabels:
-            app: opwerf-redis
-        template:
-          metadata:
-            labels:
-              app: opwerf-redis
-          spec:
-            containers:
-              - name: redis
-                image: redis:7-alpine
-                command:
-                  - redis-server
-                  - /etc/redis/redis.conf
-                ports:
-                  - containerPort: 6379
-                    name: redis
-                volumeMounts:
-                  - name: data
-                    mountPath: /data
-                  - name: config
-                    mountPath: /etc/redis
-                resources:
-                  requests:
-                    cpu: 100m
-                    memory: 256Mi
-                  limits:
-                    cpu: 500m
-                    memory: 1Gi
-            volumes:
-              - name: config
-                configMap:
-                  name: opwerf-redis-config
-        volumeClaimTemplates:
-          - metadata:
-              name: data
-            spec:
-              accessModes: ["ReadWriteOnce"]
-              storageClassName: "{{ storage_class }}"
-              resources:
-                requests:
-                  storage: "{{ opwerf_redis_storage_size }}"
-
-- name: Create Redis Service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: opwerf-redis
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        clusterIP: None
-        ports:
-          - port: 6379
-            targetPort: 6379
-            name: redis
-        selector:
-          app: opwerf-redis
-
-# ============================================
-# Elasticsearch Deployment
-# ============================================
-
-- name: Deploy Elasticsearch StatefulSet
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: StatefulSet
-      metadata:
-        name: opwerf-elasticsearch
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        serviceName: opwerf-elasticsearch
-        replicas: "{{ opwerf_elasticsearch_replicas }}"
-        selector:
-          matchLabels:
-            app: opwerf-elasticsearch
-        template:
-          metadata:
-            labels:
-              app: opwerf-elasticsearch
-          spec:
-            initContainers:
-              - name: increase-vm-max-map
-                image: busybox:latest
-                command: ['sysctl', '-w', 'vm.max_map_count=262144']
-                securityContext:
-                  privileged: true
-            containers:
-              - name: elasticsearch
-                image: elasticsearch:8.16.1
-                env:
-                  - name: discovery.type
-                    value: single-node
-                  - name: xpack.security.enabled
-                    value: "false"
-                  - name: ES_JAVA_OPTS
-                    value: "-Xms512m -Xmx512m"
-                ports:
-                  - containerPort: 9200
-                    name: http
-                  - containerPort: 9300
-                    name: transport
-                volumeMounts:
-                  - name: data
-                    mountPath: /usr/share/elasticsearch/data
-                resources:
-                  requests:
-                    cpu: 200m
-                    memory: 1Gi
-                  limits:
-                    cpu: 1000m
-                    memory: 2Gi
-        volumeClaimTemplates:
-          - metadata:
-              name: data
-            spec:
-              accessModes: ["ReadWriteOnce"]
-              storageClassName: "{{ storage_class }}"
-              resources:
-                requests:
-                  storage: "{{ opwerf_elasticsearch_storage_size }}"
-
-- name: Create Elasticsearch Service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: opwerf-elasticsearch
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        clusterIP: None
-        ports:
-          - port: 9200
-            targetPort: 9200
-            name: http
-          - port: 9300
-            targetPort: 9300
-            name: transport
-        selector:
-          app: opwerf-elasticsearch
-
-# ============================================
-# Application Secrets
-# ============================================
-
-- name: Create OpenWerf application secrets
+- name: Create OpenWerf secrets in namespace
   kubernetes.core.k8s:
     state: present
     definition:
@@ -260,458 +86,379 @@
       metadata:
         name: opwerf-secrets
         namespace: "{{ opwerf_ns }}"
+        labels:
+          app.kubernetes.io/part-of: opwerf
       type: Opaque
       stringData:
-        DATABASE_PASSWORD: "{{ resolved_opwerf_db_password }}"
-        REDIS_PASSWORD: "{{ opwerf_redis_password }}"
-        MINIO_ACCESS_KEY: "{{ minio_root_user }}"
-        MINIO_SECRET_KEY: "{{ minio_root_password }}"
-        CREDENTIAL_PROXY_INTERNAL_TOKEN: "{{ opwerf_credential_proxy_token }}"
-        ENCRYPTION_KEY: "{{ opwerf_enc_key }}"
-        ENCRYPTION_SALT: "{{ opwerf_enc_salt }}"
-        SESSION_SIGNING_KEY: "{{ opwerf_session_key }}"
-        E2B_API_KEY: "{{ opwerf_e2b_api_key }}"
-        ANTHROPIC_API_KEY: "{{ opwerf_anthropic_api_key }}"
+        database.password: "{{ opwerf_pg_password_final }}"
+        redis.password: "{{ opwerf_redis_password_resolved }}"
+        minio.accessKey: "{{ minio_root_user }}"
+        minio.secretKey: "{{ minio_root_password }}"
+        credential.proxy.token: "{{ opwerf_credential_proxy_token_resolved }}"
+        encryption.key: "{{ opwerf_enc_key_resolved }}"
+        encryption.salt: "{{ opwerf_enc_salt_resolved }}"
+        session.signing.key: "{{ opwerf_session_key_resolved }}"
+        e2b.api.key: "{{ opwerf_e2b_api_key | default('') }}"
+        anthropic.api.key: "{{ opwerf_anthropic_api_key | default('') }}"
+  no_log: true
+  register: _r_create_opwerf_secrets
+  retries: 3
+  delay: 10
+  until: _r_create_opwerf_secrets is not failed
+
+# ============================================
+# Wait for GitLab to be available
+# ============================================
+
+- name: Wait for GitLab webservice to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ opwerf_gitlab_ns }}"
+    label_selectors:
+      - app=webservice
+  register: gitlab_webservice
+  until: >
+    gitlab_webservice.resources | length > 0 and
+    (gitlab_webservice.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 60
+  delay: 15
+  failed_when: false
+
+- name: Get GitLab root password
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ opwerf_gitlab_ns }}"
+    name: gitlab-gitlab-initial-root-password
+  register: gitlab_root_secret
+  retries: 5
+  delay: 10
+  until: gitlab_root_secret.resources | length > 0
+  failed_when: false
+
+- name: Set GitLab root password fact
+  set_fact:
+    gitlab_root_password: "{{ gitlab_root_secret.resources[0].data.password | b64decode }}"
+  when: gitlab_root_secret.resources | length > 0
   no_log: true
 
 # ============================================
-# Application ConfigMap
+# Create GitLab group and project
 # ============================================
 
-- name: Create OpenWerf ConfigMap
+- name: Ensure 'platform' group exists in GitLab
+  ansible.builtin.uri:
+    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/groups"
+    method: POST
+    headers:
+      Content-Type: application/json
+      PRIVATE-TOKEN: "{{ gitlab_root_token | default('') }}"
+    body_format: json
+    body:
+      name: platform
+      path: platform
+      visibility: private
+    status_code: [200, 201, 400]
+  register: gitlab_group_result
+  when: gitlab_root_token is defined
+  failed_when: >
+    gitlab_group_result.status not in [200, 201, 400]
+
+- name: Get 'platform' group ID
+  ansible.builtin.uri:
+    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/groups/platform"
+    method: GET
+    headers:
+      PRIVATE-TOKEN: "{{ gitlab_root_token | default('') }}"
+    status_code: [200, 404]
+  register: gitlab_group_info
+  when: gitlab_root_token is defined
+  failed_when: false
+
+- name: Set platform group ID
+  set_fact:
+    platform_group_id: "{{ gitlab_group_info.json.id | default('') }}"
+  when: gitlab_root_token is defined and gitlab_group_info.status == 200
+
+- name: Create 'opwerf' project in platform group
+  ansible.builtin.uri:
+    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/projects"
+    method: POST
+    headers:
+      Content-Type: application/json
+      PRIVATE-TOKEN: "{{ gitlab_root_token | default('') }}"
+    body_format: json
+    body:
+      name: opwerf
+      path: opwerf
+      namespace_id: "{{ platform_group_id }}"
+      visibility: private
+      initialize_with_readme: true
+    status_code: [200, 201, 400]
+  register: gitlab_project_result
+  when: gitlab_root_token is defined and platform_group_id is defined
+  failed_when: >
+    gitlab_project_result.status not in [200, 201, 400]
+
+# ============================================
+# Push Helm chart to GitLab
+# ============================================
+
+- name: Check if Helm chart already pushed
+  ansible.builtin.command:
+    cmd: >
+      git ls-remote --heads
+      https://root:{{ gitlab_root_password | default('') }}@gitlab.{{ domain }}/platform/opwerf.git main
+  register: helm_repo_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+  when: gitlab_root_password is defined
+
+- name: Create temp directory for Helm chart
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: opwerf-helm
+  register: helm_tempdir
+  when: >
+    gitlab_root_password is defined and
+    helm_repo_check.stdout | default('') == ''
+
+- name: Copy Helm chart files to temp directory
+  ansible.builtin.copy:
+    src: "{{ role_path }}/files/helm/"
+    dest: "{{ helm_tempdir.path }}/"
+    mode: '0644'
+  when: >
+    gitlab_root_password is defined and
+    helm_tempdir is defined and helm_tempdir.path is defined
+
+- name: Push Helm chart to GitLab repository
+  ansible.builtin.shell: |
+    set -e
+    cd {{ helm_tempdir.path }}
+    git config --global user.email "{{ email }}"
+    git config --global user.name "Platform Bot"
+    git init
+    git checkout -b main
+    git add .
+    git commit -m "feat: initial OpenWerf Helm chart"
+    git remote add origin https://root:{{ gitlab_root_password }}@gitlab.{{ domain }}/platform/opwerf.git
+    git push --force origin main
+  when: >
+    gitlab_root_password is defined and
+    helm_tempdir is defined and helm_tempdir.path is defined
+  no_log: true
+  register: helm_push_result
+  failed_when: helm_push_result.rc != 0
+
+- name: Remove temp directory
+  ansible.builtin.file:
+    path: "{{ helm_tempdir.path }}"
+    state: absent
+  when: helm_tempdir is defined and helm_tempdir.path is defined
+
+# ============================================
+# Add GitLab repository to ArgoCD
+# ============================================
+
+- name: Add GitLab repository credentials to ArgoCD
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
-      kind: ConfigMap
+      kind: Secret
       metadata:
-        name: opwerf-config
-        namespace: "{{ opwerf_ns }}"
-      data:
-        DATABASE_HOST: "{{ opwerf_pg_host }}"
-        DATABASE_PORT: "{{ opwerf_pg_port | string }}"
-        DATABASE_NAME: "{{ opwerf_db_name }}"
-        DATABASE_USER: "{{ opwerf_db_user }}"
-        TEMPORAL_ADDRESS: "{{ opwerf_temporal_address }}"
-        TEMPORAL_NAMESPACE: "{{ opwerf_temporal_namespace }}"
-        REDIS_URL: "redis://:$(REDIS_PASSWORD)@opwerf-redis.{{ opwerf_ns }}.svc.cluster.local:6379"
-        MINIO_ENDPOINT: "{{ opwerf_minio_endpoint }}"
-        MINIO_PORT: "{{ opwerf_minio_port | string }}"
-        MINIO_BUCKET: "{{ opwerf_minio_bucket }}"
-        MINIO_USE_SSL: "{{ opwerf_minio_use_ssl | string | lower }}"
-        NODE_ENV: "{{ opwerf_node_env }}"
-        ALLOW_DEV_AUTH_BYPASS: "{{ opwerf_allow_dev_auth_bypass }}"
-        API_PORT: "3000"
-        CREDENTIAL_PROXY_PORT: "4000"
-        WORKER_LOG_LEVEL: "info"
-        APP_ROOT: "/app"
-
-# ============================================
-# API Deployment
-# ============================================
-
-- name: Deploy OpenWerf API
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: opwerf-api
-        namespace: "{{ opwerf_ns }}"
+        name: opwerf-helm-repo
+        namespace: "{{ opwerf_argocd_ns }}"
         labels:
-          app: opwerf-api
-          component: api
-      spec:
-        replicas: "{{ opwerf_api_replicas | int }}"
-        selector:
-          matchLabels:
-            app: opwerf-api
-        template:
-          metadata:
-            labels:
-              app: opwerf-api
-          spec:
-            containers:
-              - name: api
-                image: "{{ opwerf_image_registry }}/opwerf/api:{{ opwerf_image_tag }}"
-                ports:
-                  - containerPort: 3000
-                    name: http
-                envFrom:
-                  - configMapRef:
-                      name: opwerf-config
-                  - secretRef:
-                      name: opwerf-secrets
-                resources:
-                  requests:
-                    cpu: "{{ opwerf_api_cpu_request }}"
-                    memory: "{{ opwerf_api_memory_request }}"
-                  limits:
-                    cpu: "{{ opwerf_api_cpu_limit }}"
-                    memory: "{{ opwerf_api_memory_limit }}"
-                livenessProbe:
-                  httpGet:
-                    path: /health
-                    port: 3000
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                readinessProbe:
-                  httpGet:
-                    path: /health
-                    port: 3000
-                  initialDelaySeconds: 5
-                  periodSeconds: 5
-
-- name: Create OpenWerf API Service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: opwerf-api
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        type: ClusterIP
-        ports:
-          - port: 8080
-            targetPort: 3000
-            protocol: TCP
-            name: http
-        selector:
-          app: opwerf-api
-
-# ============================================
-# Worker Deployment
-# ============================================
-
-- name: Deploy OpenWerf Worker
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: opwerf-worker
-        namespace: "{{ opwerf_ns }}"
-        labels:
-          app: opwerf-worker
-          component: worker
-      spec:
-        replicas: "{{ opwerf_worker_replicas | int }}"
-        selector:
-          matchLabels:
-            app: opwerf-worker
-        template:
-          metadata:
-            labels:
-              app: opwerf-worker
-          spec:
-            containers:
-              - name: worker
-                image: "{{ opwerf_image_registry }}/opwerf/worker:{{ opwerf_image_tag }}"
-                envFrom:
-                  - configMapRef:
-                      name: opwerf-config
-                  - secretRef:
-                      name: opwerf-secrets
-                resources:
-                  requests:
-                    cpu: "{{ opwerf_worker_cpu_request }}"
-                    memory: "{{ opwerf_worker_memory_request }}"
-                  limits:
-                    cpu: "{{ opwerf_worker_cpu_limit }}"
-                    memory: "{{ opwerf_worker_memory_limit }}"
-
-# ============================================
-# Credential Proxy Deployment
-# ============================================
-
-- name: Deploy OpenWerf Credential Proxy
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: opwerf-credential-proxy
-        namespace: "{{ opwerf_ns }}"
-        labels:
-          app: opwerf-credential-proxy
-          component: credential-proxy
-      spec:
-        replicas: "{{ opwerf_credential_proxy_replicas | int }}"
-        selector:
-          matchLabels:
-            app: opwerf-credential-proxy
-        template:
-          metadata:
-            labels:
-              app: opwerf-credential-proxy
-          spec:
-            containers:
-              - name: credential-proxy
-                image: "{{ opwerf_image_registry }}/opwerf/credential-proxy:{{ opwerf_image_tag }}"
-                ports:
-                  - containerPort: 4000
-                    name: http
-                envFrom:
-                  - configMapRef:
-                      name: opwerf-config
-                  - secretRef:
-                      name: opwerf-secrets
-                resources:
-                  requests:
-                    cpu: 50m
-                    memory: 128Mi
-                  limits:
-                    cpu: 200m
-                    memory: 256Mi
-
-- name: Create OpenWerf Credential Proxy Service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: opwerf-credential-proxy
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        type: ClusterIP
-        ports:
-          - port: 4000
-            targetPort: 4000
-            protocol: TCP
-            name: http
-        selector:
-          app: opwerf-credential-proxy
-
-# ============================================
-# Dashboard Deployment
-# ============================================
-
-- name: Deploy OpenWerf Dashboard
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: opwerf-dashboard
-        namespace: "{{ opwerf_ns }}"
-        labels:
-          app: opwerf-dashboard
-          component: dashboard
-      spec:
-        replicas: "{{ opwerf_dashboard_replicas | int }}"
-        selector:
-          matchLabels:
-            app: opwerf-dashboard
-        template:
-          metadata:
-            labels:
-              app: opwerf-dashboard
-          spec:
-            containers:
-              - name: dashboard
-                image: "{{ opwerf_image_registry }}/opwerf/dashboard:{{ opwerf_image_tag }}"
-                ports:
-                  - containerPort: 80
-                    name: http
-                resources:
-                  requests:
-                    cpu: "{{ opwerf_dashboard_cpu_request }}"
-                    memory: "{{ opwerf_dashboard_memory_request }}"
-                  limits:
-                    cpu: "{{ opwerf_dashboard_cpu_limit }}"
-                    memory: "{{ opwerf_dashboard_memory_limit }}"
-                livenessProbe:
-                  httpGet:
-                    path: /
-                    port: 80
-                  initialDelaySeconds: 10
-                  periodSeconds: 10
-                readinessProbe:
-                  httpGet:
-                    path: /
-                    port: 80
-                  initialDelaySeconds: 5
-                  periodSeconds: 5
-
-- name: Create OpenWerf Dashboard Service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: opwerf-dashboard
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        type: ClusterIP
-        ports:
-          - port: 80
-            targetPort: 80
-            protocol: TCP
-            name: http
-        selector:
-          app: opwerf-dashboard
-
-# ============================================
-# Gateway API HTTPRoutes
-# ============================================
-
-- name: Create HTTPRoute for OpenWerf Dashboard
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
-      metadata:
-        name: opwerf-dashboard
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        parentRefs:
-          - name: main-gateway
-            namespace: gateway
-        hostnames:
-          - "{{ opwerf_domain }}"
-        rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: opwerf-dashboard
-                port: 80
-
-- name: Create HTTPRoute for OpenWerf API
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
-      metadata:
-        name: opwerf-api
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        parentRefs:
-          - name: main-gateway
-            namespace: gateway
-        hostnames:
-          - "{{ opwerf_api_domain }}"
-        rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: opwerf-api
-                port: 8080
-
-# ============================================
-# HPA Configuration
-# ============================================
-
-- name: Create HPA for OpenWerf API
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: autoscaling/v2
-      kind: HorizontalPodAutoscaler
-      metadata:
-        name: opwerf-api-hpa
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        scaleTargetRef:
-          apiVersion: apps/v1
-          kind: Deployment
-          name: opwerf-api
-        minReplicas: "{{ opwerf_api_replicas }}"
-        maxReplicas: 20
-        metrics:
-          - type: Resource
-            resource:
-              name: cpu
-              target:
-                type: Utilization
-                averageUtilization: 70
-          - type: Resource
-            resource:
-              name: memory
-              target:
-                type: Utilization
-                averageUtilization: 80
-
-- name: Create HPA for OpenWerf Worker
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: autoscaling/v2
-      kind: HorizontalPodAutoscaler
-      metadata:
-        name: opwerf-worker-hpa
-        namespace: "{{ opwerf_ns }}"
-      spec:
-        scaleTargetRef:
-          apiVersion: apps/v1
-          kind: Deployment
-          name: opwerf-worker
-        minReplicas: "{{ opwerf_worker_replicas }}"
-        maxReplicas: 10
-        metrics:
-          - type: Resource
-            resource:
-              name: cpu
-              target:
-                type: Utilization
-                averageUtilization: 70
-
-# ============================================
-# Wait for Deployments
-# ============================================
-
-- name: Wait for OpenWerf API to be ready
-  kubernetes.core.k8s_info:
-    kind: Deployment
-    namespace: "{{ opwerf_ns }}"
-    name: opwerf-api
-  register: api_status
-  until: >
-    api_status.resources[0].status.readyReplicas is defined and
-    api_status.resources[0].status.readyReplicas == (opwerf_api_replicas | int)
-  retries: 60
+          argocd.argoproj.io/secret-type: repository
+      type: Opaque
+      stringData:
+        type: git
+        url: "{{ opwerf_helm_repo_url }}"
+        username: root
+        password: "{{ gitlab_root_password | default('') }}"
+  no_log: true
+  register: _r_add_gitlab_repo_to_argocd
+  retries: 3
   delay: 10
+  until: _r_add_gitlab_repo_to_argocd is not failed
+  when: gitlab_root_password is defined
 
-- name: Wait for OpenWerf Dashboard to be ready
-  kubernetes.core.k8s_info:
-    kind: Deployment
-    namespace: "{{ opwerf_ns }}"
-    name: opwerf-dashboard
-  register: dashboard_status
-  until: >
-    dashboard_status.resources[0].status.readyReplicas is defined and
-    dashboard_status.resources[0].status.readyReplicas == (opwerf_dashboard_replicas | int)
-  retries: 60
+# ============================================
+# ArgoCD AppProject for OpenWerf
+# ============================================
+
+- name: Create ArgoCD AppProject for OpenWerf
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: AppProject
+      metadata:
+        name: opwerf
+        namespace: "{{ opwerf_argocd_ns }}"
+      spec:
+        description: OpenWerf AI workflow orchestration platform
+        sourceRepos:
+          - "{{ opwerf_helm_repo_url }}"
+        destinations:
+          - namespace: "{{ opwerf_ns }}"
+            server: https://kubernetes.default.svc
+        clusterResourceWhitelist:
+          - group: '*'
+            kind: Namespace
+        namespaceResourceWhitelist:
+          - group: '*'
+            kind: '*'
+        orphanedResources:
+          warn: true
+  register: _r_create_argocd_appproject
+  retries: 3
   delay: 10
+  until: _r_create_argocd_appproject is not failed
+
+# ============================================
+# ArgoCD Application (Helm)
+# ============================================
+
+- name: Create ArgoCD Application for OpenWerf
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: opwerf
+        namespace: "{{ opwerf_argocd_ns }}"
+        labels:
+          app.kubernetes.io/part-of: opwerf
+        finalizers:
+          - resources-finalizer.argocd.argoproj.io
+      spec:
+        project: opwerf
+        source:
+          repoURL: "{{ opwerf_helm_repo_url }}"
+          targetRevision: main
+          path: "."
+          helm:
+            releaseName: opwerf
+            values: |
+              global:
+                domain: {{ domain }}
+                tier: {{ tier }}
+              image:
+                registry: {{ opwerf_image_registry }}
+                tag: {{ opwerf_image_tag }}
+              app:
+                name: opwerf
+                nodeEnv: {{ opwerf_node_env }}
+                allowDevAuthBypass: "{{ opwerf_allow_dev_auth_bypass }}"
+              replicas:
+                api: {{ opwerf_api_replicas_val }}
+                worker: {{ opwerf_worker_replicas_val }}
+                dashboard: {{ opwerf_dashboard_replicas_val }}
+                credentialProxy: 1
+              database:
+                host: {{ pg_host }}
+                port: {{ opwerf_pg_port }}
+                name: {{ opwerf_db_name }}
+                user: {{ opwerf_db_user }}
+                password: {{ opwerf_pg_password_final }}
+              redis:
+                enabled: true
+                storageSize: {{ opwerf_redis_storage_size }}
+                storageClass: {{ storage_class }}
+              elasticsearch:
+                enabled: true
+                replicas: {{ opwerf_elasticsearch_replicas }}
+                storageSize: {{ opwerf_elasticsearch_storage_size }}
+                storageClass: {{ storage_class }}
+              temporal:
+                address: {{ opwerf_temporal_address }}
+                namespace: {{ opwerf_temporal_namespace }}
+              minio:
+                endpoint: {{ opwerf_minio_endpoint }}
+                port: {{ opwerf_minio_port }}
+                bucket: {{ opwerf_minio_bucket }}
+                useSSL: {{ opwerf_minio_use_ssl | string | lower }}
+                accessKey: {{ minio_root_user }}
+                secretKey: {{ minio_root_password }}
+              security:
+                redisPassword: {{ opwerf_redis_password_resolved }}
+                credentialProxyToken: {{ opwerf_credential_proxy_token_resolved }}
+                encryptionKey: {{ opwerf_enc_key_resolved }}
+                encryptionSalt: {{ opwerf_enc_salt_resolved }}
+                sessionSigningKey: {{ opwerf_session_key_resolved }}
+              externalAPIs:
+                e2bApiKey: {{ opwerf_e2b_api_key | default('') }}
+                anthropicApiKey: {{ opwerf_anthropic_api_key | default('') }}
+              ingress:
+                enabled: true
+                gatewayName: main-gateway
+                gatewayNamespace: gateway
+                dashboardHost: app.{{ domain }}
+                apiHost: api.{{ domain }}
+              autoscaling:
+                api:
+                  enabled: true
+                  minReplicas: {{ opwerf_api_replicas_val }}
+                  maxReplicas: 20
+                  targetCPUUtilizationPercentage: 70
+                  targetMemoryUtilizationPercentage: 80
+                worker:
+                  enabled: true
+                  minReplicas: {{ opwerf_worker_replicas_val }}
+                  maxReplicas: 10
+                  targetCPUUtilizationPercentage: 70
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: "{{ opwerf_ns }}"
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=true
+            - ServerSideApply=true
+          retry:
+            limit: 5
+            backoff:
+              duration: 10s
+              factor: 2
+              maxDuration: 5m
+  no_log: true
+  register: _r_create_argocd_application
+  retries: 3
+  delay: 10
+  until: _r_create_argocd_application is not failed
+
+# ============================================
+# Wait for ArgoCD to sync
+# ============================================
+
+- name: Wait for ArgoCD to sync OpenWerf application
+  ansible.builtin.command:
+    cmd: kubectl wait application/opwerf -n {{ opwerf_argocd_ns }} --for=jsonpath='{.status.health.status}'=Healthy --timeout=600s
+  register: argocd_sync_wait
+  retries: 3
+  delay: 30
+  until: argocd_sync_wait.rc == 0
+  failed_when: false
+  changed_when: false
 
 - name: Display OpenWerf deployment summary
   debug:
     msg:
       - "=========================================="
-      - "  OpenWerf Deployment Complete"
+      - "  OpenWerf Deployment via ArgoCD Complete"
       - "=========================================="
-      - "  Dashboard: https://{{ opwerf_domain }}"
-      - "  API: https://{{ opwerf_api_domain }}"
+      - "  Dashboard: https://app.{{ domain }}"
+      - "  API: https://api.{{ domain }}"
       - "  Namespace: {{ opwerf_ns }}"
+      - "  ArgoCD App: opwerf (project: opwerf)"
+      - "  Helm repo: {{ opwerf_helm_repo_url }}"
       - ""
-      - "  Components deployed:"
-      - "    - API: {{ opwerf_api_replicas }} replicas"
-      - "    - Worker: {{ opwerf_worker_replicas }} replicas"
-      - "    - Dashboard: {{ opwerf_dashboard_replicas }} replicas"
-      - "    - Credential Proxy: {{ opwerf_credential_proxy_replicas }} replica"
-      - "    - Redis: 1 replica"
-      - "    - Elasticsearch: {{ opwerf_elasticsearch_replicas }} replica"
+      - "  Monitor in ArgoCD:"
+      - "  https://argocd.{{ domain }}/applications/opwerf"
       - "=========================================="
