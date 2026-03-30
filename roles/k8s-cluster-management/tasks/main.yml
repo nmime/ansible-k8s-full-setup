@@ -164,6 +164,18 @@
       cilium_enable_health_checking: true
       cilium_enable_bandwidth_manager: true
       cilium_enable_ipv4_masquerade: true
+      # Containerd registry mirrors - route private registry through internal service
+      containerd_registries_mirrors:
+        - prefix: docker.io
+          mirrors:
+            - host: https://registry-1.docker.io
+              capabilities: ["pull", "resolve"]
+              skip_verify: false
+        - prefix: registry.{{ domain }}
+          mirrors:
+            - host: http://gitlab-registry.gitlab.svc.cluster.local:5000
+              capabilities: ["pull", "resolve", "push"]
+              skip_verify: true
     mode: '0644'
   delegate_to: localhost
   become: false

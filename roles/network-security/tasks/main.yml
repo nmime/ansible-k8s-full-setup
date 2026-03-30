@@ -1,8 +1,8 @@
 ---
 # Network Security Role - Headscale VPN v0.28.0 + Bastion Hardening
 # Installs Headscale VPN on bastion for secure admin access
-# Architecture: Public (LB) -> app, api, s3, registry
-#               Admin (VPN) -> gitlab, argocd, grafana, vault, k8s
+# Architecture: Public (LB) -> app, api, s3
+#               Admin (VPN) -> gitlab, registry, kas, argocd, grafana, vault, k8s
 
 - name: Set network security variables
   set_fact:
