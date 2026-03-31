@@ -14,27 +14,13 @@
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
 
 # ============================================
-# Install Dragonfly Operator via Helm (OCI)
+# Install Dragonfly Operator via manifest
 # ============================================
 
-- name: Install Dragonfly Operator via Helm OCI
-  kubernetes.core.helm:
-    name: dragonfly-operator
-    chart_ref: oci://ghcr.io/dragonflydb/dragonfly-operator/helm
-    chart_version: "{{ df_operator_ver }}"
-    release_namespace: "{{ df_operator_ns }}"
-    create_namespace: true
-    release_state: present
-    wait: true
-    wait_timeout: 300s
-    values:
-      crds:
-        install: true
-        keep: true
-      serviceMonitor:
-        enabled: true
-      grafanaDashboard:
-        enabled: true
+- name: Install Dragonfly Operator via manifest
+  kubernetes.core.k8s:
+    state: present
+    src: "https://raw.githubusercontent.com/dragonflydb/dragonfly-operator/{{ df_operator_ver }}/manifests/dragonfly-operator.yaml"
   register: _r_install_dragonfly_operator
   retries: 3
   delay: 15
