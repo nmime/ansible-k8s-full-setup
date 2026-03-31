@@ -24,7 +24,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "opwerf.redisUrl" -}}
-redis://:$(REDIS_PASSWORD)@{{ include "opwerf.name" . }}-redis.{{ .Release.Namespace }}.svc.cluster.local:6379
+redis://:$(REDIS_PASSWORD)@{{ .Values.dragonfly.host }}:{{ .Values.dragonfly.port }}
 {{- end }}
 
 {{- define "opwerf.credentialProxyUrl" -}}

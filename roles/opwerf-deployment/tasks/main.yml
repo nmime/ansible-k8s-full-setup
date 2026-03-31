@@ -365,10 +365,9 @@
                 name: {{ opwerf_db_name }}
                 user: {{ opwerf_db_user }}
                 password: {{ opwerf_pg_password_final }}
-              redis:
-                enabled: true
-                storageSize: {{ opwerf_redis_storage_size }}
-                storageClass: {{ storage_class }}
+              dragonfly:
+                host: dragonfly.dragonfly.svc.cluster.local
+                port: 6379
               elasticsearch:
                 enabled: true
                 replicas: {{ opwerf_elasticsearch_replicas }}
@@ -385,7 +384,7 @@
                 accessKey: {{ minio_root_user }}
                 secretKey: {{ minio_root_password }}
               security:
-                redisPassword: {{ opwerf_redis_password_resolved }}
+                redisPassword: {{ opwerf_redis_password_resolved }}  # used by Dragonfly auth
                 credentialProxyToken: {{ opwerf_credential_proxy_token_resolved }}
                 encryptionKey: {{ opwerf_enc_key_resolved }}
                 encryptionSalt: {{ opwerf_enc_salt_resolved }}

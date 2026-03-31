@@ -1,13 +1,13 @@
 ---
 # GitOps (ArgoCD) Role - Complete Implementation
-# Deploys ArgoCD v3.3.4 for GitOps continuous delivery
+# Deploys ArgoCD v3.3.6 for GitOps continuous delivery
 # Supports standalone and HA modes based on tier
 
 - name: Set ArgoCD tier-specific variables
   set_fact:
     argocd_namespace: "argocd"
-    argocd_chart_version: "9.4.15"
-    argocd_version: "v3.3.4"
+    argocd_chart_version: "9.4.17"
+    argocd_version: "v3.3.6"
     argocd_domain: "argocd.{{ domain }}"
     argocd_ha: "{{ true if tier in ['medium', 'production'] else false }}"
     argocd_server_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"

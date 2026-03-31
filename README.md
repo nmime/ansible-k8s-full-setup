@@ -89,7 +89,7 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 | **Kubernetes** | `v1.34.3` | Container orchestration (via Kubespray `v2.30.0`) |
 | **Cilium** | `v1.19.2` | CNI, eBPF networking, network policies, Hubble observability |
 | **Gateway API** | `v1.5.1` | Ingress routing (replaces legacy Ingress) |
-| **cert-manager** | `v1.20.0` | Automated TLS certificates (Let's Encrypt + DNS01) |
+| **cert-manager** | `v1.20.1` | Automated TLS certificates (Let's Encrypt + DNS01) |
 | **MetalLB** | `v0.15.3` | Bare-metal load balancer (L2 mode) |
 | **Hetzner CCM** | `v1.30.1` | Cloud controller manager |
 | **Hetzner CSI** | `v2.20.0` | Persistent volume provisioning |
@@ -105,12 +105,13 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 | **MongoDB 8.0** | Percona Operator `1.22.0` | Replicated MongoDB with PBM backups |
 | **GitLab EE** | `v18.10.0` (chart `9.10.0`) | Source code, CI/CD, Container Registry, KAS |
 | **GitLab Runner** | chart `0.87.0` | CI/CD job execution |
-| **ArgoCD** | `v3.3.4` (chart `9.4.15`) | GitOps continuous delivery |
+| **ArgoCD** | `v3.3.6` (chart `9.4.17`) | GitOps continuous delivery |
 | **VictoriaMetrics** | `v1.133.0` (operator `0.59.3`) | Metrics collection & storage |
 | **Grafana** | `v12.3.1` (chart `10.5.15`) | Dashboards & visualization (12 pre-built dashboards) |
 | **Loki** | `v3.6.3` (chart `6.55.0`) | Log aggregation |
 | **Promtail** | chart `6.17.1` | Log shipping |
 | **PMM Server** | `v3` | Percona Monitoring & Management |
+| **Dragonfly** | `v1.37.2` (operator `v1.5.0`) | Redis-compatible in-memory store (25x faster) |
 | **KEDA** | `v2.18.2` (chart `2.19.0`) | Event-driven autoscaling |
 | **Temporal** | `v1.29.1` (chart `0.73.2`) | Workflow orchestration engine |
 | **Headscale** | `v0.28.0` | Self-hosted WireGuard VPN (Tailscale-compatible) |
@@ -163,6 +164,7 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 | **Runner concurrency** | 2 | 5 | 10 | 20 |
 | **ArgoCD** | standalone | standalone | HA (2) | HA (2) |
 | **cert-manager** | 1 | 2 | 2 | 3 |
+| **Dragonfly** | `v1.37.2` (operator `v1.5.0`) | Redis-compatible in-memory store (25x faster) |
 | **KEDA** | 1 | 1 | 2 | 2 |
 | **Temporal frontend** | 1 | 1 | 1 | 2 |
 | **ESO** | 1 | 1 | 2 | 2 |
@@ -279,6 +281,7 @@ The playbook executes 12 roles sequentially:
 10. k8s-gitops             ArgoCD (standalone/HA), multi-env ApplicationSet
 11. k8s-autoscaling        KEDA event-driven autoscaler
 12. temporal               Temporal workflow engine + Web UI
+13. dragonfly              Dragonfly in-memory store (Redis-compatible)
 ```
 
 ---
@@ -500,6 +503,7 @@ The playbook only manages platform records — existing DNS records are preserve
 │   ├── k8s-gitops/                  ArgoCD + ApplicationSet
 │   ├── k8s-autoscaling/             KEDA autoscaler
 │   ├── temporal/                    Workflow engine
+│   ├── dragonfly/                    Dragonfly operator + instance (Redis-compatible)
 │   └── brocoders-boilerplate-setup/ Sample NestJS+React app (optional)
 ├── defaults/
 │   └── main.yml                     Global default variables
