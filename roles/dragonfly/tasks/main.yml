@@ -229,6 +229,27 @@
   delay: 10
   failed_when: false
 
+- name: Create PodDisruptionBudget for Dragonfly
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: dragonfly-pdb
+        namespace: "{{ df_ns }}"
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels:
+            app: dragonfly
+            app.kubernetes.io/part-of: dragonfly
+  when: df_replicas | int > 1
+  register: _r_create_dragonfly_pdb
+  retries: 3
+  delay: 10
+  until: _r_create_dragonfly_pdb is not failed
+
 - name: Display Dragonfly deployment summary
   debug:
     msg:
