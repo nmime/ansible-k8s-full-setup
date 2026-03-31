@@ -177,12 +177,12 @@
           kind: ClusterIssuer
         dnsNames:
           - "{{ argocd_domain }}"
-
-# Create default ArgoCD project
   register: _r_create_tls_certificate_for_argocd
   retries: 3
   delay: 10
   until: _r_create_tls_certificate_for_argocd is not failed
+
+# Create default ArgoCD project
 - name: Create default ArgoCD AppProject
   kubernetes.core.k8s:
     state: present
@@ -205,12 +205,12 @@
         namespaceResourceWhitelist:
           - group: '*'
             kind: '*'
-
-# Create ApplicationSet for multi-environment deployment
   register: _r_create_default_argocd_appproject
   retries: 3
   delay: 10
   until: _r_create_default_argocd_appproject is not failed
+
+# Create ApplicationSet for multi-environment deployment
 - name: Create ApplicationSet for environments
   kubernetes.core.k8s:
     state: present

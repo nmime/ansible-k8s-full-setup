@@ -103,6 +103,25 @@
   until: _r_create_backend_secret is not failed
   no_log: true
 
+- name: Create GitLab registry pull secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-registry-credentials
+        namespace: "{{ app_namespace }}"
+      type: kubernetes.io/dockerconfigjson
+      stringData:
+        .dockerconfigjson: |
+          {"auths":{"registry.{{ domain }}":{"username":"deploy-token","password":"{{ gitlab_deploy_token | default('') }}","auth":"{{ ('deploy-token:' + (gitlab_deploy_token | default(''))) | b64encode }}"}}}
+  register: _r_create_registry_secret
+  retries: 3
+  delay: 10
+  until: _r_create_registry_secret is not failed
+  no_log: true
+
 - name: Deploy backend Deployment
   kubernetes.core.k8s:
     state: present
@@ -130,6 +149,8 @@
             securityContext:
               runAsNonRoot: true
               runAsUser: 1000
+            imagePullSecrets:
+              - name: gitlab-registry-credentials
             containers:
               - name: backend
                 image: "registry.{{ domain }}/{{ app_name }}/backend:latest"
@@ -280,6 +301,8 @@
             securityContext:
               runAsNonRoot: true
               runAsUser: 1000
+            imagePullSecrets:
+              - name: gitlab-registry-credentials
             containers:
               - name: frontend
                 image: "registry.{{ domain }}/{{ app_name }}/frontend:latest"
@@ -490,6 +513,48 @@
   retries: 3
   delay: 10
   until: _r_create_argocd_application_for_frontend is not failed
+
+- name: Create PodDisruptionBudget for backend
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: "{{ app_name }}-backend-pdb"
+        namespace: "{{ app_namespace }}"
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels:
+            app: "{{ app_name }}"
+            component: backend
+  when: backend_replicas | int > 1
+  register: _r_create_backend_pdb
+  retries: 3
+  delay: 10
+  until: _r_create_backend_pdb is not failed
+
+- name: Create PodDisruptionBudget for frontend
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: "{{ app_name }}-frontend-pdb"
+        namespace: "{{ app_namespace }}"
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels:
+            app: "{{ app_name }}"
+            component: frontend
+  when: frontend_replicas | int > 1
+  register: _r_create_frontend_pdb
+  retries: 3
+  delay: 10
+  until: _r_create_frontend_pdb is not failed
 
 - name: Display boilerplate setup info
   debug:

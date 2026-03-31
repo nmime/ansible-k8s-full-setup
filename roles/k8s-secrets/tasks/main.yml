@@ -373,6 +373,84 @@
   delay: 15
   until: _r_unseal_raft_peers__ha_mode_ is not failed
 
+- name: Deploy Vault auto-unseal CronJob
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: vault-auto-unseal
+        namespace: "{{ vault_ns }}"
+        labels:
+          app: vault
+          component: auto-unseal
+      spec:
+        schedule: "*/2 * * * *"
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 3
+        concurrencyPolicy: Forbid
+        jobTemplate:
+          spec:
+            backoffLimit: 1
+            activeDeadlineSeconds: 120
+            template:
+              metadata:
+                labels:
+                  app: vault
+                  component: auto-unseal
+              spec:
+                serviceAccountName: vault
+                restartPolicy: Never
+                containers:
+                  - name: unseal
+                    image: "hashicorp/vault:{{ vault_version }}"
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        for i in $(seq 0 {{ (vault_replicas | int) - 1 }}); do
+                          VAULT_ADDR="http://vault-${i}.vault-internal.{{ vault_ns }}.svc.cluster.local:8200"
+                          export VAULT_ADDR
+                          STATUS=$(vault status -format=json 2>/dev/null) || continue
+                          SEALED=$(echo "$STATUS" | grep -o '"sealed":[a-z]*' | cut -d: -f2)
+                          if [ "$SEALED" = "true" ]; then
+                            echo "vault-${i} is sealed, unsealing..."
+                            INIT_JSON=$(cat /vault-keys/init-output)
+                            for k in 0 1 2; do
+                              KEY=$(echo "$INIT_JSON" | grep -o '"unseal_keys_b64":\[[^]]*\]' | sed 's/.*\[//;s/\]//;s/"//g' | cut -d, -f$((k+1)))
+                              vault operator unseal "$KEY" 2>/dev/null || true
+                            done
+                          fi
+                        done
+                    volumeMounts:
+                      - name: vault-keys
+                        mountPath: /vault-keys
+                        readOnly: true
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 32Mi
+                      limits:
+                        cpu: 50m
+                        memory: 64Mi
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      readOnlyRootFilesystem: true
+                      runAsNonRoot: true
+                      runAsUser: 100
+                volumes:
+                  - name: vault-keys
+                    secret:
+                      secretName: vault-init-keys
+  when: vault_init is changed
+  register: _r_deploy_vault_auto_unseal_cronjob
+  retries: 3
+  delay: 10
+  until: _r_deploy_vault_auto_unseal_cronjob is not failed
+
 - name: Enable KV v2 secrets engine
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"
@@ -644,6 +722,47 @@
   retries: 3
   delay: 15
   until: _r_create_example_externalsecret is not failed
+
+- name: Create PodDisruptionBudget for Vault (HA mode)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: vault-pdb
+        namespace: "{{ vault_ns }}"
+      spec:
+        maxUnavailable: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: vault
+            component: server
+  when: vault_ha | bool
+  register: _r_create_vault_pdb
+  retries: 3
+  delay: 10
+  until: _r_create_vault_pdb is not failed
+
+- name: Create PodDisruptionBudget for ESO
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: external-secrets-pdb
+        namespace: external-secrets
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: external-secrets
+  when: eso_replicas | default(1) | int > 1
+  register: _r_create_eso_pdb
+  retries: 3
+  delay: 10
+  until: _r_create_eso_pdb is not failed
 
 - name: Display secrets management summary
   debug:

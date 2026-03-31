@@ -427,7 +427,7 @@
 - name: Connect bastion to Headscale VPN
   ansible.builtin.shell: |
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} \
-      "tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout | trim }} --hostname {{ project }}-bastion 2>/dev/null || true"
+      "tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout | trim }} --hostname {{ project }}-bastion --advertise-routes=10.0.0.0/16 2>/dev/null || true"
   when: admin_preauth_key.stdout is defined and admin_preauth_key.stdout | trim | length > 0
 
 - name: Display network security summary
