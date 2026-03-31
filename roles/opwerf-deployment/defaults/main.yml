@@ -3,8 +3,8 @@
 # AI-powered workflow orchestration platform
 
 # Application settings
-opwerf_namespace: "{{ opwerf_namespace | default('opwerf') }}"
-opwerf_app_name: "{{ opwerf_app_name | default('opwerf') }}"
+opwerf_namespace: opwerf
+opwerf_app_name: opwerf
 opwerf_domain: "app.{{ domain }}"
 opwerf_api_domain: "api.{{ domain }}"
 
