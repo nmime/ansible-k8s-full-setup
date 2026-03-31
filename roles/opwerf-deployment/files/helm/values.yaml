@@ -56,13 +56,6 @@ resources:
     limits:
       cpu: 200m
       memory: 256Mi
-  redis:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
   elasticsearch:
     requests:
       cpu: 200m
@@ -79,11 +72,11 @@ database:
   user: opwerf
   # password is provided via secrets
 
-# Redis settings
-redis:
-  enabled: true
-  storageSize: 5Gi
-  storageClass: hcloud-volumes
+# Dragonfly (Redis-compatible) settings
+dragonfly:
+  host: dragonfly.dragonfly.svc.cluster.local
+  port: 6379
+  # password provided via opwerf-secrets Secret
 
 # Elasticsearch settings
 elasticsearch:

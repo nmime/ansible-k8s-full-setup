@@ -20,10 +20,9 @@ opwerf_db_user: "{{ opwerf_app_name }}"
 opwerf_pg_host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
 opwerf_pg_port: 5432
 
-# Redis settings (standalone or cluster)
-opwerf_redis_standalone: true
-opwerf_redis_replicas: 1
-opwerf_redis_storage_size: 5Gi
+# Dragonfly (Redis-compatible) - external, deployed by dragonfly role
+opwerf_dragonfly_host: dragonfly.dragonfly.svc.cluster.local
+opwerf_dragonfly_port: 6379
 
 # Elasticsearch settings
 opwerf_elasticsearch_replicas: 1
