@@ -363,7 +363,7 @@
         primary:
           persistence:
             enabled: true
-            size: 8Gi
+            size: "{{ '8Gi' if tier in ['minimal', 'small'] else '8Gi' }}"
             storageClass: "{{ storage_class | default('hcloud-volumes') }}"
       gitlab:
         webservice:
@@ -402,7 +402,7 @@
         gitaly:
           persistence:
             enabled: true
-            size: 50Gi
+            size: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
             storageClass: "{{ storage_class | default('hcloud-volumes') }}"
           resources:
             requests:
