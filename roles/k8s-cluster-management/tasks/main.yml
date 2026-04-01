@@ -376,7 +376,7 @@
         name: hcloud
         namespace: kube-system
       stringData:
-        token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+        token: "{{ hcloud_token | default(lookup('env', 'HCLOUD_TOKEN')) }}"
         network: "{{ project }}-network"
   register: _r_create_hcloud_token_secret_for_ccm
   retries: 3
@@ -880,7 +880,7 @@
         name: hetzner-secret
         namespace: cert-manager
       stringData:
-        api-token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+        api-token: "{{ hcloud_token | default(lookup('env', 'HCLOUD_TOKEN')) }}"
   register: _r_create_hetzner_cloud_api_token_secret_fo
   retries: 3
   delay: 10
