@@ -23,7 +23,7 @@ small:
   nodes: 3
   ha: false
   control_plane_count: 1
-  control_plane_schedulable: false
+  control_plane_schedulable: true
   worker_count: 2
 
 medium:

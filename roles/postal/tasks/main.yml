@@ -207,10 +207,10 @@
                       name: postal-mariadb-credentials
                 resources:
                   requests:
-                    cpu: 250m
+                    cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
                     memory: "{{ postal_mariadb_memory }}"
                   limits:
-                    cpu: "1"
+                    cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
                     memory: "{{ postal_mariadb_memory }}"
                 volumeMounts:
                   - name: data
