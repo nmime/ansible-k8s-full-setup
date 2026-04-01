@@ -115,6 +115,8 @@
           limits:
             cpu: 100m
             memory: 128Mi
+      dex:
+        enabled: false
       configs:
         cm:
           url: "https://{{ argocd_domain }}"
