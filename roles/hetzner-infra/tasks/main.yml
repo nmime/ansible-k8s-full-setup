@@ -30,19 +30,23 @@
 - name: Build region-aware server type list sorted by price
   set_fact:
     available_server_types: >-
-      {{ hcloud_server_types_raw.stdout | from_json
-         | selectattr('architecture', 'equalto', 'x86')
-         | list
-         | json_query('[].{
-             name: name,
-             cores: cores,
-             memory: memory,
-             price: prices[?location==`' + region + '`] | [0].price_monthly.gross
-           }')
-         | selectattr('price', 'defined')
-         | selectattr('price', 'ne', None)
-         | sort(attribute='price')
-         | list }}
+      {%- set raw = hcloud_server_types_raw.stdout | from_json
+           | selectattr('architecture', 'equalto', 'x86')
+           | list
+           | json_query('[].{
+               name: name,
+               cores: cores,
+               memory: memory,
+               price: prices[?location==`' + region + '`] | [0].price_monthly.gross
+             }')
+           | selectattr('price', 'defined')
+           | selectattr('price', 'ne', None)
+           | list -%}
+      {%- set ns = namespace(result=[]) -%}
+      {%- for item in raw -%}
+        {%- set _ = ns.result.append(item | combine({'price_num': item.price | float})) -%}
+      {%- endfor -%}
+      {{ ns.result | sort(attribute='price_num') | list }}
 
 - name: Set tier spec reference
   set_fact:
@@ -108,19 +112,23 @@
       set_fact:
         eu_fallback_region: "{{ item }}"
         eu_fallback_types: >-
-          {{ hcloud_server_types_raw.stdout | from_json
-             | selectattr('architecture', 'equalto', 'x86')
-             | list
-             | json_query('[].{
-                 name: name,
-                 cores: cores,
-                 memory: memory,
-                 price: prices[?location==`' + item + '`] | [0].price_monthly.gross
-               }')
-             | selectattr('price', 'defined')
-             | selectattr('price', 'ne', None)
-             | sort(attribute='price')
-             | list }}
+          {%- set raw = hcloud_server_types_raw.stdout | from_json
+               | selectattr('architecture', 'equalto', 'x86')
+               | list
+               | json_query('[].{
+                   name: name,
+                   cores: cores,
+                   memory: memory,
+                   price: prices[?location==`' + item + '`] | [0].price_monthly.gross
+                 }')
+               | selectattr('price', 'defined')
+               | selectattr('price', 'ne', None)
+               | list -%}
+          {%- set ns = namespace(result=[]) -%}
+          {%- for t in raw -%}
+            {%- set _ = ns.result.append(t | combine({'price_num': t.price | float})) -%}
+          {%- endfor -%}
+          {{ ns.result | sort(attribute='price_num') | list }}
       loop: "{{ hetzner_eu_locations | reject('equalto', region) | list }}"
       when: >-
         eu_fallback_region is not defined
