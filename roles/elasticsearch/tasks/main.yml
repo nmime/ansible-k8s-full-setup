@@ -1,7 +1,7 @@
 ---
 # Elasticsearch 9.x with X-Pack Platinum Crack (ELKrack method)
-# Architecture: StatefulSet master + data nodes, init container builds cracked JAR
-# TLS inter-node + HTTPS, Kibana with Ingress
+# Architecture: StatefulSet master + data nodes, init container patches JAR in-place
+# TLS via K8s Secret (generated locally), Kibana with Ingress
 
 - name: Set Elasticsearch variables
   set_fact:
@@ -30,99 +30,82 @@
   until: _r_es_ns is not failed
 
 # ============================================
-# TLS certificates for inter-node + HTTPS
+# TLS certificates — generated locally, stored in K8s Secret
 # ============================================
 
-- name: Generate ES TLS certificates
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: Job
-      metadata:
-        name: es-tls-setup
-        namespace: "{{ es_ns }}"
-      spec:
-        ttlSecondsAfterFinished: 300
-        template:
-          spec:
-            restartPolicy: Never
-            containers:
-              - name: cert-gen
-                image: "{{ es_img }}"
-                command:
-                  - bash
-                  - -c
-                  - |
-                    if [ -f /certs/transport.p12 ]; then
-                      echo "Certs already exist, skipping"
-                      exit 0
-                    fi
-                    cd /tmp
-                    elasticsearch-certutil ca --silent --pem --out /tmp/ca.zip
-                    unzip /tmp/ca.zip
-                    elasticsearch-certutil cert --silent --pem \
-                      --ca-cert /tmp/ca/ca.crt --ca-key /tmp/ca/ca.key \
-                      --dns "*.es-master-headless.{{ es_ns }}.svc.cluster.local,*.es-data-headless.{{ es_ns }}.svc.cluster.local,es-master.{{ es_ns }}.svc.cluster.local,es-data.{{ es_ns }}.svc.cluster.local,localhost" \
-                      --ip "127.0.0.1" \
-                      --out /tmp/certs.zip
-                    unzip /tmp/certs.zip
-                    cp /tmp/ca/ca.crt /certs/ca.crt
-                    cp /tmp/instance/instance.crt /certs/tls.crt
-                    cp /tmp/instance/instance.key /certs/tls.key
-                    elasticsearch-certutil cert --silent --pass "" --pem \
-                      --ca-cert /tmp/ca/ca.crt --ca-key /tmp/ca/ca.key \
-                      --dns "*.es-master-headless.{{ es_ns }}.svc.cluster.local,*.es-data-headless.{{ es_ns }}.svc.cluster.local" \
-                      --out /tmp/transport.zip
-                    unzip /tmp/transport.zip -d /tmp/transport
-                    cp /tmp/transport/instance/instance.crt /certs/transport.crt
-                    cp /tmp/transport/instance/instance.key /certs/transport.key
-                    echo "TLS certs generated successfully"
-                volumeMounts:
-                  - name: certs
-                    mountPath: /certs
-                securityContext:
-                  runAsUser: 1000
-            volumes:
-              - name: certs
-                persistentVolumeClaim:
-                  claimName: es-tls-certs
-  register: _r_tls_job
-  retries: 3
-  delay: 10
-  until: _r_tls_job is not failed
+- name: Check if ES TLS secret exists
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ es_ns }}"
+    name: es-tls-certs
+  register: es_tls_check
 
-- name: Create TLS certs PVC
+- name: Create temp directory for ES TLS generation
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: es-tls-
+  register: es_tls_tmpdir
+  delegate_to: localhost
+  when: es_tls_check.resources | length == 0
+
+- name: Generate ES CA and node TLS certificates
+  ansible.builtin.shell: |
+    cd {{ es_tls_tmpdir.path }}
+    openssl genrsa -out ca.key 4096
+    openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
+      -out ca.crt -subj "/CN=es-ca"
+    openssl genrsa -out tls.key 2048
+    cat > san.cnf <<'SANEOF'
+    [req]
+    req_extensions = v3_req
+    distinguished_name = dn
+    [dn]
+    [v3_req]
+    subjectAltName = DNS:*.es-master-headless.{{ es_ns }}.svc.cluster.local,DNS:*.es-data-headless.{{ es_ns }}.svc.cluster.local,DNS:es-master.{{ es_ns }}.svc.cluster.local,DNS:es-data.{{ es_ns }}.svc.cluster.local,DNS:elasticsearch.{{ es_ns }}.svc.cluster.local,DNS:localhost,IP:127.0.0.1
+    SANEOF
+    openssl req -new -key tls.key -out tls.csr -subj "/CN=elasticsearch" -config san.cnf
+    openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+      -out tls.crt -days 3650 -sha256 -extensions v3_req -extfile san.cnf
+  delegate_to: localhost
+  when: es_tls_check.resources | length == 0
+
+- name: Read generated TLS files
+  ansible.builtin.slurp:
+    src: "{{ es_tls_tmpdir.path }}/{{ item }}"
+  register: es_tls_files
+  loop: [ca.crt, tls.crt, tls.key]
+  delegate_to: localhost
+  when: es_tls_check.resources | length == 0
+
+- name: Create ES TLS Secret
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
-      kind: PersistentVolumeClaim
+      kind: Secret
       metadata:
         name: es-tls-certs
         namespace: "{{ es_ns }}"
-      spec:
-        accessModes: [ReadWriteOnce]
-        storageClassName: "{{ storage_class }}"
-        resources:
-          requests:
-            storage: 1Gi
-  register: _r_tls_pvc
+      type: Opaque
+      data:
+        ca.crt: "{{ es_tls_files.results[0].content }}"
+        tls.crt: "{{ es_tls_files.results[1].content }}"
+        tls.key: "{{ es_tls_files.results[2].content }}"
+        transport.crt: "{{ es_tls_files.results[1].content }}"
+        transport.key: "{{ es_tls_files.results[2].content }}"
+  when: es_tls_check.resources | length == 0
+  no_log: true
+  register: _r_tls_secret
   retries: 3
   delay: 10
-  until: _r_tls_pvc is not failed
+  until: _r_tls_secret is not failed
 
-- name: Wait for TLS job to complete
-  kubernetes.core.k8s_info:
-    kind: Job
-    namespace: "{{ es_ns }}"
-    name: es-tls-setup
-  register: tls_job_status
-  until: >
-    tls_job_status.resources | length > 0 and
-    (tls_job_status.resources[0].status.succeeded | default(0) | int) >= 1
-  retries: 60
-  delay: 10
+- name: Clean up TLS temp directory
+  ansible.builtin.file:
+    path: "{{ es_tls_tmpdir.path }}"
+    state: absent
+  delegate_to: localhost
+  when: es_tls_check.resources | length == 0
 
 # ============================================
 # Crack script ConfigMap + License
@@ -138,20 +121,22 @@
         name: es-crack-script
         namespace: "{{ es_ns }}"
       data:
-        build_crack_jar.sh: |
+        patch_xpack.sh: |
           #!/bin/bash
           set -e
           VERSION="{{ es_ver }}"
           v=( ${VERSION//./ } )
           branch="${v[0]}.${v[1]}"
+          XPACK="/usr/share/elasticsearch/modules/x-pack-core/x-pack-core-$VERSION.jar"
+          OUT="/crack-ready/x-pack-core-$VERSION.jar"
+
+          if [ -f "$OUT" ]; then
+            echo "Crack JAR already built, skipping"
+            exit 0
+          fi
 
           JAVAC="/usr/share/elasticsearch/jdk/bin/javac"
           JAR="/usr/share/elasticsearch/jdk/bin/jar"
-
-          if [ -f /crack-output/x-pack-core-$VERSION.jar ]; then
-            echo "Crack JAR already exists, skipping build"
-            exit 0
-          fi
 
           mkdir -p /tmp/crack && cd /tmp/crack
 
@@ -172,14 +157,14 @@
           "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" TransportXPackInfoAction.java 2>/dev/null
           "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" License.java 2>/dev/null
 
-          cp /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-$VERSION.jar .
+          cp "$XPACK" .
           mkdir x-pack-core && cd x-pack-core
           "$JAR" -xf ../x-pack-core-$VERSION.jar
           cp /tmp/crack/LicenseVerifier.class org/elasticsearch/license/
           cp /tmp/crack/License.class org/elasticsearch/license/
           cp /tmp/crack/TransportXPackInfoAction.class org/elasticsearch/xpack/core/action/
-          "$JAR" -cf /crack-output/x-pack-core-$VERSION.jar .
-          echo "Crack JAR built: /crack-output/x-pack-core-$VERSION.jar"
+          "$JAR" -cf "$OUT" .
+          echo "Crack JAR built: $OUT"
   register: _r_crack_cm
   retries: 3
   delay: 10
@@ -221,85 +206,6 @@
   retries: 3
   delay: 10
   until: _r_es_creds is not failed
-
-# ============================================
-# Crack JAR builder PVC (shared by init containers)
-# ============================================
-
-- name: Create crack JAR PVC
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: PersistentVolumeClaim
-      metadata:
-        name: es-crack-jar
-        namespace: "{{ es_ns }}"
-      spec:
-        accessModes: [ReadWriteOnce]
-        storageClassName: "{{ storage_class }}"
-        resources:
-          requests:
-            storage: 1Gi
-  register: _r_crack_pvc
-  retries: 3
-  delay: 10
-  until: _r_crack_pvc is not failed
-
-# ============================================
-# Build crack JAR once via Job
-# ============================================
-
-- name: Run crack JAR builder Job
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: Job
-      metadata:
-        name: "es-crack-builder-{{ es_ver | replace('.', '-') }}"
-        namespace: "{{ es_ns }}"
-      spec:
-        ttlSecondsAfterFinished: 600
-        backoffLimit: 3
-        template:
-          spec:
-            restartPolicy: Never
-            containers:
-              - name: builder
-                image: "{{ es_img }}"
-                command: ["bash", "/scripts/build_crack_jar.sh"]
-                volumeMounts:
-                  - name: crack-script
-                    mountPath: /scripts
-                  - name: crack-output
-                    mountPath: /crack-output
-                securityContext:
-                  runAsUser: 1000
-            volumes:
-              - name: crack-script
-                configMap:
-                  name: es-crack-script
-                  defaultMode: 0755
-              - name: crack-output
-                persistentVolumeClaim:
-                  claimName: es-crack-jar
-  register: _r_crack_job
-  retries: 3
-  delay: 10
-  until: _r_crack_job is not failed
-
-- name: Wait for crack JAR build to complete
-  kubernetes.core.k8s_info:
-    kind: Job
-    namespace: "{{ es_ns }}"
-    name: "es-crack-builder-{{ es_ver | replace('.', '-') }}"
-  register: crack_job_status
-  until: >
-    crack_job_status.resources | length > 0 and
-    (crack_job_status.resources[0].status.succeeded | default(0) | int) >= 1
-  retries: 60
-  delay: 10
 
 # ============================================
 # Headless services for StatefulSets
@@ -390,14 +296,16 @@
 
 # ============================================
 # Master node StatefulSet
+# Init container patches x-pack JAR in-place using emptyDir
+# No shared PVC — each pod builds its own crack on startup
 # ============================================
 
 - name: Build seed hosts list
   set_fact:
     es_seed_hosts: >-
-      {{ range(0, es_master_replicas | int) | map('regex_replace', '^(.*)$', 'es-master-\1.es-master-headless.' + es_ns + '.svc.cluster.local') | list | join(',') }}
+      {{ range(0, es_master_replicas | int) | map('regex_replace', '^(.*)$', 'es-master-\\1.es-master-headless.' + es_ns + '.svc.cluster.local') | list | join(',') }}
     es_initial_master_nodes: >-
-      {{ range(0, es_master_replicas | int) | map('regex_replace', '^(.*)$', 'es-master-\1') | list | join(',') }}
+      {{ range(0, es_master_replicas | int) | map('regex_replace', '^(.*)$', 'es-master-\\1') | list | join(',') }}
 
 - name: Deploy ES master StatefulSet
   kubernetes.core.k8s:
@@ -432,29 +340,14 @@
               runAsUser: 1000
               runAsNonRoot: true
             initContainers:
-              - name: apply-crack
+              - name: patch-xpack
                 image: "{{ es_img }}"
                 command:
                   - bash
-                  - -c
-                  - |
-                    JAR="/crack-jar/x-pack-core-{{ es_ver }}.jar"
-                    DEST="/crack-ready/x-pack-core-{{ es_ver }}.jar"
-                    for i in $(seq 1 30); do
-                      if [ -f "$JAR" ]; then
-                        cp "$JAR" "$DEST"
-                        echo "Crack JAR copied to $DEST"
-                        exit 0
-                      fi
-                      echo "Waiting for crack JAR... ($i/30)"
-                      sleep 5
-                    done
-                    echo "ERROR: Crack JAR not found"
-                    exit 1
+                  - /scripts/patch_xpack.sh
                 volumeMounts:
-                  - name: crack-jar
-                    mountPath: /crack-jar
-                    readOnly: true
+                  - name: crack-script
+                    mountPath: /scripts
                   - name: crack-ready
                     mountPath: /crack-ready
                 securityContext:
@@ -559,11 +452,12 @@
                   timeoutSeconds: 10
             volumes:
               - name: certs
-                persistentVolumeClaim:
-                  claimName: es-tls-certs
-              - name: crack-jar
-                persistentVolumeClaim:
-                  claimName: es-crack-jar
+                secret:
+                  secretName: es-tls-certs
+              - name: crack-script
+                configMap:
+                  name: es-crack-script
+                  defaultMode: 0755
               - name: crack-ready
                 emptyDir: {}
         volumeClaimTemplates:
@@ -617,28 +511,14 @@
               runAsUser: 1000
               runAsNonRoot: true
             initContainers:
-              - name: apply-crack
+              - name: patch-xpack
                 image: "{{ es_img }}"
                 command:
                   - bash
-                  - -c
-                  - |
-                    JAR="/crack-jar/x-pack-core-{{ es_ver }}.jar"
-                    DEST="/crack-ready/x-pack-core-{{ es_ver }}.jar"
-                    for i in $(seq 1 30); do
-                      if [ -f "$JAR" ]; then
-                        cp "$JAR" "$DEST"
-                        echo "Crack JAR copied"
-                        exit 0
-                      fi
-                      echo "Waiting for crack JAR... ($i/30)"
-                      sleep 5
-                    done
-                    exit 1
+                  - /scripts/patch_xpack.sh
                 volumeMounts:
-                  - name: crack-jar
-                    mountPath: /crack-jar
-                    readOnly: true
+                  - name: crack-script
+                    mountPath: /scripts
                   - name: crack-ready
                     mountPath: /crack-ready
                 securityContext:
@@ -741,11 +621,12 @@
                   timeoutSeconds: 10
             volumes:
               - name: certs
-                persistentVolumeClaim:
-                  claimName: es-tls-certs
-              - name: crack-jar
-                persistentVolumeClaim:
-                  claimName: es-crack-jar
+                secret:
+                  secretName: es-tls-certs
+              - name: crack-script
+                configMap:
+                  name: es-crack-script
+                  defaultMode: 0755
               - name: crack-ready
                 emptyDir: {}
         volumeClaimTemplates:
@@ -814,7 +695,7 @@
                   - sh
                   - -c
                   - |
-                    echo "Waiting for ES..." 
+                    echo "Waiting for ES..."
                     for i in $(seq 1 60); do
                       if curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200/_cluster/health" >/dev/null 2>&1; then
                         echo "ES ready"
@@ -861,12 +742,12 @@
   until: >
     license_job.resources | length > 0 and
     (license_job.resources[0].status.succeeded | default(0) | int) >= 1
-  retries: 30
+  retries: 60
   delay: 10
   failed_when: false
 
 # ============================================
-# Kibana
+# Kibana Deployment + Service + Ingress
 # ============================================
 
 - name: Deploy Kibana
@@ -890,9 +771,6 @@
             labels:
               app: kibana
           spec:
-            securityContext:
-              runAsUser: 1000
-              runAsNonRoot: true
             containers:
               - name: kibana
                 image: "{{ kb_img }}"
@@ -903,24 +781,18 @@
                   - name: ELASTICSEARCH_HOSTS
                     value: "https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200"
                   - name: ELASTICSEARCH_USERNAME
-                    value: "elastic"
+                    value: elastic
                   - name: ELASTICSEARCH_PASSWORD
                     valueFrom:
                       secretKeyRef:
                         name: es-credentials
                         key: ELASTIC_PASSWORD
-                  - name: ELASTICSEARCH_SSL_VERIFICATIONMODE
-                    value: "none"
+                  - name: ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES
+                    value: /usr/share/kibana/config/certs/ca.crt
                   - name: SERVER_HOST
                     value: "0.0.0.0"
-                  - name: SERVER_NAME
-                    value: "{{ es_kibana_domain }}"
-                  - name: XPACK_SECURITY_ENCRYPTIONKEY
-                    value: "{{ es_password | hash('sha256') | truncate(32, True, '') }}"
-                  - name: XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY
-                    value: "{{ es_password | hash('sha256') | truncate(32, True, '') }}"
-                  - name: XPACK_REPORTING_ENCRYPTIONKEY
-                    value: "{{ es_password | hash('sha256') | truncate(32, True, '') }}"
+                  - name: SERVER_PUBLICBASEURL
+                    value: "https://{{ es_kibana_domain }}"
                 resources:
                   requests:
                     cpu: "{{ kibana_cpu_req }}"
@@ -928,6 +800,10 @@
                   limits:
                     cpu: "{{ kibana_cpu_lim }}"
                     memory: "{{ kibana_memory_lim }}"
+                volumeMounts:
+                  - name: certs
+                    mountPath: /usr/share/kibana/config/certs
+                    readOnly: true
                 readinessProbe:
                   httpGet:
                     path: /api/status
@@ -940,6 +816,13 @@
                     port: 5601
                   initialDelaySeconds: 60
                   periodSeconds: 30
+            volumes:
+              - name: certs
+                secret:
+                  secretName: es-tls-certs
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
   register: _r_kibana
   retries: 3
   delay: 15
@@ -954,8 +837,6 @@
       metadata:
         name: kibana
         namespace: "{{ es_ns }}"
-        labels:
-          app: kibana
       spec:
         type: ClusterIP
         selector:
@@ -968,6 +849,40 @@
   retries: 3
   delay: 10
   until: _r_kibana_svc is not failed
+
+- name: Create Kibana Ingress
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: kibana
+        namespace: "{{ es_ns }}"
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+          nginx.ingress.kubernetes.io/proxy-body-size: 50m
+      spec:
+        ingressClassName: nginx
+        tls:
+          - hosts:
+              - "{{ es_kibana_domain }}"
+            secretName: kibana-tls
+        rules:
+          - host: "{{ es_kibana_domain }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: kibana
+                      port:
+                        number: 5601
+  register: _r_kibana_ingress
+  retries: 3
+  delay: 10
+  until: _r_kibana_ingress is not failed
 
 # ============================================
 # PodDisruptionBudgets
