@@ -275,7 +275,7 @@
   until: >
     mariadb_sts.resources | length > 0 and
     (mariadb_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 30
+  retries: 60
   delay: 10
 
 # ============================================
