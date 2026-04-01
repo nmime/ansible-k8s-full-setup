@@ -16,6 +16,7 @@ ansible-playbook playbooks/deploy_platform.yml \
   -e domain="$DOMAIN" \
   -e email="$EMAIL" \
   -e project_name="$PROJECT" \
+  -e hcloud_token="${HCLOUD_TOKEN}" \
   -v 2>&1 | tee -a "$LOGFILE"
 RETCODE=${PIPESTATUS[0]}
 set -e
