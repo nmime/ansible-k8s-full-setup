@@ -1057,6 +1057,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_platform_namespaces
   retries: 3
   delay: 10
@@ -1104,6 +1106,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_default_deny_netpol
   retries: 3
   delay: 10
@@ -1152,6 +1156,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_allow_apiserver_webhooks_netpol
   retries: 3
   delay: 10
@@ -1188,6 +1194,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_allow_dns_to_host_cnp
   retries: 3
   delay: 10
@@ -1224,6 +1232,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_allow_kube_apiserver_cnp
   retries: 3
   delay: 10
@@ -1264,6 +1274,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_allow_webhook_ingress_cnp
   retries: 3
   delay: 10
