@@ -10,11 +10,11 @@ es_license_type: "platinum"
 es_master_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
 es_data_replicas: "{{ 2 if tier == 'production' else 1 }}"
 
-es_master_memory_req: "{{ '2Gi' if tier in ['medium', 'production'] else '1536Mi' }}"
-es_master_memory_lim: "{{ '2Gi' if tier in ['medium', 'production'] else '1536Mi' }}"
+es_master_memory_req: '2Gi'
+es_master_memory_lim: '2Gi'
 es_master_cpu_req: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
 es_master_cpu_lim: "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
-es_master_heap: "{{ '1g' if tier in ['medium', 'production'] else '512m' }}"
+es_master_heap: '1g'
 es_master_storage: "{{ '20Gi' if tier == 'production' else '10Gi' if tier == 'medium' else '10Gi' }}"
 
 es_data_memory_req: "{{ '4Gi' if tier == 'production' else '2Gi' }}"
