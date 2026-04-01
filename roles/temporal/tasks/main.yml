@@ -17,6 +17,22 @@
     temporal_matching_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
     temporal_frontend_replicas: "{{ 2 if tier == 'production' else (1 if tier in ['minimal', 'small'] else 1) }}"
     temporal_worker_replicas: 1
+    temporal_frontend_cpu_req: "{{ '50m' if tier in ['minimal', 'small'] else '100m' }}"
+    temporal_frontend_mem_req: "{{ '128Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
+    temporal_frontend_cpu_lim: "{{ '250m' if tier in ['minimal', 'small'] else '500m' }}"
+    temporal_frontend_mem_lim: "{{ '256Mi' if tier in ['minimal', 'small'] else '1Gi' }}"
+    temporal_history_cpu_req: "{{ '100m' if tier in ['minimal', 'small'] else '200m' }}"
+    temporal_history_mem_req: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
+    temporal_history_cpu_lim: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
+    temporal_history_mem_lim: "{{ '512Mi' if tier in ['minimal', 'small'] else '2Gi' }}"
+    temporal_matching_cpu_req: "{{ '50m' if tier in ['minimal', 'small'] else '100m' }}"
+    temporal_matching_mem_req: "{{ '128Mi' if tier in ['minimal', 'small'] else '256Mi' }}"
+    temporal_matching_cpu_lim: "{{ '250m' if tier in ['minimal', 'small'] else '500m' }}"
+    temporal_matching_mem_lim: "{{ '256Mi' if tier in ['minimal', 'small'] else '1Gi' }}"
+    temporal_worker_cpu_req: "{{ '50m' if tier in ['minimal', 'small'] else '100m' }}"
+    temporal_worker_mem_req: "{{ '64Mi' if tier in ['minimal', 'small'] else '256Mi' }}"
+    temporal_worker_cpu_lim: "{{ '250m' if tier in ['minimal', 'small'] else '500m' }}"
+    temporal_worker_mem_lim: "{{ '256Mi' if tier in ['minimal', 'small'] else '1Gi' }}"
     temporal_web_replicas: 1
     db_ns: "databases"
     pg_host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
@@ -223,11 +239,11 @@
             port: 7233
           resources:
             requests:
-              cpu: 100m
-              memory: 512Mi
+              cpu: "{{ temporal_frontend_cpu_req }}"
+              memory: "{{ temporal_frontend_mem_req }}"
             limits:
-              cpu: 500m
-              memory: 1Gi
+              cpu: "{{ temporal_frontend_cpu_lim }}"
+              memory: "{{ temporal_frontend_mem_lim }}
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
@@ -243,11 +259,11 @@
             port: 7234
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: "{{ temporal_history_cpu_req }}"
+              memory: "{{ temporal_history_mem_req }}"
             limits:
-              cpu: "1"
-              memory: 2Gi
+              cpu: "{{ temporal_history_cpu_lim }}"
+              memory: "{{ temporal_history_mem_lim }}
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
@@ -263,11 +279,11 @@
             port: 7235
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "{{ temporal_matching_cpu_req }}"
+              memory: "{{ temporal_matching_mem_req }}"
             limits:
-              cpu: 500m
-              memory: 1Gi
+              cpu: "{{ temporal_matching_cpu_lim }}"
+              memory: "{{ temporal_matching_mem_lim }}
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
@@ -283,11 +299,11 @@
             port: 7239
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "{{ temporal_worker_cpu_req }}"
+              memory: "{{ temporal_worker_mem_req }}"
             limits:
-              cpu: 500m
-              memory: 1Gi
+              cpu: "{{ temporal_worker_cpu_lim }}"
+              memory: "{{ temporal_worker_mem_lim }}
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
