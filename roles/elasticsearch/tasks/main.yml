@@ -358,6 +358,7 @@
                 securityContext:
                   privileged: true
                   runAsUser: 0
+                  runAsNonRoot: false
             containers:
               - name: elasticsearch
                 image: "{{ es_img }}"
@@ -529,6 +530,7 @@
                 securityContext:
                   privileged: true
                   runAsUser: 0
+                  runAsNonRoot: false
             containers:
               - name: elasticsearch
                 image: "{{ es_img }}"
