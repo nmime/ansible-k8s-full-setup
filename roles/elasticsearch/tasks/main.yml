@@ -303,9 +303,9 @@
 - name: Build seed hosts list
   set_fact:
     es_seed_hosts: >-
-      {{ range(0, es_master_replicas | int) | map('regex_replace', '^(.*)$', 'es-master-\\1.es-master-headless.' + es_ns + '.svc.cluster.local') | list | join(',') }}
+      {% set hosts = [] %}{% for i in range(0, es_master_replicas | int) %}{% if hosts.append('es-master-' ~ i ~ '.es-master-headless.' ~ es_ns ~ '.svc.cluster.local') %}{% endif %}{% endfor %}{{ hosts | join(',') }}
     es_initial_master_nodes: >-
-      {{ range(0, es_master_replicas | int) | map('regex_replace', '^(.*)$', 'es-master-\\1') | list | join(',') }}
+      {% set nodes = [] %}{% for i in range(0, es_master_replicas | int) %}{% if nodes.append('es-master-' ~ i) %}{% endif %}{% endfor %}{{ nodes | join(',') }}
 
 - name: Deploy ES master StatefulSet
   kubernetes.core.k8s:
