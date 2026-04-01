@@ -222,6 +222,13 @@
         - autoscaling
         - keda
 
+    - name: Deploy Dragonfly (Redis-compatible in-memory store)
+      ansible.builtin.import_role:
+        name: dragonfly
+      tags:
+        - dragonfly
+        - cache
+
     - name: Deploy Temporal Workflow Engine
       ansible.builtin.import_role:
         name: temporal
@@ -250,13 +257,6 @@
       tags:
         - boilerplate
         - application
-
-    - name: Deploy Dragonfly (Redis-compatible in-memory store)
-      ansible.builtin.import_role:
-        name: dragonfly
-      tags:
-        - dragonfly
-        - cache
 
     - name: Deploy OpenWerf Platform
       ansible.builtin.import_role:

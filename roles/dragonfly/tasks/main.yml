@@ -10,7 +10,7 @@
     df_operator_ver: "{{ dragonfly_operator_version }}"
     df_image_ver: "{{ dragonfly_image_version }}"
     df_replicas: "{{ dragonfly_replicas }}"
-    df_password: "{{ opwerf_redis_password | default(saved_secrets.opwerf_redis_password | default('')) }}"
+    df_password: "{{ opwerf_redis_password }}"
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
 
 # ============================================
@@ -170,6 +170,32 @@
   retries: 3
   delay: 10
   until: _r_create_df_production_netpol is not failed
+
+- name: Create allow-from-postal NetworkPolicy for Dragonfly
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-postal
+        namespace: "{{ df_ns }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: postal
+            ports:
+              - protocol: TCP
+                port: 6379
+  register: _r_create_df_postal_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_df_postal_netpol is not failed
 
 - name: Create allow-egress-to-dragonfly CiliumNetworkPolicy for opwerf
   kubernetes.core.k8s:

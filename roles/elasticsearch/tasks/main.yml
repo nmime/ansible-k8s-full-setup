@@ -10,7 +10,7 @@
     es_img: "{{ es_image }}:{{ es_version }}"
     kb_img: "{{ kibana_image }}:{{ kibana_version }}"
     es_cluster: "{{ es_cluster_name }}"
-    es_password: "{{ saved_secrets.es_superuser_password | default(lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
+    es_password: "{{ es_superuser_password }}"
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
 
 - name: Create Elasticsearch namespace

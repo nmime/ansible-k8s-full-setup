@@ -9,8 +9,8 @@
     p_img: "{{ postal_image }}:{{ postal_version }}"
     p_web_host: "{{ postal_web_hostname }}"
     p_smtp_host: "{{ postal_smtp_hostname }}"
-    p_db_password: "{{ saved_secrets.postal_db_password | default(lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
-    p_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('ansible.builtin.password', '/dev/null length=64 chars=hexdigits') | lower) }}"
+    p_db_password: "{{ postal_db_password }}"
+    p_rails_secret: "{{ postal_rails_secret }}"
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
 
 - name: Create Postal namespace
@@ -70,58 +70,38 @@
 # SMTP TLS certificate (use cert-manager if available)
 # ============================================
 
-- name: Create self-signed SMTP TLS cert via Job
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: Job
-      metadata:
-        name: postal-smtp-tls-gen
-        namespace: "{{ p_ns }}"
-      spec:
-        ttlSecondsAfterFinished: 300
-        template:
-          spec:
-            restartPolicy: Never
-            containers:
-              - name: certgen
-                image: alpine/openssl:latest
-                command:
-                  - sh
-                  - -c
-                  - |
-                    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
-                      -keyout /certs/smtp.key -out /certs/smtp.crt \
-                      -subj "/CN={{ p_smtp_host }}" \
-                      -addext "subjectAltName=DNS:{{ p_smtp_host }},DNS:{{ p_web_host }}"
-                    echo "SMTP TLS cert generated for {{ p_smtp_host }}"
-                volumeMounts:
-                  - name: certs
-                    mountPath: /certs
-            volumes:
-              - name: certs
-                emptyDir: {}
-  register: _r_smtp_tls
-  retries: 3
-  delay: 10
-  until: _r_smtp_tls is not failed
+- name: Check if SMTP TLS secret exists
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ p_ns }}"
+    name: postal-smtp-tls
+  register: smtp_tls_check
 
-- name: Generate SMTP TLS cert locally
-  ansible.builtin.shell: |
-    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
-      -keyout /dev/stdout -subj "/CN={{ p_smtp_host }}" 2>/dev/null
-  register: smtp_key_gen
-  changed_when: false
+- name: Create temp directory for SMTP TLS
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: postal-smtp-tls-
+  register: smtp_tls_tmpdir
   delegate_to: localhost
+  when: smtp_tls_check.resources | length == 0
 
-- name: Generate SMTP TLS cert locally (cert)
+- name: Generate SMTP TLS key and cert (single keypair)
   ansible.builtin.shell: |
+    cd {{ smtp_tls_tmpdir.path }}
     openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
-      -keyout /dev/null -out /dev/stdout -subj "/CN={{ p_smtp_host }}" 2>/dev/null
-  register: smtp_cert_gen
-  changed_when: false
+      -keyout smtp.key -out smtp.crt \
+      -subj "/CN={{ p_smtp_host }}" \
+      -addext "subjectAltName=DNS:{{ p_smtp_host }},DNS:{{ p_web_host }}"
   delegate_to: localhost
+  when: smtp_tls_check.resources | length == 0
+
+- name: Read SMTP TLS files
+  ansible.builtin.slurp:
+    src: "{{ smtp_tls_tmpdir.path }}/{{ item }}"
+  register: smtp_tls_files
+  loop: [smtp.key, smtp.crt]
+  delegate_to: localhost
+  when: smtp_tls_check.resources | length == 0
 
 - name: Create SMTP TLS secret
   kubernetes.core.k8s:
@@ -133,14 +113,22 @@
         name: postal-smtp-tls
         namespace: "{{ p_ns }}"
       type: kubernetes.io/tls
-      stringData:
-        tls.key: "{{ smtp_key_gen.stdout }}"
-        tls.crt: "{{ smtp_cert_gen.stdout }}"
+      data:
+        tls.key: "{{ smtp_tls_files.results[0].content }}"
+        tls.crt: "{{ smtp_tls_files.results[1].content }}"
+  when: smtp_tls_check.resources | length == 0
   no_log: true
   register: _r_smtp_tls_secret
   retries: 3
   delay: 10
   until: _r_smtp_tls_secret is not failed
+
+- name: Clean up SMTP TLS temp directory
+  ansible.builtin.file:
+    path: "{{ smtp_tls_tmpdir.path }}"
+    state: absent
+  delegate_to: localhost
+  when: smtp_tls_check.resources | length == 0
 
 # ============================================
 # MariaDB StatefulSet
@@ -231,12 +219,12 @@
                     mountPath: /docker-entrypoint-initdb.d
                 readinessProbe:
                   exec:
-                    command: ["mariadb-admin", "ping", "-h", "localhost", "-u", "root", "-p$(MARIADB_ROOT_PASSWORD)"]
+                    command: ["/bin/sh", "-c", "mariadb-admin ping -h localhost -u root -p$MARIADB_ROOT_PASSWORD"]
                   initialDelaySeconds: 10
                   periodSeconds: 10
                 livenessProbe:
                   exec:
-                    command: ["mariadb-admin", "ping", "-h", "localhost", "-u", "root", "-p$(MARIADB_ROOT_PASSWORD)"]
+                    command: ["/bin/sh", "-c", "mariadb-admin ping -h localhost -u root -p$MARIADB_ROOT_PASSWORD"]
                   initialDelaySeconds: 30
                   periodSeconds: 30
             volumes:
@@ -364,6 +352,7 @@
             host: dragonfly.dragonfly.svc.cluster.local
             port: 6379
             database: 0
+            password: {{ opwerf_redis_password }}
           logging:
             enabled: true
           migration_waiter:
@@ -789,7 +778,7 @@
                     admin@{{ domain }}
                     Admin
                     User
-                    {{ saved_secrets.postal_admin_password | default('ChangeMe123!') }}
+                    {{ postal_admin_password }}
                     ANSWERS
                     echo "Admin user created: admin@{{ domain }}"
                 volumeMounts:
