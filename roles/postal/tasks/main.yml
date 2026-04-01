@@ -876,6 +876,146 @@
     postal_smtp_ip: "{{ smtp_svc_info.resources[0].status.loadBalancer.ingress[0].ip | default('PENDING') }}"
   when: smtp_svc_info.resources | length > 0
 
+# ============================================
+# Automatic DNS Setup via Hetzner Cloud API
+# ============================================
+
+- name: Check if DNS zone exists for domain
+  ansible.builtin.command:
+    cmd: hcloud zone describe {{ domain }} -o json
+  register: postal_dns_zone_check
+  changed_when: false
+  failed_when: false
+
+- name: Set DNS zone available
+  set_fact:
+    postal_dns_available: "{{ postal_dns_zone_check.rc == 0 }}"
+
+- name: Create SMTP A record (smtp.domain -> SMTP LB IP)
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name smtp
+      --type A
+      --record {{ postal_smtp_ip }}
+  register: _r_dns_smtp_a
+  changed_when: _r_dns_smtp_a.rc == 0
+  failed_when: _r_dns_smtp_a.rc != 0 and 'already' not in (_r_dns_smtp_a.stderr | default('')) and 'exists' not in (_r_dns_smtp_a.stderr | default(''))
+  when: postal_dns_available | bool and postal_smtp_ip | default('PENDING') != 'PENDING'
+
+- name: Create return-path A record (rp.domain -> SMTP LB IP)
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name rp
+      --type A
+      --record {{ postal_smtp_ip }}
+  register: _r_dns_rp_a
+  changed_when: _r_dns_rp_a.rc == 0
+  failed_when: _r_dns_rp_a.rc != 0 and 'already' not in (_r_dns_rp_a.stderr | default('')) and 'exists' not in (_r_dns_rp_a.stderr | default(''))
+  when: postal_dns_available | bool and postal_smtp_ip | default('PENDING') != 'PENDING'
+
+- name: Create MX record for domain
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name @
+      --type MX
+      --record "10 {{ p_smtp_host }}."
+  register: _r_dns_mx
+  changed_when: _r_dns_mx.rc == 0
+  failed_when: _r_dns_mx.rc != 0 and 'already' not in (_r_dns_mx.stderr | default('')) and 'exists' not in (_r_dns_mx.stderr | default(''))
+  when: postal_dns_available | bool
+
+- name: Create MX record for routes subdomain
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name routes
+      --type MX
+      --record "10 {{ p_smtp_host }}."
+  register: _r_dns_routes_mx
+  changed_when: _r_dns_routes_mx.rc == 0
+  failed_when: _r_dns_routes_mx.rc != 0 and 'already' not in (_r_dns_routes_mx.stderr | default('')) and 'exists' not in (_r_dns_routes_mx.stderr | default(''))
+  when: postal_dns_available | bool
+
+- name: Create SPF TXT record for spf subdomain
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name spf
+      --type TXT
+      --record "v=spf1 ip4:{{ postal_smtp_ip }} ~all"
+  register: _r_dns_spf
+  changed_when: _r_dns_spf.rc == 0
+  failed_when: _r_dns_spf.rc != 0 and 'already' not in (_r_dns_spf.stderr | default('')) and 'exists' not in (_r_dns_spf.stderr | default(''))
+  when: postal_dns_available | bool and postal_smtp_ip | default('PENDING') != 'PENDING'
+
+- name: Create SPF include TXT record on root domain
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name @
+      --type TXT
+      --record "v=spf1 a mx include:spf.{{ domain }} ~all"
+  register: _r_dns_root_spf
+  changed_when: _r_dns_root_spf.rc == 0
+  failed_when: _r_dns_root_spf.rc != 0 and 'already' not in (_r_dns_root_spf.stderr | default('')) and 'exists' not in (_r_dns_root_spf.stderr | default(''))
+  when: postal_dns_available | bool
+
+- name: Create DMARC TXT record
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name _dmarc
+      --type TXT
+      --record "v=DMARC1; p=quarantine; rua=mailto:dmarc@{{ domain }}; pct=100"
+  register: _r_dns_dmarc
+  changed_when: _r_dns_dmarc.rc == 0
+  failed_when: _r_dns_dmarc.rc != 0 and 'already' not in (_r_dns_dmarc.stderr | default('')) and 'exists' not in (_r_dns_dmarc.stderr | default(''))
+  when: postal_dns_available | bool
+
+- name: Set rDNS on SMTP LoadBalancer
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer set-rdns
+      --hostname {{ p_smtp_host }}
+      --ip {{ postal_smtp_ip }}
+      {{ project_name | default('k8s') }}-postal-smtp
+  register: _r_rdns
+  changed_when: _r_rdns.rc == 0
+  failed_when: false
+  when: postal_smtp_ip | default('PENDING') != 'PENDING'
+
+- name: Get DKIM public key for DNS record
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ p_ns }}"
+    name: postal-signing-key
+  register: dkim_secret_info
+
+- name: Extract DKIM public key
+  ansible.builtin.shell: |
+    echo "{{ dkim_secret_info.resources[0].data['signing.key'] | b64decode }}" | 
+    openssl rsa -pubout 2>/dev/null | 
+    grep -v '^-----' | tr -d '\n'
+  register: dkim_pubkey
+  changed_when: false
+  delegate_to: localhost
+  when: dkim_secret_info.resources | length > 0
+
+- name: Create DKIM TXT record
+  ansible.builtin.command:
+    cmd: >
+      hcloud zone rrset create {{ domain }}
+      --name postal._domainkey
+      --type TXT
+      --record "v=DKIM1; t=s; h=sha256; p={{ dkim_pubkey.stdout }}"
+  register: _r_dns_dkim
+  changed_when: _r_dns_dkim.rc == 0
+  failed_when: _r_dns_dkim.rc != 0 and 'already' not in (_r_dns_dkim.stderr | default('')) and 'exists' not in (_r_dns_dkim.stderr | default(''))
+  when: postal_dns_available | bool and dkim_pubkey.stdout | default('') | length > 0
+
 - name: Display Postal deployment summary
   debug:
     msg:
@@ -887,18 +1027,16 @@
       - "  SMTP LB IP: {{ postal_smtp_ip | default('PENDING') }}"
       - "  Admin: admin@{{ domain }}"
       - ""
-      - "  REQUIRED DNS RECORDS:"
+      - "  DNS RECORDS (auto-configured via Hetzner):"
       - "  ─────────────────────────────────────"
-      - "  A     {{ p_smtp_host }}        → {{ postal_smtp_ip | default('SMTP_LB_IP') }}"
-      - "  A     {{ p_web_host }}         → INGRESS_IP"
-      - "  A     {{ postal_track_domain }}       → INGRESS_IP"
-      - "  A     {{ postal_return_path_domain }}         → {{ postal_smtp_ip | default('SMTP_LB_IP') }}"
-      - "  MX    {{ domain }}             → {{ p_smtp_host }} (priority 10)"
-      - "  MX    {{ postal_route_domain }}    → {{ p_smtp_host }} (priority 10)"
-      - "  TXT   {{ postal_spf_domain }}        → v=spf1 ip4:{{ postal_smtp_ip | default('SMTP_LB_IP') }} ~all"
-      - "  TXT   {{ domain }}             → v=spf1 include:{{ postal_spf_domain }} ~all"
-      - "  TXT   _dmarc.{{ domain }}      → v=DMARC1; p=quarantine; rua=mailto:dmarc@{{ domain }}; pct=100"
-      - "  TXT   postal._domainkey.{{ domain }} → (get via: postal default-dkim-record)"
+      - "  A     smtp.{{ domain }}     → {{ postal_smtp_ip | default('PENDING') }}"
+      - "  A     rp.{{ domain }}       → {{ postal_smtp_ip | default('PENDING') }}"
+      - "  MX    {{ domain }}          → {{ p_smtp_host }} (priority 10)"
+      - "  TXT   spf.{{ domain }}      → v=spf1 ip4:{{ postal_smtp_ip | default('?') }} ~all"
+      - "  TXT   {{ domain }}          → v=spf1 include:spf.{{ domain }} ~all"
+      - "  TXT   _dmarc.{{ domain }}   → v=DMARC1; p=quarantine"
+      - "  TXT   postal._domainkey.{{ domain }} → DKIM (auto-configured)"
+      - "  PTR   {{ postal_smtp_ip | default('?') }} → {{ p_smtp_host }}"
       - ""
-      - "  rDNS/PTR: {{ postal_smtp_ip | default('SMTP_LB_IP') }} → {{ p_smtp_host }}"
+      - "  *.{{ domain }} → LB (wildcard covers mail/track/kibana)"
       - "=========================================="
