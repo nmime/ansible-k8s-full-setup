@@ -27,12 +27,12 @@
 
 - name: Generate OpenWerf secrets
   set_fact:
-    opwerf_db_password_resolved: "{{ saved_secrets.opwerf_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-    opwerf_redis_password_resolved: "{{ saved_secrets.opwerf_redis_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-    opwerf_credential_proxy_token_resolved: "{{ opwerf_credential_proxy_internal_token | default(saved_secrets.opwerf_credential_proxy_token | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48'))) }}"
-    opwerf_enc_key_resolved: "{{ opwerf_encryption_key | default(saved_secrets.opwerf_encryption_key | default(lookup('password', '/dev/null chars=hex_digits length=32'))) }}"
-    opwerf_enc_salt_resolved: "{{ opwerf_encryption_salt | default(saved_secrets.opwerf_encryption_salt | default(lookup('password', '/dev/null chars=hex_digits length=16'))) }}"
-    opwerf_session_key_resolved: "{{ opwerf_session_signing_key | default(saved_secrets.opwerf_session_signing_key | default(lookup('password', '/dev/null chars=hex_digits length=64'))) }}"
+    opwerf_db_password_resolved: "{{ opwerf_db_password }}"
+    opwerf_redis_password_resolved: "{{ opwerf_redis_password }}"
+    opwerf_credential_proxy_token_resolved: "{{ opwerf_credential_proxy_token }}"
+    opwerf_enc_key_resolved: "{{ opwerf_encryption_key }}"
+    opwerf_enc_salt_resolved: "{{ opwerf_encryption_salt }}"
+    opwerf_session_key_resolved: "{{ opwerf_session_signing_key }}"
   no_log: true
 
 # ============================================
