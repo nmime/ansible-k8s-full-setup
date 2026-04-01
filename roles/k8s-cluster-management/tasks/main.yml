@@ -1300,6 +1300,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_intra_ns_cnp
   retries: 3
   delay: 10
@@ -1504,6 +1506,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_intra_ns_netpol
   retries: 3
   delay: 10
@@ -1536,6 +1540,8 @@
     - monitoring
     - storage
     - temporal
+    - elasticsearch
+    - postal
     - production
   register: _r_create_gw_netpol
   retries: 3
@@ -1579,6 +1585,8 @@
     - temporal
     - production
     - dragonfly
+    - elasticsearch
+    - postal
   register: _r_create_mon_netpol
   retries: 3
   delay: 10
@@ -1628,6 +1636,7 @@
     - monitoring
     - vault
     - temporal
+    - postal
     - production
   register: _r_create_egress_netpol
   retries: 3

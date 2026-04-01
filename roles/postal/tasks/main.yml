@@ -521,39 +521,34 @@
   delay: 10
   until: _r_postal_web_svc is not failed
 
-- name: Create Postal web Ingress
+- name: Create Postal web HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: networking.k8s.io/v1
-      kind: Ingress
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
       metadata:
         name: postal-web
         namespace: "{{ p_ns }}"
-        annotations:
-          cert-manager.io/cluster-issuer: letsencrypt-prod
-          nginx.ingress.kubernetes.io/proxy-body-size: 50m
       spec:
-        ingressClassName: nginx
-        tls:
-          - hosts:
-              - "{{ p_web_host }}"
-            secretName: postal-web-tls
+        parentRefs:
+          - name: admin-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "{{ p_web_host }}"
         rules:
-          - host: "{{ p_web_host }}"
-            http:
-              paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: postal-web
-                      port:
-                        number: 5000
-  register: _r_postal_web_ingress
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: postal-web
+                port: 5000
+  register: _r_postal_web_httproute
   retries: 3
   delay: 10
-  until: _r_postal_web_ingress is not failed
+  until: _r_postal_web_httproute is not failed
 
 # ============================================
 # Postal SMTP Deployment

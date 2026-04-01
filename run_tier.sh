@@ -1,5 +1,5 @@
 #!/bin/bash
-TIER=${1:?"Usage: $0 <minimal|medium|production>"}
+TIER=${1:?"Usage: $0 <minimal|small|medium|production>"}
 PROJECT="k8s-${TIER}"
 DOMAIN="${TIER}.n0xeid.xyz"
 EMAIL="admin@n0xeid.xyz"
