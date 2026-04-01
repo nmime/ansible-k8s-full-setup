@@ -63,20 +63,20 @@ control_plane_subnet: 10.0.1.0/24
 workers_subnet: 10.0.2.0/24
 services_subnet: 10.0.10.0/24
 
-# Storage (MinIO)
-minio_replicas: 4
-minio_storage_size: 50Gi
+# Storage (MinIO) - tier-specific
+minio_replicas: "{{ 4 if tier in ['medium', 'production'] else 1 }}"
+minio_storage_size: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
 
-# Secrets (Vault)
-vault_replicas: 3
+# Secrets (Vault) - tier-specific
+vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 10Gi
 eso_enabled: true
 
-# Databases
-postgresql_replicas: 2
-postgresql_storage: 20Gi
+# Databases - tier-specific
+postgresql_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+postgresql_storage: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' }}"
 postgresql_version: 18
-mongodb_storage: 20Gi
+mongodb_storage: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' }}"
 
 # GitLab
 gitlab_chart_version: "9.10.0"
@@ -85,10 +85,10 @@ gitlab_runner_concurrent_jobs: 10
 # GitOps (ArgoCD)
 argocd_chart_version: "9.4.15"
 
-# Observability
-metrics_retention: 30d
-metrics_storage: 50Gi
-logging_retention: 14d
+# Observability - tier-specific
+metrics_retention: "{{ '7d' if tier == 'minimal' else '14d' if tier == 'small' else '30d' }}"
+metrics_storage: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
+logging_retention: "{{ '3d' if tier == 'minimal' else '7d' if tier == 'small' else '14d' }}"
 
 # Autoscaling
 keda_enabled: true
