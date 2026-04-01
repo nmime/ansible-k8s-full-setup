@@ -172,11 +172,11 @@
                   storage: "{{ pg_storage }}"
             resources:
               requests:
-                cpu: "250m"
-                memory: "512Mi"
+                cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
+                memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
               limits:
-                cpu: "1"
-                memory: "2Gi"
+                cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
+                memory: "{{ '1Gi' if tier in ['minimal', 'small'] else '2Gi' }}"
             affinity:
               podAntiAffinity:
                 preferredDuringSchedulingIgnoredDuringExecution:
@@ -431,11 +431,11 @@
                     storage: "{{ mongo_storage }}"
             resources:
               requests:
-                cpu: "250m"
-                memory: "512Mi"
+                cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
+                memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
               limits:
-                cpu: "1"
-                memory: "2Gi"
+                cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
+                memory: "{{ '1Gi' if tier in ['minimal', 'small'] else '2Gi' }}"
             affinity:
               antiAffinityTopologyKey: "kubernetes.io/hostname"
         sharding:

@@ -75,8 +75,8 @@
         readOnlyRootFilesystem: false
       resources:
         requests:
-          memory: "512Mi"
-          cpu: "250m"
+          memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
+          cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
       service:
         type: ClusterIP
       consoleService:
