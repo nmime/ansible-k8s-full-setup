@@ -759,7 +759,7 @@
         selector:
           matchLabels:
             app.kubernetes.io/name: external-secrets
-  when: eso_replicas | default(1) | int > 1
+  when: tier in ['medium', 'production']
   register: _r_create_eso_pdb
   retries: 3
   delay: 10
