@@ -81,6 +81,24 @@
   until: _r_create_temporal_db_credentials_secret is not failed
   no_log: true
 
+- name: Create Temporal ES credentials secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: temporal-es-credentials
+        namespace: "{{ temporal_ns }}"
+      type: Opaque
+      stringData:
+        password: "{{ es_superuser_password | default('') }}"
+  no_log: true
+  register: _r_create_temporal_es_credentials
+  retries: 3
+  delay: 10
+  until: _r_create_temporal_es_credentials is not failed
+
 - name: Get PG primary pod for CREATEDB grant
   kubernetes.core.k8s_info:
     kind: Pod
@@ -176,6 +194,23 @@
                 tls:
                   enabled: true
                   enableHostVerification: false
+            visibilityStore: visibility
+            additionalStores:
+              es-visibility:
+                elasticsearch:
+                  version: v7
+                  logLevel: info
+                  url:
+                    scheme: https
+                    host: "elasticsearch.elasticsearch.svc.cluster.local:9200"
+                  username: elastic
+                  password: "will-be-overridden"
+                  existingSecret: temporal-es-credentials
+                  indices:
+                    visibility: temporal_visibility_v1
+                  tls:
+                    enabled: true
+                    enableHostVerification: false
           namespaces:
             create: true
             namespace:

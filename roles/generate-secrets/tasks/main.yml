@@ -61,6 +61,16 @@
     generated_opwerf_encryption_salt: "{{ saved_secrets.opwerf_encryption_salt | default(lookup('password', '/dev/null chars=hex_digits length=16')) }}"
     generated_opwerf_session_signing_key: "{{ saved_secrets.opwerf_session_signing_key | default(lookup('password', '/dev/null chars=hex_digits length=64')) }}"
 
+- name: Generate Elasticsearch secrets
+  set_fact:
+    generated_es_superuser_password: "{{ saved_secrets.es_superuser_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+
+- name: Generate Postal secrets
+  set_fact:
+    generated_postal_db_password: "{{ saved_secrets.postal_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+    generated_postal_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
+    generated_postal_admin_password: "{{ saved_secrets.postal_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=16')) }}"
+
 # ============================================
 # Expose all secrets as unified variables
 # ============================================
@@ -82,6 +92,10 @@
     opwerf_encryption_key: "{{ generated_opwerf_encryption_key }}"
     opwerf_encryption_salt: "{{ generated_opwerf_encryption_salt }}"
     opwerf_session_signing_key: "{{ generated_opwerf_session_signing_key }}"
+    es_superuser_password: "{{ generated_es_superuser_password }}"
+    postal_db_password: "{{ generated_postal_db_password }}"
+    postal_rails_secret: "{{ generated_postal_rails_secret }}"
+    postal_admin_password: "{{ generated_postal_admin_password }}"
 
 # ============================================
 # Persist secrets to file (idempotent)
@@ -108,6 +122,10 @@
       opwerf_encryption_key: "{{ opwerf_encryption_key }}"
       opwerf_encryption_salt: "{{ opwerf_encryption_salt }}"
       opwerf_session_signing_key: "{{ opwerf_session_signing_key }}"
+      es_superuser_password: "{{ es_superuser_password }}"
+      postal_db_password: "{{ postal_db_password }}"
+      postal_rails_secret: "{{ postal_rails_secret }}"
+      postal_admin_password: "{{ postal_admin_password }}"
     dest: "{{ secrets_file }}"
     mode: '0600'
   delegate_to: localhost
@@ -136,6 +154,8 @@
       - "  Grafana password: ****"
       - "  App DB password: ****"
       - "  ArgoCD password: ****"
+      - "  ES password: ****"
+      - "  Postal admin: ****"
       - "============================================"
       - "  IMPORTANT: Back up {{ secrets_file }} securely!"
       - "============================================"
