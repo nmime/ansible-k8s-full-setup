@@ -1,0 +1,38 @@
+---
+postal_namespace: postal
+postal_version: "3.3.5"
+postal_image: "ghcr.io/postalserver/postal"
+postal_web_hostname: "mail.{{ domain }}"
+postal_smtp_hostname: "smtp.{{ domain }}"
+postal_track_domain: "track.{{ domain }}"
+postal_spf_domain: "spf.{{ domain }}"
+postal_return_path_domain: "rp.{{ domain }}"
+postal_route_domain: "routes.{{ domain }}"
+
+postal_web_replicas: 1
+postal_smtp_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+postal_worker_replicas: "{{ 2 if tier == 'production' else 1 }}"
+
+postal_web_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+postal_web_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+postal_web_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+postal_web_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
+
+postal_smtp_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+postal_smtp_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+postal_smtp_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+postal_smtp_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
+
+postal_worker_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+postal_worker_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+postal_worker_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+postal_worker_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
+
+postal_mariadb_storage: "{{ '20Gi' if tier in ['medium', 'production'] else '10Gi' }}"
+postal_mariadb_memory: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+
+postal_smtp_tls_enabled: true
+postal_max_message_size: 14
+postal_default_spam_threshold: 5
+postal_default_spam_failure_threshold: 20
+postal_batch_queued_messages: true

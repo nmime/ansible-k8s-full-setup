@@ -98,6 +98,14 @@ keda_chart_version: "2.19.0"
 temporal_chart_version: "0.73.2"
 temporal_num_history_shards: 512
 
+# Elasticsearch
+es_version: "9.3.2"
+kibana_version: "9.3.2"
+es_cluster_name: "platform-es"
+
+# Postal
+postal_version: "3.3.5"
+
 # Backup
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30

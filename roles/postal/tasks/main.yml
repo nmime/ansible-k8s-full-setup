@@ -1,0 +1,904 @@
+---
+# Postal Mail Server v3.3.5 on Kubernetes
+# Production mail delivery with SPF/DKIM/DMARC support
+# Architecture: web + smtp + worker Deployments + MariaDB StatefulSet
+
+- name: Set Postal variables
+  set_fact:
+    p_ns: "{{ postal_namespace }}"
+    p_img: "{{ postal_image }}:{{ postal_version }}"
+    p_web_host: "{{ postal_web_hostname }}"
+    p_smtp_host: "{{ postal_smtp_hostname }}"
+    p_db_password: "{{ saved_secrets.postal_db_password | default(lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
+    p_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('ansible.builtin.password', '/dev/null length=64 chars=hexdigits') | lower) }}"
+    storage_class: "{{ storage_class | default('hcloud-volumes') }}"
+
+- name: Create Postal namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ p_ns }}"
+        labels:
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_postal_ns
+  retries: 3
+  delay: 10
+  until: _r_postal_ns is not failed
+
+# ============================================
+# Generate DKIM signing key
+# ============================================
+
+- name: Check if signing key secret exists
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ p_ns }}"
+    name: postal-signing-key
+  register: signing_key_check
+
+- name: Generate DKIM signing key via Job
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-generate-signing-key
+        namespace: "{{ p_ns }}"
+      spec:
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: keygen
+                image: alpine/openssl:latest
+                command:
+                  - sh
+                  - -c
+                  - |
+                    openssl genrsa -out /keys/signing.key 2048
+                    openssl rsa -in /keys/signing.key -pubout -out /keys/signing.pub
+                    echo "DKIM signing key generated"
+                    cat /keys/signing.pub
+                volumeMounts:
+                  - name: keys
+                    mountPath: /keys
+            volumes:
+              - name: keys
+                emptyDir: {}
+  when: signing_key_check.resources | length == 0
+  register: _r_keygen
+  retries: 3
+  delay: 10
+  until: _r_keygen is not failed
+
+- name: Generate signing key locally for secret
+  ansible.builtin.command: openssl genrsa 2048
+  register: signing_key_gen
+  changed_when: false
+  when: signing_key_check.resources | length == 0
+  delegate_to: localhost
+
+- name: Create signing key secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postal-signing-key
+        namespace: "{{ p_ns }}"
+      type: Opaque
+      stringData:
+        signing.key: "{{ signing_key_gen.stdout if signing_key_check.resources | length == 0 else '' }}"
+  when: signing_key_check.resources | length == 0
+  no_log: true
+  register: _r_signing_secret
+  retries: 3
+  delay: 10
+  until: _r_signing_secret is not failed
+
+# ============================================
+# SMTP TLS certificate (use cert-manager if available)
+# ============================================
+
+- name: Create self-signed SMTP TLS cert via Job
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-smtp-tls-gen
+        namespace: "{{ p_ns }}"
+      spec:
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: certgen
+                image: alpine/openssl:latest
+                command:
+                  - sh
+                  - -c
+                  - |
+                    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+                      -keyout /certs/smtp.key -out /certs/smtp.crt \
+                      -subj "/CN={{ p_smtp_host }}" \
+                      -addext "subjectAltName=DNS:{{ p_smtp_host }},DNS:{{ p_web_host }}"
+                    echo "SMTP TLS cert generated for {{ p_smtp_host }}"
+                volumeMounts:
+                  - name: certs
+                    mountPath: /certs
+            volumes:
+              - name: certs
+                emptyDir: {}
+  register: _r_smtp_tls
+  retries: 3
+  delay: 10
+  until: _r_smtp_tls is not failed
+
+- name: Generate SMTP TLS cert locally
+  ansible.builtin.shell: |
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+      -keyout /dev/stdout -subj "/CN={{ p_smtp_host }}" 2>/dev/null
+  register: smtp_key_gen
+  changed_when: false
+  delegate_to: localhost
+
+- name: Generate SMTP TLS cert locally (cert)
+  ansible.builtin.shell: |
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+      -keyout /dev/null -out /dev/stdout -subj "/CN={{ p_smtp_host }}" 2>/dev/null
+  register: smtp_cert_gen
+  changed_when: false
+  delegate_to: localhost
+
+- name: Create SMTP TLS secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postal-smtp-tls
+        namespace: "{{ p_ns }}"
+      type: kubernetes.io/tls
+      stringData:
+        tls.key: "{{ smtp_key_gen.stdout }}"
+        tls.crt: "{{ smtp_cert_gen.stdout }}"
+  no_log: true
+  register: _r_smtp_tls_secret
+  retries: 3
+  delay: 10
+  until: _r_smtp_tls_secret is not failed
+
+# ============================================
+# MariaDB StatefulSet
+# ============================================
+
+- name: Create MariaDB credentials secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postal-mariadb-credentials
+        namespace: "{{ p_ns }}"
+      type: Opaque
+      stringData:
+        MARIADB_ROOT_PASSWORD: "{{ p_db_password }}"
+        MARIADB_PASSWORD: "{{ p_db_password }}"
+        MARIADB_DATABASE: postal
+        MARIADB_USER: postal
+  no_log: true
+  register: _r_mariadb_creds
+  retries: 3
+  delay: 10
+  until: _r_mariadb_creds is not failed
+
+- name: Create MariaDB init script ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: postal-mariadb-init
+        namespace: "{{ p_ns }}"
+      data:
+        grant_privileges.sql: |
+          GRANT ALL PRIVILEGES ON `postal%`.* TO 'postal'@'%' WITH GRANT OPTION;
+          FLUSH PRIVILEGES;
+  register: _r_mariadb_init
+  retries: 3
+  delay: 10
+  until: _r_mariadb_init is not failed
+
+- name: Deploy MariaDB StatefulSet
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postal-mariadb
+        namespace: "{{ p_ns }}"
+        labels:
+          app: postal-mariadb
+      spec:
+        serviceName: postal-mariadb
+        replicas: 1
+        selector:
+          matchLabels:
+            app: postal-mariadb
+        template:
+          metadata:
+            labels:
+              app: postal-mariadb
+          spec:
+            securityContext:
+              fsGroup: 999
+            containers:
+              - name: mariadb
+                image: mariadb:11.7
+                ports:
+                  - containerPort: 3306
+                envFrom:
+                  - secretRef:
+                      name: postal-mariadb-credentials
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: "{{ postal_mariadb_memory }}"
+                  limits:
+                    cpu: "1"
+                    memory: "{{ postal_mariadb_memory }}"
+                volumeMounts:
+                  - name: data
+                    mountPath: /var/lib/mysql
+                  - name: init-scripts
+                    mountPath: /docker-entrypoint-initdb.d
+                readinessProbe:
+                  exec:
+                    command: ["mariadb-admin", "ping", "-h", "localhost", "-u", "root", "-p$(MARIADB_ROOT_PASSWORD)"]
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                livenessProbe:
+                  exec:
+                    command: ["mariadb-admin", "ping", "-h", "localhost", "-u", "root", "-p$(MARIADB_ROOT_PASSWORD)"]
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+            volumes:
+              - name: init-scripts
+                configMap:
+                  name: postal-mariadb-init
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              accessModes: [ReadWriteOnce]
+              storageClassName: "{{ storage_class }}"
+              resources:
+                requests:
+                  storage: "{{ postal_mariadb_storage }}"
+  register: _r_mariadb_sts
+  retries: 3
+  delay: 15
+  until: _r_mariadb_sts is not failed
+
+- name: Create MariaDB service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: postal-mariadb
+        namespace: "{{ p_ns }}"
+      spec:
+        clusterIP: None
+        selector:
+          app: postal-mariadb
+        ports:
+          - port: 3306
+            targetPort: 3306
+  register: _r_mariadb_svc
+  retries: 3
+  delay: 10
+  until: _r_mariadb_svc is not failed
+
+- name: Wait for MariaDB to be ready
+  kubernetes.core.k8s_info:
+    kind: StatefulSet
+    namespace: "{{ p_ns }}"
+    name: postal-mariadb
+  register: mariadb_sts
+  until: >
+    mariadb_sts.resources | length > 0 and
+    (mariadb_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
+  retries: 30
+  delay: 10
+
+# ============================================
+# Postal config + secrets
+# ============================================
+
+- name: Create Postal config secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postal-config
+        namespace: "{{ p_ns }}"
+      type: Opaque
+      stringData:
+        postal.yml: |
+          version: 2
+          postal:
+            web_hostname: {{ p_web_host }}
+            web_protocol: https
+            smtp_hostname: {{ p_smtp_host }}
+            signing_key_path: /config/signing.key
+            default_maximum_delivery_attempts: 18
+            default_spam_threshold: {{ postal_default_spam_threshold }}
+            default_spam_failure_threshold: {{ postal_default_spam_failure_threshold }}
+            batch_queued_messages: {{ postal_batch_queued_messages | lower }}
+          web_server:
+            default_port: 5000
+            default_bind_address: 0.0.0.0
+            max_threads: 5
+          worker:
+            threads: 2
+            default_health_server_port: 9090
+            default_health_server_bind_address: 0.0.0.0
+          main_db:
+            host: postal-mariadb.{{ p_ns }}.svc.cluster.local
+            port: 3306
+            username: postal
+            password: {{ p_db_password }}
+            database: postal
+            pool_size: 5
+          message_db:
+            host: postal-mariadb.{{ p_ns }}.svc.cluster.local
+            port: 3306
+            username: postal
+            password: {{ p_db_password }}
+            database_name_prefix: postal
+          smtp_server:
+            default_port: 25
+            default_bind_address: "::"
+            tls_enabled: {{ postal_smtp_tls_enabled | lower }}
+            tls_certificate_path: /certs/tls.crt
+            tls_private_key_path: /certs/tls.key
+            max_message_size: {{ postal_max_message_size }}
+            default_health_server_port: 9091
+            default_health_server_bind_address: 0.0.0.0
+          dns:
+            mx_records:
+              - {{ p_smtp_host }}
+            spf_include: {{ postal_spf_domain }}
+            return_path_domain: {{ postal_return_path_domain }}
+            route_domain: {{ postal_route_domain }}
+            track_domain: {{ postal_track_domain }}
+            helo_hostname: {{ p_smtp_host }}
+            dkim_identifier: postal
+            domain_verify_prefix: postal-verification
+            custom_return_path_prefix: psrp
+          rails:
+            environment: production
+            secret_key: {{ p_rails_secret }}
+          logging:
+            enabled: true
+          migration_waiter:
+            enabled: true
+            attempts: 120
+            sleep_time: 2
+  no_log: true
+  register: _r_postal_config
+  retries: 3
+  delay: 10
+  until: _r_postal_config is not failed
+
+# ============================================
+# Initialize Postal DB
+# ============================================
+
+- name: Run Postal initialize Job
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-initialize
+        namespace: "{{ p_ns }}"
+      spec:
+        ttlSecondsAfterFinished: 600
+        backoffLimit: 5
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: init
+                image: "{{ p_img }}"
+                command: ["postal", "initialize"]
+                env:
+                  - name: POSTAL_CONFIG_FILE_PATH
+                    value: /config/postal.yml
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-signing-key
+  register: _r_postal_init
+  retries: 3
+  delay: 15
+  until: _r_postal_init is not failed
+
+- name: Wait for Postal initialization
+  kubernetes.core.k8s_info:
+    kind: Job
+    namespace: "{{ p_ns }}"
+    name: postal-initialize
+  register: postal_init_job
+  until: >
+    postal_init_job.resources | length > 0 and
+    (postal_init_job.resources[0].status.succeeded | default(0) | int) >= 1
+  retries: 60
+  delay: 10
+
+# ============================================
+# Postal Web Deployment
+# ============================================
+
+- name: Deploy Postal web server
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: postal-web
+        namespace: "{{ p_ns }}"
+        labels:
+          app: postal
+          component: web
+      spec:
+        replicas: "{{ postal_web_replicas | int }}"
+        selector:
+          matchLabels:
+            app: postal
+            component: web
+        template:
+          metadata:
+            labels:
+              app: postal
+              component: web
+          spec:
+            containers:
+              - name: web
+                image: "{{ p_img }}"
+                command: ["postal", "web-server"]
+                ports:
+                  - containerPort: 5000
+                    name: http
+                env:
+                  - name: POSTAL_CONFIG_FILE_PATH
+                    value: /config/postal.yml
+                resources:
+                  requests:
+                    cpu: "{{ postal_web_cpu_req }}"
+                    memory: "{{ postal_web_memory_req }}"
+                  limits:
+                    cpu: "{{ postal_web_cpu_lim }}"
+                    memory: "{{ postal_web_memory_lim }}"
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+                readinessProbe:
+                  httpGet:
+                    path: /
+                    port: 5000
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /
+                    port: 5000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-signing-key
+  register: _r_postal_web
+  retries: 3
+  delay: 15
+  until: _r_postal_web is not failed
+
+- name: Create Postal web service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: postal-web
+        namespace: "{{ p_ns }}"
+      spec:
+        type: ClusterIP
+        selector:
+          app: postal
+          component: web
+        ports:
+          - name: http
+            port: 5000
+            targetPort: 5000
+  register: _r_postal_web_svc
+  retries: 3
+  delay: 10
+  until: _r_postal_web_svc is not failed
+
+# ============================================
+# Postal SMTP Deployment
+# ============================================
+
+- name: Deploy Postal SMTP server
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: postal-smtp
+        namespace: "{{ p_ns }}"
+        labels:
+          app: postal
+          component: smtp
+      spec:
+        replicas: "{{ postal_smtp_replicas | int }}"
+        selector:
+          matchLabels:
+            app: postal
+            component: smtp
+        template:
+          metadata:
+            labels:
+              app: postal
+              component: smtp
+          spec:
+            containers:
+              - name: smtp
+                image: "{{ p_img }}"
+                command: ["postal", "smtp-server"]
+                ports:
+                  - containerPort: 25
+                    name: smtp
+                  - containerPort: 9091
+                    name: health
+                env:
+                  - name: POSTAL_CONFIG_FILE_PATH
+                    value: /config/postal.yml
+                resources:
+                  requests:
+                    cpu: "{{ postal_smtp_cpu_req }}"
+                    memory: "{{ postal_smtp_memory_req }}"
+                  limits:
+                    cpu: "{{ postal_smtp_cpu_lim }}"
+                    memory: "{{ postal_smtp_memory_lim }}"
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+                  - name: smtp-tls
+                    mountPath: /certs
+                    readOnly: true
+                readinessProbe:
+                  tcpSocket:
+                    port: 25
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /
+                    port: 9091
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-signing-key
+              - name: smtp-tls
+                secret:
+                  secretName: postal-smtp-tls
+  register: _r_postal_smtp
+  retries: 3
+  delay: 15
+  until: _r_postal_smtp is not failed
+
+- name: Create Postal SMTP service (LoadBalancer for port 25)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: postal-smtp
+        namespace: "{{ p_ns }}"
+        annotations:
+          load-balancer.hetzner.cloud/location: "{{ hetzner_region | default('hel1') }}"
+          load-balancer.hetzner.cloud/name: "{{ project_name | default('k8s') }}-postal-smtp"
+          load-balancer.hetzner.cloud/use-private-ip: "false"
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Local
+        selector:
+          app: postal
+          component: smtp
+        ports:
+          - name: smtp
+            port: 25
+            targetPort: 25
+            protocol: TCP
+          - name: submission
+            port: 587
+            targetPort: 25
+            protocol: TCP
+  register: _r_postal_smtp_svc
+  retries: 3
+  delay: 10
+  until: _r_postal_smtp_svc is not failed
+
+# ============================================
+# Postal Worker Deployment
+# ============================================
+
+- name: Deploy Postal worker
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: postal-worker
+        namespace: "{{ p_ns }}"
+        labels:
+          app: postal
+          component: worker
+      spec:
+        replicas: "{{ postal_worker_replicas | int }}"
+        selector:
+          matchLabels:
+            app: postal
+            component: worker
+        template:
+          metadata:
+            labels:
+              app: postal
+              component: worker
+          spec:
+            containers:
+              - name: worker
+                image: "{{ p_img }}"
+                command: ["postal", "worker"]
+                ports:
+                  - containerPort: 9090
+                    name: health
+                env:
+                  - name: POSTAL_CONFIG_FILE_PATH
+                    value: /config/postal.yml
+                resources:
+                  requests:
+                    cpu: "{{ postal_worker_cpu_req }}"
+                    memory: "{{ postal_worker_memory_req }}"
+                  limits:
+                    cpu: "{{ postal_worker_cpu_lim }}"
+                    memory: "{{ postal_worker_memory_lim }}"
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+                readinessProbe:
+                  httpGet:
+                    path: /
+                    port: 9090
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /
+                    port: 9090
+                  initialDelaySeconds: 20
+                  periodSeconds: 30
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-signing-key
+  register: _r_postal_worker
+  retries: 3
+  delay: 15
+  until: _r_postal_worker is not failed
+
+# ============================================
+# Create admin user via Job
+# ============================================
+
+- name: Create Postal admin user Job
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-create-admin
+        namespace: "{{ p_ns }}"
+      spec:
+        ttlSecondsAfterFinished: 600
+        backoffLimit: 3
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: create-admin
+                image: "{{ p_img }}"
+                command:
+                  - bash
+                  - -c
+                  - |
+                    export POSTAL_CONFIG_FILE_PATH=/config/postal.yml
+                    postal make-user <<ANSWERS
+                    admin@{{ domain }}
+                    Admin
+                    User
+                    {{ saved_secrets.postal_admin_password | default('ChangeMe123!') }}
+                    ANSWERS
+                    echo "Admin user created: admin@{{ domain }}"
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-signing-key
+  register: _r_postal_admin
+  retries: 3
+  delay: 10
+  until: _r_postal_admin is not failed
+
+# ============================================
+# NetworkPolicy
+# ============================================
+
+- name: Create Postal NetworkPolicy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postal-network-policy
+        namespace: "{{ p_ns }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - podSelector: {}
+            ports:
+              - port: 3306
+                protocol: TCP
+          - from: []
+            ports:
+              - port: 25
+                protocol: TCP
+              - port: 587
+                protocol: TCP
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: ingress-nginx
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: gateway-system
+            ports:
+              - port: 5000
+                protocol: TCP
+  register: _r_postal_netpol
+  retries: 3
+  delay: 10
+  until: _r_postal_netpol is not failed
+
+# ============================================
+# DNS Requirements Output
+# ============================================
+
+- name: Get SMTP LoadBalancer IP
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: "{{ p_ns }}"
+    name: postal-smtp
+  register: smtp_svc_info
+  until: >
+    smtp_svc_info.resources | length > 0 and
+    (smtp_svc_info.resources[0].status.loadBalancer.ingress | default([]) | length) > 0
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: Set SMTP external IP
+  set_fact:
+    postal_smtp_ip: "{{ smtp_svc_info.resources[0].status.loadBalancer.ingress[0].ip | default('PENDING') }}"
+  when: smtp_svc_info.resources | length > 0
+
+- name: Display Postal deployment summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Postal {{ postal_version }} Mail Server Deployed"
+      - "=========================================="
+      - "  Web UI: https://{{ p_web_host }}"
+      - "  SMTP: {{ p_smtp_host }}:25"
+      - "  SMTP LB IP: {{ postal_smtp_ip | default('PENDING') }}"
+      - "  Admin: admin@{{ domain }}"
+      - ""
+      - "  REQUIRED DNS RECORDS:"
+      - "  ─────────────────────────────────────"
+      - "  A     {{ p_smtp_host }}        → {{ postal_smtp_ip | default('SMTP_LB_IP') }}"
+      - "  A     {{ p_web_host }}         → INGRESS_IP"
+      - "  A     {{ postal_track_domain }}       → INGRESS_IP"
+      - "  A     {{ postal_return_path_domain }}         → {{ postal_smtp_ip | default('SMTP_LB_IP') }}"
+      - "  MX    {{ domain }}             → {{ p_smtp_host }} (priority 10)"
+      - "  MX    {{ postal_route_domain }}    → {{ p_smtp_host }} (priority 10)"
+      - "  TXT   {{ postal_spf_domain }}        → v=spf1 ip4:{{ postal_smtp_ip | default('SMTP_LB_IP') }} ~all"
+      - "  TXT   {{ domain }}             → v=spf1 include:{{ postal_spf_domain }} ~all"
+      - "  TXT   _dmarc.{{ domain }}      → v=DMARC1; p=quarantine; rua=mailto:dmarc@{{ domain }}; pct=100"
+      - "  TXT   postal._domainkey.{{ domain }} → (get via: postal default-dkim-record)"
+      - ""
+      - "  rDNS/PTR: {{ postal_smtp_ip | default('SMTP_LB_IP') }} → {{ p_smtp_host }}"
+      - "=========================================="

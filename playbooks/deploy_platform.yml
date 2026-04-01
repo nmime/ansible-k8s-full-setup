@@ -229,6 +229,20 @@
         - temporal
         - workflows
 
+    - name: Deploy Elasticsearch with X-Pack Platinum
+      ansible.builtin.import_role:
+        name: elasticsearch
+      tags:
+        - elasticsearch
+        - search
+
+    - name: Deploy Postal Mail Server
+      ansible.builtin.import_role:
+        name: postal
+      tags:
+        - postal
+        - mail
+
     - name: Deploy Brocoders Boilerplate Application
       ansible.builtin.import_role:
         name: brocoders-boilerplate-setup
@@ -274,6 +288,8 @@
           - "  - PostgreSQL HA Cluster"
           - "  - KEDA (Event Autoscaling)"
           - "  - Temporal: https://temporal.{{ domain }}"
+          - "  - Elasticsearch: https://kibana.{{ domain }}"
+          - "  - Postal: https://mail.{{ domain }}"
           - "  - Headscale VPN"
           - "  - OpenWerf Dashboard: https://app.{{ domain }} (if deploy_opwerf=true)"
           - "  - OpenWerf API: https://api.{{ domain }} (if deploy_opwerf=true)"
