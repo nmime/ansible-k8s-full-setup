@@ -40,43 +40,6 @@
     name: postal-signing-key
   register: signing_key_check
 
-- name: Generate DKIM signing key via Job
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: Job
-      metadata:
-        name: postal-generate-signing-key
-        namespace: "{{ p_ns }}"
-      spec:
-        ttlSecondsAfterFinished: 300
-        template:
-          spec:
-            restartPolicy: Never
-            containers:
-              - name: keygen
-                image: alpine/openssl:latest
-                command:
-                  - sh
-                  - -c
-                  - |
-                    openssl genrsa -out /keys/signing.key 2048
-                    openssl rsa -in /keys/signing.key -pubout -out /keys/signing.pub
-                    echo "DKIM signing key generated"
-                    cat /keys/signing.pub
-                volumeMounts:
-                  - name: keys
-                    mountPath: /keys
-            volumes:
-              - name: keys
-                emptyDir: {}
-  when: signing_key_check.resources | length == 0
-  register: _r_keygen
-  retries: 3
-  delay: 10
-  until: _r_keygen is not failed
-
 - name: Generate signing key locally for secret
   ansible.builtin.command: openssl genrsa 2048
   register: signing_key_gen
@@ -397,6 +360,10 @@
           rails:
             environment: production
             secret_key: {{ p_rails_secret }}
+          message_queue:
+            host: dragonfly.dragonfly.svc.cluster.local
+            port: 6379
+            database: 0
           logging:
             enabled: true
           migration_waiter:
@@ -564,6 +531,40 @@
   retries: 3
   delay: 10
   until: _r_postal_web_svc is not failed
+
+- name: Create Postal web Ingress
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: postal-web
+        namespace: "{{ p_ns }}"
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+          nginx.ingress.kubernetes.io/proxy-body-size: 50m
+      spec:
+        ingressClassName: nginx
+        tls:
+          - hosts:
+              - "{{ p_web_host }}"
+            secretName: postal-web-tls
+        rules:
+          - host: "{{ p_web_host }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: postal-web
+                      port:
+                        number: 5000
+  register: _r_postal_web_ingress
+  retries: 3
+  delay: 10
+  until: _r_postal_web_ingress is not failed
 
 # ============================================
 # Postal SMTP Deployment
