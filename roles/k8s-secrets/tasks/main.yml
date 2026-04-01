@@ -359,7 +359,6 @@
   until: >-
     _r_wait_raft_init.stdout is defined
     and (_r_wait_raft_init.stdout | from_json).initialized | default(false)
-  failed_when: false
 
 - name: Unseal raft peers (HA mode)
   kubernetes.core.k8s_exec:

@@ -243,7 +243,7 @@
               memory: "{{ temporal_frontend_mem_req }}"
             limits:
               cpu: "{{ temporal_frontend_cpu_lim }}"
-              memory: "{{ temporal_frontend_mem_lim }}
+              memory: "{{ temporal_frontend_mem_lim }}"
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
@@ -263,7 +263,7 @@
               memory: "{{ temporal_history_mem_req }}"
             limits:
               cpu: "{{ temporal_history_cpu_lim }}"
-              memory: "{{ temporal_history_mem_lim }}
+              memory: "{{ temporal_history_mem_lim }}"
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
@@ -283,7 +283,7 @@
               memory: "{{ temporal_matching_mem_req }}"
             limits:
               cpu: "{{ temporal_matching_cpu_lim }}"
-              memory: "{{ temporal_matching_mem_lim }}
+              memory: "{{ temporal_matching_mem_lim }}"
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
@@ -303,7 +303,7 @@
               memory: "{{ temporal_worker_mem_req }}"
             limits:
               cpu: "{{ temporal_worker_cpu_lim }}"
-              memory: "{{ temporal_worker_mem_lim }}
+              memory: "{{ temporal_worker_mem_lim }}"
           podSecurityContext:
             runAsNonRoot: true
             seccompProfile:
