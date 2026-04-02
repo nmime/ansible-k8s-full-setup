@@ -103,7 +103,7 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 | **MinIO** | chart `5.4.0` | S3-compatible object storage |
 | **PostgreSQL 18** | Percona Operator `2.8.2` | HA PostgreSQL with PgBouncer + pgBackRest |
 | **MongoDB 8.0** | Percona Operator `1.22.0` | Replicated MongoDB with PBM backups |
-| **GitLab EE** | `v18.10.0` (chart `9.10.0`) | Source code, CI/CD, Container Registry, KAS |
+| **GitLab CE** | `v18.10.0` (chart `9.10.0`) | Source code, CI/CD, Container Registry, KAS |
 | **GitLab Runner** | chart `0.87.0` | CI/CD job execution |
 | **ArgoCD** | `v3.3.6` (chart `9.4.17`) | GitOps continuous delivery |
 | **VictoriaMetrics** | `v1.133.0` (operator `0.59.3`) | Metrics collection & storage |
@@ -164,7 +164,6 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 | **Runner concurrency** | 2 | 5 | 10 | 20 |
 | **ArgoCD** | standalone | standalone | HA (2) | HA (2) |
 | **cert-manager** | 1 | 2 | 2 | 3 |
-| **Dragonfly** | `v1.37.2` (operator `v1.5.0`) | Redis-compatible in-memory store (25x faster) |
 | **KEDA** | 1 | 1 | 2 | 2 |
 | **Temporal frontend** | 1 | 1 | 1 | 2 |
 | **ESO** | 1 | 1 | 2 | 2 |
@@ -277,7 +276,7 @@ The playbook executes 12 roles sequentially:
  6. minio-storage          MinIO S3 (standalone/distributed), pre-created buckets
  7. k8s-observability      VictoriaMetrics, Loki, Promtail, Grafana (12 dashboards), PMM, alerting
  8. k8s-databases          PostgreSQL 18 HA + PgBouncer + pgBackRest, MongoDB 8.0 + PBM
- 9. gitlab-selfhosted      GitLab EE Ultimate + Runner + Registry + KAS
+ 9. gitlab-selfhosted      GitLab CE + Runner + Registry + KAS
 10. k8s-gitops             ArgoCD (standalone/HA), multi-env ApplicationSet
 11. k8s-autoscaling        KEDA event-driven autoscaler
 12. temporal               Temporal workflow engine + Web UI
@@ -499,7 +498,7 @@ The playbook only manages platform records — existing DNS records are preserve
 │   ├── minio-storage/               S3 object storage
 │   ├── k8s-observability/           Metrics, logs, dashboards, alerting
 │   ├── k8s-databases/               PostgreSQL + MongoDB operators
-│   ├── gitlab-selfhosted/           GitLab EE + Runner
+│   ├── gitlab-selfhosted/           GitLab CE + Runner
 │   ├── k8s-gitops/                  ArgoCD + ApplicationSet
 │   ├── k8s-autoscaling/             KEDA autoscaler
 │   ├── temporal/                    Workflow engine
@@ -588,20 +587,6 @@ kubectl get psmdb -n databases
 # Check PVCs
 kubectl get pvc -A
 ```
-
----
-
-## GitLab EE License
-
-GitLab EE Ultimate is deployed with an auto-generated license:
-
-- **Edition**: Enterprise Edition Ultimate
-- **Generated via**: `gitlab-license` Ruby gem (RSA 2048-bit key)
-- **Valid until**: 2500-01-01
-- **Users**: unlimited (500,000)
-- **Features**: All Ultimate features enabled
-
-The license is generated during deployment and stored in `playbooks/.gitlab-license/` (gitignored).
 
 ---
 
