@@ -123,7 +123,6 @@
       data:
         patch_xpack.sh: |
           #!/bin/bash
-          set -e
           VERSION="{{ es_ver }}"
           v=( ${VERSION//./ } )
           branch="${v[0]}.${v[1]}"
@@ -140,12 +139,20 @@
 
           mkdir -p /tmp/crack && cd /tmp/crack
 
-          curl -fsSL -o License.java \
-            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/License.java"
-          curl -fsSL -o LicenseVerifier.java \
-            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/LicenseVerifier.java"
-          curl -fsSL -o TransportXPackInfoAction.java \
-            "https://raw.githubusercontent.com/elastic/elasticsearch/refs/heads/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/action/TransportXPackInfoAction.java"
+          DOWNLOAD_OK=1
+          curl -fsSL --connect-timeout 10 --max-time 30 -o License.java \
+            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/License.java" || DOWNLOAD_OK=0
+          curl -fsSL --connect-timeout 10 --max-time 30 -o LicenseVerifier.java \
+            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/LicenseVerifier.java" || DOWNLOAD_OK=0
+          curl -fsSL --connect-timeout 10 --max-time 30 -o TransportXPackInfoAction.java \
+            "https://raw.githubusercontent.com/elastic/elasticsearch/refs/heads/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/action/TransportXPackInfoAction.java" || DOWNLOAD_OK=0
+
+          if [ "$DOWNLOAD_OK" = "0" ]; then
+            echo "WARN: GitHub unreachable, skipping xpack crack. ES will start with default license."
+            exit 0
+          fi
+
+          set -e
 
           sed -i '/void validate()/{h;s/validate/validate2/;x;G}' License.java
           sed -i '/void validate()/ s/$/}/' License.java
@@ -366,7 +373,7 @@
                   - bash
                   - -c
                   - |
-                    cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar
+                    [ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack JAR, starting with default license"
                     exec /usr/local/bin/docker-entrypoint.sh
                 ports:
                   - containerPort: 9200
@@ -538,7 +545,7 @@
                   - bash
                   - -c
                   - |
-                    cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar
+                    [ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack JAR, starting with default license"
                     exec /usr/local/bin/docker-entrypoint.sh
                 ports:
                   - containerPort: 9200
