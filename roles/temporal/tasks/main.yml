@@ -21,7 +21,7 @@
     temporal_frontend_mem_req: "{{ '128Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
     temporal_frontend_cpu_lim: "{{ '250m' if tier in ['minimal', 'small'] else '500m' }}"
     temporal_frontend_mem_lim: "{{ '256Mi' if tier in ['minimal', 'small'] else '1Gi' }}"
-    temporal_history_cpu_req: "{{ '100m' if tier in ['minimal', 'small'] else '200m' }}"
+    temporal_history_cpu_req: "{{ '50m' if tier in ['minimal', 'small'] else '200m' }}"
     temporal_history_mem_req: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
     temporal_history_cpu_lim: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
     temporal_history_mem_lim: "{{ '512Mi' if tier in ['minimal', 'small'] else '2Gi' }}"
@@ -334,7 +334,7 @@
           tag: "{{ temporal_admin_tools_ver }}"
         resources:
           requests:
-            cpu: 50m
+            cpu: 25m
             memory: 128Mi
           limits:
             cpu: 200m
@@ -350,7 +350,7 @@
           port: 8080
         resources:
           requests:
-            cpu: 50m
+            cpu: 25m
             memory: 128Mi
           limits:
             cpu: 200m

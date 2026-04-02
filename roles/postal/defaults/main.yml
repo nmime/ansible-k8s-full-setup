@@ -15,17 +15,17 @@ postal_worker_replicas: "{{ 2 if tier == 'production' else 1 }}"
 
 postal_web_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
 postal_web_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
-postal_web_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+postal_web_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '50m' }}"
 postal_web_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
 
 postal_smtp_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
 postal_smtp_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
-postal_smtp_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+postal_smtp_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '50m' }}"
 postal_smtp_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
 
 postal_worker_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
 postal_worker_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
-postal_worker_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+postal_worker_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '50m' }}"
 postal_worker_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
 
 postal_mariadb_storage: "{{ '20Gi' if tier in ['medium', 'production'] else '10Gi' }}"

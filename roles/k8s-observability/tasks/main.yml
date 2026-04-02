@@ -98,7 +98,7 @@
                     storage: "{{ vm_storage_size }}"
           resources:
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 256Mi
             limits:
               cpu: 1000m
@@ -148,8 +148,8 @@
                   storage: "{{ vm_storage_size }}"
         resources:
           requests:
-            cpu: "{{ '50m' if tier == 'minimal' else '100m' }}"
-            memory: "{{ '128Mi' if tier == 'minimal' else '256Mi' }}"
+            cpu: "{{ '50m' if tier in ['minimal', 'small'] else '100m' }}"
+            memory: "{{ '128Mi' if tier in ['minimal', 'small'] else '256Mi' }}"
           limits:
             cpu: 1000m
             memory: 2Gi
@@ -175,8 +175,8 @@
           - url: "{{ 'http://vminsert-vmcluster.' + monitoring_namespace + '.svc:8480/insert/0/prometheus/api/v1/write' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429/api/v1/write' }}"
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: "{{ '25m' if tier in ['minimal', 'small'] else '50m' }}"
+            memory: "{{ '64Mi' if tier in ['minimal', 'small'] else '128Mi' }}"
           limits:
             cpu: 500m
             memory: 512Mi
@@ -340,8 +340,8 @@
           - url: "http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local/loki/api/v1/push"
       resources:
         requests:
-          cpu: 25m
-          memory: 64Mi
+          cpu: 10m
+          memory: 32Mi
         limits:
           cpu: 200m
           memory: 256Mi
@@ -457,8 +457,8 @@
             datasource: VictoriaMetrics
       resources:
         requests:
-          cpu: 50m
-          memory: 128Mi
+          cpu: "{{ '25m' if tier in ['minimal', 'small'] else '50m' }}"
+          memory: "{{ '64Mi' if tier in ['minimal', 'small'] else '128Mi' }}"
         limits:
           cpu: 500m
           memory: 512Mi
@@ -648,8 +648,8 @@
                     mountPath: /srv
                 resources:
                   requests:
-                    cpu: 200m
-                    memory: 512Mi
+                    cpu: "{{ '50m' if tier in ['minimal', 'small'] else '200m' }}"
+                    memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
                   limits:
                     cpu: "2"
                     memory: 4Gi
