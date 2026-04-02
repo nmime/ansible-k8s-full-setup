@@ -373,7 +373,7 @@
           resources:
             requests:
               cpu: "{{ '100m' if gitlab_mode == 'light' else '300m' }}"
-              memory: "{{ '512Mi' if gitlab_mode == 'light' else '2.5Gi' }}"
+              memory: "{{ '1Gi' if gitlab_mode == 'light' else '2.5Gi' }}"
             limits:
               cpu: "{{ '1500m' if gitlab_mode == 'light' else '2000m' }}"
               memory: "{{ '2Gi' if gitlab_mode == 'light' else '5Gi' }}"
@@ -385,7 +385,7 @@
           resources:
             requests:
               cpu: "{{ '50m' if gitlab_mode == 'light' else '200m' }}"
-              memory: "{{ '512Mi' if gitlab_mode == 'light' else '1.5Gi' }}"
+              memory: "{{ '1Gi' if gitlab_mode == 'light' else '1.5Gi' }}"
             limits:
               cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
               memory: "{{ '2Gi' if gitlab_mode == 'light' else '3Gi' }}"
