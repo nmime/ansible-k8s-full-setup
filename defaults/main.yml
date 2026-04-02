@@ -86,6 +86,7 @@ gitlab_runner_concurrent_jobs: 10
 argocd_chart_version: "9.4.15"
 
 # Observability - tier-specific
+log_stack: "{{ 'loki' if tier in ['minimal', 'small'] else 'elk' }}"  # Options: loki, elk, efk
 metrics_retention: "{{ '7d' if tier == 'minimal' else '14d' if tier == 'small' else '30d' }}"
 metrics_storage: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
 logging_retention: "{{ '3d' if tier == 'minimal' else '7d' if tier == 'small' else '14d' }}"
