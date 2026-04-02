@@ -56,7 +56,7 @@
       ansible.builtin.import_role:
         name: k8s-databases
 
-    - name: Deploy GitLab EE
+    - name: Deploy GitLab CE
       ansible.builtin.import_role:
         name: gitlab-selfhosted
 
