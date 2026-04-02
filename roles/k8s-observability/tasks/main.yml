@@ -54,7 +54,8 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
-    wait: false
+    wait: true
+    wait_timeout: 120
     values:
       operator:
         enable_converter_ownership: true
@@ -75,6 +76,26 @@
   until:
     - _r_vm_webhook.resources | length > 0
     - _r_vm_webhook.resources[0].webhooks | default([]) | length > 0
+
+- name: Wait for VictoriaMetrics Operator pod to be fully ready
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=victoria-metrics-operator"
+  register: _r_vm_operator_pod
+  retries: 30
+  delay: 10
+  until:
+    - _r_vm_operator_pod.resources | length > 0
+    - _r_vm_operator_pod.resources[0].status.containerStatuses is defined
+    - _r_vm_operator_pod.resources[0].status.containerStatuses | selectattr('ready', 'equalto', true) | list | length == _r_vm_operator_pod.resources[0].status.containerStatuses | length
+
+- name: Wait for operator webhook endpoint to be serving
+  ansible.builtin.pause:
+    seconds: 15
+
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
     state: present
@@ -124,8 +145,8 @@
               memory: 512Mi
   when: tier in ['medium', 'production']
   register: _r_deploy_vmcluster_distributed_mode
-  retries: 6
-  delay: 15
+  retries: 10
+  delay: 30
   until: _r_deploy_vmcluster_distributed_mode is not failed
 
 - name: Deploy VMSingle (standalone mode for minimal/small)
@@ -155,8 +176,8 @@
             memory: 2Gi
   when: tier in ['minimal', 'small']
   register: _r_deploy_vmsingle_standalone_mode_for_mini
-  retries: 3
-  delay: 10
+  retries: 10
+  delay: 30
   until: _r_deploy_vmsingle_standalone_mode_for_mini is not failed
 
 - name: Deploy VMAgent for scraping
