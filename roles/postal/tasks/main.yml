@@ -208,7 +208,7 @@
                 resources:
                   requests:
                     cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
-                    memory: "{{ postal_mariadb_memory }}"
+                    memory: "{{ '256Mi' if tier in ['minimal', 'small'] else postal_mariadb_memory }}"
                   limits:
                     cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
                     memory: "{{ postal_mariadb_memory }}"
