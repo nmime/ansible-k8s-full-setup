@@ -150,7 +150,7 @@
         fi
         echo 'nameserver 185.12.64.1' > /etc/resolv.conf && echo 'nameserver 185.12.64.2' >> /etc/resolv.conf
         for i in $(seq 1 10); do
-          if curl -4 -sI --max-time 5 https://github.com >/dev/null 2>&1; then
+          if curl -4 -sI --max-time 5 https://github.com > /dev/null 2>&1; then
             echo "Controller connectivity restored after $i attempts"
             exit 0
           fi
@@ -201,7 +201,7 @@
         - databases
         - postgresql
 
-    - name: Deploy GitLab EE Self-Hosted
+    - name: Deploy GitLab CE Self-Hosted
       ansible.builtin.import_role:
         name: gitlab-selfhosted
       tags:
@@ -279,7 +279,7 @@
           - ""
           - "Services deployed:"
           - "  - Kubernetes Cluster with Cilium CNI"
-          - "  - GitLab EE: https://gitlab.{{ domain }}"
+          - "  - GitLab CE: https://gitlab.{{ domain }}"
           - "  - ArgoCD: https://argocd.{{ domain }}"
           - "  - Grafana: https://grafana.{{ domain }}"
           - "  - VictoriaMetrics + Loki (Observability)"
