@@ -12,14 +12,14 @@ es_data_replicas: "{{ 2 if tier == 'production' else 1 }}"
 
 es_master_memory_req: "{{ '2Gi' if tier in ['medium', 'production'] else '768Mi' }}"
 es_master_memory_lim: "{{ '2Gi' if tier in ['medium', 'production'] else '1Gi' }}"
-es_master_cpu_req: "{{ '500m' if tier in ['medium', 'production'] else '100m' }}"
+es_master_cpu_req: "{{ '500m' if tier in ['medium', 'production'] else '50m' }}"
 es_master_cpu_lim: "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
 es_master_heap: "{{ '1g' if tier in ['medium', 'production'] else '512m' }}"
 es_master_storage: "{{ '20Gi' if tier == 'production' else '10Gi' if tier == 'medium' else '10Gi' }}"
 
 es_data_memory_req: "{{ '4Gi' if tier == 'production' else '2Gi' if tier == 'medium' else '1Gi' }}"
 es_data_memory_lim: "{{ '4Gi' if tier == 'production' else '2Gi' }}"
-es_data_cpu_req: "{{ '1000m' if tier == 'production' else '500m' if tier == 'medium' else '250m' }}"
+es_data_cpu_req: "{{ '1000m' if tier == 'production' else '500m' if tier == 'medium' else '100m' }}"
 es_data_cpu_lim: "{{ '2000m' if tier == 'production' else '1000m' }}"
 es_data_heap: "{{ '2g' if tier == 'production' else '1g' }}"
 es_data_storage: "{{ '100Gi' if tier == 'production' else '50Gi' if tier == 'medium' else '10Gi' }}"
@@ -27,7 +27,7 @@ es_data_storage: "{{ '100Gi' if tier == 'production' else '50Gi' if tier == 'med
 kibana_replicas: 1
 kibana_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
 kibana_memory_lim: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
-kibana_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '100m' }}"
+kibana_cpu_req: "{{ '250m' if tier in ['medium', 'production'] else '50m' }}"
 kibana_cpu_lim: "{{ '500m' if tier in ['medium', 'production'] else '250m' }}"
 
 es_kibana_domain: "kibana.{{ domain }}"
