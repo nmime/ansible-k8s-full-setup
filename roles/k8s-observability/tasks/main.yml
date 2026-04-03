@@ -218,6 +218,7 @@
   retries: 3
   delay: 10
   until: _r_add_grafana_helm_repository is not failed
+  when: log_stack == "loki"
 
 - name: Create Loki S3 credentials secret
   kubernetes.core.k8s:
@@ -237,6 +238,7 @@
   delay: 10
   until: _r_create_loki_s3_credentials_secret is not failed
   no_log: true
+  when: log_stack == "loki"
 
 - name: Install Loki with Helm
   kubernetes.core.helm:
@@ -345,6 +347,7 @@
   retries: 3
   delay: 10
   until: _r_install_loki_with_helm is not failed
+  when: log_stack == "loki"
 
 - name: Install Promtail for log collection
   kubernetes.core.helm:
@@ -374,6 +377,7 @@
   retries: 3
   delay: 10
   until: _r_install_promtail_for_log_collection is not failed
+  when: log_stack == "loki"
 
 - name: Install Grafana with Helm
   kubernetes.core.helm:
@@ -404,13 +408,17 @@
               isDefault: true
               jsonData:
                 timeInterval: 15s
-            - name: Loki
-              type: loki
-              uid: loki
-              url: "http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local"
+            - name: "{{ 'Loki' if log_stack == 'loki' else 'Elasticsearch' }}"
+              type: "{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}"
+              uid: "{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}"
+              url: "{{ 'http://loki-gateway.' + monitoring_namespace + '.svc.cluster.local' if log_stack == 'loki' else 'https://es-http.elasticsearch.svc.cluster.local:9200' }}"
               access: proxy
+              basicAuth: "{{ false if log_stack == 'loki' else true }}"
+              basicAuthUser: "{{ '' if log_stack == 'loki' else 'elastic' }}"
               jsonData:
-                maxLines: 1000
+                maxLines: "{{ 1000 if log_stack == 'loki' else omit }}"
+                timeField: "{{ omit if log_stack == 'loki' else '@timestamp' }}"
+                esVersion: "{{ omit if log_stack == 'loki' else '8.0.0' }}"
             - name: PMM
               type: prometheus
               uid: pmm
@@ -1025,3 +1033,173 @@
       - "  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}"
       - "  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM"
       - "=========================================="
+
+# ============================================
+# ELK Stack - Filebeat Log Shipper
+# ============================================
+
+- name: Add Elastic Helm repository
+  kubernetes.core.helm_repository:
+    name: elastic
+    repo_url: "https://helm.elastic.co"
+  register: _r_add_elastic_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_elastic_helm_repository is not failed
+  when: log_stack == "elk"
+
+- name: Install Filebeat for log collection (ELK)
+  kubernetes.core.helm:
+    name: filebeat
+    chart_ref: elastic/filebeat
+    chart_version: "{{ es_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: false
+    values:
+      daemonset:
+        enabled: true
+        filebeatConfig:
+          filebeat.yml: |
+            filebeat.inputs:
+            - type: container
+              paths:
+                - /var/log/containers/*.log
+              processors:
+              - add_kubernetes_metadata:
+                  host: ${NODE_NAME}
+                  matchers:
+                  - logs_path:
+                      logs_path: "/var/log/containers/"
+            output.elasticsearch:
+              hosts: ["https://es-http.elasticsearch.svc.cluster.local:9200"]
+              username: "elastic"
+              password: "${ELASTICSEARCH_PASSWORD}"
+              ssl.certificate_authorities: ["/usr/share/filebeat/config/certs/ca.crt"]
+              index: "filebeat-%{[agent.version]}-%{+yyyy.MM.dd}"
+            setup.ilm.enabled: true
+            setup.ilm.rollover_alias: "filebeat"
+            setup.ilm.pattern: "{now/d}-000001"
+            setup.template.name: "filebeat"
+            setup.template.pattern: "filebeat-*"
+            logging.level: info
+        secretMounts:
+          - name: elasticsearch-ca
+            secretName: es-http-certs-public
+            path: /usr/share/filebeat/config/certs
+        extraEnvs:
+          - name: ELASTICSEARCH_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: es-elastic-user
+                key: elastic
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+  register: _r_install_filebeat_elk
+  retries: 3
+  delay: 10
+  until: _r_install_filebeat_elk is not failed
+  when: log_stack == "elk"
+
+# ============================================
+# EFK Stack - Fluentd Log Shipper
+# ============================================
+
+- name: Add Fluent Helm repository
+  kubernetes.core.helm_repository:
+    name: fluent
+    repo_url: "https://fluent.github.io/helm-charts"
+  register: _r_add_fluent_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_fluent_helm_repository is not failed
+  when: log_stack == "efk"
+
+- name: Install Fluentd for log collection (EFK)
+  kubernetes.core.helm:
+    name: fluentd
+    chart_ref: fluent/fluentd
+    chart_version: "0.5.2"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: false
+    values:
+      kind: DaemonSet
+      fileConfigs:
+        01_sources.conf: |
+          <source>
+            @type tail
+            @id in_tail_container_logs
+            path /var/log/containers/*.log
+            pos_file /var/log/fluentd-containers.log.pos
+            tag kubernetes.*
+            read_from_head true
+            <parse>
+              @type json
+              time_format %Y-%m-%dT%H:%M:%S.%NZ
+            </parse>
+          </source>
+        02_filters.conf: |
+          <filter kubernetes.**>
+            @type kubernetes_metadata
+            @id filter_kube_metadata
+          </filter>
+        04_outputs.conf: |
+          <match **>
+            @type elasticsearch
+            @id out_es
+            host es-http.elasticsearch.svc.cluster.local
+            port 9200
+            scheme https
+            ssl_verify true
+            ca_file /fluentd/certs/ca.crt
+            user elastic
+            password "#{ENV['ELASTICSEARCH_PASSWORD']}"
+            logstash_format true
+            logstash_prefix fluentd
+            <buffer>
+              @type file
+              path /var/log/fluentd-buffers/kubernetes.system.buffer
+              flush_mode interval
+              retry_type exponential_backoff
+              flush_interval 5s
+              retry_forever false
+              retry_max_interval 30
+              chunk_limit_size 2M
+              queue_limit_length 8
+              overflow_action block
+            </buffer>
+          </match>
+      extraVolumes:
+        - name: elasticsearch-ca
+          secret:
+            secretName: es-http-certs-public
+      extraVolumeMounts:
+        - name: elasticsearch-ca
+          mountPath: /fluentd/certs
+          readOnly: true
+      env:
+        - name: ELASTICSEARCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: es-elastic-user
+              key: elastic
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  register: _r_install_fluentd_efk
+  retries: 3
+  delay: 10
+  until: _r_install_fluentd_efk is not failed
+  when: log_stack == "efk"
