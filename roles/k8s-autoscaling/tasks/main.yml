@@ -216,6 +216,7 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_keda_metrics is not failed
+  ignore_errors: true
 
 - name: Display KEDA deployment info
   debug:

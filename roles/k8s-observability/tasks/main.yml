@@ -862,6 +862,7 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_postgresql_ex is not failed
+  ignore_errors: true
 
 - name: Create VMServiceScrape for MongoDB exporter
   kubernetes.core.k8s:
@@ -887,6 +888,7 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_mongodb_expor is not failed
+  ignore_errors: true
 
 - name: Create VMServiceScrape for PMM Server
   kubernetes.core.k8s:
@@ -913,6 +915,7 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_pmm_server is not failed
+  ignore_errors: true
 
 - name: Deploy VMRule for alerting
   kubernetes.core.k8s:
