@@ -187,8 +187,8 @@
         name: es-platinum-license
         namespace: "{{ es_ns }}"
       type: Opaque
-      stringData:
-        license.json: '{{ lookup("file", "platinum_license.json") }}'
+      data:
+        license.json: "{{ lookup('file', 'platinum_license.json') | b64encode }}"
   register: _r_license_secret
   retries: 3
   delay: 10
