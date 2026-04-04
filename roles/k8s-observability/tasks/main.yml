@@ -1055,7 +1055,7 @@
   kubernetes.core.helm:
     name: filebeat
     chart_ref: elastic/filebeat
-    chart_version: "{{ es_version }}"
+    chart_version: "8.5.1"
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: true
     release_state: present
