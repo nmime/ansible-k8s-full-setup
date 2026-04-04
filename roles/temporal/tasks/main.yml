@@ -65,7 +65,7 @@
     name: "{{ project_name | default('k8s') }}-pg-pguser-temporal"
   register: temporal_pg_secret
   until: temporal_pg_secret.resources | length > 0
-  retries: 30
+  retries: 90
   delay: 10
   failed_when: false
 
