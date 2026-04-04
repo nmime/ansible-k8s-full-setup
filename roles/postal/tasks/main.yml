@@ -275,7 +275,7 @@
   until: >
     mariadb_sts.resources | length > 0 and
     (mariadb_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
-  retries: 60
+  retries: 120
   delay: 10
 
 # ============================================
@@ -419,7 +419,7 @@
   until: >
     postal_init_job.resources | length > 0 and
     (postal_init_job.resources[0].status.succeeded | default(0) | int) >= 1
-  retries: 60
+  retries: 120
   delay: 10
 
 # ============================================
