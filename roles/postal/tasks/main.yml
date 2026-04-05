@@ -266,6 +266,34 @@
   delay: 10
   until: _r_mariadb_svc is not failed
 
+- name: Wait for MariaDB PVC to be bound
+  kubernetes.core.k8s_info:
+    kind: PersistentVolumeClaim
+    namespace: "{{ p_ns }}"
+    name: data-postal-mariadb-0
+  register: mariadb_pvc
+  until: >
+    mariadb_pvc.resources | length > 0 and
+    (mariadb_pvc.resources[0].status.phase | default('')) == 'Bound'
+  retries: 180
+  delay: 10
+  failed_when: false
+
+- name: Check PVC events if not bound
+  ansible.builtin.command:
+    cmd: "kubectl -n {{ p_ns }} describe pvc data-postal-mariadb-0"
+  register: pvc_events
+  when: >
+    mariadb_pvc.resources | length == 0 or
+    (mariadb_pvc.resources[0].status.phase | default('')) != 'Bound'
+
+- name: Fail with PVC error details
+  fail:
+    msg: "MariaDB PVC failed to bind after 30 minutes. Events: {{ pvc_events.stdout_lines | default([]) }}"
+  when: >
+    mariadb_pvc.resources | length == 0 or
+    (mariadb_pvc.resources[0].status.phase | default('')) != 'Bound'
+
 - name: Wait for MariaDB to be ready
   kubernetes.core.k8s_info:
     kind: StatefulSet
