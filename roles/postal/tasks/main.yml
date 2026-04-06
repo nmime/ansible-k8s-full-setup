@@ -48,6 +48,7 @@
   delegate_to: localhost
 
 - name: Create signing key secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -135,6 +136,7 @@
 # ============================================
 
 - name: Create MariaDB credentials secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -276,6 +278,7 @@
 # ============================================
 
 - name: Create Postal config secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

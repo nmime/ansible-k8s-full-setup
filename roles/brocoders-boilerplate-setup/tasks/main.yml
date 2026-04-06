@@ -79,6 +79,7 @@
     resolved_app_db_password: "{{ (app_pg_conn_secret.resources[0].data['postgresql-password'] | b64decode) if app_pg_conn_secret.resources | length > 0 else app_db_password }}"
 
 - name: Create backend Secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

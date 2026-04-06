@@ -106,6 +106,7 @@
 # ============================================
 
 - name: Create pgbackrest S3 credentials secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -385,6 +386,7 @@
 # ============================================
 
 - name: Create MongoDB backup credentials for MinIO
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -493,6 +495,7 @@
   failed_when: false
 
 - name: Patch MongoDB users secret with PMM_SERVER_API_KEY
+  no_log: true
   kubernetes.core.k8s:
     state: patched
     kind: Secret
@@ -554,6 +557,7 @@
   until: _r_ensure_gitlab_namespace_exists_for_cross is not failed
 
 - name: Create PostgreSQL connection secret for GitLab
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -591,6 +595,7 @@
     app_pg_password: "{{ (app_pg_secret.resources[0].data.password | b64decode) if app_pg_secret.resources | length > 0 else '' }}"
 
 - name: Create PostgreSQL connection secret for application
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

@@ -221,6 +221,7 @@
   when: log_stack == "loki"
 
 - name: Create Loki S3 credentials secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -556,6 +557,7 @@
   until: _r_create_tls_certificate_for_grafana is not failed
 
 - name: Create PMM admin password secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

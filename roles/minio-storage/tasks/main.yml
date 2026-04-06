@@ -246,6 +246,7 @@
   until: _r_create_minio_api_httproute_public_s3 is not failed
 
 - name: Create MinIO credentials in GitLab namespace
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

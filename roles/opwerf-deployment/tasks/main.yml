@@ -262,6 +262,7 @@
 # ============================================
 
 - name: Add GitLab repository credentials to ArgoCD
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
