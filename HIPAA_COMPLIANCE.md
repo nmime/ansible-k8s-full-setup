@@ -2,7 +2,7 @@
 
 **Date**: April 6, 2026  
 **Status**: Optional hardening for healthcare/regulated workloads  
-**Activation**: `-e hipaa_compliance=true` at deploy time  
+**Default**: ON. Disable only for dev/staging with `-e hipaa_compliance=false`  
 
 ---
 

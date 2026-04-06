@@ -122,6 +122,6 @@ tempo_storage_size: "{{ '5Gi' if tier in ['minimal', 'small'] else '10Gi' if tie
 otel_collector_enabled: "{{ tracing_enabled }}"
 
 # HIPAA Compliance (enable for healthcare/regulated workloads)
-hipaa_compliance: false  # Set to true to enable all HIPAA requirements
+hipaa_compliance: true  # Default ON - disable only for dev/staging with explicit -e hipaa_compliance=false
 internal_tls_enabled: "{{ hipaa_compliance }}"  # TLS for internal services (MinIO, Vault, Loki)
 log_redaction_enabled: "{{ hipaa_compliance }}"  # Redact PII from logs
