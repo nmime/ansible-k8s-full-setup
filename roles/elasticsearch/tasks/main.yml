@@ -195,6 +195,7 @@
   until: _r_license_secret is not failed
 
 - name: Create ES credentials secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

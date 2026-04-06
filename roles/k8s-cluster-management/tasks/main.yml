@@ -367,6 +367,7 @@
 # ============================================
 
 - name: Create hcloud-token secret for CCM
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -871,6 +872,7 @@
   until: _r_install_official_hetzner_cloud_dns_webho is not failed
 
 - name: Create Hetzner Cloud API token secret for cert-manager
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

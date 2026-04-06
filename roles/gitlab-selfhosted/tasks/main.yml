@@ -50,6 +50,7 @@
 # ============================================
 
 - name: Create S3 object storage secret for GitLab
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -522,6 +523,7 @@
   until: _r_install_gitlab_runner_with_helm is not failed
 
 - name: Create S3 cache secret for GitLab Runner
+  no_log: true
   when: gitlab_runner_token is defined and gitlab_runner_token != ''
   kubernetes.core.k8s:
     state: present
