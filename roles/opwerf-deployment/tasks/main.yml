@@ -9,7 +9,7 @@
     opwerf_helm_repo_url: https://gitlab.{{ domain }}/platform/opwerf.git
     opwerf_api_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
     opwerf_worker_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
-    opwerf_dashboard_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+    opwerf_frontend_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
 - name: Generate OpenWerf secrets
   set_fact:
     opwerf_db_password_resolved: '{{ opwerf_db_password }}'
@@ -36,7 +36,7 @@
       apiVersion: v1
       kind: ServiceAccount
       metadata:
-        name: opwerf-dashboard
+        name: opwerf-frontend
         namespace: '{{ opwerf_ns }}'
       automountServiceAccountToken: false
 - name: Create default-deny NetworkPolicy for OpenWerf namespace
@@ -77,12 +77,12 @@
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
-        name: allow-dashboard-ingress
+        name: allow-frontend-ingress
         namespace: '{{ opwerf_ns }}'
       spec:
         endpointSelector:
           matchLabels:
-            app.kubernetes.io/name: opwerf-dashboard
+            app.kubernetes.io/name: opwerf-frontend
         ingress:
         - fromEntities:
           - cluster
@@ -137,12 +137,12 @@
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
-        name: allow-dashboard-to-api
+        name: allow-frontend-to-api
         namespace: '{{ opwerf_ns }}'
       spec:
         endpointSelector:
           matchLabels:
-            app.kubernetes.io/name: opwerf-dashboard
+            app.kubernetes.io/name: opwerf-frontend
         egress:
         - toEndpoints:
           - matchLabels:
@@ -438,14 +438,14 @@
           helm:
             releaseName: opwerf
             values: "global:\n  domain: {{ domain }}\n  tier: {{ tier }}\nimage:\n  registry: {{ opwerf_image_registry }}\n  tag: {{ opwerf_image_tag }}\napp:\n  name: opwerf\n  nodeEnv: {{ opwerf_node_env\
-              \ }}\n  allowDevAuthBypass: \"{{ opwerf_allow_dev_auth_bypass }}\"\nreplicas:\n  api: {{ opwerf_api_replicas_val }}\n  worker: {{ opwerf_worker_replicas_val }}\n  dashboard: {{ opwerf_dashboard_replicas_val\
+              \ }}\n  allowDevAuthBypass: \"{{ opwerf_allow_dev_auth_bypass }}\"\nreplicas:\n  api: {{ opwerf_api_replicas_val }}\n  worker: {{ opwerf_worker_replicas_val }}\n  frontend: {{ opwerf_frontend_replicas_val\
               \ }}\n  credentialProxy: 1\ndatabase:\n  host: {{ pg_host }}\n  port: {{ opwerf_pg_port }}\n  name: {{ opwerf_db_name }}\n  user: {{ opwerf_db_user }}\n  password: {{ opwerf_pg_password_final\
               \ }}\ndragonfly:\n  host: dragonfly.dragonfly.svc.cluster.local\n  port: 6379\nelasticsearch:\n  enabled: true\n  replicas: {{ opwerf_elasticsearch_replicas }}\n  storageSize: {{ opwerf_elasticsearch_storage_size\
               \ }}\n  storageClass: {{ storage_class }}\ntemporal:\n  address: {{ opwerf_temporal_address }}\n  namespace: {{ opwerf_temporal_namespace }}\nminio:\n  endpoint: {{ opwerf_minio_endpoint }}\n\
               \  port: {{ opwerf_minio_port }}\n  bucket: {{ opwerf_minio_bucket }}\n  useSSL: {{ opwerf_minio_use_ssl | string | lower }}\n  accessKey: {{ minio_root_user }}\n  secretKey: {{ minio_root_password\
               \ }}\nsecurity:\n  redisPassword: {{ opwerf_redis_password_resolved }}  # used by Dragonfly auth\n  credentialProxyToken: {{ opwerf_credential_proxy_token_resolved }}\n  encryptionKey: {{\
               \ opwerf_enc_key_resolved }}\n  encryptionSalt: {{ opwerf_enc_salt_resolved }}\n  sessionSigningKey: {{ opwerf_session_key_resolved }}\nexternalAPIs:\n  e2bApiKey: {{ opwerf_e2b_api_key |\
-              \ default('') }}\n  anthropicApiKey: {{ opwerf_anthropic_api_key | default('') }}\ningress:\n  enabled: true\n  gatewayName: main-gateway\n  gatewayNamespace: gateway\n  dashboardHost: app.{{\
+              \ default('') }}\n  anthropicApiKey: {{ opwerf_anthropic_api_key | default('') }}\ningress:\n  enabled: true\n  gatewayName: main-gateway\n  gatewayNamespace: gateway\n  frontendHost: app.{{\
               \ domain }}\n  apiHost: api.{{ domain }}\nautoscaling:\n  api:\n    enabled: true\n    minReplicas: {{ opwerf_api_replicas_val }}\n    maxReplicas: 20\n    targetCPUUtilizationPercentage:\
               \ 70\n    targetMemoryUtilizationPercentage: 80\n  worker:\n    enabled: true\n    minReplicas: {{ opwerf_worker_replicas_val }}\n    maxReplicas: 10\n    targetCPUUtilizationPercentage: 70\n"
         destination:
