@@ -151,7 +151,7 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e tier=producti
 ```
 
 ### Tier Upgrade Path
-- minimal (~€18/mo) → small (~€30/mo) → medium (~€50/mo) → production (~€75/mo)
+- minimal (~€16/mo) → small (~€40/mo) → medium (~€52/mo) → production (~€97/mo)
 
 ## Backup and Restore
 
