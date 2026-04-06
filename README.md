@@ -400,7 +400,38 @@ tailscale up --login-server https://vpn.<domain> --authkey <preauthkey>
 
 ## Observability
 
+### Complete Coverage
+
+| Component | Minimal/Small | Medium/Production |
+|-----------|---------------|-------------------|
+| **Pod logs** | Loki + Promtail | Elasticsearch + Filebeat |
+| **Bastion logs** | Promtail → Loki | Filebeat → ES |
+| **Cluster metrics** | VictoriaMetrics | VictoriaMetrics |
+| **Database metrics** | PMM (PG/Mongo) | PMM (PG/Mongo) |
+| **Hetzner cloud metrics** | ✅ Cloud Exporter | ✅ Cloud Exporter |
+| **Distributed tracing** | ❌ (optional) | ✅ Tempo + OTEL |
+| **Dashboards** | 12 Grafana | 12 Grafana |
+| **Alerting** | VMRule → Grafana | VMRule → Grafana |
+
+### Logs Access
+
+- **Minimal/Small**: Grafana Explore → Loki datasource
+- **Medium/Production**: Grafana Explore → ES datasource OR Kibana UI (`https://kibana.{domain}`)
+
+### Distributed Tracing (Medium/Production)
+
+Applications send traces via OpenTelemetry:
+```bash
+# OTEL Collector endpoints (cluster-internal)
+OTLP gRPC: otel-collector.monitoring.svc.cluster.local:4317
+OTLP HTTP: otel-collector.monitoring.svc.cluster.local:4318
+Jaeger:    otel-collector.monitoring.svc.cluster.local:14268
+```
+
+View in Grafana → Explore → Tempo datasource.
+
 ### Pre-configured Grafana Dashboards
+
 
 12 dashboards are automatically provisioned:
 
