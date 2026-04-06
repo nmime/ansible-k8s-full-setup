@@ -1,8 +1,57 @@
 - name: HIPAA hardening only applied when hipaa_compliance=true
   debug:
-    msg: "Applying HIPAA internal TLS and log redaction. This will restart services."
+    msg: Applying HIPAA internal TLS and log redaction. This will restart services.
   when: hipaa_compliance | default(false) | bool
-
+- name: Create internal CA issuer for HIPAA TLS
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: internal-ca
+      spec:
+        ca:
+          secretName: internal-ca-secret
+  when: internal_tls_enabled | default(false) | bool
+- name: Generate internal CA certificate secret
+  ansible.builtin.shell: kubectl get secret -n cert-manager internal-ca-secret || (openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes -keyout /tmp/ca.key -out /tmp/ca.crt -subj '/CN=Internal-CA'
+    && kubectl create secret tls internal-ca-secret -n cert-manager --cert=/tmp/ca.crt --key=/tmp/ca.key && rm /tmp/ca.{crt,key})
+  when: internal_tls_enabled | default(false) | bool
+  ignore_errors: true
+- name: Create internal TLS certificates for HIPAA services
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: '{{ item.name }}'
+        namespace: '{{ item.namespace }}'
+      spec:
+        secretName: '{{ item.name }}'
+        duration: 8760h
+        renewBefore: 720h
+        issuerRef:
+          name: internal-ca
+          kind: ClusterIssuer
+        dnsNames: '{{ item.dnsNames }}'
+  loop:
+  - name: loki-gateway-tls
+    namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+    dnsNames:
+    - loki-gateway
+    - loki-gateway.{{ monitoring_namespace | default('monitoring') }}
+    - loki-gateway.{{ monitoring_namespace | default('monitoring') }}.svc
+    - loki-gateway.{{ monitoring_namespace | default('monitoring') }}.svc.cluster.local
+  - name: tempo-tls
+    namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+    dnsNames:
+    - tempo-distributor
+    - tempo-query-frontend
+    - tempo-distributor.{{ monitoring_namespace | default('monitoring') }}.svc.cluster.local
+    - tempo-query-frontend.{{ monitoring_namespace | default('monitoring') }}.svc.cluster.local
+  when: internal_tls_enabled | default(false) | bool
 - name: Enable Vault TLS (update ConfigMap)
   kubernetes.core.k8s:
     state: present
@@ -11,39 +60,21 @@
       kind: ConfigMap
       metadata:
         name: vault-config
-        namespace: "{{ vault_ns | default('vault') }}"
+        namespace: '{{ vault_ns | default(''vault'') }}'
       data:
-        vault.hcl: |
-          ui = true
-          listener "tcp" {
-            tls_disable = 0
-            address = "[::]:8200"
-            cluster_address = "[::]:8201"
-            tls_cert_file = "/vault/tls/tls.crt"
-            tls_key_file = "/vault/tls/tls.key"
-          }
-          storage "raft" {
-            path = "/vault/data"
-          }
+        vault.hcl: "ui = true\nlistener \"tcp\" {\n  tls_disable = 0\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n  tls_cert_file = \"/vault/tls/tls.crt\"\n  tls_key_file = \"/vault/tls/tls.key\"\
+          \n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n}\n"
   when: hipaa_compliance | default(false) | bool and internal_tls_enabled | default(false) | bool
   register: vault_tls
-
 - name: Restart Vault StatefulSet to apply TLS
   ansible.builtin.shell: kubectl rollout restart statefulset/vault -n {{ vault_ns | default('vault') }}
   when: vault_tls.changed
-
 - name: Enable MinIO TLS (update values via helm upgrade)
-  ansible.builtin.shell: |
-    helm upgrade minio minio/minio -n storage \
-      --reuse-values \
-      --set tls.enabled=true \
-      --set tls.certSecret=minio-api-tls \
-      --set tls.publicCrt=tls.crt \
-      --set tls.privateKey=tls.key
+  ansible.builtin.shell: "helm upgrade minio minio/minio -n storage \\\n  --reuse-values \\\n  --set tls.enabled=true \\\n  --set tls.certSecret=minio-api-tls \\\n  --set tls.publicCrt=tls.crt \\\n  --set\
+    \ tls.privateKey=tls.key\n"
   when: hipaa_compliance | default(false) | bool and internal_tls_enabled | default(false) | bool
   register: minio_tls
   ignore_errors: true
-
 - name: Add Promtail log redaction ConfigMap
   kubernetes.core.k8s:
     state: present
@@ -52,34 +83,24 @@
       kind: ConfigMap
       metadata:
         name: promtail-redaction
-        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+        namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
       data:
-        redaction.yaml: |
-          # HIPAA PII redaction patterns (SSN, phone, email)
-          # Applied as pipeline_stages in Promtail scrape_configs
-          - replace:
-              expression: '\b\d{3}-\d{2}-\d{4}\b'
-              replace: 'XXX-XX-XXXX'
-          - replace:
-              expression: '\(\d{3}\)\s*\d{3}-\d{4}'
-              replace: '(XXX) XXX-XXXX'
-          - replace:
-              expression: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-              replace: '[REDACTED_EMAIL]'
+        redaction.yaml: "# HIPAA PII redaction patterns (SSN, phone, email)\n# Applied as pipeline_stages in Promtail scrape_configs\n- replace:\n    expression: '\\b\\d{3}-\\d{2}-\\d{4}\\b'\n    replace:\
+          \ 'XXX-XX-XXXX'\n- replace:\n    expression: '\\(\\d{3}\\)\\s*\\d{3}-\\d{4}'\n    replace: '(XXX) XXX-XXXX'\n- replace:\n    expression: '\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\\
+          b'\n    replace: '[REDACTED_EMAIL]'\n"
   when: hipaa_compliance | default(false) | bool and log_redaction_enabled | default(false) | bool
-
 - name: Display HIPAA hardening summary
   debug:
     msg:
-      - "HIPAA compliance mode ENABLED:"
-      - "  - Vault TLS: {{ 'ENABLED' if vault_tls.changed else 'Already configured' }}"
-      - "  - MinIO TLS: {{ 'ENABLED' if minio_tls.changed else 'Already configured' }}"
-      - "  - Log redaction: ConfigMap created (manual Promtail/Filebeat restart required)"
-      - ""
-      - "Next steps:"
-      - "  1. Verify services: kubectl get pods -A"
-      - "  2. Test Vault HTTPS: curl https://vault.vault.svc:8200/v1/sys/health --cacert /path/to/ca.crt"
-      - "  3. Test MinIO HTTPS: mc alias set minio https://minio.storage.svc:9000 admin password"
-      - "  4. Update client configs to use https:// URLs"
-      - "  5. Restart Promtail/Filebeat to apply redaction"
+    - 'HIPAA compliance mode ENABLED:'
+    - '  - Vault TLS: {{ ''ENABLED'' if vault_tls.changed else ''Already configured'' }}'
+    - '  - MinIO TLS: {{ ''ENABLED'' if minio_tls.changed else ''Already configured'' }}'
+    - '  - Log redaction: ConfigMap created (manual Promtail/Filebeat restart required)'
+    - ''
+    - 'Next steps:'
+    - '  1. Verify services: kubectl get pods -A'
+    - '  2. Test Vault HTTPS: curl https://vault.vault.svc:8200/v1/sys/health --cacert /path/to/ca.crt'
+    - '  3. Test MinIO HTTPS: mc alias set minio https://minio.storage.svc:9000 admin password'
+    - '  4. Update client configs to use https:// URLs'
+    - '  5. Restart Promtail/Filebeat to apply redaction'
   when: hipaa_compliance | default(false) | bool

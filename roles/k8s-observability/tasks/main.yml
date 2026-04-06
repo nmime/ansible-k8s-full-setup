@@ -1,21 +1,15 @@
----
-# Observability Stack Role - Complete Implementation
-# Deploys VictoriaMetrics + Loki + Grafana on Kubernetes
-# VictoriaMetrics v1.133.0, Loki v3.6.3, Grafana v12.3.1
-
 - name: Set observability tier-specific variables
   set_fact:
-    monitoring_namespace: "monitoring"
-    vm_operator_version: "0.59.3"
-    loki_chart_version: "6.55.0"
-    grafana_chart_version: "10.5.15"
-    grafana_domain: "grafana.{{ domain }}"
-    vm_retention: "{{ metrics_retention | default('30d') }}"
-    vm_storage_size: "{{ metrics_storage | default('50Gi') }}"
-    loki_retention: "{{ logging_retention | default('14d') }}"
-    vm_replicas: "{{ (2 if tier in ['medium', 'production'] else 1) | int }}"
-    grafana_replicas: "{{ 2 if tier == 'production' else 1 }}"
-
+    monitoring_namespace: monitoring
+    vm_operator_version: 0.59.3
+    loki_chart_version: 6.55.0
+    grafana_chart_version: 10.5.15
+    grafana_domain: grafana.{{ domain }}
+    vm_retention: '{{ metrics_retention | default(''30d'') }}'
+    vm_storage_size: '{{ metrics_storage | default(''50Gi'') }}'
+    loki_retention: '{{ logging_retention | default(''14d'') }}'
+    vm_replicas: '{{ (2 if tier in [''medium'', ''production''] else 1) | int }}'
+    grafana_replicas: '{{ 2 if tier == ''production'' else 1 }}'
 - name: Create monitoring namespace
   kubernetes.core.k8s:
     state: present
@@ -28,34 +22,28 @@
           app.kubernetes.io/part-of: observability
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
-
-# ============================================
-# VictoriaMetrics
-# ============================================
   register: _r_create_monitoring_namespace
   retries: 3
   delay: 10
   until: _r_create_monitoring_namespace is not failed
-
 - name: Add VictoriaMetrics Helm repository
   kubernetes.core.helm_repository:
     name: vm
-    repo_url: "https://victoriametrics.github.io/helm-charts/"
+    repo_url: https://victoriametrics.github.io/helm-charts/
   register: _r_add_victoriametrics_helm_repository
   retries: 3
   delay: 10
   until: _r_add_victoriametrics_helm_repository is not failed
-
 - name: Install VictoriaMetrics Operator
   kubernetes.core.helm:
     name: vm-operator
     chart_ref: vm/victoria-metrics-operator
-    chart_version: "{{ vm_operator_version }}"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: '{{ vm_operator_version }}'
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: true
-    timeout: "2m0s"
+    timeout: 2m0s
     values:
       operator:
         enable_converter_ownership: true
@@ -63,7 +51,6 @@
   retries: 3
   delay: 10
   until: _r_install_victoriametrics_operator is not failed
-
 - name: Wait for VictoriaMetrics Operator webhook to be ready
   kubernetes.core.k8s_info:
     api_version: admissionregistration.k8s.io/v1
@@ -74,28 +61,25 @@
   delay: 10
   failed_when: false
   until:
-    - _r_vm_webhook.resources | length > 0
-    - _r_vm_webhook.resources[0].webhooks | default([]) | length > 0
-
+  - _r_vm_webhook.resources | length > 0
+  - _r_vm_webhook.resources[0].webhooks | default([]) | length > 0
 - name: Wait for VictoriaMetrics Operator pod to be fully ready
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ monitoring_namespace }}"
+    namespace: '{{ monitoring_namespace }}'
     label_selectors:
-      - "app.kubernetes.io/name=victoria-metrics-operator"
+    - app.kubernetes.io/name=victoria-metrics-operator
   register: _r_vm_operator_pod
   retries: 30
   delay: 10
   until:
-    - _r_vm_operator_pod.resources | length > 0
-    - _r_vm_operator_pod.resources[0].status.containerStatuses is defined
-    - _r_vm_operator_pod.resources[0].status.containerStatuses | selectattr('ready', 'equalto', true) | list | length == _r_vm_operator_pod.resources[0].status.containerStatuses | length
-
+  - _r_vm_operator_pod.resources | length > 0
+  - _r_vm_operator_pod.resources[0].status.containerStatuses is defined
+  - _r_vm_operator_pod.resources[0].status.containerStatuses | selectattr('ready', 'equalto', true) | list | length == _r_vm_operator_pod.resources[0].status.containerStatuses | length
 - name: Wait for operator webhook endpoint to be serving
   ansible.builtin.pause:
     seconds: 15
-
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
     state: present
@@ -104,19 +88,19 @@
       kind: VMCluster
       metadata:
         name: vmcluster
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
-        retentionPeriod: "{{ vm_retention }}"
-        replicationFactor: "{{ (2 if tier in ['medium', 'production'] else 1) | int }}"
+        retentionPeriod: '{{ vm_retention }}'
+        replicationFactor: '{{ (2 if tier in [''medium'', ''production''] else 1) | int }}'
         vmstorage:
-          replicaCount: "{{ vm_replicas | int }}"
+          replicaCount: '{{ vm_replicas | int }}'
           storage:
             volumeClaimTemplate:
               spec:
-                storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
+                storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
                 resources:
                   requests:
-                    storage: "{{ vm_storage_size }}"
+                    storage: '{{ vm_storage_size }}'
           resources:
             requests:
               cpu: 50m
@@ -125,7 +109,7 @@
               cpu: 1000m
               memory: 2Gi
         vmselect:
-          replicaCount: "{{ vm_replicas | int }}"
+          replicaCount: '{{ vm_replicas | int }}'
           cacheMountPath: /cache
           resources:
             requests:
@@ -135,7 +119,7 @@
               cpu: 500m
               memory: 1Gi
         vminsert:
-          replicaCount: "{{ vm_replicas | int }}"
+          replicaCount: '{{ vm_replicas | int }}'
           resources:
             requests:
               cpu: 50m
@@ -148,7 +132,6 @@
   retries: 10
   delay: 30
   until: _r_deploy_vmcluster_distributed_mode is not failed
-
 - name: Deploy VMSingle (standalone mode for minimal/small)
   kubernetes.core.k8s:
     state: present
@@ -157,20 +140,20 @@
       kind: VMSingle
       metadata:
         name: vmsingle
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
-        retentionPeriod: "{{ vm_retention }}"
+        retentionPeriod: '{{ vm_retention }}'
         storage:
           volumeClaimTemplate:
             spec:
-              storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
+              storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
               resources:
                 requests:
-                  storage: "{{ vm_storage_size }}"
+                  storage: '{{ vm_storage_size }}'
         resources:
           requests:
-            cpu: "{{ '50m' if tier in ['minimal', 'small'] else '100m' }}"
-            memory: "{{ '128Mi' if tier in ['minimal', 'small'] else '256Mi' }}"
+            cpu: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
+            memory: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''256Mi'' }}'
           limits:
             cpu: 1000m
             memory: 2Gi
@@ -179,7 +162,6 @@
   retries: 10
   delay: 30
   until: _r_deploy_vmsingle_standalone_mode_for_mini is not failed
-
 - name: Deploy VMAgent for scraping
   kubernetes.core.k8s:
     state: present
@@ -188,38 +170,33 @@
       kind: VMAgent
       metadata:
         name: vmagent
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
-        replicaCount: "{{ vm_replicas | int }}"
+        replicaCount: '{{ vm_replicas | int }}'
         selectAllByDefault: true
         remoteWrite:
-          - url: "{{ 'http://vminsert-vmcluster.' + monitoring_namespace + '.svc:8480/insert/0/prometheus/api/v1/write' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429/api/v1/write' }}"
+        - url: '{{ ''http://vminsert-vmcluster.'' + monitoring_namespace + ''.svc:8480/insert/0/prometheus/api/v1/write'' if tier in [''medium'', ''production''] else ''http://vmsingle-vmsingle.'' + monitoring_namespace
+            + ''.svc:8429/api/v1/write'' }}'
         resources:
           requests:
-            cpu: "{{ '25m' if tier in ['minimal', 'small'] else '50m' }}"
-            memory: "{{ '64Mi' if tier in ['minimal', 'small'] else '128Mi' }}"
+            cpu: '{{ ''25m'' if tier in [''minimal'', ''small''] else ''50m'' }}'
+            memory: '{{ ''64Mi'' if tier in [''minimal'', ''small''] else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
-
-# ============================================
-# Loki (Log Aggregation)
-# ============================================
   register: _r_deploy_vmagent_for_scraping
   retries: 3
   delay: 10
   until: _r_deploy_vmagent_for_scraping is not failed
-
 - name: Add Grafana Helm repository
   kubernetes.core.helm_repository:
     name: grafana
-    repo_url: "https://grafana.github.io/helm-charts"
+    repo_url: https://grafana.github.io/helm-charts
   register: _r_add_grafana_helm_repository
   retries: 3
   delay: 10
   until: _r_add_grafana_helm_repository is not failed
   when: log_stack == "loki"
-
 - name: Create Loki S3 credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -229,41 +206,39 @@
       kind: Secret
       metadata:
         name: loki-s3-credentials
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
-        S3_ACCESS_KEY: "{{ minio_root_user }}"
-        S3_SECRET_KEY: "{{ minio_root_password }}"
+        S3_ACCESS_KEY: '{{ minio_root_user }}'
+        S3_SECRET_KEY: '{{ minio_root_password }}'
   register: _r_create_loki_s3_credentials_secret
   retries: 3
   delay: 10
   until: _r_create_loki_s3_credentials_secret is not failed
-  no_log: true
   when: log_stack == "loki"
-
 - name: Install Loki with Helm
   kubernetes.core.helm:
     name: loki
     chart_ref: grafana/loki
-    chart_version: "{{ loki_chart_version }}"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: '{{ loki_chart_version }}'
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
-    timeout: "10m0s"
+    timeout: 10m0s
     values:
-      deploymentMode: "{{ 'SingleBinary' if tier in ['minimal', 'small'] else 'SimpleScalable' }}"
+      deploymentMode: '{{ ''SingleBinary'' if tier in [''minimal'', ''small''] else ''SimpleScalable'' }}'
       loki:
         auth_enabled: false
         commonConfig:
-          replication_factor: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+          replication_factor: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
         storage:
           type: s3
           s3:
-            endpoint: "http://minio.storage.svc.cluster.local:9000"
+            endpoint: http://minio.storage.svc.cluster.local:9000
             bucketnames: loki-chunks
-            access_key_id: "{{ minio_root_user }}"
-            secret_access_key: "{{ minio_root_password }}"
+            access_key_id: '{{ minio_root_user }}'
+            secret_access_key: '{{ minio_root_password }}'
             s3ForcePathStyle: true
             insecure: true
           bucketNames:
@@ -272,65 +247,65 @@
             admin: loki-admin
         schemaConfig:
           configs:
-            - from: "2024-01-01"
-              store: tsdb
-              object_store: s3
-              schema: v13
-              index:
-                prefix: loki_index_
-                period: 24h
+          - from: '2024-01-01'
+            store: tsdb
+            object_store: s3
+            schema: v13
+            index:
+              prefix: loki_index_
+              period: 24h
         limits_config:
-          retention_period: "{{ loki_retention }}"
+          retention_period: '{{ loki_retention }}'
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
+        replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
-            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
+            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
+        replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
-            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
+            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
-          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+          size: '{{ ''5Gi'' if tier == ''minimal'' else ''10Gi'' }}'
+          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       backend:
-        replicas: "{{ 0 if tier in ['minimal', 'small'] else vm_replicas | int }}"
+        replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
-            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
+            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
-          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+          size: '{{ ''5Gi'' if tier == ''minimal'' else ''10Gi'' }}'
+          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       singleBinary:
-        replicas: "{{ 1 if tier in ['minimal', 'small'] else 0 | int }}"
+        replicas: '{{ 1 if tier in [''minimal'', ''small''] else 0 | int }}'
         resources:
           requests:
-            cpu: "{{ '25m' if tier == 'minimal' else '50m' }}"
-            memory: "{{ '64Mi' if tier == 'minimal' else '128Mi' }}"
+            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: "{{ '5Gi' if tier == 'minimal' else '10Gi' }}"
-          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+          size: '{{ ''5Gi'' if tier == ''minimal'' else ''10Gi'' }}'
+          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       gateway:
         enabled: true
         replicas: 1
@@ -349,20 +324,19 @@
   delay: 10
   until: _r_install_loki_with_helm is not failed
   when: log_stack == "loki"
-
 - name: Install Promtail for log collection
   kubernetes.core.helm:
     name: promtail
     chart_ref: grafana/promtail
-    chart_version: "6.17.1"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: 6.17.1
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
     values:
       config:
         clients:
-          - url: "http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local/loki/api/v1/push"
+        - url: http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local/loki/api/v1/push
       resources:
         requests:
           cpu: 10m
@@ -370,75 +344,71 @@
         limits:
           cpu: 200m
           memory: 256Mi
-
-# ============================================
-# Grafana
-# ============================================
   register: _r_install_promtail_for_log_collection
   retries: 3
   delay: 10
   until: _r_install_promtail_for_log_collection is not failed
   when: log_stack == "loki"
-
 - name: Install Grafana with Helm
   kubernetes.core.helm:
     name: grafana
     chart_ref: grafana/grafana
-    chart_version: "{{ grafana_chart_version }}"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: '{{ grafana_chart_version }}'
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
     values:
-      replicas: "{{ grafana_replicas | int }}"
-      adminUser: "{{ grafana_admin_user | default('admin') }}"
-      adminPassword: "{{ grafana_admin_password }}"
+      replicas: '{{ grafana_replicas | int }}'
+      adminUser: '{{ grafana_admin_user | default(''admin'') }}'
+      adminPassword: '{{ grafana_admin_password }}'
       persistence:
         enabled: true
         size: 5Gi
-        storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+        storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       datasources:
         datasources.yaml:
           apiVersion: 1
           datasources:
-            - name: VictoriaMetrics
-              type: prometheus
-              uid: victoria-metrics
-              url: "{{ 'http://vmselect-vmcluster.' + monitoring_namespace + '.svc:8481/select/0/prometheus' if tier in ['medium', 'production'] else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc:8429' }}"
-              access: proxy
-              isDefault: true
-              jsonData:
-                timeInterval: 15s
-            - name: "{{ 'Loki' if log_stack == 'loki' else 'Elasticsearch' }}"
-              type: "{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}"
-              uid: "{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}"
-              url: "{{ 'http://loki-gateway.' + monitoring_namespace + '.svc.cluster.local' if log_stack == 'loki' else 'https://es-http.elasticsearch.svc.cluster.local:9200' }}"
-              access: proxy
-              basicAuth: "{{ false if log_stack == 'loki' else true }}"
-              basicAuthUser: "{{ '' if log_stack == 'loki' else 'elastic' }}"
-              jsonData:
-                maxLines: "{{ 1000 if log_stack == 'loki' else omit }}"
-                timeField: "{{ omit if log_stack == 'loki' else '@timestamp' }}"
-                esVersion: "{{ omit if log_stack == 'loki' else '8.0.0' }}"
-            - name: PMM
-              type: prometheus
-              uid: pmm
-              url: "http://pmm-server.{{ monitoring_namespace }}.svc.cluster.local/prometheus"
-              access: proxy
-              jsonData:
-                timeInterval: 5s
+          - name: VictoriaMetrics
+            type: prometheus
+            uid: victoria-metrics
+            url: '{{ ''http://vmselect-vmcluster.'' + monitoring_namespace + ''.svc:8481/select/0/prometheus'' if tier in [''medium'', ''production''] else ''http://vmsingle-vmsingle.'' + monitoring_namespace
+              + ''.svc:8429'' }}'
+            access: proxy
+            isDefault: true
+            jsonData:
+              timeInterval: 15s
+          - name: '{{ ''Loki'' if log_stack == ''loki'' else ''Elasticsearch'' }}'
+            type: '{{ ''loki'' if log_stack == ''loki'' else ''elasticsearch'' }}'
+            uid: '{{ ''loki'' if log_stack == ''loki'' else ''elasticsearch'' }}'
+            url: '{{ ''http://loki-gateway.'' + monitoring_namespace + ''.svc.cluster.local'' if log_stack == ''loki'' else ''https://es-http.elasticsearch.svc.cluster.local:9200'' }}'
+            access: proxy
+            basicAuth: '{{ false if log_stack == ''loki'' else true }}'
+            basicAuthUser: '{{ '''' if log_stack == ''loki'' else ''elastic'' }}'
+            jsonData:
+              maxLines: '{{ 1000 if log_stack == ''loki'' else omit }}'
+              timeField: '{{ omit if log_stack == ''loki'' else ''@timestamp'' }}'
+              esVersion: '{{ omit if log_stack == ''loki'' else ''8.0.0'' }}'
+          - name: PMM
+            type: prometheus
+            uid: pmm
+            url: http://pmm-server.{{ monitoring_namespace }}.svc.cluster.local/prometheus
+            access: proxy
+            jsonData:
+              timeInterval: 5s
       dashboardProviders:
         dashboardproviders.yaml:
           apiVersion: 1
           providers:
-            - name: default
-              orgId: 1
-              folder: ''
-              type: file
-              disableDeletion: false
-              editable: true
-              options:
-                path: /var/lib/grafana/dashboards/default
+          - name: default
+            orgId: 1
+            folder: ''
+            type: file
+            disableDeletion: false
+            editable: true
+            options:
+              path: /var/lib/grafana/dashboards/default
       dashboards:
         default:
           node-exporter:
@@ -487,8 +457,8 @@
             datasource: VictoriaMetrics
       resources:
         requests:
-          cpu: "{{ '25m' if tier in ['minimal', 'small'] else '50m' }}"
-          memory: "{{ '64Mi' if tier in ['minimal', 'small'] else '128Mi' }}"
+          cpu: '{{ ''25m'' if tier in [''minimal'', ''small''] else ''50m'' }}'
+          memory: '{{ ''64Mi'' if tier in [''minimal'', ''small''] else ''128Mi'' }}'
         limits:
           cpu: 500m
           memory: 512Mi
@@ -501,7 +471,6 @@
   retries: 3
   delay: 10
   until: _r_install_grafana_with_helm is not failed
-
 - name: Create Grafana Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -510,27 +479,26 @@
       kind: HTTPRoute
       metadata:
         name: grafana
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "{{ grafana_domain }}"
+        - '{{ grafana_domain }}'
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: grafana
-                port: 80
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: grafana
+            port: 80
   register: _r_create_grafana_gateway_api_httproute_vpn
   retries: 3
   delay: 10
   until: _r_create_grafana_gateway_api_httproute_vpn is not failed
-
 - name: Create TLS Certificate for Grafana
   kubernetes.core.k8s:
     state: present
@@ -546,16 +514,11 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "{{ grafana_domain }}"
-
-# ============================================
-# Percona Monitoring and Management (PMM) Server
-# ============================================
+        - '{{ grafana_domain }}'
   register: _r_create_tls_certificate_for_grafana
   retries: 3
   delay: 10
   until: _r_create_tls_certificate_for_grafana is not failed
-
 - name: Create PMM admin password secret
   no_log: true
   kubernetes.core.k8s:
@@ -565,16 +528,14 @@
       kind: Secret
       metadata:
         name: pmm-secret
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
-        PMM_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+        PMM_ADMIN_PASSWORD: '{{ grafana_admin_password }}'
   register: _r_create_pmm_admin_password_secret
   retries: 3
   delay: 10
   until: _r_create_pmm_admin_password_secret is not failed
-  no_log: true
-
 - name: Create PMM ServiceAccount
   kubernetes.core.k8s:
     state: present
@@ -583,7 +544,7 @@
       kind: ServiceAccount
       metadata:
         name: pmm-server
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
         labels:
           app: pmm-server
       automountServiceAccountToken: false
@@ -591,7 +552,6 @@
   retries: 3
   delay: 10
   until: _r_create_pmm_sa is not failed
-
 - name: Create PMM Server PVC
   kubernetes.core.k8s:
     state: present
@@ -600,19 +560,18 @@
       kind: PersistentVolumeClaim
       metadata:
         name: pmm-server-data
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         accessModes:
-          - ReadWriteOnce
-        storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
+        - ReadWriteOnce
+        storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
         resources:
           requests:
-            storage: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' }}"
+            storage: '{{ ''10Gi'' if tier in [''minimal'', ''small''] else ''20Gi'' }}'
   register: _r_create_pmm_server_pvc
   retries: 3
   delay: 10
   until: _r_create_pmm_server_pvc is not failed
-
 - name: Deploy PMM Server
   kubernetes.core.k8s:
     state: present
@@ -621,7 +580,7 @@
       kind: Deployment
       metadata:
         name: pmm-server
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
         labels:
           app: pmm-server
       spec:
@@ -641,73 +600,75 @@
             serviceAccountName: pmm-server
             enableServiceLinks: false
             initContainers:
-              - name: fix-perms
-                image: busybox:1.36
-                command: ["sh", "-c", "chown -R 1000:0 /srv"]
-                volumeMounts:
-                  - name: pmm-data
-                    mountPath: /srv
-                securityContext:
-                  runAsUser: 0
-            containers:
-              - name: pmm-server
-                image: "percona/pmm-server:3"
-                ports:
-                  - containerPort: 8443
-                    name: https
-                  - containerPort: 8080
-                    name: http
-                securityContext:
-                  allowPrivilegeEscalation: false
-                  capabilities:
-                    drop:
-                      - ALL
-                env:
-                  - name: DISABLE_UPDATES
-                    value: "1"
-                  - name: METRICS_RESOLUTION
-                    value: "5s"
-                  - name: DISABLE_TELEMETRY
-                    value: "1"
-                  - name: PMM_ADMIN_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: pmm-secret
-                        key: PMM_ADMIN_PASSWORD
-                volumeMounts:
-                  - name: pmm-data
-                    mountPath: /srv
-                resources:
-                  requests:
-                    cpu: "{{ '50m' if tier in ['minimal', 'small'] else '200m' }}"
-                    memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
-                  limits:
-                    cpu: "2"
-                    memory: 4Gi
-                readinessProbe:
-                  httpGet:
-                    path: /v1/readyz
-                    port: 8080
-                  initialDelaySeconds: 60
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                livenessProbe:
-                  httpGet:
-                    path: /v1/readyz
-                    port: 8080
-                  initialDelaySeconds: 300
-                  periodSeconds: 30
-                  timeoutSeconds: 5
-                  failureThreshold: 10
-            volumes:
+            - name: fix-perms
+              image: busybox:1.36
+              command:
+              - sh
+              - -c
+              - chown -R 1000:0 /srv
+              volumeMounts:
               - name: pmm-data
-                persistentVolumeClaim:
-                  claimName: pmm-server-data
+                mountPath: /srv
+              securityContext:
+                runAsUser: 0
+            containers:
+            - name: pmm-server
+              image: percona/pmm-server:3
+              ports:
+              - containerPort: 8443
+                name: https
+              - containerPort: 8080
+                name: http
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+              env:
+              - name: DISABLE_UPDATES
+                value: '1'
+              - name: METRICS_RESOLUTION
+                value: 5s
+              - name: DISABLE_TELEMETRY
+                value: '1'
+              - name: PMM_ADMIN_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: pmm-secret
+                    key: PMM_ADMIN_PASSWORD
+              volumeMounts:
+              - name: pmm-data
+                mountPath: /srv
+              resources:
+                requests:
+                  cpu: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
+                  memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+                limits:
+                  cpu: '2'
+                  memory: 4Gi
+              readinessProbe:
+                httpGet:
+                  path: /v1/readyz
+                  port: 8080
+                initialDelaySeconds: 60
+                periodSeconds: 10
+                timeoutSeconds: 5
+              livenessProbe:
+                httpGet:
+                  path: /v1/readyz
+                  port: 8080
+                initialDelaySeconds: 300
+                periodSeconds: 30
+                timeoutSeconds: 5
+                failureThreshold: 10
+            volumes:
+            - name: pmm-data
+              persistentVolumeClaim:
+                claimName: pmm-server-data
   register: _r_deploy_pmm_server
   retries: 3
   delay: 10
   until: _r_deploy_pmm_server is not failed
-
 - name: Create PMM Server Service
   kubernetes.core.k8s:
     state: present
@@ -716,46 +677,42 @@
       kind: Service
       metadata:
         name: pmm-server
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
         labels:
           app: pmm-server
       spec:
         selector:
           app: pmm-server
         ports:
-          - name: http
-            port: 8080
-            targetPort: 8080
-          - name: https
-            port: 8443
-            targetPort: 8443
-          - name: https-compat
-            port: 443
-            targetPort: 8443
+        - name: http
+          port: 8080
+          targetPort: 8080
+        - name: https
+          port: 8443
+          targetPort: 8443
+        - name: https-compat
+          port: 443
+          targetPort: 8443
   register: _r_create_pmm_server_service
   retries: 3
   delay: 10
   until: _r_create_pmm_server_service is not failed
-
 - name: Wait for PMM Server to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
-    namespace: "{{ monitoring_namespace }}"
+    namespace: '{{ monitoring_namespace }}'
     name: pmm-server
   register: pmm_deploy
-  until: >
-    pmm_deploy.resources | length > 0
-    and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: |
+    pmm_deploy.resources | length > 0 and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 30
   delay: 15
   failed_when: false
-
 - name: Get PMM Server pod name
   shell: kubectl get pod -n {{ monitoring_namespace }} -l app=pmm-server -o jsonpath='{.items[0].metadata.name}'
   register: pmm_pod_name
   changed_when: false
   failed_when: false
-
 - name: Generate PMM API key for database monitoring
   shell: |
     kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash -c '
@@ -779,13 +736,11 @@
   changed_when: false
   no_log: true
   when: pmm_pod_name.stdout | default('') | length > 0
-
 - name: Set PMM API key fact
   set_fact:
-    pmm_api_key: "{{ pmm_api_key_result.stdout_lines | default([]) | last | default('') }}"
+    pmm_api_key: '{{ pmm_api_key_result.stdout_lines | default([]) | last | default('''') }}'
   when: pmm_api_key_result.rc | default(1) == 0
   failed_when: false
-
 - name: Create PMM HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -794,27 +749,26 @@
       kind: HTTPRoute
       metadata:
         name: pmm
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "pmm.{{ domain }}"
+        - pmm.{{ domain }}
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: pmm-server
-                port: 8080
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: pmm-server
+            port: 8080
   register: _r_create_pmm_httproute_vpn_only_via_admin_
   retries: 3
   delay: 10
   until: _r_create_pmm_httproute_vpn_only_via_admin_ is not failed
-
 - name: Create TLS Certificate for PMM
   kubernetes.core.k8s:
     state: present
@@ -830,16 +784,11 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "pmm.{{ domain }}"
-
-# ============================================
-# VMServiceScrape for Percona exporters
-# ============================================
+        - pmm.{{ domain }}
   register: _r_create_tls_certificate_for_pmm
   retries: 3
   delay: 10
   until: _r_create_tls_certificate_for_pmm is not failed
-
 - name: Create VMServiceScrape for PostgreSQL exporter
   kubernetes.core.k8s:
     state: present
@@ -848,24 +797,23 @@
       kind: VMServiceScrape
       metadata:
         name: percona-pg-exporter
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         namespaceSelector:
           matchNames:
-            - databases
+          - databases
         selector:
           matchLabels:
-            postgres-operator.crunchydata.com/crunchy-postgres-exporter: "true"
+            postgres-operator.crunchydata.com/crunchy-postgres-exporter: 'true'
         endpoints:
-          - port: exporter
-            path: /metrics
-            interval: 30s
+        - port: exporter
+          path: /metrics
+          interval: 30s
   register: _r_create_vmservicescrape_for_postgresql_ex
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_postgresql_ex is not failed
   ignore_errors: true
-
 - name: Create VMServiceScrape for MongoDB exporter
   kubernetes.core.k8s:
     state: present
@@ -874,24 +822,23 @@
       kind: VMServiceScrape
       metadata:
         name: percona-mongodb-exporter
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         namespaceSelector:
           matchNames:
-            - databases
+          - databases
         selector:
           matchLabels:
             app.kubernetes.io/name: percona-server-mongodb
         endpoints:
-          - port: metrics
-            path: /metrics
-            interval: 30s
+        - port: metrics
+          path: /metrics
+          interval: 30s
   register: _r_create_vmservicescrape_for_mongodb_expor
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_mongodb_expor is not failed
   ignore_errors: true
-
 - name: Create VMServiceScrape for PMM Server
   kubernetes.core.k8s:
     state: present
@@ -900,25 +847,20 @@
       kind: VMServiceScrape
       metadata:
         name: pmm-server
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         selector:
           matchLabels:
             app: pmm-server
         endpoints:
-          - port: http
-            path: /prometheus/metrics
-            interval: 30s
-
-# ============================================
-# Alerting Rules
-# ============================================
+        - port: http
+          path: /prometheus/metrics
+          interval: 30s
   register: _r_create_vmservicescrape_for_pmm_server
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_pmm_server is not failed
   ignore_errors: true
-
 - name: Deploy VMRule for alerting
   kubernetes.core.k8s:
     state: present
@@ -927,138 +869,131 @@
       kind: VMRule
       metadata:
         name: platform-alerts
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         groups:
-          - name: kubernetes
-            rules:
-              - alert: KubePodCrashLooping
-                expr: 'rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0'
-                for: 15m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "Pod {{ '{{ $labels.namespace }}' }}/{{ '{{ $labels.pod }}' }} is crash looping"
-              - alert: KubeNodeNotReady
-                expr: 'kube_node_status_condition{condition="Ready",status="true"} == 0'
-                for: 15m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Node {{ '{{ $labels.node }}' }} is not ready"
-              - alert: KubePersistentVolumeFillingUp
-                expr: 'kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15'
-                for: 1h
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "PV {{ '{{ $labels.persistentvolumeclaim }}' }} filling up (< 15% free)"
-              - alert: HighMemoryUsage
-                expr: '(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9'
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High memory usage on {{ '{{ $labels.instance }}' }}"
-          - name: databases
-            rules:
-              - alert: PostgreSQLDown
-                expr: 'pg_up == 0'
-                for: 2m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "PostgreSQL instance {{ '{{ $labels.instance }}' }} is down"
-              - alert: PostgreSQLReplicationLag
-                expr: 'pg_replication_lag > 30'
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "PostgreSQL replication lag is {{ '{{ $value }}' }}s on {{ '{{ $labels.instance }}' }}"
-              - alert: PostgreSQLTooManyConnections
-                expr: 'sum by (instance) (pg_stat_activity_count) > pg_settings_max_connections * 0.8'
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "PostgreSQL connections above 80% on {{ '{{ $labels.instance }}' }}"
-              - alert: PostgreSQLDeadlocks
-                expr: 'rate(pg_stat_database_deadlocks[5m]) > 0'
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "PostgreSQL deadlocks detected on {{ '{{ $labels.datname }}' }}"
-              - alert: MongoDBDown
-                expr: 'mongodb_up == 0'
-                for: 2m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "MongoDB instance {{ '{{ $labels.instance }}' }} is down"
-              - alert: MongoDBReplicationLag
-                expr: 'mongodb_mongod_replset_member_replication_lag > 30'
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "MongoDB replication lag is {{ '{{ $value }}' }}s on {{ '{{ $labels.instance }}' }}"
-              - alert: MongoDBCursorsOpen
-                expr: 'mongodb_mongod_metrics_cursor_open{state="total"} > 10000'
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "MongoDB has {{ '{{ $value }}' }} open cursors on {{ '{{ $labels.instance }}' }}"
-              - alert: PGBackrestBackupStale
-                expr: 'time() - pg_backrest_backup_last_completed_time_epoch > 172800'
-                for: 1h
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "pgbackrest backup is older than 48h"
+        - name: kubernetes
+          rules:
+          - alert: KubePodCrashLooping
+            expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: Pod {{ '{{ $labels.namespace }}' }}/{{ '{{ $labels.pod }}' }} is crash looping
+          - alert: KubeNodeNotReady
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: 15m
+            labels:
+              severity: critical
+            annotations:
+              summary: Node {{ '{{ $labels.node }}' }} is not ready
+          - alert: KubePersistentVolumeFillingUp
+            expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: PV {{ '{{ $labels.persistentvolumeclaim }}' }} filling up (< 15% free)
+          - alert: HighMemoryUsage
+            expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: High memory usage on {{ '{{ $labels.instance }}' }}
+        - name: databases
+          rules:
+          - alert: PostgreSQLDown
+            expr: pg_up == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: PostgreSQL instance {{ '{{ $labels.instance }}' }} is down
+          - alert: PostgreSQLReplicationLag
+            expr: pg_replication_lag > 30
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: PostgreSQL replication lag is {{ '{{ $value }}' }}s on {{ '{{ $labels.instance }}' }}
+          - alert: PostgreSQLTooManyConnections
+            expr: sum by (instance) (pg_stat_activity_count) > pg_settings_max_connections * 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: PostgreSQL connections above 80% on {{ '{{ $labels.instance }}' }}
+          - alert: PostgreSQLDeadlocks
+            expr: rate(pg_stat_database_deadlocks[5m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: PostgreSQL deadlocks detected on {{ '{{ $labels.datname }}' }}
+          - alert: MongoDBDown
+            expr: mongodb_up == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: MongoDB instance {{ '{{ $labels.instance }}' }} is down
+          - alert: MongoDBReplicationLag
+            expr: mongodb_mongod_replset_member_replication_lag > 30
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: MongoDB replication lag is {{ '{{ $value }}' }}s on {{ '{{ $labels.instance }}' }}
+          - alert: MongoDBCursorsOpen
+            expr: mongodb_mongod_metrics_cursor_open{state="total"} > 10000
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: MongoDB has {{ '{{ $value }}' }} open cursors on {{ '{{ $labels.instance }}' }}
+          - alert: PGBackrestBackupStale
+            expr: time() - pg_backrest_backup_last_completed_time_epoch > 172800
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: pgbackrest backup is older than 48h
   register: _r_deploy_vmrule_for_alerting
   retries: 3
   delay: 10
   until: _r_deploy_vmrule_for_alerting is not failed
-
 - name: Display observability deployment info
   debug:
     msg:
-      - "=========================================="
-      - "  Observability Stack Deployed"
-      - "=========================================="
-      - "  Grafana: https://{{ grafana_domain }}"
-      - "    User: {{ grafana_admin_user }} / ****"
-      - "  VictoriaMetrics: {{ 'Cluster' if tier in ['medium', 'production'] else 'Single' }} mode"
-      - "  Loki: SimpleScalable mode"
-      - "  PMM Server: https://pmm.{{ domain }}"
-      - "    User: admin / ****"
-      - "  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}"
-      - "  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM"
-      - "=========================================="
-
-# ============================================
-# ELK Stack - Filebeat Log Shipper
-# ============================================
-
+    - ==========================================
+    - '  Observability Stack Deployed'
+    - ==========================================
+    - '  Grafana: https://{{ grafana_domain }}'
+    - '    User: {{ grafana_admin_user }} / ****'
+    - '  VictoriaMetrics: {{ ''Cluster'' if tier in [''medium'', ''production''] else ''Single'' }} mode'
+    - '  Loki: SimpleScalable mode'
+    - '  PMM Server: https://pmm.{{ domain }}'
+    - '    User: admin / ****'
+    - '  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}'
+    - '  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM'
+    - ==========================================
 - name: Add Elastic Helm repository
   kubernetes.core.helm_repository:
     name: elastic
-    repo_url: "https://helm.elastic.co"
+    repo_url: https://helm.elastic.co
   register: _r_add_elastic_helm_repository
   retries: 3
   delay: 10
   until: _r_add_elastic_helm_repository is not failed
   when: log_stack == "elk"
-
 - name: Install Filebeat for log collection (ELK)
   kubernetes.core.helm:
     name: filebeat
     chart_ref: elastic/filebeat
-    chart_version: "8.5.1"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: 8.5.1
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -1090,15 +1025,15 @@
             setup.template.pattern: "filebeat-*"
             logging.level: info
         secretMounts:
-          - name: elasticsearch-ca
-            secretName: es-http-certs-public
-            path: /usr/share/filebeat/config/certs
+        - name: elasticsearch-ca
+          secretName: es-http-certs-public
+          path: /usr/share/filebeat/config/certs
         extraEnvs:
-          - name: ELASTICSEARCH_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: es-elastic-user
-                key: elastic
+        - name: ELASTICSEARCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: es-elastic-user
+              key: elastic
         resources:
           requests:
             cpu: 50m
@@ -1111,27 +1046,21 @@
   delay: 10
   until: _r_install_filebeat_elk is not failed
   when: log_stack == "elk"
-
-# ============================================
-# EFK Stack - Fluentd Log Shipper
-# ============================================
-
 - name: Add Fluent Helm repository
   kubernetes.core.helm_repository:
     name: fluent
-    repo_url: "https://fluent.github.io/helm-charts"
+    repo_url: https://fluent.github.io/helm-charts
   register: _r_add_fluent_helm_repository
   retries: 3
   delay: 10
   until: _r_add_fluent_helm_repository is not failed
   when: log_stack == "efk"
-
 - name: Install Fluentd for log collection (EFK)
   kubernetes.core.helm:
     name: fluentd
     chart_ref: fluent/fluentd
-    chart_version: "0.5.2"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: 0.5.2
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -1183,19 +1112,19 @@
             </buffer>
           </match>
       extraVolumes:
-        - name: elasticsearch-ca
-          secret:
-            secretName: es-http-certs-public
+      - name: elasticsearch-ca
+        secret:
+          secretName: es-http-certs-public
       extraVolumeMounts:
-        - name: elasticsearch-ca
-          mountPath: /fluentd/certs
-          readOnly: true
+      - name: elasticsearch-ca
+        mountPath: /fluentd/certs
+        readOnly: true
       env:
-        - name: ELASTICSEARCH_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: es-elastic-user
-              key: elastic
+      - name: ELASTICSEARCH_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: es-elastic-user
+            key: elastic
       resources:
         requests:
           cpu: 50m
@@ -1208,11 +1137,6 @@
   delay: 10
   until: _r_install_fluentd_efk is not failed
   when: log_stack == "efk"
-
-# ============================================
-# Hetzner Cloud Exporter (expose cloud API metrics)
-# ============================================
-
 - name: Create Hetzner Cloud token secret
   kubernetes.core.k8s:
     state: present
@@ -1221,17 +1145,16 @@
       kind: Secret
       metadata:
         name: hetzner-cloud-token
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
-        token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+        token: '{{ lookup(''env'', ''HCLOUD_TOKEN'') }}'
   when: hetzner_metrics_enabled | default(true) | bool
   no_log: true
   register: _r_create_hetzner_token_secret
   retries: 3
   delay: 10
   until: _r_create_hetzner_token_secret is not failed
-
 - name: Deploy Hetzner Cloud Exporter
   kubernetes.core.k8s:
     state: present
@@ -1240,7 +1163,7 @@
       kind: Deployment
       metadata:
         name: hetzner-cloud-exporter
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
         labels:
           app: hetzner-cloud-exporter
       spec:
@@ -1254,33 +1177,32 @@
               app: hetzner-cloud-exporter
           spec:
             containers:
-              - name: exporter
-                image: ghcr.io/promhetznercloud/prometheus-hetzner-sd:v0.5.0
-                args:
-                  - --hcloud.token=$(HCLOUD_TOKEN)
-                  - --output.format=prometheus
-                env:
-                  - name: HCLOUD_TOKEN
-                    valueFrom:
-                      secretKeyRef:
-                        name: hetzner-cloud-token
-                        key: token
-                ports:
-                  - containerPort: 9090
-                    name: metrics
-                resources:
-                  requests:
-                    cpu: 10m
-                    memory: 32Mi
-                  limits:
-                    cpu: 100m
-                    memory: 64Mi
+            - name: exporter
+              image: ghcr.io/promhetznercloud/prometheus-hetzner-sd:v0.5.0
+              args:
+              - --hcloud.token=$(HCLOUD_TOKEN)
+              - --output.format=prometheus
+              env:
+              - name: HCLOUD_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: hetzner-cloud-token
+                    key: token
+              ports:
+              - containerPort: 9090
+                name: metrics
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
   when: hetzner_metrics_enabled | default(true) | bool
   register: _r_deploy_hetzner_exporter
   retries: 3
   delay: 10
   until: _r_deploy_hetzner_exporter is not failed
-
 - name: Create Hetzner Exporter Service
   kubernetes.core.k8s:
     state: present
@@ -1289,22 +1211,21 @@
       kind: Service
       metadata:
         name: hetzner-cloud-exporter
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
         labels:
           app: hetzner-cloud-exporter
       spec:
         selector:
           app: hetzner-cloud-exporter
         ports:
-          - port: 9090
-            targetPort: 9090
-            name: metrics
+        - port: 9090
+          targetPort: 9090
+          name: metrics
   when: hetzner_metrics_enabled | default(true) | bool
   register: _r_create_hetzner_exporter_svc
   retries: 3
   delay: 10
   until: _r_create_hetzner_exporter_svc is not failed
-
 - name: Create VMServiceScrape for Hetzner Cloud Exporter
   kubernetes.core.k8s:
     state: present
@@ -1313,36 +1234,29 @@
       kind: VMServiceScrape
       metadata:
         name: hetzner-cloud-exporter
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       spec:
         selector:
           matchLabels:
             app: hetzner-cloud-exporter
         endpoints:
-          - port: metrics
-            interval: 60s
+        - port: metrics
+          interval: 60s
   when: hetzner_metrics_enabled | default(true) | bool
   register: _r_create_hetzner_vmservicescrape
   retries: 3
   delay: 10
   until: _r_create_hetzner_vmservicescrape is not failed
   ignore_errors: true
-
-# ============================================
-# Grafana Tempo - Distributed Tracing
-# (medium/production tiers only by default)
-# ============================================
-
 - name: Add Tempo Helm repository
   kubernetes.core.helm_repository:
     name: grafana
-    repo_url: "https://grafana.github.io/helm-charts"
+    repo_url: https://grafana.github.io/helm-charts
   when: tracing_enabled | default(false) | bool
   register: _r_add_tempo_helm_repo
   retries: 3
   delay: 10
   until: _r_add_tempo_helm_repo is not failed
-
 - name: Create Tempo S3 credentials secret
   kubernetes.core.k8s:
     state: present
@@ -1351,18 +1265,17 @@
       kind: Secret
       metadata:
         name: tempo-s3-credentials
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
-        S3_ACCESS_KEY: "{{ minio_root_user }}"
-        S3_SECRET_KEY: "{{ minio_root_password }}"
+        S3_ACCESS_KEY: '{{ minio_root_user }}'
+        S3_SECRET_KEY: '{{ minio_root_password }}'
   when: tracing_enabled | default(false) | bool
   no_log: true
   register: _r_create_tempo_s3_secret
   retries: 3
   delay: 10
   until: _r_create_tempo_s3_secret is not failed
-
 - name: Create Tempo MinIO bucket
   kubernetes.core.k8s:
     state: present
@@ -1378,38 +1291,37 @@
           spec:
             restartPolicy: OnFailure
             containers:
-              - name: mc
-                image: minio/mc:RELEASE.2024-10-02T08-27-28Z
-                command:
-                  - sh
-                  - -c
-                  - |
-                    mc alias set minio http://minio.storage.svc.cluster.local:9000 $MINIO_USER $MINIO_PASS
-                    mc mb -p minio/tempo-traces
-                env:
-                  - name: MINIO_USER
-                    valueFrom:
-                      secretKeyRef:
-                        name: minio-root-credentials
-                        key: rootUser
-                  - name: MINIO_PASS
-                    valueFrom:
-                      secretKeyRef:
-                        name: minio-root-credentials
-                        key: rootPassword
+            - name: mc
+              image: minio/mc:RELEASE.2024-10-02T08-27-28Z
+              command:
+              - sh
+              - -c
+              - |
+                mc alias set minio http://minio.storage.svc.cluster.local:9000 $MINIO_USER $MINIO_PASS
+                mc mb -p minio/tempo-traces
+              env:
+              - name: MINIO_USER
+                valueFrom:
+                  secretKeyRef:
+                    name: minio-root-credentials
+                    key: rootUser
+              - name: MINIO_PASS
+                valueFrom:
+                  secretKeyRef:
+                    name: minio-root-credentials
+                    key: rootPassword
   when: tracing_enabled | default(false) | bool
   register: _r_create_tempo_bucket
   retries: 3
   delay: 10
   until: _r_create_tempo_bucket is not failed
   ignore_errors: true
-
 - name: Install Grafana Tempo with Helm
   kubernetes.core.helm:
     name: tempo
     chart_ref: grafana/tempo-distributed
-    chart_version: "1.9.0"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: 1.9.0
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -1420,13 +1332,13 @@
           s3:
             bucket: tempo-traces
             endpoint: minio.storage.svc.cluster.local:9000
-            access_key: "{{ minio_root_user }}"
-            secret_key: "{{ minio_root_password }}"
+            access_key: '{{ minio_root_user }}'
+            secret_key: '{{ minio_root_password }}'
             insecure: true
       compactor:
         config:
           compaction:
-            block_retention: "{{ tempo_retention | default('24h') }}"
+            block_retention: '{{ tempo_retention | default(''24h'') }}'
       distributor:
         resources:
           requests:
@@ -1436,7 +1348,7 @@
             cpu: 500m
             memory: 512Mi
       ingester:
-        replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
+        replicas: '{{ 1 if tier in [''minimal'', ''small'', ''medium''] else 2 }}'
         resources:
           requests:
             cpu: 100m
@@ -1446,8 +1358,8 @@
             memory: 512Mi
         persistence:
           enabled: true
-          size: "{{ tempo_storage_size | default('5Gi') }}"
-          storageClass: "{{ storage_class }}"
+          size: '{{ tempo_storage_size | default(''5Gi'') }}'
+          storageClass: '{{ storage_class }}'
       querier:
         resources:
           requests:
@@ -1478,27 +1390,21 @@
   retries: 3
   delay: 10
   until: _r_install_tempo is not failed
-
-# ============================================
-# OpenTelemetry Collector
-# ============================================
-
 - name: Add OpenTelemetry Helm repository
   kubernetes.core.helm_repository:
     name: open-telemetry
-    repo_url: "https://open-telemetry.github.io/opentelemetry-helm-charts"
+    repo_url: https://open-telemetry.github.io/opentelemetry-helm-charts
   when: otel_collector_enabled | default(false) | bool
   register: _r_add_otel_helm_repo
   retries: 3
   delay: 10
   until: _r_add_otel_helm_repo is not failed
-
 - name: Install OpenTelemetry Collector
   kubernetes.core.helm:
     name: otel-collector
     chart_ref: open-telemetry/opentelemetry-collector
-    chart_version: "0.83.0"
-    release_namespace: "{{ monitoring_namespace }}"
+    chart_version: 0.83.0
+    release_namespace: '{{ monitoring_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -1526,15 +1432,20 @@
             limit_mib: 256
         exporters:
           otlp:
-            endpoint: "tempo-distributor.{{ monitoring_namespace }}.svc.cluster.local:4317"
+            endpoint: tempo-distributor.{{ monitoring_namespace }}.svc.cluster.local:4317
             tls:
               insecure: true
         service:
           pipelines:
             traces:
-              receivers: [otlp, jaeger]
-              processors: [memory_limiter, batch]
-              exporters: [otlp]
+              receivers:
+              - otlp
+              - jaeger
+              processors:
+              - memory_limiter
+              - batch
+              exporters:
+              - otlp
       resources:
         requests:
           cpu: 50m
@@ -1547,7 +1458,6 @@
   retries: 3
   delay: 10
   until: _r_install_otel_collector is not failed
-
 - name: Add Tempo datasource to Grafana
   kubernetes.core.k8s:
     state: present
@@ -1556,9 +1466,9 @@
       kind: ConfigMap
       metadata:
         name: grafana-tempo-datasource
-        namespace: "{{ monitoring_namespace }}"
+        namespace: '{{ monitoring_namespace }}'
         labels:
-          grafana_datasource: "1"
+          grafana_datasource: '1'
       data:
         tempo-datasource.yaml: |
           apiVersion: 1
@@ -1584,3 +1494,49 @@
   retries: 3
   delay: 10
   until: _r_add_tempo_grafana_datasource is not failed
+- name: Deploy ServiceMonitors for platform services
+  kubernetes.core.k8s:
+    state: present
+    src: '{{ playbook_dir }}/../roles/k8s-observability/templates/servicemonitors.yml'
+  ignore_errors: true
+- name: Enable Vault Prometheus telemetry
+  ansible.builtin.shell: kubectl exec -n {{ vault_ns | default('vault') }} vault-0 -- sh -c 'VAULT_TOKEN=$(cat /vault/token) vault write sys/config/ui-custom-message '|| true && kubectl exec -n {{ vault_ns
+    | default('vault') }} vault-0 -- sh -c 'cat /vault/config/vault.hcl | grep -q telemetry || (echo -e "\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n}" >> /vault/config/vault.hcl)'
+  ignore_errors: true
+- name: Deploy cert-manager alert (cert expiry warning)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: cert-expiry-alerts
+        namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+      spec:
+        groups:
+        - name: cert-manager
+          rules:
+          - alert: CertificateExpiringSoon
+            expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: Certificate {{ $labels.name }} expires in < 7 days
+              description: Namespace {{ $labels.namespace }}, cert {{ $labels.name }}
+          - alert: CertificateExpiryCritical
+            expr: certmanager_certificate_expiration_timestamp_seconds - time() < 24 * 3600
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: Certificate {{ $labels.name }} expires in < 24 hours!
+              description: Immediate action needed. Namespace {{ $labels.namespace }}
+          - alert: CertificateRenewalFailed
+            expr: certmanager_certificate_ready_status{condition="False"} == 1
+            for: 30m
+            labels:
+              severity: critical
+            annotations:
+              summary: Certificate {{ $labels.name }} renewal FAILED
+              description: cert-manager cannot renew {{ $labels.name }} in {{ $labels.namespace }}
