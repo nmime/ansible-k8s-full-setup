@@ -120,3 +120,8 @@ tracing_enabled: "{{ tier in ['medium', 'production'] }}"  # Only medium/product
 tempo_retention: "{{ '24h' if tier == 'medium' else '72h' if tier == 'production' else '12h' }}"
 tempo_storage_size: "{{ '5Gi' if tier in ['minimal', 'small'] else '10Gi' if tier == 'medium' else '20Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"
+
+# HIPAA Compliance (enable for healthcare/regulated workloads)
+hipaa_compliance: false  # Set to true to enable all HIPAA requirements
+internal_tls_enabled: "{{ hipaa_compliance }}"  # TLS for internal services (MinIO, Vault, Loki)
+log_redaction_enabled: "{{ hipaa_compliance }}"  # Redact PII from logs
