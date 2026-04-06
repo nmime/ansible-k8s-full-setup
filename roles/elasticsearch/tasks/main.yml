@@ -399,6 +399,10 @@
                       secretKeyRef:
                         name: es-credentials
                         key: ELASTIC_PASSWORD
+                  - name: xpack.security.audit.enabled
+                    value: "true"
+                  - name: xpack.security.audit.logfile.events.include
+                    value: "access_granted,access_denied,authentication_failed,connection_denied"
                   - name: xpack.security.enabled
                     value: "true"
                   - name: xpack.security.http.ssl.enabled
@@ -569,6 +573,10 @@
                       secretKeyRef:
                         name: es-credentials
                         key: ELASTIC_PASSWORD
+                  - name: xpack.security.audit.enabled
+                    value: "true"
+                  - name: xpack.security.audit.logfile.events.include
+                    value: "access_granted,access_denied,authentication_failed,connection_denied"
                   - name: xpack.security.enabled
                     value: "true"
                   - name: xpack.security.http.ssl.enabled
@@ -994,3 +1002,32 @@
       - "  Kibana: https://{{ es_kibana_domain }}"
       - "  User: elastic / (from es-credentials secret)"
       - "=========================================="
+
+- name: Create CiliumNetworkPolicy for Filebeat to Elasticsearch
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-filebeat-to-es
+        namespace: "{{ es_ns }}"
+      spec:
+        description: "Allow Filebeat DaemonSet to push logs to Elasticsearch"
+        endpointSelector:
+          matchLabels:
+            app: elasticsearch
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  app: filebeat
+            toPorts:
+              - ports:
+                  - port: "9200"
+                    protocol: TCP
+  when: log_stack | default('elk') in ['elk', 'efk']
+  register: _r_create_filebeat_cnp
+  retries: 3
+  delay: 10
+  until: _r_create_filebeat_cnp is not failed
+  ignore_errors: true

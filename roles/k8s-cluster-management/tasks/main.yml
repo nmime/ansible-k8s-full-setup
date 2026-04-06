@@ -128,6 +128,10 @@
       kube_service_addresses: {{ k8s_service_cidr | default('10.233.0.0/18') }}
       kube_proxy_mode: ipvs
       kubernetes_audit: true
+      kube_encrypt_secret_data: true
+      kube_encryption_resources:
+        - secrets
+      kube_encryption_algorithm: aescbc
       metrics_server_enabled: true
       enable_nodelocaldns: true
       kubelet_max_pods: 110
