@@ -9,7 +9,7 @@ echo "=== Starting $TIER at $(date) ===" | tee "$LOGFILE"
 set -a; . ${HOME}/.env; set +a
 export HCLOUD_TOKEN
 
-cd /root/ansible-k8s-full-setup-fix
+cd /root/ansible-k8s-full-setup
 set +e
 ansible-playbook playbooks/deploy_platform.yml \
   -e tier="$TIER" \
@@ -28,6 +28,6 @@ else
 fi
 
 #echo "=== Teardown $TIER at $(date) ===" | tee -a "$LOGFILE"
-#bash /root/ansible-k8s-full-setup-fix/teardown.sh "$PROJECT" 2>&1 | tee -a "$LOGFILE"
+#bash /root/ansible-k8s-full-setup/teardown.sh "$PROJECT" 2>&1 | tee -a "$LOGFILE"
 echo "=== Done $TIER at $(date) ===" | tee -a "$LOGFILE"
 exit $RETCODE
