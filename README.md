@@ -14,7 +14,7 @@ One Ansible playbook provisions **everything** — cloud infrastructure, Kuberne
 
 **Key highlights:**
 - Zero-to-production in **~3–5 hours** (fully automated, no manual steps)
-- **4 deployment tiers** from €18/mo dev to €100/mo production HA
+- **4 deployment tiers** from €16/mo dev to €97/mo production HA
 - **Private-only architecture** — all nodes behind bastion + VPN, no public IPs
 - **12 integrated platform services** with security hardened by default
 - **Idempotent** — safe to re-run at any point
@@ -135,13 +135,13 @@ VPN client (100.64.0.0/10) → admin-gateway NodePort :31443
 
 | | **Minimal** | **Small** | **Medium** | **Production** |
 |---|---|---|---|---|
-| **Cost** | ~€18–20/mo | ~€28–35/mo | ~€48–55/mo | ~€74–100/mo |
+| **Cost** | ~€16/mo | ~€40/mo | ~€52/mo | ~€97/mo |
 | **Best for** | Dev / Learning | Startups / Staging | Small-medium teams | Production workloads |
-| **Deploy time** | ~3 hours | ~3 hours | ~5 hours | ~5 hours |
-| **Nodes** | 2 | 3 | 5 | 6+ |
-| **Control plane** | 1× cx23 | 1× cx23 | 3× cx23 (HA) | 3× cx33 (HA) |
-| **Workers** | 1× cx23 | 2× cx23 | 2× cx33 | 3× cx33 |
-| **CP schedulable** | ✅ | ❌ | ❌ | ❌ |
+| **Deploy time** | ~4 hours | ~3.5 hours | ~5.5 hours | ~5.5 hours |
+| **Nodes** | 2 | 3 | 5 | 6 |
+| **Control plane** | 1× cx22 (2c/4GB) | 1× cx22 (2c/4GB) | 3× cx22 (HA) | 3× cpx31 (HA) |
+| **Workers** | 1× cx32 (2c/8GB) | 2× cpx31 (2c/8GB) | 2× cpx31 (4c/8GB) | 3× cpx31 (4c/8GB) |
+| **CP schedulable** | ✅ | ✅ | ✅ | ❌ |
 | **Load balancer** | ❌ (bastion proxy) | ✅ lb11 | ✅ lb11 | ✅ lb11 |
 | **Placement group** | ❌ | ❌ | ✅ spread | ✅ spread |
 
@@ -525,10 +525,10 @@ Measured on Hetzner Cloud (hel1 region), sequential deployment:
 
 | Tier | Duration | Tasks | Breakdown |
 |------|----------|-------|-----------|
-| **Minimal** | ~3 hours | 329 | Infra 15m → K8s 20m → Services 2.5h |
-| **Small** | ~3 hours | 337 | Infra 15m → K8s 20m → Services 2.5h |
-| **Medium** | ~5 hours | 346 | Infra 20m → K8s 25m → Services 4h |
-| **Production** | ~5 hours | 346 | Infra 20m → K8s 25m → Services 4h |
+| **Minimal** | ~4 hours | 401 | Infra 15m → K8s 20m → Services 3h |
+| **Small** | ~1.5 hours | 337 | Infra 15m → K8s 20m → Services 1h |
+| **Medium** | ~5.5 hours | 346 | Infra 20m → K8s 25m → Services 5h |
+| **Production** | ~5.5 hours | 346 | Infra 20m → K8s 25m → Services 5h |
 
 Most time is spent waiting for Helm deployments and image pulls on private-only nodes (all traffic routed through bastion NAT). Re-runs are significantly faster due to caching.
 
