@@ -1,44 +1,164 @@
----
-# OpenWerf Deployment Role - ArgoCD + Helm GitOps delivery
-# Delivers OpenWerf via ArgoCD using a Helm chart stored in GitLab.
-# Flow:
-#   1. Generate secrets
-#   2. Create namespace + ExternalSecret (or K8s Secret directly if Vault not configured)
-#   3. Create GitLab project and push Helm chart
-#   4. Create ArgoCD AppProject + Application pointing to GitLab Helm chart
-#   5. ArgoCD reconciles the full deployment
-
 - name: Set OpenWerf variables
   set_fact:
-    opwerf_ns: "{{ opwerf_namespace }}"
-    opwerf_argocd_ns: "argocd"
-    opwerf_gitlab_ns: "gitlab"
-    pg_host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
-    opwerf_helm_repo_name: "opwerf"
-    opwerf_helm_project: "platform/opwerf"
-    opwerf_helm_repo_url: "https://gitlab.{{ domain }}/platform/opwerf.git"
-    opwerf_api_replicas_val: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    opwerf_worker_replicas_val: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    opwerf_dashboard_replicas_val: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-
-# ============================================
-# Secret Generation
-# ============================================
-
+    opwerf_ns: '{{ opwerf_namespace }}'
+    opwerf_argocd_ns: argocd
+    opwerf_gitlab_ns: gitlab
+    pg_host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
+    opwerf_helm_repo_name: opwerf
+    opwerf_helm_project: platform/opwerf
+    opwerf_helm_repo_url: https://gitlab.{{ domain }}/platform/opwerf.git
+    opwerf_api_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+    opwerf_worker_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+    opwerf_dashboard_replicas_val: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
 - name: Generate OpenWerf secrets
   set_fact:
-    opwerf_db_password_resolved: "{{ opwerf_db_password }}"
-    opwerf_redis_password_resolved: "{{ opwerf_redis_password }}"
-    opwerf_credential_proxy_token_resolved: "{{ opwerf_credential_proxy_token }}"
-    opwerf_enc_key_resolved: "{{ opwerf_encryption_key }}"
-    opwerf_enc_salt_resolved: "{{ opwerf_encryption_salt }}"
-    opwerf_session_key_resolved: "{{ opwerf_session_signing_key }}"
+    opwerf_db_password_resolved: '{{ opwerf_db_password }}'
+    opwerf_redis_password_resolved: '{{ opwerf_redis_password }}'
+    opwerf_credential_proxy_token_resolved: '{{ opwerf_credential_proxy_token }}'
+    opwerf_enc_key_resolved: '{{ opwerf_encryption_key }}'
+    opwerf_enc_salt_resolved: '{{ opwerf_encryption_salt }}'
+    opwerf_session_key_resolved: '{{ opwerf_session_signing_key }}'
   no_log: true
-
-# ============================================
-# Namespace
-# ============================================
-
+- name: Create OpenWerf API ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: opwerf-api
+        namespace: '{{ opwerf_ns }}'
+      automountServiceAccountToken: false
+- name: Create OpenWerf Dashboard ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: opwerf-dashboard
+        namespace: '{{ opwerf_ns }}'
+      automountServiceAccountToken: false
+- name: Create default-deny NetworkPolicy for OpenWerf namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ opwerf_ns }}'
+      spec:
+        endpointSelector: {}
+- name: Allow OpenWerf API ingress from gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-api-ingress
+        namespace: '{{ opwerf_ns }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-api
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '8000'
+              protocol: TCP
+- name: Allow OpenWerf Dashboard ingress from gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-dashboard-ingress
+        namespace: '{{ opwerf_ns }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-dashboard
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '3000'
+              protocol: TCP
+- name: Allow OpenWerf API egress to PostgreSQL, Redis, MinIO
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-api-egress
+        namespace: '{{ opwerf_ns }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-api
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+            - port: '6379'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: storage
+          toPorts:
+          - ports:
+            - port: '9000'
+              protocol: TCP
+        - toEntities:
+          - kube-apiserver
+        - toFQDNs:
+          - matchPattern: '*'
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '53'
+              protocol: UDP
+- name: Allow Dashboard egress to API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-dashboard-to-api
+        namespace: '{{ opwerf_ns }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-dashboard
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              app.kubernetes.io/name: opwerf-api
+          toPorts:
+          - ports:
+            - port: '8000'
+              protocol: TCP
+        - toFQDNs:
+          - matchPattern: '*'
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '53'
+              protocol: UDP
 - name: Create OpenWerf namespace
   kubernetes.core.k8s:
     state: present
@@ -46,37 +166,30 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ opwerf_ns }}"
+        name: '{{ opwerf_ns }}'
         labels:
           app.kubernetes.io/part-of: opwerf
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/enforce-version: latest
-          argocd.argoproj.io/managed-by: "{{ opwerf_argocd_ns }}"
+          argocd.argoproj.io/managed-by: '{{ opwerf_argocd_ns }}'
   register: _r_create_opwerf_namespace
   retries: 3
   delay: 10
   until: _r_create_opwerf_namespace is not failed
-
-# ============================================
-# Pre-populate secrets so ArgoCD can deploy
-# ============================================
-
 - name: Retrieve Percona-generated OpenWerf PG password
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: databases
-    name: "{{ project_name | default('k8s') }}-pg-pguser-{{ opwerf_db_user }}"
+    name: '{{ project_name | default(''k8s'') }}-pg-pguser-{{ opwerf_db_user }}'
   register: opwerf_pg_secret
   until: opwerf_pg_secret.resources | length > 0
   retries: 30
   delay: 10
   failed_when: false
-
 - name: Set resolved PG password
   set_fact:
-    opwerf_pg_password_final: "{{ (opwerf_pg_secret.resources[0].data.password | b64decode) if opwerf_pg_secret.resources | length > 0 else opwerf_db_password_resolved }}"
+    opwerf_pg_password_final: '{{ (opwerf_pg_secret.resources[0].data.password | b64decode) if opwerf_pg_secret.resources | length > 0 else opwerf_db_password_resolved }}'
   no_log: true
-
 - name: Create OpenWerf secrets in namespace
   kubernetes.core.k8s:
     state: present
@@ -85,182 +198,173 @@
       kind: Secret
       metadata:
         name: opwerf-secrets
-        namespace: "{{ opwerf_ns }}"
+        namespace: '{{ opwerf_ns }}'
         labels:
           app.kubernetes.io/part-of: opwerf
       type: Opaque
       stringData:
-        database.password: "{{ opwerf_pg_password_final }}"
-        redis.password: "{{ opwerf_redis_password_resolved }}"
-        minio.accessKey: "{{ minio_root_user }}"
-        minio.secretKey: "{{ minio_root_password }}"
-        credential.proxy.token: "{{ opwerf_credential_proxy_token_resolved }}"
-        encryption.key: "{{ opwerf_enc_key_resolved }}"
-        encryption.salt: "{{ opwerf_enc_salt_resolved }}"
-        session.signing.key: "{{ opwerf_session_key_resolved }}"
-        e2b.api.key: "{{ opwerf_e2b_api_key | default('') }}"
-        anthropic.api.key: "{{ opwerf_anthropic_api_key | default('') }}"
+        database.password: '{{ opwerf_pg_password_final }}'
+        redis.password: '{{ opwerf_redis_password_resolved }}'
+        minio.accessKey: '{{ minio_root_user }}'
+        minio.secretKey: '{{ minio_root_password }}'
+        credential.proxy.token: '{{ opwerf_credential_proxy_token_resolved }}'
+        encryption.key: '{{ opwerf_enc_key_resolved }}'
+        encryption.salt: '{{ opwerf_enc_salt_resolved }}'
+        session.signing.key: '{{ opwerf_session_key_resolved }}'
+        e2b.api.key: '{{ opwerf_e2b_api_key | default('''') }}'
+        anthropic.api.key: '{{ opwerf_anthropic_api_key | default('''') }}'
   no_log: true
   register: _r_create_opwerf_secrets
   retries: 3
   delay: 10
   until: _r_create_opwerf_secrets is not failed
-
-# ============================================
-# Wait for GitLab to be available
-# ============================================
-
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
-    namespace: "{{ opwerf_gitlab_ns }}"
+    namespace: '{{ opwerf_gitlab_ns }}'
     label_selectors:
-      - app=webservice
+    - app=webservice
   register: gitlab_webservice
-  until: >
-    gitlab_webservice.resources | length > 0 and
-    (gitlab_webservice.resources[0].status.readyReplicas | default(0)) >= 1
+  until: 'gitlab_webservice.resources | length > 0 and (gitlab_webservice.resources[0].status.readyReplicas | default(0)) >= 1
+
+    '
   retries: 60
   delay: 15
   failed_when: false
-
 - name: Get GitLab root password
   kubernetes.core.k8s_info:
     kind: Secret
-    namespace: "{{ opwerf_gitlab_ns }}"
+    namespace: '{{ opwerf_gitlab_ns }}'
     name: gitlab-gitlab-initial-root-password
   register: gitlab_root_secret
   retries: 5
   delay: 10
   until: gitlab_root_secret.resources | length > 0
   failed_when: false
-
 - name: Set GitLab root password fact
   set_fact:
-    gitlab_root_password: "{{ gitlab_root_secret.resources[0].data.password | b64decode }}"
+    gitlab_root_password: '{{ gitlab_root_secret.resources[0].data.password | b64decode }}'
   when: gitlab_root_secret.resources | length > 0
   no_log: true
-
-# ============================================
-# Create GitLab group and project
-# ============================================
-
 - name: Ensure 'platform' group exists in GitLab
   ansible.builtin.uri:
-    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/groups"
+    url: http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/groups
     method: POST
     headers:
       Content-Type: application/json
-      PRIVATE-TOKEN: "{{ gitlab_root_token | default('') }}"
+      PRIVATE-TOKEN: '{{ gitlab_root_token | default('''') }}'
     body_format: json
     body:
       name: platform
       path: platform
       visibility: private
-    status_code: [200, 201, 400]
+    status_code:
+    - 200
+    - 201
+    - 400
   register: gitlab_group_result
   when: gitlab_root_token is defined
-  failed_when: >
-    gitlab_group_result.status not in [200, 201, 400]
+  failed_when: 'gitlab_group_result.status not in [200, 201, 400]
 
+    '
 - name: Get 'platform' group ID
   ansible.builtin.uri:
-    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/groups/platform"
+    url: http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/groups/platform
     method: GET
     headers:
-      PRIVATE-TOKEN: "{{ gitlab_root_token | default('') }}"
-    status_code: [200, 404]
+      PRIVATE-TOKEN: '{{ gitlab_root_token | default('''') }}'
+    status_code:
+    - 200
+    - 404
   register: gitlab_group_info
   when: gitlab_root_token is defined
   failed_when: false
-
 - name: Set platform group ID
   set_fact:
-    platform_group_id: "{{ gitlab_group_info.json.id | default('') }}"
+    platform_group_id: '{{ gitlab_group_info.json.id | default('''') }}'
   when: gitlab_root_token is defined and gitlab_group_info.status == 200
-
 - name: Create 'opwerf' project in platform group
   ansible.builtin.uri:
-    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/projects"
+    url: http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/projects
     method: POST
     headers:
       Content-Type: application/json
-      PRIVATE-TOKEN: "{{ gitlab_root_token | default('') }}"
+      PRIVATE-TOKEN: '{{ gitlab_root_token | default('''') }}'
     body_format: json
     body:
       name: opwerf
       path: opwerf
-      namespace_id: "{{ platform_group_id }}"
+      namespace_id: '{{ platform_group_id }}'
       visibility: private
       initialize_with_readme: true
-    status_code: [200, 201, 400]
+    status_code:
+    - 200
+    - 201
+    - 400
   register: gitlab_project_result
   when: gitlab_root_token is defined and platform_group_id is defined
-  failed_when: >
-    gitlab_project_result.status not in [200, 201, 400]
+  failed_when: 'gitlab_project_result.status not in [200, 201, 400]
 
-# ============================================
-# Push Helm chart to GitLab
-# ============================================
-
+    '
 - name: Check if Helm chart already pushed
   ansible.builtin.command:
-    cmd: >
-      git ls-remote --heads
-      https://root:{{ gitlab_root_password | default('') }}@gitlab.{{ domain }}/platform/opwerf.git main
+    cmd: 'git ls-remote --heads https://root:{{ gitlab_root_password | default('''') }}@gitlab.{{ domain }}/platform/opwerf.git main
+
+      '
   register: helm_repo_check
   failed_when: false
   changed_when: false
   no_log: true
   when: gitlab_root_password is defined
-
 - name: Create temp directory for Helm chart
   ansible.builtin.tempfile:
     state: directory
     suffix: opwerf-helm
   register: helm_tempdir
-  when: >
-    gitlab_root_password is defined and
-    helm_repo_check.stdout | default('') == ''
+  when: 'gitlab_root_password is defined and helm_repo_check.stdout | default('''') == ''''
 
+    '
 - name: Copy Helm chart files to temp directory
   ansible.builtin.copy:
-    src: "{{ role_path }}/files/helm/"
-    dest: "{{ helm_tempdir.path }}/"
+    src: '{{ role_path }}/files/helm/'
+    dest: '{{ helm_tempdir.path }}/'
     mode: '0644'
-  when: >
-    gitlab_root_password is defined and
-    helm_tempdir is defined and helm_tempdir.path is defined
+  when: 'gitlab_root_password is defined and helm_tempdir is defined and helm_tempdir.path is defined
 
+    '
 - name: Push Helm chart to GitLab repository
-  ansible.builtin.shell: |
-    set -e
+  ansible.builtin.shell: 'set -e
+
     cd {{ helm_tempdir.path }}
+
     git config --global user.email "{{ email }}"
+
     git config --global user.name "Platform Bot"
+
     git init
+
     git checkout -b main
+
     git add .
+
     git commit -m "feat: initial OpenWerf Helm chart"
+
     git remote add origin https://root:{{ gitlab_root_password }}@gitlab.{{ domain }}/platform/opwerf.git
+
     git push --force origin main
-  when: >
-    gitlab_root_password is defined and
-    helm_tempdir is defined and helm_tempdir.path is defined
+
+    '
+  when: 'gitlab_root_password is defined and helm_tempdir is defined and helm_tempdir.path is defined
+
+    '
   no_log: true
   register: helm_push_result
   failed_when: helm_push_result.rc != 0
-
 - name: Remove temp directory
   ansible.builtin.file:
-    path: "{{ helm_tempdir.path }}"
+    path: '{{ helm_tempdir.path }}'
     state: absent
   when: helm_tempdir is defined and helm_tempdir.path is defined
-
-# ============================================
-# Add GitLab repository to ArgoCD
-# ============================================
-
 - name: Add GitLab repository credentials to ArgoCD
   no_log: true
   kubernetes.core.k8s:
@@ -270,26 +374,20 @@
       kind: Secret
       metadata:
         name: opwerf-helm-repo
-        namespace: "{{ opwerf_argocd_ns }}"
+        namespace: '{{ opwerf_argocd_ns }}'
         labels:
           argocd.argoproj.io/secret-type: repository
       type: Opaque
       stringData:
         type: git
-        url: "{{ opwerf_helm_repo_url }}"
+        url: '{{ opwerf_helm_repo_url }}'
         username: root
-        password: "{{ gitlab_root_password | default('') }}"
-  no_log: true
+        password: '{{ gitlab_root_password | default('''') }}'
   register: _r_add_gitlab_repo_to_argocd
   retries: 3
   delay: 10
   until: _r_add_gitlab_repo_to_argocd is not failed
   when: gitlab_root_password is defined
-
-# ============================================
-# ArgoCD AppProject for OpenWerf
-# ============================================
-
 - name: Create ArgoCD AppProject for OpenWerf
   kubernetes.core.k8s:
     state: present
@@ -298,31 +396,26 @@
       kind: AppProject
       metadata:
         name: opwerf
-        namespace: "{{ opwerf_argocd_ns }}"
+        namespace: '{{ opwerf_argocd_ns }}'
       spec:
         description: OpenWerf AI workflow orchestration platform
         sourceRepos:
-          - "{{ opwerf_helm_repo_url }}"
+        - '{{ opwerf_helm_repo_url }}'
         destinations:
-          - namespace: "{{ opwerf_ns }}"
-            server: https://kubernetes.default.svc
+        - namespace: '{{ opwerf_ns }}'
+          server: https://kubernetes.default.svc
         clusterResourceWhitelist:
-          - group: '*'
-            kind: Namespace
+        - group: '*'
+          kind: Namespace
         namespaceResourceWhitelist:
-          - group: '*'
-            kind: '*'
+        - group: '*'
+          kind: '*'
         orphanedResources:
           warn: true
   register: _r_create_argocd_appproject
   retries: 3
   delay: 10
   until: _r_create_argocd_appproject is not failed
-
-# ============================================
-# ArgoCD Application (Helm)
-# ============================================
-
 - name: Create ArgoCD Application for OpenWerf
   kubernetes.core.k8s:
     state: present
@@ -331,96 +424,40 @@
       kind: Application
       metadata:
         name: opwerf
-        namespace: "{{ opwerf_argocd_ns }}"
+        namespace: '{{ opwerf_argocd_ns }}'
         labels:
           app.kubernetes.io/part-of: opwerf
         finalizers:
-          - resources-finalizer.argocd.argoproj.io
+        - resources-finalizer.argocd.argoproj.io
       spec:
         project: opwerf
         source:
-          repoURL: "{{ opwerf_helm_repo_url }}"
+          repoURL: '{{ opwerf_helm_repo_url }}'
           targetRevision: main
-          path: "."
+          path: .
           helm:
             releaseName: opwerf
-            values: |
-              global:
-                domain: {{ domain }}
-                tier: {{ tier }}
-              image:
-                registry: {{ opwerf_image_registry }}
-                tag: {{ opwerf_image_tag }}
-              app:
-                name: opwerf
-                nodeEnv: {{ opwerf_node_env }}
-                allowDevAuthBypass: "{{ opwerf_allow_dev_auth_bypass }}"
-              replicas:
-                api: {{ opwerf_api_replicas_val }}
-                worker: {{ opwerf_worker_replicas_val }}
-                dashboard: {{ opwerf_dashboard_replicas_val }}
-                credentialProxy: 1
-              database:
-                host: {{ pg_host }}
-                port: {{ opwerf_pg_port }}
-                name: {{ opwerf_db_name }}
-                user: {{ opwerf_db_user }}
-                password: {{ opwerf_pg_password_final }}
-              dragonfly:
-                host: dragonfly.dragonfly.svc.cluster.local
-                port: 6379
-              elasticsearch:
-                enabled: true
-                replicas: {{ opwerf_elasticsearch_replicas }}
-                storageSize: {{ opwerf_elasticsearch_storage_size }}
-                storageClass: {{ storage_class }}
-              temporal:
-                address: {{ opwerf_temporal_address }}
-                namespace: {{ opwerf_temporal_namespace }}
-              minio:
-                endpoint: {{ opwerf_minio_endpoint }}
-                port: {{ opwerf_minio_port }}
-                bucket: {{ opwerf_minio_bucket }}
-                useSSL: {{ opwerf_minio_use_ssl | string | lower }}
-                accessKey: {{ minio_root_user }}
-                secretKey: {{ minio_root_password }}
-              security:
-                redisPassword: {{ opwerf_redis_password_resolved }}  # used by Dragonfly auth
-                credentialProxyToken: {{ opwerf_credential_proxy_token_resolved }}
-                encryptionKey: {{ opwerf_enc_key_resolved }}
-                encryptionSalt: {{ opwerf_enc_salt_resolved }}
-                sessionSigningKey: {{ opwerf_session_key_resolved }}
-              externalAPIs:
-                e2bApiKey: {{ opwerf_e2b_api_key | default('') }}
-                anthropicApiKey: {{ opwerf_anthropic_api_key | default('') }}
-              ingress:
-                enabled: true
-                gatewayName: main-gateway
-                gatewayNamespace: gateway
-                dashboardHost: app.{{ domain }}
-                apiHost: api.{{ domain }}
-              autoscaling:
-                api:
-                  enabled: true
-                  minReplicas: {{ opwerf_api_replicas_val }}
-                  maxReplicas: 20
-                  targetCPUUtilizationPercentage: 70
-                  targetMemoryUtilizationPercentage: 80
-                worker:
-                  enabled: true
-                  minReplicas: {{ opwerf_worker_replicas_val }}
-                  maxReplicas: 10
-                  targetCPUUtilizationPercentage: 70
+            values: "global:\n  domain: {{ domain }}\n  tier: {{ tier }}\nimage:\n  registry: {{ opwerf_image_registry }}\n  tag: {{ opwerf_image_tag }}\napp:\n  name: opwerf\n  nodeEnv: {{ opwerf_node_env\
+              \ }}\n  allowDevAuthBypass: \"{{ opwerf_allow_dev_auth_bypass }}\"\nreplicas:\n  api: {{ opwerf_api_replicas_val }}\n  worker: {{ opwerf_worker_replicas_val }}\n  dashboard: {{ opwerf_dashboard_replicas_val\
+              \ }}\n  credentialProxy: 1\ndatabase:\n  host: {{ pg_host }}\n  port: {{ opwerf_pg_port }}\n  name: {{ opwerf_db_name }}\n  user: {{ opwerf_db_user }}\n  password: {{ opwerf_pg_password_final\
+              \ }}\ndragonfly:\n  host: dragonfly.dragonfly.svc.cluster.local\n  port: 6379\nelasticsearch:\n  enabled: true\n  replicas: {{ opwerf_elasticsearch_replicas }}\n  storageSize: {{ opwerf_elasticsearch_storage_size\
+              \ }}\n  storageClass: {{ storage_class }}\ntemporal:\n  address: {{ opwerf_temporal_address }}\n  namespace: {{ opwerf_temporal_namespace }}\nminio:\n  endpoint: {{ opwerf_minio_endpoint }}\n\
+              \  port: {{ opwerf_minio_port }}\n  bucket: {{ opwerf_minio_bucket }}\n  useSSL: {{ opwerf_minio_use_ssl | string | lower }}\n  accessKey: {{ minio_root_user }}\n  secretKey: {{ minio_root_password\
+              \ }}\nsecurity:\n  redisPassword: {{ opwerf_redis_password_resolved }}  # used by Dragonfly auth\n  credentialProxyToken: {{ opwerf_credential_proxy_token_resolved }}\n  encryptionKey: {{\
+              \ opwerf_enc_key_resolved }}\n  encryptionSalt: {{ opwerf_enc_salt_resolved }}\n  sessionSigningKey: {{ opwerf_session_key_resolved }}\nexternalAPIs:\n  e2bApiKey: {{ opwerf_e2b_api_key |\
+              \ default('') }}\n  anthropicApiKey: {{ opwerf_anthropic_api_key | default('') }}\ningress:\n  enabled: true\n  gatewayName: main-gateway\n  gatewayNamespace: gateway\n  dashboardHost: app.{{\
+              \ domain }}\n  apiHost: api.{{ domain }}\nautoscaling:\n  api:\n    enabled: true\n    minReplicas: {{ opwerf_api_replicas_val }}\n    maxReplicas: 20\n    targetCPUUtilizationPercentage:\
+              \ 70\n    targetMemoryUtilizationPercentage: 80\n  worker:\n    enabled: true\n    minReplicas: {{ opwerf_worker_replicas_val }}\n    maxReplicas: 10\n    targetCPUUtilizationPercentage: 70\n"
         destination:
           server: https://kubernetes.default.svc
-          namespace: "{{ opwerf_ns }}"
+          namespace: '{{ opwerf_ns }}'
         syncPolicy:
           automated:
             prune: true
             selfHeal: true
           syncOptions:
-            - CreateNamespace=true
-            - ServerSideApply=true
+          - CreateNamespace=true
+          - ServerSideApply=true
           retry:
             limit: 5
             backoff:
@@ -432,11 +469,6 @@
   retries: 3
   delay: 10
   until: _r_create_argocd_application is not failed
-
-# ============================================
-# Wait for ArgoCD to sync
-# ============================================
-
 - name: Wait for ArgoCD to sync OpenWerf application
   ansible.builtin.command:
     cmd: kubectl wait application/opwerf -n {{ opwerf_argocd_ns }} --for=jsonpath='{.status.health.status}'=Healthy --timeout=600s
@@ -446,19 +478,18 @@
   until: argocd_sync_wait.rc == 0
   failed_when: false
   changed_when: false
-
 - name: Display OpenWerf deployment summary
   debug:
     msg:
-      - "=========================================="
-      - "  OpenWerf Deployment via ArgoCD Complete"
-      - "=========================================="
-      - "  Dashboard: https://app.{{ domain }}"
-      - "  API: https://api.{{ domain }}"
-      - "  Namespace: {{ opwerf_ns }}"
-      - "  ArgoCD App: opwerf (project: opwerf)"
-      - "  Helm repo: {{ opwerf_helm_repo_url }}"
-      - ""
-      - "  Monitor in ArgoCD:"
-      - "  https://argocd.{{ domain }}/applications/opwerf"
-      - "=========================================="
+    - ==========================================
+    - '  OpenWerf Deployment via ArgoCD Complete'
+    - ==========================================
+    - '  Dashboard: https://app.{{ domain }}'
+    - '  API: https://api.{{ domain }}'
+    - '  Namespace: {{ opwerf_ns }}'
+    - '  ArgoCD App: opwerf (project: opwerf)'
+    - '  Helm repo: {{ opwerf_helm_repo_url }}'
+    - ''
+    - '  Monitor in ArgoCD:'
+    - '  https://argocd.{{ domain }}/applications/opwerf'
+    - ==========================================
