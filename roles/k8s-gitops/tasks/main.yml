@@ -343,3 +343,21 @@
               protocol: TCP
             - port: '53'
               protocol: UDP
+- name: Create ArgoCD ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: argocd
+        namespace: '{{ argocd_namespace }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: argocd-server
+        endpoints:
+        - port: metrics
+          interval: 30s

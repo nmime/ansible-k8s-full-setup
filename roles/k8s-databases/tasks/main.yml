@@ -646,3 +646,21 @@
               protocol: TCP
         - toEntities:
           - kube-apiserver
+- name: Create PostgreSQL ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: postgresql
+        namespace: databases
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            cnpg.io/cluster: '{{ pg_cluster_name | default(''pg-main'') }}'
+        endpoints:
+        - port: metrics
+          interval: 30s
