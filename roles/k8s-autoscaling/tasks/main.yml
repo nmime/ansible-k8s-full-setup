@@ -243,3 +243,22 @@
         - toEntities:
           - cluster
           - kube-apiserver
+- name: Create KEDA ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: keda
+        namespace: keda
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app: keda-operator
+        endpoints:
+        - port: http
+          interval: 30s
+          path: /metrics

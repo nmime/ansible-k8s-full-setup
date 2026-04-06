@@ -582,3 +582,22 @@
               protocol: TCP
             - port: '53'
               protocol: UDP
+- name: Create GitLab ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: gitlab
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app: webservice
+        endpoints:
+        - port: http-workhorse
+          interval: 30s
+          path: /-/metrics

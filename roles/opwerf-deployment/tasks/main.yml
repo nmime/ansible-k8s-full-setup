@@ -493,3 +493,22 @@
     - '  Monitor in ArgoCD:'
     - '  https://argocd.{{ domain }}/applications/opwerf'
     - ==========================================
+- name: Create OpenWerf API ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: opwerf-api
+        namespace: opwerf
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/component: api
+        endpoints:
+        - port: http
+          interval: 30s
+          path: /metrics
