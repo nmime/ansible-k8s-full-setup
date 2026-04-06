@@ -448,3 +448,154 @@
       - "  Firewall: SSH(22), HTTP(80), HTTPS(443), STUN(3478), WG(41641)"
       - "  Hardening: fail2ban, password-auth disabled"
       - "=========================================="
+
+# ============================================
+# Bastion Log Shipping (to cluster logging stack)
+# ============================================
+
+- name: Install and configure Promtail on bastion (for Loki)
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    set -e
+    
+    if [ -f /usr/bin/promtail ]; then
+      echo "Promtail already installed"
+      exit 0
+    fi
+    
+    PROMTAIL_VERSION="3.0.0"
+    cd /tmp
+    curl -fsSL -o promtail.zip "https://github.com/grafana/loki/releases/download/v${PROMTAIL_VERSION}/promtail-linux-amd64.zip"
+    unzip -o promtail.zip
+    chmod +x promtail-linux-amd64
+    mv promtail-linux-amd64 /usr/bin/promtail
+    rm -f promtail.zip
+    
+    mkdir -p /etc/promtail /var/lib/promtail
+    REMOTECMD
+  when: bastion_log_shipping | default(true) | bool and log_stack | default('loki') == 'loki'
+  register: _r_install_promtail_bastion
+  retries: 2
+  delay: 5
+  until: _r_install_promtail_bastion is not failed
+
+- name: Configure Promtail on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << REMOTECMD
+    cat > /etc/promtail/config.yml << 'EOF'
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+    
+    positions:
+      filename: /var/lib/promtail/positions.yaml
+    
+    clients:
+      - url: http://{{ control_plane_ips[0] }}:31000/loki/api/v1/push
+        tenant_id: bastion
+    
+    scrape_configs:
+      - job_name: bastion-system
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: bastion
+              host: {{ project }}-bastion
+              __path__: /var/log/*.log
+    
+      - job_name: bastion-journal
+        journal:
+          max_age: 12h
+          labels:
+            job: bastion-journal
+            host: {{ project }}-bastion
+        relabel_configs:
+          - source_labels: ['__journal__systemd_unit']
+            target_label: 'unit'
+          - source_labels: ['__journal__hostname']
+            target_label: 'hostname'
+    EOF
+    REMOTECMD
+  when: bastion_log_shipping | default(true) | bool and log_stack | default('loki') == 'loki'
+
+- name: Create Promtail systemd service on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    cat > /etc/systemd/system/promtail.service << 'EOF'
+    [Unit]
+    Description=Promtail Log Shipper
+    After=network.target
+    
+    [Service]
+    Type=simple
+    ExecStart=/usr/bin/promtail -config.file=/etc/promtail/config.yml
+    Restart=always
+    RestartSec=5
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOF
+    
+    systemctl daemon-reload
+    systemctl enable promtail
+    systemctl restart promtail
+    REMOTECMD
+  when: bastion_log_shipping | default(true) | bool and log_stack | default('loki') == 'loki'
+
+- name: Install and configure Filebeat on bastion (for ELK)
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    set -e
+    
+    if [ -f /usr/bin/filebeat ]; then
+      echo "Filebeat already installed"
+    else
+      curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg
+      echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" > /etc/apt/sources.list.d/elastic-8.x.list
+      apt-get update && apt-get install -y filebeat
+    fi
+    REMOTECMD
+  when: bastion_log_shipping | default(true) | bool and log_stack | default('loki') in ['elk', 'efk']
+  register: _r_install_filebeat_bastion
+  retries: 2
+  delay: 5
+  until: _r_install_filebeat_bastion is not failed
+
+- name: Configure Filebeat on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << REMOTECMD
+    cat > /etc/filebeat/filebeat.yml << 'EOF'
+    filebeat.inputs:
+      - type: log
+        enabled: true
+        paths:
+          - /var/log/*.log
+          - /var/log/syslog
+          - /var/log/auth.log
+        fields:
+          host: {{ project }}-bastion
+          job: bastion
+        fields_under_root: true
+    
+      - type: journald
+        enabled: true
+        id: bastion-journal
+    
+    output.elasticsearch:
+      hosts: ["https://{{ control_plane_ips[0] }}:31443"]
+      username: "elastic"
+      password: "{{ es_password | default('changeme') }}"
+      ssl.verification_mode: none
+      index: "bastion-%{+yyyy.MM.dd}"
+    
+    setup.ilm.enabled: false
+    setup.template.name: "bastion"
+    setup.template.pattern: "bastion-*"
+    EOF
+    
+    systemctl enable filebeat
+    systemctl restart filebeat
+    REMOTECMD
+  when: bastion_log_shipping | default(true) | bool and log_stack | default('loki') in ['elk', 'efk']
+  no_log: true

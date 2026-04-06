@@ -110,3 +110,13 @@ postal_version: "3.3.5"
 # Backup
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30
+
+# Observability enhancements
+bastion_log_shipping: true  # Ship bastion logs to cluster logging stack
+hetzner_metrics_enabled: true  # Expose Hetzner Cloud API metrics
+
+# Distributed Tracing (Tempo)
+tracing_enabled: "{{ tier in ['medium', 'production'] }}"  # Only medium/production by default
+tempo_retention: "{{ '24h' if tier == 'medium' else '72h' if tier == 'production' else '12h' }}"
+tempo_storage_size: "{{ '5Gi' if tier in ['minimal', 'small'] else '10Gi' if tier == 'medium' else '20Gi' }}"
+otel_collector_enabled: "{{ tracing_enabled }}"
