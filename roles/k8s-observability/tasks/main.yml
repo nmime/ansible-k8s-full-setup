@@ -1208,3 +1208,379 @@
   delay: 10
   until: _r_install_fluentd_efk is not failed
   when: log_stack == "efk"
+
+# ============================================
+# Hetzner Cloud Exporter (expose cloud API metrics)
+# ============================================
+
+- name: Create Hetzner Cloud token secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: hetzner-cloud-token
+        namespace: "{{ monitoring_namespace }}"
+      type: Opaque
+      stringData:
+        token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+  when: hetzner_metrics_enabled | default(true) | bool
+  no_log: true
+  register: _r_create_hetzner_token_secret
+  retries: 3
+  delay: 10
+  until: _r_create_hetzner_token_secret is not failed
+
+- name: Deploy Hetzner Cloud Exporter
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hetzner-cloud-exporter
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          app: hetzner-cloud-exporter
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: hetzner-cloud-exporter
+        template:
+          metadata:
+            labels:
+              app: hetzner-cloud-exporter
+          spec:
+            containers:
+              - name: exporter
+                image: ghcr.io/promhetznercloud/prometheus-hetzner-sd:latest
+                args:
+                  - --hcloud.token=$(HCLOUD_TOKEN)
+                  - --output.format=prometheus
+                env:
+                  - name: HCLOUD_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: hetzner-cloud-token
+                        key: token
+                ports:
+                  - containerPort: 9090
+                    name: metrics
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 64Mi
+  when: hetzner_metrics_enabled | default(true) | bool
+  register: _r_deploy_hetzner_exporter
+  retries: 3
+  delay: 10
+  until: _r_deploy_hetzner_exporter is not failed
+
+- name: Create Hetzner Exporter Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: hetzner-cloud-exporter
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          app: hetzner-cloud-exporter
+      spec:
+        selector:
+          app: hetzner-cloud-exporter
+        ports:
+          - port: 9090
+            targetPort: 9090
+            name: metrics
+  when: hetzner_metrics_enabled | default(true) | bool
+  register: _r_create_hetzner_exporter_svc
+  retries: 3
+  delay: 10
+  until: _r_create_hetzner_exporter_svc is not failed
+
+- name: Create VMServiceScrape for Hetzner Cloud Exporter
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: hetzner-cloud-exporter
+        namespace: "{{ monitoring_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            app: hetzner-cloud-exporter
+        endpoints:
+          - port: metrics
+            interval: 60s
+  when: hetzner_metrics_enabled | default(true) | bool
+  register: _r_create_hetzner_vmservicescrape
+  retries: 3
+  delay: 10
+  until: _r_create_hetzner_vmservicescrape is not failed
+  ignore_errors: true
+
+# ============================================
+# Grafana Tempo - Distributed Tracing
+# (medium/production tiers only by default)
+# ============================================
+
+- name: Add Tempo Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: "https://grafana.github.io/helm-charts"
+  when: tracing_enabled | default(false) | bool
+  register: _r_add_tempo_helm_repo
+  retries: 3
+  delay: 10
+  until: _r_add_tempo_helm_repo is not failed
+
+- name: Create Tempo S3 credentials secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: tempo-s3-credentials
+        namespace: "{{ monitoring_namespace }}"
+      type: Opaque
+      stringData:
+        S3_ACCESS_KEY: "{{ minio_root_user }}"
+        S3_SECRET_KEY: "{{ minio_root_password }}"
+  when: tracing_enabled | default(false) | bool
+  no_log: true
+  register: _r_create_tempo_s3_secret
+  retries: 3
+  delay: 10
+  until: _r_create_tempo_s3_secret is not failed
+
+- name: Create Tempo MinIO bucket
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: create-tempo-bucket
+        namespace: storage
+      spec:
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: mc
+                image: minio/mc:latest
+                command:
+                  - sh
+                  - -c
+                  - |
+                    mc alias set minio http://minio.storage.svc.cluster.local:9000 $MINIO_USER $MINIO_PASS
+                    mc mb -p minio/tempo-traces
+                env:
+                  - name: MINIO_USER
+                    valueFrom:
+                      secretKeyRef:
+                        name: minio-root-credentials
+                        key: rootUser
+                  - name: MINIO_PASS
+                    valueFrom:
+                      secretKeyRef:
+                        name: minio-root-credentials
+                        key: rootPassword
+  when: tracing_enabled | default(false) | bool
+  register: _r_create_tempo_bucket
+  retries: 3
+  delay: 10
+  until: _r_create_tempo_bucket is not failed
+  ignore_errors: true
+
+- name: Install Grafana Tempo with Helm
+  kubernetes.core.helm:
+    name: tempo
+    chart_ref: grafana/tempo-distributed
+    chart_version: "1.9.0"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: false
+    values:
+      storage:
+        trace:
+          backend: s3
+          s3:
+            bucket: tempo-traces
+            endpoint: minio.storage.svc.cluster.local:9000
+            access_key: "{{ minio_root_user }}"
+            secret_key: "{{ minio_root_password }}"
+            insecure: true
+      compactor:
+        config:
+          compaction:
+            block_retention: "{{ tempo_retention | default('24h') }}"
+      distributor:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      ingester:
+        replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        persistence:
+          enabled: true
+          size: "{{ tempo_storage_size | default('5Gi') }}"
+          storageClass: "{{ storage_class }}"
+      querier:
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      queryFrontend:
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+      gateway:
+        enabled: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+  when: tracing_enabled | default(false) | bool
+  register: _r_install_tempo
+  retries: 3
+  delay: 10
+  until: _r_install_tempo is not failed
+
+# ============================================
+# OpenTelemetry Collector
+# ============================================
+
+- name: Add OpenTelemetry Helm repository
+  kubernetes.core.helm_repository:
+    name: open-telemetry
+    repo_url: "https://open-telemetry.github.io/opentelemetry-helm-charts"
+  when: otel_collector_enabled | default(false) | bool
+  register: _r_add_otel_helm_repo
+  retries: 3
+  delay: 10
+  until: _r_add_otel_helm_repo is not failed
+
+- name: Install OpenTelemetry Collector
+  kubernetes.core.helm:
+    name: otel-collector
+    chart_ref: open-telemetry/opentelemetry-collector
+    chart_version: "0.83.0"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: false
+    values:
+      mode: daemonset
+      config:
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+              http:
+                endpoint: 0.0.0.0:4318
+          jaeger:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:14250
+              thrift_http:
+                endpoint: 0.0.0.0:14268
+        processors:
+          batch:
+            timeout: 5s
+          memory_limiter:
+            check_interval: 1s
+            limit_mib: 256
+        exporters:
+          otlp:
+            endpoint: "tempo-distributor.{{ monitoring_namespace }}.svc.cluster.local:4317"
+            tls:
+              insecure: true
+        service:
+          pipelines:
+            traces:
+              receivers: [otlp, jaeger]
+              processors: [memory_limiter, batch]
+              exporters: [otlp]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
+  when: otel_collector_enabled | default(false) | bool
+  register: _r_install_otel_collector
+  retries: 3
+  delay: 10
+  until: _r_install_otel_collector is not failed
+
+- name: Add Tempo datasource to Grafana
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-tempo-datasource
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          grafana_datasource: "1"
+      data:
+        tempo-datasource.yaml: |
+          apiVersion: 1
+          datasources:
+            - name: Tempo
+              type: tempo
+              uid: tempo
+              url: http://tempo-query-frontend.{{ monitoring_namespace }}.svc.cluster.local:3100
+              access: proxy
+              editable: false
+              jsonData:
+                httpMethod: GET
+                serviceMap:
+                  datasourceUid: prometheus
+                nodeGraph:
+                  enabled: true
+                search:
+                  hide: false
+                lokiSearch:
+                  datasourceUid: "{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}"
+  when: tracing_enabled | default(false) | bool
+  register: _r_add_tempo_grafana_datasource
+  retries: 3
+  delay: 10
+  until: _r_add_tempo_grafana_datasource is not failed
