@@ -267,6 +267,15 @@
         - application
 
   post_tasks:
+    - name: Apply HIPAA hardening (internal TLS + log redaction)
+      ansible.builtin.import_role:
+        name: hipaa-hardening
+      when: hipaa_compliance | default(false) | bool
+      tags:
+        - hipaa
+        - security
+        - compliance
+
     - name: Display deployment completion summary
       debug:
         msg:

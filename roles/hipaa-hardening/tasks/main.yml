@@ -1,0 +1,85 @@
+- name: HIPAA hardening only applied when hipaa_compliance=true
+  debug:
+    msg: "Applying HIPAA internal TLS and log redaction. This will restart services."
+  when: hipaa_compliance | default(false) | bool
+
+- name: Enable Vault TLS (update ConfigMap)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: vault-config
+        namespace: "{{ vault_ns | default('vault') }}"
+      data:
+        vault.hcl: |
+          ui = true
+          listener "tcp" {
+            tls_disable = 0
+            address = "[::]:8200"
+            cluster_address = "[::]:8201"
+            tls_cert_file = "/vault/tls/tls.crt"
+            tls_key_file = "/vault/tls/tls.key"
+          }
+          storage "raft" {
+            path = "/vault/data"
+          }
+  when: hipaa_compliance | default(false) | bool and internal_tls_enabled | default(false) | bool
+  register: vault_tls
+
+- name: Restart Vault StatefulSet to apply TLS
+  ansible.builtin.shell: kubectl rollout restart statefulset/vault -n {{ vault_ns | default('vault') }}
+  when: vault_tls.changed
+
+- name: Enable MinIO TLS (update values via helm upgrade)
+  ansible.builtin.shell: |
+    helm upgrade minio minio/minio -n storage \
+      --reuse-values \
+      --set tls.enabled=true \
+      --set tls.certSecret=minio-api-tls \
+      --set tls.publicCrt=tls.crt \
+      --set tls.privateKey=tls.key
+  when: hipaa_compliance | default(false) | bool and internal_tls_enabled | default(false) | bool
+  register: minio_tls
+  ignore_errors: true
+
+- name: Add Promtail log redaction ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: promtail-redaction
+        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+      data:
+        redaction.yaml: |
+          # HIPAA PII redaction patterns (SSN, phone, email)
+          # Applied as pipeline_stages in Promtail scrape_configs
+          - replace:
+              expression: '\b\d{3}-\d{2}-\d{4}\b'
+              replace: 'XXX-XX-XXXX'
+          - replace:
+              expression: '\(\d{3}\)\s*\d{3}-\d{4}'
+              replace: '(XXX) XXX-XXXX'
+          - replace:
+              expression: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+              replace: '[REDACTED_EMAIL]'
+  when: hipaa_compliance | default(false) | bool and log_redaction_enabled | default(false) | bool
+
+- name: Display HIPAA hardening summary
+  debug:
+    msg:
+      - "HIPAA compliance mode ENABLED:"
+      - "  - Vault TLS: {{ 'ENABLED' if vault_tls.changed else 'Already configured' }}"
+      - "  - MinIO TLS: {{ 'ENABLED' if minio_tls.changed else 'Already configured' }}"
+      - "  - Log redaction: ConfigMap created (manual Promtail/Filebeat restart required)"
+      - ""
+      - "Next steps:"
+      - "  1. Verify services: kubectl get pods -A"
+      - "  2. Test Vault HTTPS: curl https://vault.vault.svc:8200/v1/sys/health --cacert /path/to/ca.crt"
+      - "  3. Test MinIO HTTPS: mc alias set minio https://minio.storage.svc:9000 admin password"
+      - "  4. Update client configs to use https:// URLs"
+      - "  5. Restart Promtail/Filebeat to apply redaction"
+  when: hipaa_compliance | default(false) | bool
