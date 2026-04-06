@@ -464,6 +464,19 @@
   delay: 15
   until: _r_enable_kv_v2_secrets_engine is not failed
 
+
+- name: Enable Vault file audit device
+  kubernetes.core.k8s_exec:
+    namespace: "{{ vault_ns }}"
+    pod: "vault-0"
+    command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault audit enable file file_path=/vault/audit/audit.log"
+  register: _r_enable_vault_audit
+  retries: 3
+  delay: 10
+  until: _r_enable_vault_audit is not failed
+  failed_when: _r_enable_vault_audit.rc is defined and _r_enable_vault_audit.rc != 0 and "already in use" not in (_r_enable_vault_audit.stderr | default(''))
+  when: vault_init is changed
+  no_log: true
 - name: Enable Kubernetes auth method
   kubernetes.core.k8s_exec:
     namespace: "{{ vault_ns }}"

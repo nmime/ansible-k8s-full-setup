@@ -1255,7 +1255,7 @@
           spec:
             containers:
               - name: exporter
-                image: ghcr.io/promhetznercloud/prometheus-hetzner-sd:latest
+                image: ghcr.io/promhetznercloud/prometheus-hetzner-sd:v0.5.0
                 args:
                   - --hcloud.token=$(HCLOUD_TOKEN)
                   - --output.format=prometheus
@@ -1379,7 +1379,7 @@
             restartPolicy: OnFailure
             containers:
               - name: mc
-                image: minio/mc:latest
+                image: minio/mc:RELEASE.2024-10-02T08-27-28Z
                 command:
                   - sh
                   - -c
