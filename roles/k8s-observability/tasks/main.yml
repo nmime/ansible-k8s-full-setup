@@ -703,8 +703,9 @@
     namespace: '{{ monitoring_namespace }}'
     name: pmm-server
   register: pmm_deploy
-  until: |
-    pmm_deploy.resources | length > 0 and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: 'pmm_deploy.resources | length > 0 and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+
+    '
   retries: 30
   delay: 15
   failed_when: false
@@ -714,23 +715,13 @@
   changed_when: false
   failed_when: false
 - name: Generate PMM API key for database monitoring
-  shell: |
-    kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash -c '
-      supervisorctl stop pmm-managed 2>/dev/null; sleep 3;
-      SA_ID=$(curl -sf -X POST -H "Content-Type: application/json" \
-        -u "admin:{{ grafana_admin_password }}" \
-        http://127.0.0.1:8080/graph/api/serviceaccounts \
-        -d "{\"name\":\"percona-db-sa\",\"role\":\"Admin\"}" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get(\"id\",\"\"))" 2>/dev/null);
-      if [ -z "$SA_ID" ]; then
-        SA_ID=$(curl -sf -u "admin:{{ grafana_admin_password }}" \
-          "http://127.0.0.1:8080/graph/api/serviceaccounts/search?query=percona-db-sa" 2>/dev/null | python3 -c "import sys,json;sa=json.load(sys.stdin).get(\"serviceAccounts\",[]);print(sa[0][\"id\"] if sa else \"\")" 2>/dev/null);
-      fi;
-      KEY=$(curl -sf -X POST -H "Content-Type: application/json" \
-        -u "admin:{{ grafana_admin_password }}" \
-        "http://127.0.0.1:8080/graph/api/serviceaccounts/${SA_ID}/tokens" \
-        -d "{\"name\":\"percona-db-key-{{ ansible_date_time.epoch }}\"}" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get(\"key\",\"\"))" 2>/dev/null);
-      supervisorctl start pmm-managed 2>/dev/null;
-      echo "$KEY"'
+  shell: "kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash -c '\n  supervisorctl stop pmm-managed 2>/dev/null; sleep 3;\n  SA_ID=$(curl -sf -X POST -H \"Content-Type: application/json\"\
+    \ \\\n    -u \"admin:{{ grafana_admin_password }}\" \\\n    http://127.0.0.1:8080/graph/api/serviceaccounts \\\n    -d \"{\\\"name\\\":\\\"percona-db-sa\\\",\\\"role\\\":\\\"Admin\\\"}\" 2>/dev/null\
+    \ | python3 -c \"import sys,json;print(json.load(sys.stdin).get(\\\"id\\\",\\\"\\\"))\" 2>/dev/null);\n  if [ -z \"$SA_ID\" ]; then\n    SA_ID=$(curl -sf -u \"admin:{{ grafana_admin_password }}\" \\\
+    \n      \"http://127.0.0.1:8080/graph/api/serviceaccounts/search?query=percona-db-sa\" 2>/dev/null | python3 -c \"import sys,json;sa=json.load(sys.stdin).get(\\\"serviceAccounts\\\",[]);print(sa[0][\\\
+    \"id\\\"] if sa else \\\"\\\")\" 2>/dev/null);\n  fi;\n  KEY=$(curl -sf -X POST -H \"Content-Type: application/json\" \\\n    -u \"admin:{{ grafana_admin_password }}\" \\\n    \"http://127.0.0.1:8080/graph/api/serviceaccounts/${SA_ID}/tokens\"\
+    \ \\\n    -d \"{\\\"name\\\":\\\"percona-db-key-{{ ansible_date_time.epoch }}\\\"}\" 2>/dev/null | python3 -c \"import sys,json;print(json.load(sys.stdin).get(\\\"key\\\",\\\"\\\"))\" 2>/dev/null);\n\
+    \  supervisorctl start pmm-managed 2>/dev/null;\n  echo \"$KEY\"'\n"
   register: pmm_api_key_result
   failed_when: false
   changed_when: false
@@ -1001,29 +992,10 @@
       daemonset:
         enabled: true
         filebeatConfig:
-          filebeat.yml: |
-            filebeat.inputs:
-            - type: container
-              paths:
-                - /var/log/containers/*.log
-              processors:
-              - add_kubernetes_metadata:
-                  host: ${NODE_NAME}
-                  matchers:
-                  - logs_path:
-                      logs_path: "/var/log/containers/"
-            output.elasticsearch:
-              hosts: ["https://es-http.elasticsearch.svc.cluster.local:9200"]
-              username: "elastic"
-              password: "${ELASTICSEARCH_PASSWORD}"
-              ssl.certificate_authorities: ["/usr/share/filebeat/config/certs/ca.crt"]
-              index: "filebeat-%{[agent.version]}-%{+yyyy.MM.dd}"
-            setup.ilm.enabled: true
-            setup.ilm.rollover_alias: "filebeat"
-            setup.ilm.pattern: "{now/d}-000001"
-            setup.template.name: "filebeat"
-            setup.template.pattern: "filebeat-*"
-            logging.level: info
+          filebeat.yml: "filebeat.inputs:\n- type: container\n  paths:\n    - /var/log/containers/*.log\n  processors:\n  - add_kubernetes_metadata:\n      host: ${NODE_NAME}\n      matchers:\n      - logs_path:\n\
+            \          logs_path: \"/var/log/containers/\"\noutput.elasticsearch:\n  hosts: [\"https://es-http.elasticsearch.svc.cluster.local:9200\"]\n  username: \"elastic\"\n  password: \"${ELASTICSEARCH_PASSWORD}\"\
+            \n  ssl.certificate_authorities: [\"/usr/share/filebeat/config/certs/ca.crt\"]\n  index: \"filebeat-%{[agent.version]}-%{+yyyy.MM.dd}\"\nsetup.ilm.enabled: true\nsetup.ilm.rollover_alias: \"\
+            filebeat\"\nsetup.ilm.pattern: \"{now/d}-000001\"\nsetup.template.name: \"filebeat\"\nsetup.template.pattern: \"filebeat-*\"\nlogging.level: info\n"
         secretMounts:
         - name: elasticsearch-ca
           secretName: es-http-certs-public
@@ -1067,50 +1039,13 @@
     values:
       kind: DaemonSet
       fileConfigs:
-        01_sources.conf: |
-          <source>
-            @type tail
-            @id in_tail_container_logs
-            path /var/log/containers/*.log
-            pos_file /var/log/fluentd-containers.log.pos
-            tag kubernetes.*
-            read_from_head true
-            <parse>
-              @type json
-              time_format %Y-%m-%dT%H:%M:%S.%NZ
-            </parse>
-          </source>
-        02_filters.conf: |
-          <filter kubernetes.**>
-            @type kubernetes_metadata
-            @id filter_kube_metadata
-          </filter>
-        04_outputs.conf: |
-          <match **>
-            @type elasticsearch
-            @id out_es
-            host es-http.elasticsearch.svc.cluster.local
-            port 9200
-            scheme https
-            ssl_verify true
-            ca_file /fluentd/certs/ca.crt
-            user elastic
-            password "#{ENV['ELASTICSEARCH_PASSWORD']}"
-            logstash_format true
-            logstash_prefix fluentd
-            <buffer>
-              @type file
-              path /var/log/fluentd-buffers/kubernetes.system.buffer
-              flush_mode interval
-              retry_type exponential_backoff
-              flush_interval 5s
-              retry_forever false
-              retry_max_interval 30
-              chunk_limit_size 2M
-              queue_limit_length 8
-              overflow_action block
-            </buffer>
-          </match>
+        01_sources.conf: "<source>\n  @type tail\n  @id in_tail_container_logs\n  path /var/log/containers/*.log\n  pos_file /var/log/fluentd-containers.log.pos\n  tag kubernetes.*\n  read_from_head true\n\
+          \  <parse>\n    @type json\n    time_format %Y-%m-%dT%H:%M:%S.%NZ\n  </parse>\n</source>\n"
+        02_filters.conf: "<filter kubernetes.**>\n  @type kubernetes_metadata\n  @id filter_kube_metadata\n</filter>\n"
+        04_outputs.conf: "<match **>\n  @type elasticsearch\n  @id out_es\n  host es-http.elasticsearch.svc.cluster.local\n  port 9200\n  scheme https\n  ssl_verify true\n  ca_file /fluentd/certs/ca.crt\n\
+          \  user elastic\n  password \"#{ENV['ELASTICSEARCH_PASSWORD']}\"\n  logstash_format true\n  logstash_prefix fluentd\n  <buffer>\n    @type file\n    path /var/log/fluentd-buffers/kubernetes.system.buffer\n\
+          \    flush_mode interval\n    retry_type exponential_backoff\n    flush_interval 5s\n    retry_forever false\n    retry_max_interval 30\n    chunk_limit_size 2M\n    queue_limit_length 8\n   \
+          \ overflow_action block\n  </buffer>\n</match>\n"
       extraVolumes:
       - name: elasticsearch-ca
         secret:
@@ -1296,9 +1231,11 @@
               command:
               - sh
               - -c
-              - |
-                mc alias set minio http://minio.storage.svc.cluster.local:9000 $MINIO_USER $MINIO_PASS
+              - 'mc alias set minio http://minio.storage.svc.cluster.local:9000 $MINIO_USER $MINIO_PASS
+
                 mc mb -p minio/tempo-traces
+
+                '
               env:
               - name: MINIO_USER
                 valueFrom:
@@ -1470,25 +1407,9 @@
         labels:
           grafana_datasource: '1'
       data:
-        tempo-datasource.yaml: |
-          apiVersion: 1
-          datasources:
-            - name: Tempo
-              type: tempo
-              uid: tempo
-              url: http://tempo-query-frontend.{{ monitoring_namespace }}.svc.cluster.local:3100
-              access: proxy
-              editable: false
-              jsonData:
-                httpMethod: GET
-                serviceMap:
-                  datasourceUid: prometheus
-                nodeGraph:
-                  enabled: true
-                search:
-                  hide: false
-                lokiSearch:
-                  datasourceUid: "{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}"
+        tempo-datasource.yaml: "apiVersion: 1\ndatasources:\n  - name: Tempo\n    type: tempo\n    uid: tempo\n    url: http://tempo-query-frontend.{{ monitoring_namespace }}.svc.cluster.local:3100\n  \
+          \  access: proxy\n    editable: false\n    jsonData:\n      httpMethod: GET\n      serviceMap:\n        datasourceUid: prometheus\n      nodeGraph:\n        enabled: true\n      search:\n    \
+          \    hide: false\n      lokiSearch:\n        datasourceUid: \"{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}\"\n"
   when: tracing_enabled | default(false) | bool
   register: _r_add_tempo_grafana_datasource
   retries: 3
@@ -1540,3 +1461,52 @@
             annotations:
               summary: Certificate {{ $labels.name }} renewal FAILED
               description: cert-manager cannot renew {{ $labels.name }} in {{ $labels.namespace }}
+- name: Create default-deny for monitoring namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+      spec:
+        endpointSelector: {}
+- name: Allow Grafana ingress from gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-grafana-ingress
+        namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: grafana
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '3000'
+              protocol: TCP
+- name: Allow monitoring scrape (VMAgent/Promtail collect from all namespaces)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-monitoring-egress
+        namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEntities:
+          - cluster
+          - kube-apiserver
+        ingress:
+        - fromEntities:
+          - cluster

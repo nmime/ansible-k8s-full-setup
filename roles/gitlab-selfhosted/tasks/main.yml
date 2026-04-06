@@ -1,20 +1,14 @@
----
-# GitLab Self-Hosted Role - Community Edition
-# Deploys GitLab CE on Kubernetes using Helm
-# Supports light mode (minimal/small/medium) and full mode (production)
-
 - name: Set GitLab tier-specific variables
   set_fact:
-    gitlab_chart_version: "9.10.0"
-    gitlab_namespace: "gitlab"
-    gitlab_domain: "gitlab.{{ domain }}"
-    registry_domain: "registry.{{ domain }}"
-    kas_domain: "kas.{{ domain }}"
-    gitlab_mode: "{{ 'light' if tier in ['minimal', 'small', 'medium'] else 'full' }}"
-    gitlab_webservice_replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
-    gitlab_sidekiq_replicas: "{{ 1 if tier in ['minimal', 'small', 'medium'] else 2 }}"
-    gitlab_runner_concurrent: "{{ gitlab_runner_concurrent_jobs | default(10) }}"
-
+    gitlab_chart_version: 9.10.0
+    gitlab_namespace: gitlab
+    gitlab_domain: gitlab.{{ domain }}
+    registry_domain: registry.{{ domain }}
+    kas_domain: kas.{{ domain }}
+    gitlab_mode: '{{ ''light'' if tier in [''minimal'', ''small'', ''medium''] else ''full'' }}'
+    gitlab_webservice_replicas: '{{ 1 if tier in [''minimal'', ''small'', ''medium''] else 2 }}'
+    gitlab_sidekiq_replicas: '{{ 1 if tier in [''minimal'', ''small'', ''medium''] else 2 }}'
+    gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
 - name: Create GitLab namespace
   kubernetes.core.k8s:
     state: present
@@ -22,7 +16,7 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ gitlab_namespace }}"
+        name: '{{ gitlab_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
           pod-security.kubernetes.io/enforce: baseline
@@ -31,24 +25,14 @@
   retries: 3
   delay: 10
   until: _r_create_gitlab_namespace is not failed
-
-# ============================================
-# Helm Repositories
-# ============================================
-
 - name: Add GitLab Helm repository
   kubernetes.core.helm_repository:
     name: gitlab
-    repo_url: "https://charts.gitlab.io/"
+    repo_url: https://charts.gitlab.io/
   register: _r_add_gitlab_helm_repository
   retries: 3
   delay: 10
   until: _r_add_gitlab_helm_repository is not failed
-
-# ============================================
-# Pre-requisite Secrets
-# ============================================
-
 - name: Create S3 object storage secret for GitLab
   no_log: true
   kubernetes.core.k8s:
@@ -58,22 +42,26 @@
       kind: Secret
       metadata:
         name: gitlab-object-storage
-        namespace: "{{ gitlab_namespace }}"
+        namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        connection: |
-          provider: AWS
+        connection: 'provider: AWS
+
           region: us-east-1
+
           aws_access_key_id: "{{ minio_root_user }}"
+
           aws_secret_access_key: "{{ minio_root_password }}"
+
           endpoint: "http://minio.storage.svc.cluster.local:9000"
+
           path_style: true
+
+          '
   register: _r_create_s3_object_storage_secret_for_gitl
   retries: 3
   delay: 10
   until: _r_create_s3_object_storage_secret_for_gitl is not failed
-  no_log: true
-
 - name: Create registry storage secret
   kubernetes.core.k8s:
     state: present
@@ -82,80 +70,65 @@
       kind: Secret
       metadata:
         name: gitlab-registry-storage
-        namespace: "{{ gitlab_namespace }}"
+        namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        config: |
-          s3:
-            bucket: gitlab-registry
-            accesskey: "{{ minio_root_user }}"
-            secretkey: "{{ minio_root_password }}"
-            region: us-east-1
-            regionendpoint: "http://minio.storage.svc.cluster.local:9000"
-            v4auth: true
-            pathstyle: true
-            rootdirectory: /registry
+        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ minio_root_user }}\"\n  secretkey: \"{{ minio_root_password }}\"\n  region: us-east-1\n  regionendpoint: \"http://minio.storage.svc.cluster.local:9000\"\
+          \n  v4auth: true\n  pathstyle: true\n  rootdirectory: /registry\n"
   register: _r_create_registry_storage_secret
   retries: 3
   delay: 10
   until: _r_create_registry_storage_secret is not failed
   no_log: true
-
-# ============================================
-# GitLab CE Helm Installation
-# ============================================
-
 - name: Check GitLab Helm release status
   ansible.builtin.command: helm status gitlab -n {{ gitlab_namespace }} -o json
   register: _gitlab_helm_status
   failed_when: false
   changed_when: false
-
 - name: Remove failed GitLab Helm release before reinstall
   kubernetes.core.helm:
     name: gitlab
-    release_namespace: "{{ gitlab_namespace }}"
+    release_namespace: '{{ gitlab_namespace }}'
     release_state: absent
     wait: true
   when:
-    - _gitlab_helm_status.rc == 0
-    - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
-
+  - _gitlab_helm_status.rc == 0
+  - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
 - name: Install GitLab CE with Helm
   kubernetes.core.helm:
     name: gitlab
     chart_ref: gitlab/gitlab
-    chart_version: "{{ gitlab_chart_version }}"
-    release_namespace: "{{ gitlab_namespace }}"
+    chart_version: '{{ gitlab_chart_version }}'
+    release_namespace: '{{ gitlab_namespace }}'
     create_namespace: true
     release_state: present
-    timeout: "30m0s"
+    timeout: 30m0s
     wait: false
     values:
       global:
         edition: ce
-        gitlabVersion: "18.10.0"
+        gitlabVersion: 18.10.0
         hosts:
-          domain: "{{ domain }}"
+          domain: '{{ domain }}'
           gitlab:
-            name: "{{ gitlab_domain }}"
+            name: '{{ gitlab_domain }}'
             https: true
           registry:
-            name: "{{ registry_domain }}"
+            name: '{{ registry_domain }}'
             https: true
           kas:
-            name: "{{ kas_domain }}"
+            name: '{{ kas_domain }}'
             https: true
         ingress:
           enabled: false
           configureCertmanager: false
         time_zone: UTC
         email:
-          from: "gitlab@{{ domain }}"
+          from: gitlab@{{ domain }}
           display_name: GitLab
-          reply_to: "noreply@{{ domain }}"
+          reply_to: noreply@{{ domain }}
         psql:
-          host: "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local"
+          host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
           port: 5432
           database: gitlabhq_production
           username: gitlab
@@ -209,35 +182,35 @@
         primary:
           persistence:
             enabled: true
-            size: "8Gi"
-            storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+            size: 8Gi
+            storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       gitlab:
         webservice:
-          replicaCount: "{{ gitlab_webservice_replicas | int }}"
-          minReplicas: "{{ gitlab_webservice_replicas | int }}"
+          replicaCount: '{{ gitlab_webservice_replicas | int }}'
+          minReplicas: '{{ gitlab_webservice_replicas | int }}'
           maxReplicas: 10
           resources:
             requests:
-              cpu: "{{ '100m' if gitlab_mode == 'light' else '300m' }}"
-              memory: "{{ '1Gi' if gitlab_mode == 'light' else '2.5Gi' }}"
+              cpu: '{{ ''100m'' if gitlab_mode == ''light'' else ''300m'' }}'
+              memory: '{{ ''1Gi'' if gitlab_mode == ''light'' else ''2.5Gi'' }}'
             limits:
-              cpu: "{{ '1500m' if gitlab_mode == 'light' else '2000m' }}"
-              memory: "{{ '2Gi' if gitlab_mode == 'light' else '5Gi' }}"
+              cpu: '{{ ''1500m'' if gitlab_mode == ''light'' else ''2000m'' }}'
+              memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''5Gi'' }}'
           workerProcesses: 2
         sidekiq:
-          replicaCount: "{{ gitlab_sidekiq_replicas | int }}"
+          replicaCount: '{{ gitlab_sidekiq_replicas | int }}'
           minReplicas: 1
           maxReplicas: 10
           resources:
             requests:
-              cpu: "{{ '50m' if gitlab_mode == 'light' else '200m' }}"
-              memory: "{{ '1Gi' if gitlab_mode == 'light' else '1.5Gi' }}"
+              cpu: '{{ ''50m'' if gitlab_mode == ''light'' else ''200m'' }}'
+              memory: '{{ ''1Gi'' if gitlab_mode == ''light'' else ''1.5Gi'' }}'
             limits:
-              cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
-              memory: "{{ '2Gi' if gitlab_mode == 'light' else '3Gi' }}"
+              cpu: '{{ ''1000m'' if gitlab_mode == ''light'' else ''1500m'' }}'
+              memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''3Gi'' }}'
         gitlab-shell:
-          replicaCount: "{{ gitlab_webservice_replicas | int }}"
-          minReplicas: "{{ gitlab_webservice_replicas | int }}"
+          replicaCount: '{{ gitlab_webservice_replicas | int }}'
+          minReplicas: '{{ gitlab_webservice_replicas | int }}'
           resources:
             requests:
               cpu: 50m
@@ -248,34 +221,34 @@
         gitaly:
           persistence:
             enabled: true
-            size: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
-            storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+            size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' if tier == ''small'' else ''50Gi'' }}'
+            storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
           resources:
             requests:
-              cpu: "{{ '50m' if gitlab_mode == 'light' else '200m' }}"
-              memory: "{{ '256Mi' if gitlab_mode == 'light' else '512Mi' }}"
+              cpu: '{{ ''50m'' if gitlab_mode == ''light'' else ''200m'' }}'
+              memory: '{{ ''256Mi'' if gitlab_mode == ''light'' else ''512Mi'' }}'
             limits:
-              cpu: "{{ '1000m' if gitlab_mode == 'light' else '1500m' }}"
-              memory: "{{ '1Gi' if gitlab_mode == 'light' else '2Gi' }}"
+              cpu: '{{ ''1000m'' if gitlab_mode == ''light'' else ''1500m'' }}'
+              memory: '{{ ''1Gi'' if gitlab_mode == ''light'' else ''2Gi'' }}'
         kas:
           enabled: true
-          minReplicas: "{{ gitlab_webservice_replicas | int }}"
+          minReplicas: '{{ gitlab_webservice_replicas | int }}'
         toolbox:
           enabled: true
           backups:
             cron:
               enabled: true
-              schedule: "0 2 * * *"
-              extraArgs: ""
+              schedule: 0 2 * * *
+              extraArgs: ''
             objectStorage:
               config:
                 secret: gitlab-object-storage
                 key: connection
       registry:
         enabled: true
-        replicaCount: "{{ gitlab_webservice_replicas | int }}"
+        replicaCount: '{{ gitlab_webservice_replicas | int }}'
         hpa:
-          minReplicas: "{{ gitlab_webservice_replicas | int }}"
+          minReplicas: '{{ gitlab_webservice_replicas | int }}'
           maxReplicas: 5
         storage:
           secret: gitlab-registry-storage
@@ -283,11 +256,11 @@
         maintenance:
           gc:
             disabled: false
-            schedule: "0 4 * * 0"
+            schedule: 0 4 * * 0
         resources:
           requests:
-            cpu: "{{ '25m' if gitlab_mode == 'light' else '50m' }}"
-            memory: "{{ '32Mi' if gitlab_mode == 'light' else '64Mi' }}"
+            cpu: '{{ ''25m'' if gitlab_mode == ''light'' else ''50m'' }}'
+            memory: '{{ ''32Mi'' if gitlab_mode == ''light'' else ''64Mi'' }}'
           limits:
             cpu: 500m
             memory: 256Mi
@@ -311,38 +284,27 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_ce_with_helm is not failed
-
 - name: Increase GitLab deployment progressDeadlineSeconds for slow image pulls
-  shell: |
-    for DEPLOY in $(kubectl get deployment -n {{ gitlab_namespace }} -l release=gitlab -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-      kubectl patch deployment "$DEPLOY" -n {{ gitlab_namespace }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge 2>/dev/null || true
-    done
-    echo "patched"
+  shell: "for DEPLOY in $(kubectl get deployment -n {{ gitlab_namespace }} -l release=gitlab -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do\n  kubectl patch deployment \"$DEPLOY\" -n {{ gitlab_namespace\
+    \ }} -p '{\"spec\":{\"progressDeadlineSeconds\":1800}}' --type=merge 2>/dev/null || true\ndone\necho \"patched\"\n"
   register: _r_patch_gitlab_progress_deadline
   retries: 10
   delay: 15
   until: _r_patch_gitlab_progress_deadline.rc == 0
   changed_when: true
-
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
-    namespace: "{{ gitlab_namespace }}"
+    namespace: '{{ gitlab_namespace }}'
     label_selectors:
-      - app=webservice
+    - app=webservice
   register: gitlab_webservice_deploy
-  until: >
-    gitlab_webservice_deploy.resources is defined
-    and gitlab_webservice_deploy.resources | length > 0
-    and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: 'gitlab_webservice_deploy.resources is defined and gitlab_webservice_deploy.resources | length > 0 and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+
+    '
   retries: 120
   delay: 15
   failed_when: false
-
-# ============================================
-# Gateway API Routes
-# ============================================
-
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -351,27 +313,26 @@
       kind: HTTPRoute
       metadata:
         name: gitlab-webservice
-        namespace: "{{ gitlab_namespace }}"
+        namespace: '{{ gitlab_namespace }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "{{ gitlab_domain }}"
+        - '{{ gitlab_domain }}'
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: gitlab-webservice-default
-                port: 8181
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: gitlab-webservice-default
+            port: 8181
   register: _r_create_gitlab_gateway_api_httproute_vpn_
   retries: 3
   delay: 10
   until: _r_create_gitlab_gateway_api_httproute_vpn_ is not failed
-
 - name: Create GitLab Registry HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -380,27 +341,26 @@
       kind: HTTPRoute
       metadata:
         name: gitlab-registry
-        namespace: "{{ gitlab_namespace }}"
+        namespace: '{{ gitlab_namespace }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "{{ registry_domain }}"
+        - '{{ registry_domain }}'
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: gitlab-registry
-                port: 5000
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: gitlab-registry
+            port: 5000
   register: _r_create_gitlab_registry_httproute
   retries: 3
   delay: 10
   until: _r_create_gitlab_registry_httproute is not failed
-
 - name: Create GitLab KAS HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -409,27 +369,26 @@
       kind: HTTPRoute
       metadata:
         name: gitlab-kas
-        namespace: "{{ gitlab_namespace }}"
+        namespace: '{{ gitlab_namespace }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "{{ kas_domain }}"
+        - '{{ kas_domain }}'
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: gitlab-kas
-                port: 8150
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: gitlab-kas
+            port: 8150
   register: _r_create_gitlab_kas_httproute_vpn_only_via
   retries: 3
   delay: 10
   until: _r_create_gitlab_kas_httproute_vpn_only_via is not failed
-
 - name: Create TLS Certificate for GitLab
   kubernetes.core.k8s:
     state: present
@@ -445,70 +404,48 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "{{ gitlab_domain }}"
-          - "{{ registry_domain }}"
-          - "{{ kas_domain }}"
+        - '{{ gitlab_domain }}'
+        - '{{ registry_domain }}'
+        - '{{ kas_domain }}'
   register: _r_create_tls_certificate_for_gitlab
   retries: 3
   delay: 10
   until: _r_create_tls_certificate_for_gitlab is not failed
-
-# ============================================
-# GitLab Runner
-# ============================================
-
 - name: Add GitLab Runner Helm repository
   kubernetes.core.helm_repository:
     name: gitlab-runner
-    repo_url: "https://charts.gitlab.io/"
+    repo_url: https://charts.gitlab.io/
   register: _r_add_gitlab_runner_helm_repository
   retries: 3
   delay: 10
   until: _r_add_gitlab_runner_helm_repository is not failed
-
 - name: Install GitLab Runner with Helm
   kubernetes.core.helm:
     name: gitlab-runner
     chart_ref: gitlab/gitlab-runner
-    chart_version: "0.87.0"
-    release_namespace: "{{ gitlab_namespace }}"
+    chart_version: 0.87.0
+    release_namespace: '{{ gitlab_namespace }}'
     create_namespace: false
     release_state: present
     wait: true
     values:
-      gitlabUrl: "https://{{ gitlab_domain }}"
-      runnerToken: "{{ gitlab_runner_token | default('') }}"
-      concurrent: "{{ gitlab_runner_concurrent }}"
+      gitlabUrl: https://{{ gitlab_domain }}
+      runnerToken: '{{ gitlab_runner_token | default('''') }}'
+      concurrent: '{{ gitlab_runner_concurrent }}'
       checkInterval: 3
       rbac:
         create: true
         clusterWideAccess: true
       runners:
-        config: |
-          [[runners]]
-            [runners.kubernetes]
-              namespace = "{{ gitlab_namespace }}"
-              image = "ubuntu:22.04"
-              privileged = false
-              [runners.kubernetes.pod_security_context]
-                run_as_non_root = true
-                run_as_user = 1000
-              [runners.kubernetes.build_container_resources]
-                cpu_request = "500m"
-                cpu_limit = "2000m"
-                memory_request = "1Gi"
-                memory_limit = "4Gi"
-              [runners.kubernetes.service_container_resources]
-                cpu_request = "200m"
-                memory_request = "512Mi"
-              [runners.kubernetes.helper_container_resources]
-                cpu_request = "100m"
-                memory_request = "128Mi"
-        tags: "kubernetes,docker,k8s"
+        config: "[[runners]]\n  [runners.kubernetes]\n    namespace = \"{{ gitlab_namespace }}\"\n    image = \"ubuntu:22.04\"\n    privileged = false\n    [runners.kubernetes.pod_security_context]\n  \
+          \    run_as_non_root = true\n      run_as_user = 1000\n    [runners.kubernetes.build_container_resources]\n      cpu_request = \"500m\"\n      cpu_limit = \"2000m\"\n      memory_request = \"\
+          1Gi\"\n      memory_limit = \"4Gi\"\n    [runners.kubernetes.service_container_resources]\n      cpu_request = \"200m\"\n      memory_request = \"512Mi\"\n    [runners.kubernetes.helper_container_resources]\n\
+          \      cpu_request = \"100m\"\n      memory_request = \"128Mi\"\n"
+        tags: kubernetes,docker,k8s
         runUntagged: true
       podAnnotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9252"
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9252'
       resources:
         requests:
           cpu: 100m
@@ -521,7 +458,6 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_runner_with_helm is not failed
-
 - name: Create S3 cache secret for GitLab Runner
   no_log: true
   when: gitlab_runner_token is defined and gitlab_runner_token != ''
@@ -532,29 +468,117 @@
       kind: Secret
       metadata:
         name: gitlab-runner-s3-cache
-        namespace: "{{ gitlab_namespace }}"
+        namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        accesskey: "{{ minio_root_user }}"
-        secretkey: "{{ minio_root_password }}"
+        accesskey: '{{ minio_root_user }}'
+        secretkey: '{{ minio_root_password }}'
   register: _r_create_s3_cache_secret_for_gitlab_runner
   retries: 3
   delay: 10
   until: _r_create_s3_cache_secret_for_gitlab_runner is not failed
-  no_log: true
-
 - name: Display GitLab CE deployment info
   debug:
     msg:
-      - "=========================================="
-      - "  GitLab CE Deployed"
-      - "  Mode: {{ gitlab_mode }}"
-      - "=========================================="
-      - "  GitLab URL: https://{{ gitlab_domain }}"
-      - "  Registry: https://{{ registry_domain }}"
-      - "  KAS: https://{{ kas_domain }}"
-      - "  Edition: Community Edition"
-      - ""
-      - "  Get root password:"
-      - "  kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' | base64 -d"
-      - "=========================================="
+    - ==========================================
+    - '  GitLab CE Deployed'
+    - '  Mode: {{ gitlab_mode }}'
+    - ==========================================
+    - '  GitLab URL: https://{{ gitlab_domain }}'
+    - '  Registry: https://{{ registry_domain }}'
+    - '  KAS: https://{{ kas_domain }}'
+    - '  Edition: Community Edition'
+    - ''
+    - '  Get root password:'
+    - '  kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath=''{.data.password}'' | base64 -d'
+    - ==========================================
+- name: Create default-deny for GitLab namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector: {}
+- name: Allow GitLab ingress from gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-gitlab-ingress
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: webservice
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '8181'
+              protocol: TCP
+- name: Allow GitLab registry ingress
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-registry-ingress
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: registry
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '5000'
+              protocol: TCP
+- name: Allow GitLab egress to PostgreSQL and MinIO
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-gitlab-egress
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+            - port: '6379'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: storage
+          toPorts:
+          - ports:
+            - port: '9000'
+              protocol: TCP
+        - toEntities:
+          - kube-apiserver
+          - world
+        - toFQDNs:
+          - matchPattern: '*'
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '53'
+              protocol: UDP

@@ -288,3 +288,58 @@
                         key: password
                 restartPolicy: OnFailure
   when: rotate_argocd_password | default(false) | bool
+- name: Create default-deny for ArgoCD namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ argocd_namespace }}'
+      spec:
+        endpointSelector: {}
+- name: Allow ArgoCD server ingress from gateway (VPN)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-argocd-ingress
+        namespace: '{{ argocd_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: argocd-server
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '8080'
+              protocol: TCP
+- name: Allow ArgoCD egress to Git repos and K8s API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-argocd-egress
+        namespace: '{{ argocd_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEntities:
+          - kube-apiserver
+        - toFQDNs:
+          - matchPattern: '*'
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '22'
+              protocol: TCP
+            - port: '53'
+              protocol: UDP

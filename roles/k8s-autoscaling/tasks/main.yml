@@ -1,16 +1,10 @@
----
-# Autoscaling (KEDA) Role - Complete Implementation
-# Deploys KEDA v2.18.2 for event-driven autoscaling
-# Supports 70+ built-in scalers
-
 - name: Set KEDA tier-specific variables
   set_fact:
-    keda_namespace: "keda"
-    keda_chart_version: "2.19.0"
-    keda_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    keda_min_replicas_default: "{{ 2 if tier == 'production' else 1 }}"
-    keda_max_replicas_default: "{{ 20 if tier == 'production' else 10 }}"
-
+    keda_namespace: keda
+    keda_chart_version: 2.19.0
+    keda_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+    keda_min_replicas_default: '{{ 2 if tier == ''production'' else 1 }}'
+    keda_max_replicas_default: '{{ 20 if tier == ''production'' else 10 }}'
 - name: Create KEDA namespace
   kubernetes.core.k8s:
     state: present
@@ -18,7 +12,7 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ keda_namespace }}"
+        name: '{{ keda_namespace }}'
         labels:
           app.kubernetes.io/part-of: keda
           pod-security.kubernetes.io/enforce: baseline
@@ -27,33 +21,31 @@
   retries: 3
   delay: 10
   until: _r_create_keda_namespace is not failed
-
 - name: Add KEDA Helm repository
   kubernetes.core.helm_repository:
     name: kedacore
-    repo_url: "https://kedacore.github.io/charts"
+    repo_url: https://kedacore.github.io/charts
   register: _r_add_keda_helm_repository
   retries: 3
   delay: 10
   until: _r_add_keda_helm_repository is not failed
-
 - name: Install KEDA with Helm
   kubernetes.core.helm:
     name: keda
     chart_ref: kedacore/keda
-    chart_version: "{{ keda_chart_version }}"
-    release_namespace: "{{ keda_namespace }}"
+    chart_version: '{{ keda_chart_version }}'
+    release_namespace: '{{ keda_namespace }}'
     create_namespace: true
     release_state: present
     wait: true
-    timeout: "10m0s"
+    timeout: 10m0s
     values:
       operator:
-        replicaCount: "{{ keda_replicas | int }}"
+        replicaCount: '{{ keda_replicas | int }}'
       metricsServer:
-        replicaCount: "{{ keda_replicas | int }}"
+        replicaCount: '{{ keda_replicas | int }}'
       webhooks:
-        replicaCount: "{{ keda_replicas | int }}"
+        replicaCount: '{{ keda_replicas | int }}'
       podSecurityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -62,7 +54,7 @@
         allowPrivilegeEscalation: false
         capabilities:
           drop:
-            - ALL
+          - ALL
         readOnlyRootFilesystem: true
       resources:
         operator:
@@ -95,8 +87,6 @@
           port: 8080
       serviceAccount:
         create: true
-
-# Create example ScaledObject for CPU-based autoscaling
   register: _r_install_keda_with_helm
   retries: 3
   delay: 10
@@ -119,16 +109,14 @@
           name: example-app
         pollingInterval: 15
         cooldownPeriod: 300
-        minReplicaCount: "{{ keda_min_replicas_default }}"
-        maxReplicaCount: "{{ keda_max_replicas_default }}"
+        minReplicaCount: '{{ keda_min_replicas_default }}'
+        maxReplicaCount: '{{ keda_max_replicas_default }}'
         triggers:
-          - type: cpu
-            metricType: Utilization
-            metadata:
-              value: "70"
-  when: false  # Example only, deploy manually when needed
-
-# Create Prometheus-based ScaledObject template
+        - type: cpu
+          metricType: Utilization
+          metadata:
+            value: '70'
+  when: false
   register: _r_create_example_cpu_scaledobject
   retries: 3
   delay: 10
@@ -154,15 +142,13 @@
         minReplicaCount: 0
         maxReplicaCount: 50
         triggers:
-          - type: prometheus
-            metadata:
-              serverAddress: "http://vmselect-vmcluster.monitoring.svc:8481/select/0/prometheus"
-              query: 'sum(rate(http_requests_total{namespace="default",deployment="example-app"}[2m]))'
-              threshold: "100"
-              activationThreshold: "5"
-  when: false  # Example only, deploy manually when needed
-
-# Create TriggerAuthentication for Prometheus
+        - type: prometheus
+          metadata:
+            serverAddress: http://vmselect-vmcluster.monitoring.svc:8481/select/0/prometheus
+            query: sum(rate(http_requests_total{namespace="default",deployment="example-app"}[2m]))
+            threshold: '100'
+            activationThreshold: '5'
+  when: false
   register: _r_create_example_prometheus_scaledobject
   retries: 3
   delay: 10
@@ -178,8 +164,6 @@
       spec:
         podIdentity:
           provider: none
-
-# Deploy ServiceMonitor for KEDA metrics
   register: _r_create_keda_triggerauthentication_for_vi
   retries: 3
   delay: 10
@@ -194,7 +178,6 @@
   delay: 10
   until: vmscrape_crd is not failed
   ignore_errors: true
-
 - name: Create VMServiceScrape for KEDA metrics
   kubernetes.core.k8s:
     state: present
@@ -203,35 +186,60 @@
       kind: VMServiceScrape
       metadata:
         name: keda-metrics
-        namespace: "{{ keda_namespace }}"
+        namespace: '{{ keda_namespace }}'
       spec:
         selector:
           matchLabels:
             app.kubernetes.io/name: keda-operator
         endpoints:
-          - port: metrics
-            interval: 30s
+        - port: metrics
+          interval: 30s
   when: vmscrape_crd.resources | default([]) | length > 0
   register: _r_create_vmservicescrape_for_keda_metrics
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_keda_metrics is not failed
   ignore_errors: true
-
 - name: Display KEDA deployment info
   debug:
     msg:
-      - "=========================================="
-      - "  KEDA Autoscaling Deployed"
-      - "=========================================="
-      - "  Version: {{ keda_chart_version }}"
-      - "  Replicas: {{ keda_replicas }}"
-      - "  Default min/max: {{ keda_min_replicas_default }}/{{ keda_max_replicas_default }}"
-      - ""
-      - "  Available scalers: 70+"
-      - "  Supported: CPU, Memory, Prometheus, Cron,"
-      - "    RabbitMQ, Kafka, PostgreSQL, Redis, etc."
-      - ""
-      - "  Create ScaledObject resources to enable"
-      - "  autoscaling for your deployments."
-      - "=========================================="
+    - ==========================================
+    - '  KEDA Autoscaling Deployed'
+    - ==========================================
+    - '  Version: {{ keda_chart_version }}'
+    - '  Replicas: {{ keda_replicas }}'
+    - '  Default min/max: {{ keda_min_replicas_default }}/{{ keda_max_replicas_default }}'
+    - ''
+    - '  Available scalers: 70+'
+    - '  Supported: CPU, Memory, Prometheus, Cron,'
+    - '    RabbitMQ, Kafka, PostgreSQL, Redis, etc.'
+    - ''
+    - '  Create ScaledObject resources to enable'
+    - '  autoscaling for your deployments.'
+    - ==========================================
+- name: Create default-deny for KEDA namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: keda
+      spec:
+        endpointSelector: {}
+- name: Allow KEDA egress to metrics sources and K8s API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-keda-egress
+        namespace: keda
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEntities:
+          - cluster
+          - kube-apiserver

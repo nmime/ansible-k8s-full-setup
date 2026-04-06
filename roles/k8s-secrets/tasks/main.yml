@@ -1,24 +1,14 @@
----
-# K8s Secrets Role - Vault (Helm 0.32.0) + ESO (Helm 2.2.0)
-# HashiCorp Vault for secret storage + External Secrets Operator for K8s integration
-# Components: Vault (Helm chart 0.32.0), ESO (Helm chart 2.2.0)
-
 - name: Set secrets tier-specific variables
   set_fact:
-    vault_ns: "vault"
-    eso_ns: "external-secrets"
-    vault_chart_ver: "0.32.0"
-    vault_version: "1.21.2"
-    eso_chart_ver: "2.2.0"
-    vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
-    vault_ha: "{{ true if tier in ['medium', 'production'] else false }}"
-    vault_storage: "{{ vault_storage_size | default('10Gi') }}"
-    vault_domain: "vault.{{ domain }}"
-
-# ============================================
-# Vault Installation
-# ============================================
-
+    vault_ns: vault
+    eso_ns: external-secrets
+    vault_chart_ver: 0.32.0
+    vault_version: 1.21.2
+    eso_chart_ver: 2.2.0
+    vault_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
+    vault_ha: '{{ true if tier in [''medium'', ''production''] else false }}'
+    vault_storage: '{{ vault_storage_size | default(''10Gi'') }}'
+    vault_domain: vault.{{ domain }}
 - name: Create Vault namespace
   kubernetes.core.k8s:
     state: present
@@ -35,31 +25,29 @@
   retries: 3
   delay: 15
   until: _r_create_vault_namespace is not failed
-
 - name: Add HashiCorp Helm repository
   kubernetes.core.helm_repository:
     name: hashicorp
-    repo_url: "https://helm.releases.hashicorp.com"
+    repo_url: https://helm.releases.hashicorp.com
   register: _r_add_hashicorp_helm_repository
   retries: 3
   delay: 15
   until: _r_add_hashicorp_helm_repository is not failed
-
 - name: Install Vault via Helm
   kubernetes.core.helm:
     name: vault
     chart_ref: hashicorp/vault
-    chart_version: "{{ vault_chart_ver }}"
+    chart_version: '{{ vault_chart_ver }}'
     release_namespace: vault
     create_namespace: true
     release_state: present
     wait: true
-    timeout: "10m0s"
+    timeout: 10m0s
     set_values:
-      - value: "server.ha.replicas={{ vault_replicas }}"
-      - value: "server.ha.enabled={{ (vault_ha | bool) | lower }}"
-      - value: "server.ha.raft.enabled={{ (vault_ha | bool) | lower }}"
-      - value: "server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}"
+    - value: server.ha.replicas={{ vault_replicas }}
+    - value: server.ha.enabled={{ (vault_ha | bool) | lower }}
+    - value: server.ha.raft.enabled={{ (vault_ha | bool) | lower }}
+    - value: server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}
     values:
       global:
         tlsDisable: true
@@ -75,65 +63,40 @@
           allowPrivilegeEscalation: false
           capabilities:
             drop:
-              - ALL
+            - ALL
         affinity:
           podAntiAffinity:
             preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                podAffinityTerm:
-                  labelSelector:
-                    matchLabels:
-                      app.kubernetes.io/name: vault
-                      component: server
-                  topologyKey: kubernetes.io/hostname
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vault
+                    component: server
+                topologyKey: kubernetes.io/hostname
         tolerations:
-          - key: node-role.kubernetes.io/control-plane
-            operator: Exists
-            effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
         dataStorage:
           enabled: true
-          size: "{{ vault_storage }}"
-          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+          size: '{{ vault_storage }}'
+          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         auditStorage:
           enabled: true
-          size: "10Gi"
-          storageClass: "{{ storage_class | default('hcloud-volumes') }}"
+          size: 10Gi
+          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         extraEnvironmentVars:
-          VAULT_API_ADDR: "http://$(HOSTNAME).vault-internal:8200"
-          VAULT_CLUSTER_ADDR: "http://$(HOSTNAME).vault-internal:8201"
+          VAULT_API_ADDR: http://$(HOSTNAME).vault-internal:8200
+          VAULT_CLUSTER_ADDR: http://$(HOSTNAME).vault-internal:8201
         ha:
           raft:
             setNodeId: true
-            config: |
-              ui = true
-              listener "tcp" {
-                tls_disable = 1
-                address = "[::]:8200"
-                cluster_address = "[::]:8201"
-              }
-              storage "raft" {
-                path = "/vault/data"
-                retry_join {
-                  leader_api_addr = "http://vault-0.vault-internal:8200"
-                }
-                retry_join {
-                  leader_api_addr = "http://vault-1.vault-internal:8200"
-                }
-                retry_join {
-                  leader_api_addr = "http://vault-2.vault-internal:8200"
-                }
-              }
+            config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n  retry_join {\n   \
+              \ leader_api_addr = \"http://vault-0.vault-internal:8200\"\n  }\n  retry_join {\n    leader_api_addr = \"http://vault-1.vault-internal:8200\"\n  }\n  retry_join {\n    leader_api_addr = \"\
+              http://vault-2.vault-internal:8200\"\n  }\n}\n"
         standalone:
-          config: |
-            ui = true
-            listener "tcp" {
-              tls_disable = 1
-              address = "[::]:8200"
-              cluster_address = "[::]:8201"
-            }
-            storage "file" {
-              path = "/vault/data"
-            }
+          config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\nstorage \"file\" {\n  path = \"/vault/data\"\n}\n"
         ingress:
           enabled: false
         ui:
@@ -144,80 +107,72 @@
   retries: 3
   delay: 15
   until: _r_install_vault_via_helm is not failed
-
 - name: Wait for Vault pods to be running
   kubernetes.core.k8s_info:
     kind: Pod
-    namespace: "{{ vault_ns }}"
+    namespace: '{{ vault_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=vault
-      - component=server
+    - app.kubernetes.io/name=vault
+    - component=server
   register: vault_pods
-  until: >
-    vault_pods.resources | length >= (vault_replicas | int)
-    and vault_pods.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  until: 'vault_pods.resources | length >= (vault_replicas | int) and vault_pods.resources | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas | int)
+
+    '
   retries: 120
   delay: 15
   failed_when: false
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
-
 - name: Patch Vault StatefulSet DNS to bypass nodelocaldns
   kubernetes.core.k8s:
     state: patched
     kind: StatefulSet
     name: vault
-    namespace: "{{ vault_ns }}"
+    namespace: '{{ vault_ns }}'
     definition:
       spec:
         template:
           spec:
-            dnsPolicy: "None"
+            dnsPolicy: None
             dnsConfig:
               nameservers:
-                - "10.233.0.3"
+              - 10.233.0.3
               searches:
-                - "{{ vault_ns }}.svc.cluster.local"
-                - "svc.cluster.local"
-                - "cluster.local"
+              - '{{ vault_ns }}.svc.cluster.local'
+              - svc.cluster.local
+              - cluster.local
               options:
-                - name: ndots
-                  value: "5"
+              - name: ndots
+                value: '5'
   when: vault_ha | bool
-
 - name: Delete Vault pods to apply DNS patch
   kubernetes.core.k8s:
     state: absent
     kind: Pod
-    namespace: "{{ vault_ns }}"
+    namespace: '{{ vault_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=vault
-      - component=server
+    - app.kubernetes.io/name=vault
+    - component=server
   when: vault_ha | bool
-
 - name: Wait for Vault pods to be running after DNS patch
   kubernetes.core.k8s_info:
     kind: Pod
-    namespace: "{{ vault_ns }}"
+    namespace: '{{ vault_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=vault
-      - component=server
+    - app.kubernetes.io/name=vault
+    - component=server
   register: vault_pods_dns
-  until: >
-    vault_pods_dns.resources | length >= (vault_replicas | int)
-    and vault_pods_dns.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  until: 'vault_pods_dns.resources | length >= (vault_replicas | int) and vault_pods_dns.resources | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas
+    | int)
+
+    '
   retries: 120
   delay: 15
   failed_when: false
   when: vault_ha | bool
-
-# ============================================
-# Vault Initialization & Configuration
-# ============================================
-
 - name: Check Vault init status
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
     command: vault status -format=json
   register: vault_status_raw
   retries: 3
@@ -225,53 +180,48 @@
   until: vault_status_raw is not failed
   failed_when: false
   changed_when: false
-
 - name: Parse Vault status
   set_fact:
-    vault_initialized: "{{ (vault_status_raw.stdout | from_json).initialized | default(false) }}"
+    vault_initialized: '{{ (vault_status_raw.stdout | from_json).initialized | default(false) }}'
   when: vault_status_raw.rc is defined and (vault_status_raw.rc == 0 or vault_status_raw.rc == 2)
   failed_when: false
-
 - name: Clear stale Raft data on all vault pods
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-{{ item }}"
+    namespace: '{{ vault_ns }}'
+    pod: vault-{{ item }}
     command: sh -c "rm -rf /vault/data/*"
-  loop: "{{ range(0, vault_replicas | int) | list }}"
+  loop: '{{ range(0, vault_replicas | int) | list }}'
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
   failed_when: false
-
 - name: Restart vault pods after clearing Raft data
   kubernetes.core.k8s:
     state: absent
     kind: Pod
-    namespace: "{{ vault_ns }}"
+    namespace: '{{ vault_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=vault
-      - component=server
+    - app.kubernetes.io/name=vault
+    - component=server
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
-
 - name: Wait for Vault pods to be running after Raft cleanup
   kubernetes.core.k8s_info:
     kind: Pod
-    namespace: "{{ vault_ns }}"
+    namespace: '{{ vault_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=vault
-      - component=server
+    - app.kubernetes.io/name=vault
+    - component=server
   register: vault_pods_raft
-  until: >
-    vault_pods_raft.resources | length >= (vault_replicas | int)
-    and vault_pods_raft.resources | map(attribute='status.phase') | select('equalto', 'Running') | list | length >= (vault_replicas | int)
+  until: 'vault_pods_raft.resources | length >= (vault_replicas | int) and vault_pods_raft.resources | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas
+    | int)
+
+    '
   retries: 120
   delay: 15
   failed_when: false
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
-
-
 - name: Initialize Vault (if not initialized)
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
     command: vault operator init -key-shares=5 -key-threshold=3 -format=json
   register: vault_init
   retries: 3
@@ -279,13 +229,11 @@
   until: vault_init is not failed
   when: not (vault_initialized | default(false) | bool)
   failed_when: vault_init.rc is defined and vault_init.rc != 0
-
 - name: Normalize vault init output
   set_fact:
-    vault_init_data: "{{ vault_init.stdout if vault_init.stdout is mapping else vault_init.stdout | from_json }}"
+    vault_init_data: '{{ vault_init.stdout if vault_init.stdout is mapping else vault_init.stdout | from_json }}'
   when: vault_init is changed
   no_log: true
-
 - name: Store Vault init keys as K8s secret
   kubernetes.core.k8s:
     state: present
@@ -294,85 +242,78 @@
       kind: Secret
       metadata:
         name: vault-init-keys
-        namespace: "{{ vault_ns }}"
+        namespace: '{{ vault_ns }}'
         labels:
           app: vault
       stringData:
-        init-output: "{{ vault_init_data | to_json }}"
+        init-output: '{{ vault_init_data | to_json }}'
   when: vault_init is changed
   register: _r_store_vault_init_keys_as_k8s_secret
   retries: 3
   delay: 15
   until: _r_store_vault_init_keys_as_k8s_secret is not failed
   no_log: true
-
 - name: Unseal Vault (primary)
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
-    command: "vault operator unseal {{ vault_init_data.unseal_keys_b64[item] }}"
-  loop: [0, 1, 2]
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: vault operator unseal {{ vault_init_data.unseal_keys_b64[item] }}
+  loop:
+  - 0
+  - 1
+  - 2
   when: vault_init is changed
   no_log: true
   register: _r_unseal_vault__primary_
   retries: 3
   delay: 15
   until: _r_unseal_vault__primary_ is not failed
-
 - name: Wait for Vault leader to be ready for raft
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
     command: vault status -format=json
   when: vault_ha and vault_init is changed
   register: _r_vault_leader_status
   retries: 12
   delay: 5
-  until: >-
-    _r_vault_leader_status.stdout is defined
-    and (_r_vault_leader_status.stdout | from_json).sealed == false
+  until: _r_vault_leader_status.stdout is defined and (_r_vault_leader_status.stdout | from_json).sealed == false
   failed_when: false
-
 - name: Join raft peers (HA mode)
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-{{ item }}"
+    namespace: '{{ vault_ns }}'
+    pod: vault-{{ item }}
     command: vault operator raft join http://vault-0.vault-internal:8200
-  loop: "{{ range(1, vault_replicas | int) | list }}"
+  loop: '{{ range(1, vault_replicas | int) | list }}'
   when: vault_ha and vault_init is changed
   register: _r_join_raft_peers__ha_mode_
   retries: 10
   delay: 15
   until: _r_join_raft_peers__ha_mode_.rc | default(1) == 0
-
 - name: Wait for raft peers to recognize initialization
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-{{ item }}"
+    namespace: '{{ vault_ns }}'
+    pod: vault-{{ item }}
     command: vault status -format=json
-  loop: "{{ range(1, vault_replicas | int) | list }}"
+  loop: '{{ range(1, vault_replicas | int) | list }}'
   when: vault_ha and vault_init is changed
   register: _r_wait_raft_init
   retries: 120
   delay: 5
   failed_when: false
-  until: >-
-    _r_wait_raft_init.stdout is defined
-    and (_r_wait_raft_init.stdout | from_json).initialized | default(false)
-
+  until: _r_wait_raft_init.stdout is defined and (_r_wait_raft_init.stdout | from_json).initialized | default(false)
 - name: Unseal raft peers (HA mode)
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-{{ item.0 }}"
-    command: "vault operator unseal {{ vault_init_data.unseal_keys_b64[item.1] }}"
-  loop: "{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}"
+    namespace: '{{ vault_ns }}'
+    pod: vault-{{ item.0 }}
+    command: vault operator unseal {{ vault_init_data.unseal_keys_b64[item.1] }}
+  loop: '{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}'
   when: vault_ha and vault_init is changed
   no_log: true
   register: _r_unseal_raft_peers__ha_mode_
   retries: 5
   delay: 15
   until: _r_unseal_raft_peers__ha_mode_ is not failed
-
 - name: Deploy Vault auto-unseal CronJob
   kubernetes.core.k8s:
     state: present
@@ -381,12 +322,12 @@
       kind: CronJob
       metadata:
         name: vault-auto-unseal
-        namespace: "{{ vault_ns }}"
+        namespace: '{{ vault_ns }}'
         labels:
           app: vault
           component: auto-unseal
       spec:
-        schedule: "*/2 * * * *"
+        schedule: '*/2 * * * *'
         successfulJobsHistoryLimit: 1
         failedJobsHistoryLimit: 3
         concurrencyPolicy: Forbid
@@ -403,58 +344,47 @@
                 serviceAccountName: vault
                 restartPolicy: Never
                 containers:
-                  - name: unseal
-                    image: "hashicorp/vault:{{ vault_version }}"
-                    command:
-                      - /bin/sh
-                      - -c
-                      - |
-                        for i in $(seq 0 {{ (vault_replicas | int) - 1 }}); do
-                          VAULT_ADDR="http://vault-${i}.vault-internal.{{ vault_ns }}.svc.cluster.local:8200"
-                          export VAULT_ADDR
-                          STATUS=$(vault status -format=json 2>/dev/null) || continue
-                          SEALED=$(echo "$STATUS" | grep -o '"sealed":[a-z]*' | cut -d: -f2)
-                          if [ "$SEALED" = "true" ]; then
-                            echo "vault-${i} is sealed, unsealing..."
-                            INIT_JSON=$(cat /vault-keys/init-output)
-                            for k in 0 1 2; do
-                              KEY=$(echo "$INIT_JSON" | grep -o '"unseal_keys_b64":\[[^]]*\]' | sed 's/.*\[//;s/\]//;s/"//g' | cut -d, -f$((k+1)))
-                              vault operator unseal "$KEY" 2>/dev/null || true
-                            done
-                          fi
-                        done
-                    volumeMounts:
-                      - name: vault-keys
-                        mountPath: /vault-keys
-                        readOnly: true
-                    resources:
-                      requests:
-                        cpu: 10m
-                        memory: 32Mi
-                      limits:
-                        cpu: 50m
-                        memory: 64Mi
-                    securityContext:
-                      allowPrivilegeEscalation: false
-                      capabilities:
-                        drop: ["ALL"]
-                      readOnlyRootFilesystem: true
-                      runAsNonRoot: true
-                      runAsUser: 100
-                volumes:
+                - name: unseal
+                  image: hashicorp/vault:{{ vault_version }}
+                  command:
+                  - /bin/sh
+                  - -c
+                  - "for i in $(seq 0 {{ (vault_replicas | int) - 1 }}); do\n  VAULT_ADDR=\"http://vault-${i}.vault-internal.{{ vault_ns }}.svc.cluster.local:8200\"\n  export VAULT_ADDR\n  STATUS=$(vault\
+                    \ status -format=json 2>/dev/null) || continue\n  SEALED=$(echo \"$STATUS\" | grep -o '\"sealed\":[a-z]*' | cut -d: -f2)\n  if [ \"$SEALED\" = \"true\" ]; then\n    echo \"vault-${i}\
+                    \ is sealed, unsealing...\"\n    INIT_JSON=$(cat /vault-keys/init-output)\n    for k in 0 1 2; do\n      KEY=$(echo \"$INIT_JSON\" | grep -o '\"unseal_keys_b64\":\\[[^]]*\\]' | sed 's/.*\\\
+                    [//;s/\\]//;s/\"//g' | cut -d, -f$((k+1)))\n      vault operator unseal \"$KEY\" 2>/dev/null || true\n    done\n  fi\ndone\n"
+                  volumeMounts:
                   - name: vault-keys
-                    secret:
-                      secretName: vault-init-keys
+                    mountPath: /vault-keys
+                    readOnly: true
+                  resources:
+                    requests:
+                      cpu: 10m
+                      memory: 32Mi
+                    limits:
+                      cpu: 50m
+                      memory: 64Mi
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop:
+                      - ALL
+                    readOnlyRootFilesystem: true
+                    runAsNonRoot: true
+                    runAsUser: 100
+                volumes:
+                - name: vault-keys
+                  secret:
+                    secretName: vault-init-keys
   when: vault_init is changed
   register: _r_deploy_vault_auto_unseal_cronjob
   retries: 3
   delay: 10
   until: _r_deploy_vault_auto_unseal_cronjob is not failed
-
 - name: Enable KV v2 secrets engine
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
     command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault secrets enable -path=secret kv-v2"
   when: vault_init is changed
   failed_when: false
@@ -463,12 +393,10 @@
   retries: 3
   delay: 15
   until: _r_enable_kv_v2_secrets_engine is not failed
-
-
 - name: Enable Vault file audit device
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
     command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault audit enable file file_path=/vault/audit/audit.log"
   register: _r_enable_vault_audit
   retries: 3
@@ -479,8 +407,8 @@
   no_log: true
 - name: Enable Kubernetes auth method
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
     command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault auth enable kubernetes"
   when: vault_init is changed
   failed_when: false
@@ -489,27 +417,18 @@
   retries: 3
   delay: 15
   until: _r_enable_kubernetes_auth_method is not failed
-
 - name: Configure Kubernetes auth method
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
-    command: >-
-      sh -c "VAULT_TOKEN={{ vault_init_data.root_token }}
-      vault write auth/kubernetes/config
-      kubernetes_host=https://kubernetes.default.svc:443"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc:443"
   when: vault_init is changed
   failed_when: false
   no_log: true
-
-# ============================================
-# Vault Gateway API Route
-# ============================================
   register: _r_configure_kubernetes_auth_method
   retries: 3
   delay: 15
   until: _r_configure_kubernetes_auth_method is not failed
-
 - name: Create Vault TLS certificate
   kubernetes.core.k8s:
     state: present
@@ -525,12 +444,11 @@
           name: letsencrypt-prod
           kind: ClusterIssuer
         dnsNames:
-          - "{{ vault_domain }}"
+        - '{{ vault_domain }}'
   register: _r_create_vault_tls_certificate
   retries: 3
   delay: 15
   until: _r_create_vault_tls_certificate is not failed
-
 - name: Create Vault HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -539,31 +457,26 @@
       kind: HTTPRoute
       metadata:
         name: vault
-        namespace: "{{ vault_ns }}"
+        namespace: '{{ vault_ns }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "{{ vault_domain }}"
+        - '{{ vault_domain }}'
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: vault-ui
-                port: 8200
-
-# ============================================
-# External Secrets Operator v1.2.1
-# ============================================
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: vault-ui
+            port: 8200
   register: _r_create_vault_httproute_vpn_only_via_admi
   retries: 3
   delay: 15
   until: _r_create_vault_httproute_vpn_only_via_admi is not failed
-
 - name: Create ESO namespace
   kubernetes.core.k8s:
     state: present
@@ -571,59 +484,51 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ eso_ns }}"
+        name: '{{ eso_ns }}'
         labels:
           app.kubernetes.io/part-of: external-secrets
   register: _r_create_eso_namespace
   retries: 3
   delay: 15
   until: _r_create_eso_namespace is not failed
-
 - name: Add External Secrets Helm repository
   kubernetes.core.helm_repository:
     name: external-secrets
-    repo_url: "https://charts.external-secrets.io"
+    repo_url: https://charts.external-secrets.io
   register: _r_add_external_secrets_helm_repository
   retries: 3
   delay: 15
   until: _r_add_external_secrets_helm_repository is not failed
-
 - name: Install External Secrets Operator via Helm
   kubernetes.core.helm:
     name: external-secrets
     chart_ref: external-secrets/external-secrets
-    chart_version: "{{ eso_chart_ver }}"
-    release_namespace: "{{ eso_ns }}"
+    chart_version: '{{ eso_chart_ver }}'
+    release_namespace: '{{ eso_ns }}'
     create_namespace: true
     release_state: present
     wait: true
     set_values:
-      - value: "replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}"
-      - value: "webhook.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}"
-      - value: "certController.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}"
-      - value: "serviceMonitor.enabled=true"
+    - value: replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}
+    - value: webhook.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}
+    - value: certController.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}
+    - value: serviceMonitor.enabled=true
   register: _r_install_external_secrets_operator_via_he
   retries: 3
   delay: 15
   until: _r_install_external_secrets_operator_via_he is not failed
-
 - name: Wait for ESO to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
-    namespace: "{{ eso_ns }}"
+    namespace: '{{ eso_ns }}'
     name: external-secrets
   register: eso_deploy
-  until: >
-    eso_deploy.resources | length > 0
-    and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: 'eso_deploy.resources | length > 0 and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+
+    '
   retries: 120
   failed_when: false
   delay: 15
-
-# ============================================
-# ClusterSecretStore (Vault Backend)
-# ============================================
-
 - name: Create Vault ESO service account
   kubernetes.core.k8s:
     state: present
@@ -632,23 +537,17 @@
       kind: ServiceAccount
       metadata:
         name: external-secrets-vault
-        namespace: "{{ eso_ns }}"
+        namespace: '{{ eso_ns }}'
   register: _r_create_vault_eso_service_account
   retries: 3
   delay: 15
   until: _r_create_vault_eso_service_account is not failed
-
 - name: Create Vault ESO auth role
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
-    command: >-
-      sh -c "VAULT_TOKEN={{ vault_init_data.root_token }}
-      vault write auth/kubernetes/role/external-secrets
-      bound_service_account_names=external-secrets-vault
-      bound_service_account_namespaces={{ eso_ns }}
-      policies=default,external-secrets
-      ttl=1h"
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault write auth/kubernetes/role/external-secrets bound_service_account_names=external-secrets-vault bound_service_account_namespaces={{
+      eso_ns }} policies=default,external-secrets ttl=1h"
   when: vault_init is changed
   failed_when: false
   no_log: true
@@ -656,21 +555,12 @@
   retries: 3
   delay: 15
   until: _r_create_vault_eso_auth_role is not failed
-
 - name: Create Vault policy for ESO
   kubernetes.core.k8s_exec:
-    namespace: "{{ vault_ns }}"
-    pod: "vault-0"
-    command: |
-      export VAULT_TOKEN={{ vault_init_data.root_token }}
-      vault policy write external-secrets - <<EOF
-      path "secret/data/*" {
-        capabilities = ["read", "list"]
-      }
-      path "secret/metadata/*" {
-        capabilities = ["read", "list"]
-      }
-      EOF
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: "export VAULT_TOKEN={{ vault_init_data.root_token }}\nvault policy write external-secrets - <<EOF\npath \"secret/data/*\" {\n  capabilities = [\"read\", \"list\"]\n}\npath \"secret/metadata/*\"\
+      \ {\n  capabilities = [\"read\", \"list\"]\n}\nEOF\n"
   when: vault_init is changed
   failed_when: false
   no_log: true
@@ -678,7 +568,6 @@
   retries: 3
   delay: 15
   until: _r_create_vault_policy_for_eso is not failed
-
 - name: Create ClusterSecretStore for Vault
   kubernetes.core.k8s:
     state: present
@@ -690,25 +579,20 @@
       spec:
         provider:
           vault:
-            server: "http://vault.{{ vault_ns }}.svc.cluster.local:8200"
-            path: "secret"
-            version: "v2"
+            server: http://vault.{{ vault_ns }}.svc.cluster.local:8200
+            path: secret
+            version: v2
             auth:
               kubernetes:
-                mountPath: "kubernetes"
-                role: "external-secrets"
+                mountPath: kubernetes
+                role: external-secrets
                 serviceAccountRef:
-                  name: "external-secrets-vault"
-                  namespace: "{{ eso_ns }}"
-
-# ============================================
-# Example ExternalSecret
-# ============================================
+                  name: external-secrets-vault
+                  namespace: '{{ eso_ns }}'
   register: _r_create_clustersecretstore_for_vault
   retries: 3
   delay: 15
   until: _r_create_clustersecretstore_for_vault is not failed
-
 - name: Create example ExternalSecret
   kubernetes.core.k8s:
     state: present
@@ -727,15 +611,14 @@
           name: example-secret
           creationPolicy: Owner
         data:
-          - secretKey: password
-            remoteRef:
-              key: example
-              property: password
+        - secretKey: password
+          remoteRef:
+            key: example
+            property: password
   register: _r_create_example_externalsecret
   retries: 3
   delay: 15
   until: _r_create_example_externalsecret is not failed
-
 - name: Create PodDisruptionBudget for Vault (HA mode)
   kubernetes.core.k8s:
     state: present
@@ -744,7 +627,7 @@
       kind: PodDisruptionBudget
       metadata:
         name: vault-pdb
-        namespace: "{{ vault_ns }}"
+        namespace: '{{ vault_ns }}'
       spec:
         maxUnavailable: 1
         selector:
@@ -756,7 +639,6 @@
   retries: 3
   delay: 10
   until: _r_create_vault_pdb is not failed
-
 - name: Create PodDisruptionBudget for ESO
   kubernetes.core.k8s:
     state: present
@@ -776,17 +658,71 @@
   retries: 3
   delay: 10
   until: _r_create_eso_pdb is not failed
-
 - name: Display secrets management summary
   debug:
     msg:
-      - "=========================================="
-      - "  Secrets Management Deployed"
-      - "=========================================="
-      - "  Vault: v1.21.2 (chart {{ vault_chart_ver }})"
-      - "  ESO: v0.15.0 (chart {{ eso_chart_ver }})"
-      - "  HA Mode: {{ vault_ha }}"
-      - "  Replicas: {{ vault_replicas }}"
-      - "  UI: {{ vault_domain }}"
-      - "  ClusterSecretStore: vault-backend"
-      - "=========================================="
+    - ==========================================
+    - '  Secrets Management Deployed'
+    - ==========================================
+    - '  Vault: v1.21.2 (chart {{ vault_chart_ver }})'
+    - '  ESO: v0.15.0 (chart {{ eso_chart_ver }})'
+    - '  HA Mode: {{ vault_ha }}'
+    - '  Replicas: {{ vault_replicas }}'
+    - '  UI: {{ vault_domain }}'
+    - '  ClusterSecretStore: vault-backend'
+    - ==========================================
+- name: Create default-deny for Vault namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ vault_ns | default(''vault'') }}'
+      spec:
+        endpointSelector: {}
+- name: Allow Vault ingress from cluster (ExternalSecrets + gateway)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-vault-ingress
+        namespace: '{{ vault_ns | default(''vault'') }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: vault
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '8200'
+              protocol: TCP
+            - port: '8201'
+              protocol: TCP
+- name: Allow Vault egress (Raft replication)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-vault-egress
+        namespace: '{{ vault_ns | default(''vault'') }}'
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEndpoints:
+          - matchLabels: {}
+          toPorts:
+          - ports:
+            - port: '8200'
+              protocol: TCP
+            - port: '8201'
+              protocol: TCP
+        - toEntities:
+          - kube-apiserver

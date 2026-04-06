@@ -1,24 +1,14 @@
----
-# K8s Databases Role - Percona PG Operator v2.8.2 + Percona MongoDB v1.22.0
-# PostgreSQL 18.x via Percona PG Operator, MongoDB 8.0.x via Percona Server for MongoDB
-# Tier-aware HA configuration
-
 - name: Set database tier-specific variables
   set_fact:
-    db_ns: "databases"
-    pg_operator_ver: "2.8.2"
-    psmdb_operator_ver: "1.22.0"
-    pg_version: "{{ postgresql_version | default(18) }}"
-    pg_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
-    pg_storage: "{{ postgresql_storage | default('20Gi') }}"
-    pg_proxy_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-    mongo_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
-    mongo_storage: "{{ mongodb_storage | default('20Gi') }}"
-
-# ============================================
-# Percona PostgreSQL Operator
-# ============================================
-
+    db_ns: databases
+    pg_operator_ver: 2.8.2
+    psmdb_operator_ver: 1.22.0
+    pg_version: '{{ postgresql_version | default(18) }}'
+    pg_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
+    pg_storage: '{{ postgresql_storage | default(''20Gi'') }}'
+    pg_proxy_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+    mongo_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
+    mongo_storage: '{{ mongodb_storage | default(''20Gi'') }}'
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -35,38 +25,34 @@
   retries: 3
   delay: 10
   until: _r_create_databases_namespace is not failed
-
 - name: Add Percona Helm repository
   kubernetes.core.helm_repository:
     name: percona
-    repo_url: "https://percona.github.io/percona-helm-charts"
+    repo_url: https://percona.github.io/percona-helm-charts
   register: _r_add_percona_helm_repository
   retries: 3
   delay: 10
   until: _r_add_percona_helm_repository is not failed
-
 - name: Check PG Operator Helm release status
   ansible.builtin.command: helm status percona-pg-operator -n {{ db_ns }} -o json
   register: _pg_operator_helm_status
   failed_when: false
   changed_when: false
-
 - name: Remove failed PG Operator Helm release before reinstall
   kubernetes.core.helm:
     name: percona-pg-operator
-    release_namespace: "{{ db_ns }}"
+    release_namespace: '{{ db_ns }}'
     release_state: absent
     wait: true
   when:
-    - _pg_operator_helm_status.rc == 0
-    - (_pg_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
-
+  - _pg_operator_helm_status.rc == 0
+  - (_pg_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
 - name: Install Percona PG Operator
   kubernetes.core.helm:
     name: percona-pg-operator
     chart_ref: percona/pg-operator
-    chart_version: "{{ pg_operator_ver }}"
-    release_namespace: "{{ db_ns }}"
+    chart_version: '{{ pg_operator_ver }}'
+    release_namespace: '{{ db_ns }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -75,36 +61,32 @@
   retries: 3
   delay: 30
   until: _r_install_percona_pg_operator is not failed
-
 - name: Increase PG Operator progressDeadlineSeconds for slow image pulls
-  shell: |
-    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  shell: 'DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath=''{.items[0].metadata.name}'' 2>/dev/null)
+
     if [ -z "$DEPLOY" ]; then DEPLOY="percona-pg-operator"; fi
-    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
+
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p ''{"spec":{"progressDeadlineSeconds":1800}}'' --type=merge
+
+    '
   register: _r_patch_pg_operator_progress_deadline
   retries: 10
   delay: 15
   until: _r_patch_pg_operator_progress_deadline.rc == 0
   changed_when: _r_patch_pg_operator_progress_deadline.rc == 0
-
 - name: Wait for PG Operator to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
-    namespace: "{{ db_ns }}"
+    namespace: '{{ db_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=pg-operator
+    - app.kubernetes.io/name=pg-operator
   register: pg_operator_deploy
-  until: >
-    pg_operator_deploy.resources | length > 0
-    and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: 'pg_operator_deploy.resources | length > 0 and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+
+    '
   retries: 120
   delay: 15
   failed_when: false
-
-# ============================================
-# PostgreSQL Cluster (PerconaPGCluster CR)
-# ============================================
-
 - name: Create pgbackrest S3 credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -114,19 +96,20 @@
       kind: Secret
       metadata:
         name: pgbackrest-s3-creds
-        namespace: "{{ db_ns }}"
+        namespace: '{{ db_ns }}'
       type: Opaque
       stringData:
-        s3.conf: |
-          [global]
+        s3.conf: '[global]
+
           repo2-s3-key={{ minio_root_user }}
+
           repo2-s3-key-secret={{ minio_root_password }}
+
+          '
   register: _r_create_pgbackrest_s3_credentials_secret
   retries: 3
   delay: 10
   until: _r_create_pgbackrest_s3_credentials_secret is not failed
-  no_log: true
-
 - name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
     state: present
@@ -135,18 +118,17 @@
       kind: Secret
       metadata:
         name: pmm-secret
-        namespace: "{{ db_ns }}"
+        namespace: '{{ db_ns }}'
       type: Opaque
       stringData:
-        PMM_SERVER_USER: "admin"
-        PMM_SERVER_PASSWORD: "{{ grafana_admin_password }}"
-        PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+        PMM_SERVER_USER: admin
+        PMM_SERVER_PASSWORD: '{{ grafana_admin_password }}'
+        PMM_SERVER_API_KEY: '{{ pmm_api_key | default('''') }}'
   register: _r_create_pmm_credentials_secret_for_databa
   retries: 3
   delay: 10
   until: _r_create_pmm_credentials_secret_for_databa is not failed
   no_log: true
-
 - name: Create PostgreSQL cluster
   kubernetes.core.k8s:
     state: present
@@ -154,101 +136,101 @@
       apiVersion: pgv2.percona.com/v2
       kind: PerconaPGCluster
       metadata:
-        name: "{{ project_name | default('k8s') }}-pg"
-        namespace: "{{ db_ns }}"
+        name: '{{ project_name | default(''k8s'') }}-pg'
+        namespace: '{{ db_ns }}'
       spec:
-        crVersion: "{{ pg_operator_ver }}"
-        image: "percona/percona-distribution-postgresql:{{ pg_version }}.3-1"
-        postgresVersion: "{{ pg_version }}"
+        crVersion: '{{ pg_operator_ver }}'
+        image: percona/percona-distribution-postgresql:{{ pg_version }}.3-1
+        postgresVersion: '{{ pg_version }}'
         port: 5432
         instances:
-          - name: instance1
-            replicas: "{{ pg_replicas | int }}"
-            dataVolumeClaimSpec:
-              accessModes:
-                - ReadWriteOnce
-              storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
-              resources:
-                requests:
-                  storage: "{{ pg_storage }}"
+        - name: instance1
+          replicas: '{{ pg_replicas | int }}'
+          dataVolumeClaimSpec:
+            accessModes:
+            - ReadWriteOnce
+            storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
             resources:
               requests:
-                cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
-                memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
-              limits:
-                cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
-                memory: "{{ '1Gi' if tier in ['minimal', 'small'] else '2Gi' }}"
-            affinity:
-              podAntiAffinity:
-                preferredDuringSchedulingIgnoredDuringExecution:
-                  - weight: 100
-                    podAffinityTerm:
-                      labelSelector:
-                        matchLabels:
-                          postgres-operator.crunchydata.com/cluster: "{{ project_name | default('k8s') }}-pg"
-                      topologyKey: kubernetes.io/hostname
+                storage: '{{ pg_storage }}'
+          resources:
+            requests:
+              cpu: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''250m'' }}'
+              memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+            limits:
+              cpu: '{{ ''500m'' if tier in [''minimal'', ''small''] else ''1'' }}'
+              memory: '{{ ''1Gi'' if tier in [''minimal'', ''small''] else ''2Gi'' }}'
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
+                  topologyKey: kubernetes.io/hostname
         proxy:
           pgBouncer:
-            replicas: "{{ pg_proxy_replicas | int }}"
-            image: "percona/percona-pgbouncer:1.25.1-1"
+            replicas: '{{ pg_proxy_replicas | int }}'
+            image: percona/percona-pgbouncer:1.25.1-1
             config:
               global:
-                pool_mode: "transaction"
-                max_client_conn: "1000"
-                default_pool_size: "25"
+                pool_mode: transaction
+                max_client_conn: '1000'
+                default_pool_size: '25'
             resources:
               requests:
-                cpu: "50m"
-                memory: "128Mi"
+                cpu: 50m
+                memory: 128Mi
               limits:
-                cpu: "500m"
-                memory: "512Mi"
+                cpu: 500m
+                memory: 512Mi
             affinity:
               podAntiAffinity:
                 preferredDuringSchedulingIgnoredDuringExecution:
-                  - weight: 100
-                    podAffinityTerm:
-                      labelSelector:
-                        matchLabels:
-                          postgres-operator.crunchydata.com/role: pgbouncer
-                      topologyKey: kubernetes.io/hostname
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        postgres-operator.crunchydata.com/role: pgbouncer
+                    topologyKey: kubernetes.io/hostname
         backups:
           pgbackrest:
-            image: "percona/percona-pgbackrest:2.58.0-1"
+            image: percona/percona-pgbackrest:2.58.0-1
             repos:
-              - name: repo1
-                schedules:
-                  full: "{{ backup_schedule | default('0 2 * * *') }}"
-                  differential: "0 */6 * * *"
-                volume:
-                  volumeClaimSpec:
-                    accessModes:
-                      - ReadWriteOnce
-                    storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
-                    resources:
-                      requests:
-                        storage: "{{ pg_storage }}"
-              - name: repo2
-                schedules:
-                  full: "0 3 * * 0"
-                s3:
-                  bucket: "backups"
-                  endpoint: "http://minio.storage.svc.cluster.local:9000"
-                  region: "us-east-1"
+            - name: repo1
+              schedules:
+                full: '{{ backup_schedule | default(''0 2 * * *'') }}'
+                differential: 0 */6 * * *
+              volume:
+                volumeClaimSpec:
+                  accessModes:
+                  - ReadWriteOnce
+                  storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
+                  resources:
+                    requests:
+                      storage: '{{ pg_storage }}'
+            - name: repo2
+              schedules:
+                full: 0 3 * * 0
+              s3:
+                bucket: backups
+                endpoint: http://minio.storage.svc.cluster.local:9000
+                region: us-east-1
             configuration:
-              - secret:
-                  name: pgbackrest-s3-creds
+            - secret:
+                name: pgbackrest-s3-creds
             global:
-              repo1-retention-full: "7"
-              repo1-retention-diff: "4"
-              repo2-path: "/pgbackrest/{{ project_name | default('k8s') }}-pg/repo2"
-              repo2-s3-uri-style: "path"
-              repo2-retention-full: "4"
-              repo2-retention-full-type: "count"
+              repo1-retention-full: '7'
+              repo1-retention-diff: '4'
+              repo2-path: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
+              repo2-s3-uri-style: path
+              repo2-retention-full: '4'
+              repo2-retention-full-type: count
         pmm:
           enabled: true
-          image: "percona/pmm-client:2.44.0"
-          serverHost: "pmm-server.monitoring.svc.cluster.local"
+          image: percona/pmm-client:2.44.0
+          serverHost: pmm-server.monitoring.svc.cluster.local
           secret: pmm-secret
           resources:
             requests:
@@ -264,89 +246,81 @@
           dynamicConfiguration:
             postgresql:
               parameters:
-                shared_preload_libraries: "pg_stat_statements"
-                pg_stat_statements.track: "all"
-                track_activity_query_size: "2048"
-                track_io_timing: "on"
-                log_checkpoints: "on"
-                log_lock_waits: "on"
-                log_temp_files: "0"
+                shared_preload_libraries: pg_stat_statements
+                pg_stat_statements.track: all
+                track_activity_query_size: '2048'
+                track_io_timing: 'on'
+                log_checkpoints: 'on'
+                log_lock_waits: 'on'
+                log_temp_files: '0'
               pg_hba:
-                - local all all md5
-                - local all "postgres" peer
-                - hostssl replication "_crunchyrepl" all cert
-                - hostssl "postgres" "_crunchyrepl" all cert
-                - host all "_crunchyrepl" all reject
-                - host all "monitor" "127.0.0.0/8" scram-sha-256
-                - host all "monitor" "::1/128" scram-sha-256
-                - host all "monitor" all reject
-                - hostssl all "_crunchypgbouncer" all scram-sha-256
-                - host all "_crunchypgbouncer" all reject
-                - hostssl all all all md5
-                - host all all all md5
+              - local all all md5
+              - local all "postgres" peer
+              - hostssl replication "_crunchyrepl" all cert
+              - hostssl "postgres" "_crunchyrepl" all cert
+              - host all "_crunchyrepl" all reject
+              - host all "monitor" "127.0.0.0/8" scram-sha-256
+              - host all "monitor" "::1/128" scram-sha-256
+              - host all "monitor" all reject
+              - hostssl all "_crunchypgbouncer" all scram-sha-256
+              - host all "_crunchypgbouncer" all reject
+              - hostssl all all all md5
+              - host all all all md5
         users:
-          - name: "{{ project_name | default('k8s') }}"
-            databases:
-              - "{{ project_name | default('k8s') }}"
-            options: "SUPERUSER"
-          - name: gitlab
-            databases:
-              - gitlabhq_production
-          - name: "{{ app_name | default('myapp') }}"
-            databases:
-              - "{{ app_name | default('myapp') }}"
-          - name: temporal
-            databases:
-              - temporal
-              - temporal_visibility
-          - name: "{{ opwerf_app_name | default('opwerf') }}"
-            databases:
-              - "{{ opwerf_app_name | default('opwerf') }}"
+        - name: '{{ project_name | default(''k8s'') }}'
+          databases:
+          - '{{ project_name | default(''k8s'') }}'
+          options: SUPERUSER
+        - name: gitlab
+          databases:
+          - gitlabhq_production
+        - name: '{{ app_name | default(''myapp'') }}'
+          databases:
+          - '{{ app_name | default(''myapp'') }}'
+        - name: temporal
+          databases:
+          - temporal
+          - temporal_visibility
+        - name: '{{ opwerf_app_name | default(''opwerf'') }}'
+          databases:
+          - '{{ opwerf_app_name | default(''opwerf'') }}'
   register: _r_create_postgresql_cluster
   retries: 3
   delay: 10
   until: _r_create_postgresql_cluster is not failed
-
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
     api_version: pgv2.percona.com/v2
     kind: PerconaPGCluster
-    namespace: "{{ db_ns }}"
-    name: "{{ project_name | default('k8s') }}-pg"
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-pg'
   register: pg_cluster
-  until: >
-    pg_cluster.resources | length > 0
-    and (pg_cluster.resources[0].status.state | default('')) == 'ready'
+  until: 'pg_cluster.resources | length > 0 and (pg_cluster.resources[0].status.state | default('''')) == ''ready''
+
+    '
   retries: 60
   delay: 15
   failed_when: false
-
-# ============================================
-# Percona Server for MongoDB Operator
-# ============================================
-
 - name: Check MongoDB Operator Helm release status
   ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
   register: _mongo_operator_helm_status
   failed_when: false
   changed_when: false
-
 - name: Remove failed MongoDB Operator Helm release before reinstall
   kubernetes.core.helm:
     name: percona-server-mongodb-operator
-    release_namespace: "{{ db_ns }}"
+    release_namespace: '{{ db_ns }}'
     release_state: absent
     wait: true
   when:
-    - _mongo_operator_helm_status.rc == 0
-    - (_mongo_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
-
+  - _mongo_operator_helm_status.rc == 0
+  - (_mongo_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
 - name: Install Percona MongoDB Operator
   kubernetes.core.helm:
     name: percona-server-mongodb-operator
     chart_ref: percona/psmdb-operator
-    chart_version: "{{ psmdb_operator_ver }}"
-    release_namespace: "{{ db_ns }}"
+    chart_version: '{{ psmdb_operator_ver }}'
+    release_namespace: '{{ db_ns }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -355,36 +329,32 @@
   retries: 3
   delay: 30
   until: _r_install_percona_mongodb_operator is not failed
-
 - name: Increase MongoDB Operator progressDeadlineSeconds for slow image pulls
-  shell: |
-    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  shell: 'DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath=''{.items[0].metadata.name}'' 2>/dev/null)
+
     if [ -z "$DEPLOY" ]; then DEPLOY="percona-server-mongodb-operator"; fi
-    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
+
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p ''{"spec":{"progressDeadlineSeconds":1800}}'' --type=merge
+
+    '
   register: _r_patch_mongo_operator_progress_deadline
   retries: 10
   delay: 15
   until: _r_patch_mongo_operator_progress_deadline.rc == 0
   changed_when: _r_patch_mongo_operator_progress_deadline.rc == 0
-
 - name: Wait for MongoDB Operator to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
-    namespace: "{{ db_ns }}"
+    namespace: '{{ db_ns }}'
     label_selectors:
-      - app.kubernetes.io/name=psmdb-operator
+    - app.kubernetes.io/name=psmdb-operator
   register: mongo_operator_deploy
-  until: >
-    mongo_operator_deploy.resources | length > 0
-    and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: 'mongo_operator_deploy.resources | length > 0 and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+
+    '
   retries: 120
   delay: 15
   failed_when: false
-
-# ============================================
-# MongoDB Cluster (PerconaServerMongoDB CR)
-# ============================================
-
 - name: Create MongoDB backup credentials for MinIO
   no_log: true
   kubernetes.core.k8s:
@@ -394,16 +364,14 @@
       kind: Secret
       metadata:
         name: minio-backup-credentials
-        namespace: "{{ db_ns }}"
+        namespace: '{{ db_ns }}'
       stringData:
-        AWS_ACCESS_KEY_ID: "{{ minio_root_user }}"
-        AWS_SECRET_ACCESS_KEY: "{{ minio_root_password }}"
+        AWS_ACCESS_KEY_ID: '{{ minio_root_user }}'
+        AWS_SECRET_ACCESS_KEY: '{{ minio_root_password }}'
   register: _r_create_mongodb_backup_credentials_for_mi
   retries: 3
   delay: 10
   until: _r_create_mongodb_backup_credentials_for_mi is not failed
-  no_log: true
-
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
     state: present
@@ -411,138 +379,127 @@
       apiVersion: psmdb.percona.com/v1
       kind: PerconaServerMongoDB
       metadata:
-        name: "{{ project_name | default('k8s') }}-mongo"
-        namespace: "{{ db_ns }}"
+        name: '{{ project_name | default(''k8s'') }}-mongo'
+        namespace: '{{ db_ns }}'
       spec:
-        crVersion: "{{ psmdb_operator_ver }}"
-        image: "percona/percona-server-mongodb:8.0"
+        crVersion: '{{ psmdb_operator_ver }}'
+        image: percona/percona-server-mongodb:8.0
         imagePullPolicy: IfNotPresent
         unsafeFlags:
-          replsetSize: "{{ true if tier in ['minimal', 'small'] else false }}"
-          mongosSize: "{{ true if tier in ['minimal', 'small'] else false }}"
+          replsetSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
+          mongosSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
         replsets:
-          - name: rs0
-            size: "{{ mongo_replicas }}"
-            volumeSpec:
-              persistentVolumeClaim:
-                storageClassName: "{{ storage_class | default('hcloud-volumes') }}"
-                accessModes:
-                  - ReadWriteOnce
-                resources:
-                  requests:
-                    storage: "{{ mongo_storage }}"
-            resources:
-              requests:
-                cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
-                memory: "{{ '256Mi' if tier in ['minimal', 'small'] else '512Mi' }}"
-              limits:
-                cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
-                memory: "{{ '1Gi' if tier in ['minimal', 'small'] else '2Gi' }}"
-            affinity:
-              antiAffinityTopologyKey: "kubernetes.io/hostname"
+        - name: rs0
+          size: '{{ mongo_replicas }}'
+          volumeSpec:
+            persistentVolumeClaim:
+              storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
+              accessModes:
+              - ReadWriteOnce
+              resources:
+                requests:
+                  storage: '{{ mongo_storage }}'
+          resources:
+            requests:
+              cpu: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''250m'' }}'
+              memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+            limits:
+              cpu: '{{ ''500m'' if tier in [''minimal'', ''small''] else ''1'' }}'
+              memory: '{{ ''1Gi'' if tier in [''minimal'', ''small''] else ''2Gi'' }}'
+          affinity:
+            antiAffinityTopologyKey: kubernetes.io/hostname
         sharding:
           enabled: false
         mongos:
           size: 0
         backup:
           enabled: true
-          image: "percona/percona-backup-mongodb:2.13.0"
+          image: percona/percona-backup-mongodb:2.13.0
           storages:
             s3-minio:
               type: s3
               s3:
-                bucket: "backups"
-                endpointUrl: "http://minio.storage.svc.cluster.local:9000"
-                region: "us-east-1"
+                bucket: backups
+                endpointUrl: http://minio.storage.svc.cluster.local:9000
+                region: us-east-1
                 credentialsSecret: minio-backup-credentials
-                prefix: "mongodb/{{ project_name | default('k8s') }}-mongo"
+                prefix: mongodb/{{ project_name | default('k8s') }}-mongo
           pitr:
             enabled: true
             oplogOnly: true
             compressionType: gzip
           tasks:
-            - name: daily-backup
-              enabled: true
-              schedule: "{{ backup_schedule | default('0 2 * * *') }}"
-              keep: "{{ backup_retention_days | default(30) }}"
-              storageName: s3-minio
-              compressionType: gzip
-            - name: weekly-full-backup
-              enabled: true
-              schedule: "0 3 * * 0"
-              keep: 8
-              storageName: s3-minio
-              compressionType: gzip
-              type: physical
+          - name: daily-backup
+            enabled: true
+            schedule: '{{ backup_schedule | default(''0 2 * * *'') }}'
+            keep: '{{ backup_retention_days | default(30) }}'
+            storageName: s3-minio
+            compressionType: gzip
+          - name: weekly-full-backup
+            enabled: true
+            schedule: 0 3 * * 0
+            keep: 8
+            storageName: s3-minio
+            compressionType: gzip
+            type: physical
         pmm:
           enabled: true
-          image: "percona/pmm-client:2.44.0"
-          serverHost: "pmm-server.monitoring.svc.cluster.local"
+          image: percona/pmm-client:2.44.0
+          serverHost: pmm-server.monitoring.svc.cluster.local
   register: _r_create_mongodb_cluster
   retries: 3
   delay: 10
   until: _r_create_mongodb_cluster is not failed
-
 - name: Wait for MongoDB users secret to be created by operator
   kubernetes.core.k8s_info:
     kind: Secret
-    namespace: "{{ db_ns }}"
-    name: "internal-{{ project_name | default('k8s') }}-mongo-users"
+    namespace: '{{ db_ns }}'
+    name: internal-{{ project_name | default('k8s') }}-mongo-users
   register: mongo_users_secret
   until: mongo_users_secret.resources | length > 0
   retries: 30
   delay: 10
   failed_when: false
-
 - name: Patch MongoDB users secret with PMM_SERVER_API_KEY
   no_log: true
   kubernetes.core.k8s:
     state: patched
     kind: Secret
-    namespace: "{{ db_ns }}"
-    name: "internal-{{ project_name | default('k8s') }}-mongo-users"
+    namespace: '{{ db_ns }}'
+    name: internal-{{ project_name | default('k8s') }}-mongo-users
     definition:
       stringData:
-        PMM_SERVER_API_KEY: "{{ pmm_api_key | default('') }}"
+        PMM_SERVER_API_KEY: '{{ pmm_api_key | default('''') }}'
   register: _r_patch_mongo_pmm_secret
   retries: 3
   delay: 10
   until: _r_patch_mongo_pmm_secret is not failed
-  no_log: true
-
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
     api_version: psmdb.percona.com/v1
     kind: PerconaServerMongoDB
-    namespace: "{{ db_ns }}"
-    name: "{{ project_name | default('k8s') }}-mongo"
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-mongo'
   register: mongo_cluster
-  until: >
-    mongo_cluster.resources | length > 0
-    and (mongo_cluster.resources[0].status.state | default('')) == 'ready'
+  until: 'mongo_cluster.resources | length > 0 and (mongo_cluster.resources[0].status.state | default('''')) == ''ready''
+
+    '
   retries: 60
   delay: 15
   failed_when: false
-
-# ============================================
-# Cross-namespace connection secrets
-# ============================================
-
 - name: Retrieve Percona-generated GitLab PG password
   kubernetes.core.k8s_info:
     kind: Secret
-    namespace: "{{ db_ns }}"
-    name: "{{ project_name | default('k8s') }}-pg-pguser-gitlab"
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-pg-pguser-gitlab'
   register: gitlab_pg_secret
   until: gitlab_pg_secret.resources | length > 0
   retries: 30
   delay: 10
   failed_when: false
-
 - name: Set GitLab PG password fact
   set_fact:
-    gitlab_pg_password: "{{ (gitlab_pg_secret.resources[0].data.password | b64decode) if gitlab_pg_secret.resources | length > 0 else '' }}"
-
+    gitlab_pg_password: '{{ (gitlab_pg_secret.resources[0].data.password | b64decode) if gitlab_pg_secret.resources | length > 0 else '''' }}'
 - name: Ensure GitLab namespace exists for cross-namespace secret
   kubernetes.core.k8s:
     state: present
@@ -555,7 +512,6 @@
   retries: 3
   delay: 10
   until: _r_ensure_gitlab_namespace_exists_for_cross is not failed
-
 - name: Create PostgreSQL connection secret for GitLab
   no_log: true
   kubernetes.core.k8s:
@@ -568,32 +524,28 @@
         namespace: gitlab
       type: Opaque
       stringData:
-        postgresql-password: "{{ gitlab_pg_password }}"
-        host: "{{ project_name | default('k8s') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local"
-        port: "5432"
+        postgresql-password: '{{ gitlab_pg_password }}'
+        host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        port: '5432'
         database: gitlabhq_production
         username: gitlab
   register: _r_create_postgresql_connection_secret_for_
   retries: 3
   delay: 10
   until: _r_create_postgresql_connection_secret_for_ is not failed
-  no_log: true
-
 - name: Retrieve Percona-generated app PG password
   kubernetes.core.k8s_info:
     kind: Secret
-    namespace: "{{ db_ns }}"
-    name: "{{ project_name | default('k8s') }}-pg-pguser-{{ app_name | default('myapp') }}"
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-pg-pguser-{{ app_name | default(''myapp'') }}'
   register: app_pg_secret
   until: app_pg_secret.resources | length > 0
   retries: 30
   delay: 10
   failed_when: false
-
 - name: Set app PG password fact
   set_fact:
-    app_pg_password: "{{ (app_pg_secret.resources[0].data.password | b64decode) if app_pg_secret.resources | length > 0 else '' }}"
-
+    app_pg_password: '{{ (app_pg_secret.resources[0].data.password | b64decode) if app_pg_secret.resources | length > 0 else '''' }}'
 - name: Create PostgreSQL connection secret for application
   no_log: true
   kubernetes.core.k8s:
@@ -602,41 +554,95 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ app_name | default('myapp') }}-postgresql-password"
-        namespace: "{{ app_namespace | default('production') }}"
+        name: '{{ app_name | default(''myapp'') }}-postgresql-password'
+        namespace: '{{ app_namespace | default(''production'') }}'
       type: Opaque
       stringData:
-        postgresql-password: "{{ app_pg_password }}"
-        host: "{{ project_name | default('k8s') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local"
-        port: "5432"
-        database: "{{ app_name | default('myapp') }}"
-        username: "{{ app_name | default('myapp') }}"
+        postgresql-password: '{{ app_pg_password }}'
+        host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        port: '5432'
+        database: '{{ app_name | default(''myapp'') }}'
+        username: '{{ app_name | default(''myapp'') }}'
   when: app_pg_password | length > 0
   register: _r_create_postgresql_connection_secret_for_app
   retries: 3
   delay: 10
   until: _r_create_postgresql_connection_secret_for_app is not failed
-  no_log: true
-
 - name: Display databases summary
   debug:
     msg:
-      - "=========================================="
-      - "  Databases Deployed"
-      - "=========================================="
-      - "  PostgreSQL:"
-      - "    Percona PG Operator: v{{ pg_operator_ver }}"
-      - "    PostgreSQL: {{ pg_version }}"
-      - "    Replicas: {{ pg_replicas }}"
-      - "    PgBouncer: {{ pg_proxy_replicas }} replicas"
-      - "    Cluster: {{ project_name | default('k8s') }}-pg.{{ db_ns }}"
-      - "  MongoDB:"
-      - "    Percona PSMDB Operator: v{{ psmdb_operator_ver }}"
-      - "    MongoDB: 8.0.x"
-      - "    Replicas: {{ mongo_replicas }}"
-      - "    Cluster: {{ project_name | default('k8s') }}-mongo.{{ db_ns }}"
-      - "  Backups:"
-      - "    PostgreSQL: pgbackrest (daily full + 6h diff + S3 weekly)"
-      - "    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)"
-      - "    Retention: PG 7 full / 4 diff, Mongo {{ backup_retention_days | default(30) }} days"
-      - "=========================================="
+    - ==========================================
+    - '  Databases Deployed'
+    - ==========================================
+    - '  PostgreSQL:'
+    - '    Percona PG Operator: v{{ pg_operator_ver }}'
+    - '    PostgreSQL: {{ pg_version }}'
+    - '    Replicas: {{ pg_replicas }}'
+    - '    PgBouncer: {{ pg_proxy_replicas }} replicas'
+    - '    Cluster: {{ project_name | default(''k8s'') }}-pg.{{ db_ns }}'
+    - '  MongoDB:'
+    - '    Percona PSMDB Operator: v{{ psmdb_operator_ver }}'
+    - '    MongoDB: 8.0.x'
+    - '    Replicas: {{ mongo_replicas }}'
+    - '    Cluster: {{ project_name | default(''k8s'') }}-mongo.{{ db_ns }}'
+    - '  Backups:'
+    - '    PostgreSQL: pgbackrest (daily full + 6h diff + S3 weekly)'
+    - '    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)'
+    - '    Retention: PG 7 full / 4 diff, Mongo {{ backup_retention_days | default(30) }} days'
+    - ==========================================
+- name: Create default-deny for databases namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: databases
+      spec:
+        endpointSelector: {}
+- name: Allow PostgreSQL ingress from app/system namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-postgres-ingress
+        namespace: databases
+      spec:
+        endpointSelector: {}
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+            - port: '6379'
+              protocol: TCP
+            - port: '27017'
+              protocol: TCP
+- name: Allow database egress (replication + backups)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-db-egress
+        namespace: databases
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEndpoints:
+          - matchLabels: {}
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: storage
+          toPorts:
+          - ports:
+            - port: '9000'
+              protocol: TCP
+        - toEntities:
+          - kube-apiserver
