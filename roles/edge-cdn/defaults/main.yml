@@ -91,3 +91,11 @@ edge_cache_rules:
     ttl: "1h"
   - match: "default"
     ttl: "10m"
+
+# WAF / Rate limiting
+edge_rate_limit: "50r/s"          # Max req/sec per IP (general)
+edge_api_rate_limit: "20r/s"      # Max req/sec per IP for /api/
+edge_max_body_size: "10m"         # Max request body size
+edge_purge_allowed_ips:           # IPs allowed to purge cache
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
