@@ -111,7 +111,72 @@
         group: www-data
         mode: "0755"
 
-    - name: Deploy Nginx edge proxy config
+    - name: Create webroot for ACME challenges
+      file:
+        path: /var/www/certbot
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Deploy temporary HTTP-only Nginx config for cert issuance
+      copy:
+        dest: /etc/nginx/sites-available/edge-temp
+        content: |
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name {{ edge_domain }} *.{{ edge_domain }};
+              location /.well-known/acme-challenge/ {
+                  root /var/www/certbot;
+              }
+              location / {
+                  return 200 "ok";
+              }
+          }
+        mode: "0644"
+
+    - name: Enable temporary site
+      file:
+        src: /etc/nginx/sites-available/edge-temp
+        dest: /etc/nginx/sites-enabled/edge-temp
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Start Nginx temporarily for ACME challenge
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Obtain Let's Encrypt certificate for all CDN domains
+      command: >
+        certbot certonly
+        --webroot
+        --webroot-path /var/www/certbot
+        -d "{{ edge_domain }}"
+        {% for d in (edge_cdn_domains + edge_direct_domains) | unique %}
+        -d "{{ d }}"
+        {% endfor %}
+        --email "{{ edge_tls_cert_email }}"
+        --agree-tos
+        --non-interactive
+        --expand
+      args:
+        creates: "/etc/letsencrypt/live/{{ edge_domain }}/fullchain.pem"
+      when: edge_tls_enabled
+      register: _r_certbot
+
+    - name: Remove temporary Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/edge-temp
+        state: absent
+
+    - name: Deploy production Nginx edge proxy config
       template:
         src: edge-nginx.conf.j2
         dest: /etc/nginx/sites-available/edge-proxy
@@ -126,22 +191,14 @@
         dest: /etc/nginx/sites-enabled/edge-proxy
         state: link
 
-    - name: Remove default Nginx site
-      file:
-        path: /etc/nginx/sites-enabled/default
-        state: absent
+    - name: Validate Nginx config
+      command: nginx -t
+      changed_when: false
 
-    - name: Obtain Let's Encrypt certificate
-      command: >
-        certbot certonly --nginx
-        -d "*.{{ edge_domain }}"
-        -d "{{ edge_domain }}"
-        --email "{{ edge_tls_cert_email }}"
-        --agree-tos
-        --non-interactive
-      args:
-        creates: "/etc/letsencrypt/live/{{ edge_domain }}/fullchain.pem"
-      when: edge_tls_enabled
+    - name: Reload Nginx with production config
+      systemd:
+        name: nginx
+        state: reloaded
 
     - name: Setup certbot auto-renewal cron
       cron:
@@ -151,7 +208,7 @@
         day: "*/7"
         job: "certbot renew --quiet --deploy-hook 'systemctl reload nginx'"
 
-    - name: Enable and start Nginx
+    - name: Enable and ensure Nginx is running
       systemd:
         name: nginx
         enabled: yes
