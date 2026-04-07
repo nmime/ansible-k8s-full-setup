@@ -28,15 +28,15 @@
 - VictoriaMetrics + Grafana (monitoring)
 - Loki + Promtail (logging)
 - Headscale VPN (WireGuard)
+- GitLab CE (Git + CI/CD + Registry)
+- ArgoCD (GitOps continuous delivery)
+- Elasticsearch (audit logs + compliance)
 
 **Optional Components** (install as needed):
 - PostgreSQL 18 HA (Percona Operator)
 - MongoDB 8.0 HA (Percona Operator)
 - Dragonfly (Redis-compatible, 25x faster)
-- GitLab CE (Git + CI/CD + Registry)
-- ArgoCD (GitOps)
 - Temporal (workflow orchestration)
-- Elasticsearch + Kibana (audit logs for compliance)
 
 ---
 
@@ -156,6 +156,9 @@ APAC Edge   EU Edge    US Edge
 | **Loki + Promtail** | v3.6 | Log aggregation |
 | **Headscale** | v0.28 | WireGuard VPN |
 | **MetalLB** | v0.15 | Bare-metal LB |
+| **GitLab CE** | v18.10 | Git + CI/CD + Registry |
+| **ArgoCD** | v3.3 | GitOps continuous delivery |
+| **Elasticsearch** | v8.x | Audit logs + compliance |
 
 ### Optional (Install as Needed)
 
@@ -164,21 +167,15 @@ APAC Edge   EU Edge    US Edge
 | **PostgreSQL 18** | Percona 2.8 | `install_postgresql: true` | HA database with pgBackRest |
 | **MongoDB 8.0** | Percona 1.22 | `install_mongodb: true` | HA NoSQL with PBM backups |
 | **Dragonfly** | v1.37 | `install_dragonfly: true` | Redis-compatible (25x faster) |
-| **GitLab CE** | v18.10 | `install_gitlab: true` | Git + CI/CD + Registry |
-| **ArgoCD** | v3.3 | `install_argocd: true` | GitOps CD |
 | **Temporal** | v1.29 | `install_temporal: true` | Workflow orchestration |
-| **Elasticsearch** | v8.x | `install_elasticsearch: true` | Audit logs (HIPAA) |
-| **PMM** | v3 | `install_pmm: true` | Database monitoring |
+**Database monitoring**: PMM (Percona Monitoring and Management) is automatically installed when PostgreSQL or MongoDB is enabled.
 
 **Enable in `group_vars/all.yml`:**
 ```yaml
 install_postgresql: true
 install_mongodb: false
 install_dragonfly: true
-install_gitlab: true
-install_argocd: true
 install_temporal: false  # Heavy, only if needed
-install_elasticsearch: false  # HIPAA/compliance only
 ```
 
 ---
@@ -342,8 +339,6 @@ worker_count: 5
 server_type: "cx52"  # 16 vCPU, 32GB
 control_server_type: "cx42"
 edge_enabled: true
-install_elasticsearch: true  # Compliance
-install_pmm: true  # DB monitoring
 ```
 **Use case**: HIPAA compliance, high traffic
 
@@ -402,10 +397,7 @@ install_vpn: true
 install_postgresql: true
 install_mongodb: false
 install_dragonfly: true
-install_gitlab: true
-install_argocd: true
 install_temporal: false
-install_elasticsearch: false
 
 # Edge CDN
 edge_dns_provider: "gcore"
