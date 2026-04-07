@@ -362,7 +362,7 @@ hcloud_token: "{{ env.HCLOUD_TOKEN }}"  # Same token for DNS + infra
 # roles/edge-cdn/defaults/main.yml
 gcore_api_key: "{{ env.GCORE_API_KEY }}"  # Separate API key
 edge_domain: "{{ domain }}"               # Same domain
-edge_subdomain: "cdn"                     # cdn.example.com
+edge_dns_provider: "gcore"  # gcore | hetzner | hetzner_cname                     # cdn.example.com
 ```
 
 ### cert-manager (K8s TLS)

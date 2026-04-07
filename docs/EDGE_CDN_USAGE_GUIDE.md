@@ -36,7 +36,7 @@ After deploying the edge CDN, you have **cdn.example.com** with **GeoDNS** routi
 
 ```yaml
 # group_vars/all.yml or inventory
-edge_subdomain: "static"  # Instead of "cdn"
+edge_dns_provider: "gcore"  # gcore | hetzner | hetzner_cname
 ```
 
 This creates: `static.example.com` → GeoDNS → Edge proxies
