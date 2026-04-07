@@ -163,23 +163,50 @@
         enabled: yes
         state: started
 
-    - name: Configure fail2ban for Nginx
+    - name: Configure fail2ban for Nginx WAF
       copy:
         dest: /etc/fail2ban/jail.local
         content: |
           [DEFAULT]
-          bantime = 3600
+          bantime  = 86400
           findtime = 600
           maxretry = 5
+          banaction = ufw
+          banaction_allports = ufw
 
           [sshd]
-          enabled = true
+          enabled  = true
+          maxretry = 3
+          bantime  = 604800
 
           [nginx-http-auth]
-          enabled = true
+          enabled  = true
 
           [nginx-botsearch]
-          enabled = true
+          enabled  = true
+          maxretry = 2
+
+          [nginx-limit-req]
+          enabled  = true
+          filter   = nginx-limit-req
+          logpath  = /var/log/nginx/error.log
+          maxretry = 10
+
+          [nginx-req-limit]
+          enabled  = true
+          filter   = nginx-req-limit
+          logpath  = /var/log/nginx/error.log
+          maxretry = 10
+        mode: "0644"
+      notify: restart fail2ban
+
+    - name: Configure fail2ban nginx-req-limit filter
+      copy:
+        dest: /etc/fail2ban/filter.d/nginx-req-limit.conf
+        content: |
+          [Definition]
+          failregex = limiting requests, excess:.* by zone.*client: <HOST>
+          ignoreregex =
         mode: "0644"
       notify: restart fail2ban
 
