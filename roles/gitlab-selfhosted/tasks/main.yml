@@ -94,7 +94,7 @@
   when:
   - _gitlab_helm_status.rc == 0
   - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
-- name: Install GitLab CE with Helm
+- name: Install GitLab with Helm
   kubernetes.core.helm:
     name: gitlab
     chart_ref: gitlab/gitlab
@@ -106,7 +106,7 @@
     wait: false
     values:
       global:
-        edition: ce
+        edition: "{{ gitlab_edition | default('ce') }}"
         gitlabVersion: 18.10.0
         hosts:
           domain: '{{ domain }}'
@@ -477,11 +477,11 @@
   retries: 3
   delay: 10
   until: _r_create_s3_cache_secret_for_gitlab_runner is not failed
-- name: Display GitLab CE deployment info
+- name: Display GitLab deployment info
   debug:
     msg:
     - ==========================================
-    - '  GitLab CE Deployed'
+    - '  GitLab {{ gitlab_edition | default('ce') | upper }} Deployed'
     - '  Mode: {{ gitlab_mode }}'
     - ==========================================
     - '  GitLab URL: https://{{ gitlab_domain }}'
