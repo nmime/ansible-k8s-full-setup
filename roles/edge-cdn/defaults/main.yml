@@ -5,6 +5,18 @@ gcore_api_key: "{{ lookup('env', 'GCORE_API_KEY') }}"
 
 # Domain configuration
 edge_domain: "{{ domain }}"
+
+# CDN routing mode:
+#   "subdomain" - Only cdn.example.com goes through edges (default, safest)
+#   "full" - ALL traffic (*.example.com) goes through edges (recommended for production)
+edge_mode: "subdomain"
+
+# Subdomains to route through CDN when mode=full
+# Leave empty for wildcard (all subdomains)
+# Or specify explicit list: ["app", "dash", "static"]
+edge_cdn_subdomains: []
+
+# CDN subdomain (only used when edge_mode=subdomain)
 edge_subdomain: "cdn"  # cdn.example.com
 
 # Edge proxy configuration
@@ -19,7 +31,7 @@ edge_regions:
   eu:
     name: "Europe"
     continents: ["EU"]
-    countries: []  # empty = all countries in continent
+    countries: []
     hetzner_location: "fsn1"  # Falkenstein, Germany
     server_type: "cx21"
   us:
@@ -32,7 +44,7 @@ edge_regions:
     name: "Asia Pacific"
     continents: ["AS", "OC"]
     countries: []
-    hetzner_location: "sin"  # Singapore (if available) or closest
+    hetzner_location: "sin"  # Singapore
     server_type: "cx21"
 
 # Default/fallback goes to origin
@@ -56,3 +68,13 @@ edge_cache_rules:
     ttl: "1h"
   - match: "default"
     ttl: "10m"
+
+# Domains to EXCLUDE from CDN (always go direct to origin)
+# Typically: VPN, admin panels, API that can't be cached
+edge_bypass_subdomains:
+  - "vpn"       # VPN must go direct to bastion
+  - "api"       # API usually shouldn't be cached (unless you configure it)
+  - "gitlab"    # Admin services behind VPN
+  - "grafana"
+  - "argocd"
+  - "vault"
