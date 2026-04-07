@@ -276,3 +276,124 @@
       - "  Endpoint: dragonfly.{{ df_ns }}.svc.cluster.local:6379"
       - "  Auth: password from dragonfly-auth secret"
       - "=========================================="
+
+# ============================================
+# PMM Monitoring for Dragonfly (Redis exporter)
+# ============================================
+
+- name: Deploy Redis Exporter for Dragonfly monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dragonfly-redis-exporter
+        namespace: "{{ df_ns }}"
+        labels:
+          app: dragonfly-redis-exporter
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: dragonfly-redis-exporter
+        template:
+          metadata:
+            labels:
+              app: dragonfly-redis-exporter
+            annotations:
+              prometheus.io/scrape: "true"
+              prometheus.io/port: "9121"
+              prometheus.io/path: "/metrics"
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 59000
+              fsGroup: 59000
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: redis-exporter
+                image: oliver006/redis_exporter:v1.68.0
+                ports:
+                  - containerPort: 9121
+                    name: metrics
+                env:
+                  - name: REDIS_ADDR
+                    value: "dragonfly.{{ df_ns }}.svc.cluster.local:6379"
+                  - name: REDIS_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: dragonfly-auth
+                        key: password
+                  - name: REDIS_EXPORTER_SKIP_TLS_VERIFICATION
+                    value: "true"
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  readOnlyRootFilesystem: true
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 50m
+                    memory: 64Mi
+                readinessProbe:
+                  httpGet:
+                    path: /metrics
+                    port: 9121
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+  register: _r_deploy_dragonfly_redis_exporter
+  retries: 3
+  delay: 10
+  until: _r_deploy_dragonfly_redis_exporter is not failed
+
+- name: Create Service for Redis Exporter
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: dragonfly-redis-exporter
+        namespace: "{{ df_ns }}"
+        labels:
+          app: dragonfly-redis-exporter
+      spec:
+        selector:
+          app: dragonfly-redis-exporter
+        ports:
+          - name: metrics
+            port: 9121
+            targetPort: 9121
+  register: _r_create_dragonfly_redis_exporter_service
+  retries: 3
+  delay: 10
+  until: _r_create_dragonfly_redis_exporter_service is not failed
+
+- name: Create VMServiceScrape for Dragonfly (VictoriaMetrics)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: dragonfly-redis-exporter
+        namespace: "{{ df_ns }}"
+      spec:
+        selector:
+          matchLabels:
+            app: dragonfly-redis-exporter
+        endpoints:
+          - port: metrics
+            interval: 30s
+            path: /metrics
+  register: _r_create_dragonfly_vmservicescrape
+  retries: 3
+  delay: 10
+  until: _r_create_dragonfly_vmservicescrape is not failed
+  failed_when: false
