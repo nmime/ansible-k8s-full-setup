@@ -134,7 +134,7 @@
     - name: Obtain Let's Encrypt certificate
       command: >
         certbot certonly --nginx
-        -d "{{ edge_subdomain }}.{{ edge_domain }}"
+        -d "*.{{ edge_domain }}"
         -d "{{ edge_domain }}"
         --email "{{ edge_tls_cert_email }}"
         --agree-tos
@@ -194,10 +194,14 @@
   loop: "{{ edge_server_ips | dict2items }}"
 
 # ============================================
-# 3. GCORE GeoDNS CONFIGURATION
+# 3. DNS CONFIGURATION
 # ============================================
 
-- name: Create DNS zone in Gcore (if not exists)
+# ==================== MODE: gcore ====================
+# All DNS in Gcore. Set NS at registrar to Gcore nameservers.
+# CDN domains: GeoDNS -> nearest edge. Direct domains: plain A -> K8s LB.
+
+- name: Create DNS zone in Gcore (mode=gcore)
   uri:
     url: "{{ gcore_api_url }}/dns/v2/zones"
     method: POST
@@ -208,28 +212,11 @@
     body:
       name: "{{ edge_domain }}"
     status_code: [200, 201, 409]
-  register: _r_gcore_zone
   retries: 3
   delay: 5
-  until: _r_gcore_zone is not failed
+  when: edge_dns_provider == "gcore"
 
-- name: Get DNS zone ID
-  uri:
-    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}"
-    method: GET
-    headers:
-      Authorization: "APIKey {{ gcore_api_key }}"
-    status_code: 200
-  register: _r_gcore_zone_info
-
-- name: Set zone ID fact
-  set_fact:
-    gcore_zone_id: "{{ _r_gcore_zone_info.json.id }}"
-
-# Create GeoDNS for each domain in edge_cdn_domains list
-# edge_cdn_domains defaults to ["app.example.com", "dash.example.com"] etc.
-# These are your REAL app domains — users visit them directly, CDN is transparent.
-- name: Create GeoDNS A record for each app domain
+- name: Create GeoDNS A records for CDN domains (mode=gcore)
   uri:
     url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ item }}/A"
     method: PUT
@@ -249,22 +236,17 @@
         - content:
             - "{{ edge_server_ips.eu }}"
           meta:
-            continents:
-              - EU
+            continents: ["EU"]
             default: false
         - content:
             - "{{ edge_server_ips.us }}"
           meta:
-            continents:
-              - NA
-              - SA
+            continents: ["NA", "SA"]
             default: false
         - content:
             - "{{ edge_server_ips.apac }}"
           meta:
-            continents:
-              - AS
-              - OC
+            continents: ["AS", "OC"]
             default: false
         - content:
             - "{{ edge_server_ips.eu }}"
@@ -272,15 +254,13 @@
             default: true
     status_code: [200, 201]
   loop: "{{ edge_cdn_domains }}"
-  register: _r_gcore_app_geodns
   retries: 3
   delay: 5
-  until: _r_gcore_app_geodns is not failed
-  when: edge_cdn_domains | length > 0
+  when: edge_dns_provider == "gcore" and edge_cdn_domains | length > 0
 
-- name: Create origin A record (direct to K8s cluster)
+- name: Create plain A records for direct domains in Gcore (mode=gcore)
   uri:
-    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/origin.{{ edge_domain }}/A"
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ item }}/A"
     method: PUT
     headers:
       Authorization: "APIKey {{ gcore_api_key }}"
@@ -292,10 +272,211 @@
         - content:
             - "{{ origin_server_ip }}"
     status_code: [200, 201]
-  register: _r_gcore_origin
+  loop: "{{ edge_direct_domains }}"
   retries: 3
   delay: 5
-  until: _r_gcore_origin is not failed
+  when: edge_dns_provider == "gcore" and edge_direct_domains | length > 0
+
+- name: Create origin A record in Gcore (mode=gcore)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_origin_domain }}/A"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      resource_records:
+        - content:
+            - "{{ origin_server_ip }}"
+    status_code: [200, 201]
+  retries: 3
+  delay: 5
+  when: edge_dns_provider == "gcore"
+
+# ==================== MODE: hetzner ====================
+# All DNS stays in Hetzner. At registrar, NS-delegate each CDN subdomain to Gcore.
+# e.g. app.example.com NS ns1.gcorelabs.net
+# We create GeoDNS records in Gcore for CDN, Hetzner handles direct domains.
+
+- name: Create Gcore zone for CDN subdomains (mode=hetzner)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones"
+    method: POST
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      name: "{{ edge_domain }}"
+    status_code: [200, 201, 409]
+  retries: 3
+  delay: 5
+  when: edge_dns_provider == "hetzner"
+
+- name: Create GeoDNS A records in Gcore for CDN domains (mode=hetzner)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ item }}/A"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      filters:
+        - type: geodns
+        - type: default
+          limit: 1
+        - type: is_healthy
+          strict: false
+      resource_records:
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            continents: ["EU"]
+            default: false
+        - content:
+            - "{{ edge_server_ips.us }}"
+          meta:
+            continents: ["NA", "SA"]
+            default: false
+        - content:
+            - "{{ edge_server_ips.apac }}"
+          meta:
+            continents: ["AS", "OC"]
+            default: false
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            default: true
+    status_code: [200, 201]
+  loop: "{{ edge_cdn_domains }}"
+  retries: 3
+  delay: 5
+  when: edge_dns_provider == "hetzner" and edge_cdn_domains | length > 0
+
+- name: Create A records in Hetzner for direct domains (mode=hetzner)
+  shell: >
+    hcloud dns record-create --zone-id
+    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
+    --name {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}
+    --type A --ttl 300 --value {{ origin_server_ip }}
+  loop: "{{ edge_direct_domains }}"
+  environment:
+    HCLOUD_TOKEN: "{{ hcloud_token }}"
+  ignore_errors: yes
+  when: edge_dns_provider == "hetzner" and edge_direct_domains | length > 0
+
+- name: Create origin A record in Hetzner (mode=hetzner)
+  shell: >
+    hcloud dns record-create --zone-id
+    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
+    --name {{ edge_origin_domain | regex_replace('\\.'+ edge_domain +'$', '') }}
+    --type A --ttl 300 --value {{ origin_server_ip }}
+  environment:
+    HCLOUD_TOKEN: "{{ hcloud_token }}"
+  ignore_errors: yes
+  when: edge_dns_provider == "hetzner"
+
+# ==================== MODE: hetzner_cname ====================
+# All DNS in Hetzner. CDN domains CNAME to Gcore-hosted subdomains under cdn.example.com.
+# Gcore zone: cdn.example.com. Each CDN domain in Hetzner is a CNAME -> Gcore.
+# Slower (extra DNS hop) but no NS delegation needed.
+
+- name: Create Gcore zone for cdn.example.com (mode=hetzner_cname)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones"
+    method: POST
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      name: "cdn.{{ edge_domain }}"
+    status_code: [200, 201, 409]
+  retries: 3
+  delay: 5
+  when: edge_dns_provider == "hetzner_cname"
+
+- name: Create GeoDNS A records in Gcore cdn zone (mode=hetzner_cname)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/cdn.{{ edge_domain }}/{{ item | regex_replace('\\.'+ edge_domain +'$', '') }}.cdn.{{ edge_domain }}/A"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      filters:
+        - type: geodns
+        - type: default
+          limit: 1
+        - type: is_healthy
+          strict: false
+      resource_records:
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            continents: ["EU"]
+            default: false
+        - content:
+            - "{{ edge_server_ips.us }}"
+          meta:
+            continents: ["NA", "SA"]
+            default: false
+        - content:
+            - "{{ edge_server_ips.apac }}"
+          meta:
+            continents: ["AS", "OC"]
+            default: false
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            default: true
+    status_code: [200, 201]
+  loop: "{{ edge_cdn_domains }}"
+  retries: 3
+  delay: 5
+  when: edge_dns_provider == "hetzner_cname" and edge_cdn_domains | length > 0
+
+- name: Create CNAME records in Hetzner for CDN domains (mode=hetzner_cname)
+  shell: >
+    hcloud dns record-create --zone-id
+    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
+    --name {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}
+    --type CNAME --ttl 300
+    --value {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}.cdn.{{ edge_domain }}.
+  loop: "{{ edge_cdn_domains }}"
+  environment:
+    HCLOUD_TOKEN: "{{ hcloud_token }}"
+  ignore_errors: yes
+  when: edge_dns_provider == "hetzner_cname" and edge_cdn_domains | length > 0
+
+- name: Create A records in Hetzner for direct domains (mode=hetzner_cname)
+  shell: >
+    hcloud dns record-create --zone-id
+    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
+    --name {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}
+    --type A --ttl 300 --value {{ origin_server_ip }}
+  loop: "{{ edge_direct_domains }}"
+  environment:
+    HCLOUD_TOKEN: "{{ hcloud_token }}"
+  ignore_errors: yes
+  when: edge_dns_provider == "hetzner_cname" and edge_direct_domains | length > 0
+
+- name: Create origin A record in Hetzner (mode=hetzner_cname)
+  shell: >
+    hcloud dns record-create --zone-id
+    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
+    --name {{ edge_origin_domain | regex_replace('\\.'+ edge_domain +'$', '') }}
+    --type A --ttl 300 --value {{ origin_server_ip }}
+  environment:
+    HCLOUD_TOKEN: "{{ hcloud_token }}"
+  ignore_errors: yes
+  when: edge_dns_provider == "hetzner_cname"
 
 # ============================================
 # 4. HEALTH CHECKS
@@ -483,7 +664,7 @@
       EDGE CDN DEPLOYMENT COMPLETE
       ========================================
       Domain: {{ edge_domain }}
-      CDN: {{ edge_subdomain }}.{{ edge_domain }}
+      CDN domains: {{ edge_cdn_domains | join(", ") }}
       Origin: origin.{{ edge_domain }} -> {{ origin_server_ip }}
 
       Edge Servers:

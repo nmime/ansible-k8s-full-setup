@@ -3,32 +3,53 @@
 gcore_api_url: "https://api.gcore.com"
 gcore_api_key: "{{ lookup('env', 'GCORE_API_KEY') }}"
 
+# Hetzner API (only used for hetzner/hetzner_cname modes)
+hcloud_token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+
 # Domain configuration
 edge_domain: "{{ domain }}"
 
 # ============================================
+# DNS PROVIDER SELECTION
+# ============================================
+# Choose ONE:
+#   "gcore" - All DNS in Gcore (NS at registrar points to Gcore)
+#             Best: Simple, GeoDNS for CDN domains, plain A records for others
+#
+#   "hetzner" - All DNS in Hetzner (NS at registrar points to Hetzner)
+#               CDN domains get GeoDNS via NS delegation or manual config
+#               Requires: You manually delegate CDN subdomains to Gcore at registrar
+#
+#   "hetzner_cname" - All DNS in Hetzner, CNAME CDN domains to Gcore
+#                     Slower (extra DNS lookup), but keeps everything in Hetzner UI
+#
+edge_dns_provider: "gcore"  # gcore | hetzner | hetzner_cname
+
+# ============================================
 # CDN DOMAIN ROUTING
 # ============================================
-# List the FULL domains (app.example.com, NOT just "app") that should go through CDN.
-# These domains get GeoDNS A records in Gcore that route to nearest edge.
-#
-# Examples:
-#   edge_cdn_domains: ["app.example.com", "dash.example.com", "www.example.com"]
-#   edge_cdn_domains: []  # Empty = no CDN routing, all traffic direct to K8s
-#
-# IMPORTANT: You must set this explicitly in your playbook/inventory.
-# The defaults here are placeholders only — replace with your actual domains.
+# List domains that go through CDN edges (app.example.com, NOT just "app")
 edge_cdn_domains:
-  - "app.{{ domain }}"      # Main app
-  - "dash.{{ domain }}"     # Dashboard
-  - "www.{{ domain }}"      # Marketing site
-# Remove or comment out domains you DON'T want cached (e.g., API, admin panels)
+  - "app.{{ domain }}"
+  - "dash.{{ domain }}"
+  - "www.{{ domain }}"
+
+# Direct domains (skip CDN, go straight to K8s)
+edge_direct_domains:
+  - "vpn.{{ domain }}"      # VPN must be direct
+  - "api.{{ domain }}"      # API can't be cached
+  - "gitlab.{{ domain }}"   # Admin via VPN
+  - "grafana.{{ domain }}"
+  - "argocd.{{ domain }}"
+
+# Origin hostname (where edges fetch from)
+edge_origin_domain: "origin.{{ domain }}"
 
 # Edge proxy configuration
 edge_proxy_port: 443
 edge_cache_size: "10g"
 edge_cache_path: "/var/cache/nginx"
-edge_upstream_host: "origin.{{ domain }}"
+edge_upstream_host: "{{ edge_origin_domain }}"
 edge_upstream_port: 443
 
 # GeoDNS regions - edge servers in each region
@@ -37,23 +58,20 @@ edge_regions:
     name: "Europe"
     continents: ["EU"]
     countries: []
-    hetzner_location: "fsn1"  # Falkenstein, Germany
+    hetzner_location: "fsn1"
     server_type: "cx21"
   us:
     name: "North America"
     continents: ["NA"]
     countries: []
-    hetzner_location: "ash"  # Ashburn, US
+    hetzner_location: "ash"
     server_type: "cx21"
   apac:
     name: "Asia Pacific"
     continents: ["AS", "OC"]
     countries: []
-    hetzner_location: "sin"  # Singapore
+    hetzner_location: "sin"
     server_type: "cx21"
-
-# Default/fallback goes to origin
-edge_default_target: "origin"
 
 # Health check configuration
 edge_health_check_path: "/health"
