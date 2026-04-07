@@ -1,18 +1,12 @@
----
-# Elasticsearch 9.x with X-Pack Platinum Crack (ELKrack method)
-# Architecture: StatefulSet master + data nodes, init container patches JAR in-place
-# TLS via K8s Secret (generated locally), Kibana with Ingress
-
 - name: Set Elasticsearch variables
   set_fact:
-    es_ns: "{{ es_namespace }}"
-    es_ver: "{{ es_version }}"
-    es_img: "{{ es_image }}:{{ es_version }}"
-    kb_img: "{{ kibana_image }}:{{ kibana_version }}"
-    es_cluster: "{{ es_cluster_name }}"
-    es_password: "{{ es_superuser_password }}"
-    storage_class: "{{ storage_class | default('hcloud-volumes') }}"
-
+    es_ns: '{{ es_namespace }}'
+    es_ver: '{{ es_version }}'
+    es_img: '{{ es_image }}:{{ es_version }}'
+    kb_img: '{{ kibana_image }}:{{ kibana_version }}'
+    es_cluster: '{{ es_cluster_name }}'
+    es_password: '{{ es_superuser_password }}'
+    storage_class: '{{ storage_class | default(''hcloud-volumes'') }}'
 - name: Create Elasticsearch namespace
   kubernetes.core.k8s:
     state: present
@@ -20,7 +14,7 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ es_ns }}"
+        name: '{{ es_ns }}'
         labels:
           pod-security.kubernetes.io/enforce: privileged
           pod-security.kubernetes.io/warn: restricted
@@ -28,18 +22,12 @@
   retries: 3
   delay: 10
   until: _r_es_ns is not failed
-
-# ============================================
-# TLS certificates — generated locally, stored in K8s Secret
-# ============================================
-
 - name: Check if ES TLS secret exists
   kubernetes.core.k8s_info:
     kind: Secret
-    namespace: "{{ es_ns }}"
+    namespace: '{{ es_ns }}'
     name: es-tls-certs
   register: es_tls_check
-
 - name: Create temp directory for ES TLS generation
   ansible.builtin.tempfile:
     state: directory
@@ -47,36 +35,24 @@
   register: es_tls_tmpdir
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
-
 - name: Generate ES CA and node TLS certificates
-  ansible.builtin.shell: |
-    cd {{ es_tls_tmpdir.path }}
-    openssl genrsa -out ca.key 4096
-    openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
-      -out ca.crt -subj "/CN=es-ca"
-    openssl genrsa -out tls.key 2048
-    cat > san.cnf <<'SANEOF'
-    [req]
-    req_extensions = v3_req
-    distinguished_name = dn
-    [dn]
-    [v3_req]
-    subjectAltName = DNS:*.es-master-headless.{{ es_ns }}.svc.cluster.local,DNS:*.es-data-headless.{{ es_ns }}.svc.cluster.local,DNS:es-master.{{ es_ns }}.svc.cluster.local,DNS:es-data.{{ es_ns }}.svc.cluster.local,DNS:elasticsearch.{{ es_ns }}.svc.cluster.local,DNS:localhost,IP:127.0.0.1
-    SANEOF
-    openssl req -new -key tls.key -out tls.csr -subj "/CN=elasticsearch" -config san.cnf
-    openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-      -out tls.crt -days 3650 -sha256 -extensions v3_req -extfile san.cnf
+  ansible.builtin.shell: "cd {{ es_tls_tmpdir.path }}\nopenssl genrsa -out ca.key 4096\nopenssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \\\n  -out ca.crt -subj \"/CN=es-ca\"\nopenssl genrsa\
+    \ -out tls.key 2048\ncat > san.cnf <<'SANEOF'\n[req]\nreq_extensions = v3_req\ndistinguished_name = dn\n[dn]\n[v3_req]\nsubjectAltName = DNS:*.es-master-headless.{{ es_ns }}.svc.cluster.local,DNS:*.es-data-headless.{{\
+    \ es_ns }}.svc.cluster.local,DNS:es-master.{{ es_ns }}.svc.cluster.local,DNS:es-data.{{ es_ns }}.svc.cluster.local,DNS:elasticsearch.{{ es_ns }}.svc.cluster.local,DNS:localhost,IP:127.0.0.1\nSANEOF\n\
+    openssl req -new -key tls.key -out tls.csr -subj \"/CN=elasticsearch\" -config san.cnf\nopenssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \\\n  -out tls.crt -days 3650 -sha256 -extensions\
+    \ v3_req -extfile san.cnf\n"
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
-
 - name: Read generated TLS files
   ansible.builtin.slurp:
-    src: "{{ es_tls_tmpdir.path }}/{{ item }}"
+    src: '{{ es_tls_tmpdir.path }}/{{ item }}'
   register: es_tls_files
-  loop: [ca.crt, tls.crt, tls.key]
+  loop:
+  - ca.crt
+  - tls.crt
+  - tls.key
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
-
 - name: Create ES TLS Secret
   kubernetes.core.k8s:
     state: present
@@ -85,32 +61,26 @@
       kind: Secret
       metadata:
         name: es-tls-certs
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       type: Opaque
       data:
-        ca.crt: "{{ es_tls_files.results[0].content }}"
-        tls.crt: "{{ es_tls_files.results[1].content }}"
-        tls.key: "{{ es_tls_files.results[2].content }}"
-        transport.crt: "{{ es_tls_files.results[1].content }}"
-        transport.key: "{{ es_tls_files.results[2].content }}"
+        ca.crt: '{{ es_tls_files.results[0].content }}'
+        tls.crt: '{{ es_tls_files.results[1].content }}'
+        tls.key: '{{ es_tls_files.results[2].content }}'
+        transport.crt: '{{ es_tls_files.results[1].content }}'
+        transport.key: '{{ es_tls_files.results[2].content }}'
   when: es_tls_check.resources | length == 0
   no_log: true
   register: _r_tls_secret
   retries: 3
   delay: 10
   until: _r_tls_secret is not failed
-
 - name: Clean up TLS temp directory
   ansible.builtin.file:
-    path: "{{ es_tls_tmpdir.path }}"
+    path: '{{ es_tls_tmpdir.path }}'
     state: absent
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
-
-# ============================================
-# Crack script ConfigMap + License
-# ============================================
-
 - name: Create crack build script ConfigMap
   kubernetes.core.k8s:
     state: present
@@ -119,64 +89,25 @@
       kind: ConfigMap
       metadata:
         name: es-crack-script
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       data:
-        patch_xpack.sh: |
-          #!/bin/bash
-          VERSION="{{ es_ver }}"
-          v=( ${VERSION//./ } )
-          branch="${v[0]}.${v[1]}"
-          XPACK="/usr/share/elasticsearch/modules/x-pack-core/x-pack-core-$VERSION.jar"
-          OUT="/crack-ready/x-pack-core-$VERSION.jar"
-
-          if [ -f "$OUT" ]; then
-            echo "Crack JAR already built, skipping"
-            exit 0
-          fi
-
-          JAVAC="/usr/share/elasticsearch/jdk/bin/javac"
-          JAR="/usr/share/elasticsearch/jdk/bin/jar"
-
-          mkdir -p /tmp/crack && cd /tmp/crack
-
-          DOWNLOAD_OK=1
-          curl -fsSL --connect-timeout 10 --max-time 30 -o License.java \
-            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/License.java" || DOWNLOAD_OK=0
-          curl -fsSL --connect-timeout 10 --max-time 30 -o LicenseVerifier.java \
-            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/LicenseVerifier.java" || DOWNLOAD_OK=0
-          curl -fsSL --connect-timeout 10 --max-time 30 -o TransportXPackInfoAction.java \
-            "https://raw.githubusercontent.com/elastic/elasticsearch/refs/heads/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/action/TransportXPackInfoAction.java" || DOWNLOAD_OK=0
-
-          if [ "$DOWNLOAD_OK" = "0" ]; then
-            echo "WARN: GitHub unreachable, skipping xpack crack. ES will start with default license."
-            exit 0
-          fi
-
-          set -e
-
-          sed -i '/void validate()/{h;s/validate/validate2/;x;G}' License.java
-          sed -i '/void validate()/ s/$/}/' License.java
-          sed -i '/boolean verifyLicense(/{h;s/verifyLicense/verifyLicense2/;x;G}' LicenseVerifier.java
-          sed -i '/boolean verifyLicense(/ s/$/return true;}/' LicenseVerifier.java
-          sed -E -i 's|^([[:space:]]*)buildInfo = new XPackInfoResponse\.BuildInfo\(.*|\1buildInfo = new XPackInfoResponse.BuildInfo("Unknown", "Unknown");|' TransportXPackInfoAction.java
-
-          "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" LicenseVerifier.java 2>/dev/null
-          "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" TransportXPackInfoAction.java 2>/dev/null
-          "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" License.java 2>/dev/null
-
-          cp "$XPACK" .
-          mkdir x-pack-core && cd x-pack-core
-          "$JAR" -xf ../x-pack-core-$VERSION.jar
-          cp /tmp/crack/LicenseVerifier.class org/elasticsearch/license/
-          cp /tmp/crack/License.class org/elasticsearch/license/
-          cp /tmp/crack/TransportXPackInfoAction.class org/elasticsearch/xpack/core/action/
-          "$JAR" -cf "$OUT" .
-          echo "Crack JAR built: $OUT"
+        patch_xpack.sh: "#!/bin/bash\nVERSION=\"{{ es_ver }}\"\nv=( ${VERSION//./ } )\nbranch=\"${v[0]}.${v[1]}\"\nXPACK=\"/usr/share/elasticsearch/modules/x-pack-core/x-pack-core-$VERSION.jar\"\nOUT=\"\
+          /crack-ready/x-pack-core-$VERSION.jar\"\n\nif [ -f \"$OUT\" ]; then\n  echo \"Crack JAR already built, skipping\"\n  exit 0\nfi\n\nJAVAC=\"/usr/share/elasticsearch/jdk/bin/javac\"\nJAR=\"/usr/share/elasticsearch/jdk/bin/jar\"\
+          \n\nmkdir -p /tmp/crack && cd /tmp/crack\n\nDOWNLOAD_OK=1\ncurl -fsSL --connect-timeout 10 --max-time 30 -o License.java \\\n  \"https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/License.java\"\
+          \ || DOWNLOAD_OK=0\ncurl -fsSL --connect-timeout 10 --max-time 30 -o LicenseVerifier.java \\\n  \"https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/LicenseVerifier.java\"\
+          \ || DOWNLOAD_OK=0\ncurl -fsSL --connect-timeout 10 --max-time 30 -o TransportXPackInfoAction.java \\\n  \"https://raw.githubusercontent.com/elastic/elasticsearch/refs/heads/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/action/TransportXPackInfoAction.java\"\
+          \ || DOWNLOAD_OK=0\n\nif [ \"$DOWNLOAD_OK\" = \"0\" ]; then\n  echo \"WARN: GitHub unreachable, skipping xpack crack. ES will start with default license.\"\n  exit 0\nfi\n\nset -e\n\nsed -i '/void\
+          \ validate()/{h;s/validate/validate2/;x;G}' License.java\nsed -i '/void validate()/ s/$/}/' License.java\nsed -i '/boolean verifyLicense(/{h;s/verifyLicense/verifyLicense2/;x;G}' LicenseVerifier.java\n\
+          sed -i '/boolean verifyLicense(/ s/$/return true;}/' LicenseVerifier.java\nsed -E -i 's|^([[:space:]]*)buildInfo = new XPackInfoResponse\\.BuildInfo\\(.*|\\1buildInfo = new XPackInfoResponse.BuildInfo(\"\
+          Unknown\", \"Unknown\");|' TransportXPackInfoAction.java\n\n\"$JAVAC\" -cp \"/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*\" LicenseVerifier.java 2>/dev/null\n\"\
+          $JAVAC\" -cp \"/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*\" TransportXPackInfoAction.java 2>/dev/null\n\"$JAVAC\" -cp \"/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*\"\
+          \ License.java 2>/dev/null\n\ncp \"$XPACK\" .\nmkdir x-pack-core && cd x-pack-core\n\"$JAR\" -xf ../x-pack-core-$VERSION.jar\ncp /tmp/crack/LicenseVerifier.class org/elasticsearch/license/\ncp\
+          \ /tmp/crack/License.class org/elasticsearch/license/\ncp /tmp/crack/TransportXPackInfoAction.class org/elasticsearch/xpack/core/action/\n\"$JAR\" -cf \"$OUT\" .\necho \"Crack JAR built: $OUT\"\
+          \n"
   register: _r_crack_cm
   retries: 3
   delay: 10
   until: _r_crack_cm is not failed
-
 - name: Create Platinum license secret
   kubernetes.core.k8s:
     state: present
@@ -185,15 +116,14 @@
       kind: Secret
       metadata:
         name: es-platinum-license
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       type: Opaque
       data:
-        license.json: "{{ lookup('file', 'platinum_license.json') | b64encode }}"
+        license.json: '{{ lookup(''file'', ''platinum_license.json'') | b64encode }}'
   register: _r_license_secret
   retries: 3
   delay: 10
   until: _r_license_secret is not failed
-
 - name: Create ES credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -203,22 +133,16 @@
       kind: Secret
       metadata:
         name: es-credentials
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       type: Opaque
       stringData:
-        ELASTIC_PASSWORD: "{{ es_password }}"
+        ELASTIC_PASSWORD: '{{ es_password }}'
         username: elastic
-        password: "{{ es_password }}"
-  no_log: true
+        password: '{{ es_password }}'
   register: _r_es_creds
   retries: 3
   delay: 10
   until: _r_es_creds is not failed
-
-# ============================================
-# Headless services for StatefulSets
-# ============================================
-
 - name: Create ES master headless service
   kubernetes.core.k8s:
     state: present
@@ -227,7 +151,7 @@
       kind: Service
       metadata:
         name: es-master-headless
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
         labels:
           app: elasticsearch
           role: master
@@ -238,15 +162,14 @@
           app: elasticsearch
           role: master
         ports:
-          - name: transport
-            port: 9300
-          - name: http
-            port: 9200
+        - name: transport
+          port: 9300
+        - name: http
+          port: 9200
   register: _r_master_svc
   retries: 3
   delay: 10
   until: _r_master_svc is not failed
-
 - name: Create ES data headless service
   kubernetes.core.k8s:
     state: present
@@ -255,7 +178,7 @@
       kind: Service
       metadata:
         name: es-data-headless
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
         labels:
           app: elasticsearch
           role: data
@@ -266,15 +189,14 @@
           app: elasticsearch
           role: data
         ports:
-          - name: transport
-            port: 9300
-          - name: http
-            port: 9200
+        - name: transport
+          port: 9300
+        - name: http
+          port: 9200
   register: _r_data_svc
   retries: 3
   delay: 10
   until: _r_data_svc is not failed
-
 - name: Create ES client service (load-balanced)
   kubernetes.core.k8s:
     state: present
@@ -283,7 +205,7 @@
       kind: Service
       metadata:
         name: elasticsearch
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
         labels:
           app: elasticsearch
       spec:
@@ -291,30 +213,21 @@
         selector:
           app: elasticsearch
         ports:
-          - name: http
-            port: 9200
-            targetPort: 9200
-          - name: transport
-            port: 9300
-            targetPort: 9300
+        - name: http
+          port: 9200
+          targetPort: 9200
+        - name: transport
+          port: 9300
+          targetPort: 9300
   register: _r_client_svc
   retries: 3
   delay: 10
   until: _r_client_svc is not failed
-
-# ============================================
-# Master node StatefulSet
-# Init container patches x-pack JAR in-place using emptyDir
-# No shared PVC — each pod builds its own crack on startup
-# ============================================
-
 - name: Build seed hosts list
   set_fact:
-    es_seed_hosts: >-
-      {% set hosts = [] %}{% for i in range(0, es_master_replicas | int) %}{% if hosts.append('es-master-' ~ i ~ '.es-master-headless.' ~ es_ns ~ '.svc.cluster.local') %}{% endif %}{% endfor %}{{ hosts | join(',') }}
-    es_initial_master_nodes: >-
-      {% set nodes = [] %}{% for i in range(0, es_master_replicas | int) %}{% if nodes.append('es-master-' ~ i) %}{% endif %}{% endfor %}{{ nodes | join(',') }}
-
+    es_seed_hosts: '{% set hosts = [] %}{% for i in range(0, es_master_replicas | int) %}{% if hosts.append(''es-master-'' ~ i ~ ''.es-master-headless.'' ~ es_ns ~ ''.svc.cluster.local'') %}{% endif %}{%
+      endfor %}{{ hosts | join('','') }}'
+    es_initial_master_nodes: '{% set nodes = [] %}{% for i in range(0, es_master_replicas | int) %}{% if nodes.append(''es-master-'' ~ i) %}{% endif %}{% endfor %}{{ nodes | join('','') }}'
 - name: Deploy ES master StatefulSet
   kubernetes.core.k8s:
     state: present
@@ -323,13 +236,13 @@
       kind: StatefulSet
       metadata:
         name: es-master
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
         labels:
           app: elasticsearch
           role: master
       spec:
         serviceName: es-master-headless
-        replicas: "{{ es_master_replicas | int }}"
+        replicas: '{{ es_master_replicas | int }}'
         podManagementPolicy: Parallel
         updateStrategy:
           type: RollingUpdate
@@ -348,149 +261,153 @@
               runAsUser: 1000
               runAsNonRoot: true
             initContainers:
-              - name: patch-xpack
-                image: "{{ es_img }}"
-                command:
-                  - bash
-                  - /scripts/patch_xpack.sh
-                volumeMounts:
-                  - name: crack-script
-                    mountPath: /scripts
-                  - name: crack-ready
-                    mountPath: /crack-ready
-                securityContext:
-                  runAsUser: 1000
-              - name: sysctl
-                image: busybox:1.37
-                command: ["sh", "-c", "sysctl -w vm.max_map_count=262144 || true"]
-                securityContext:
-                  privileged: true
-                  runAsUser: 0
-                  runAsNonRoot: false
-            containers:
-              - name: elasticsearch
-                image: "{{ es_img }}"
-                command:
-                  - bash
-                  - -c
-                  - |
-                    [ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack JAR, starting with default license"
-                    exec /usr/local/bin/docker-entrypoint.sh
-                ports:
-                  - containerPort: 9200
-                    name: http
-                  - containerPort: 9300
-                    name: transport
-                env:
-                  - name: node.name
-                    valueFrom:
-                      fieldRef:
-                        fieldPath: metadata.name
-                  - name: cluster.name
-                    value: "{{ es_cluster }}"
-                  - name: node.roles
-                    value: "master"
-                  - name: discovery.seed_hosts
-                    value: "{{ es_seed_hosts }}"
-                  - name: cluster.initial_master_nodes
-                    value: "{{ es_initial_master_nodes }}"
-                  - name: ELASTIC_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: es-credentials
-                        key: ELASTIC_PASSWORD
-                  - name: xpack.security.audit.enabled
-                    value: "true"
-                  - name: xpack.security.audit.logfile.events.include
-                    value: "access_granted,access_denied,authentication_failed,connection_denied"
-                  - name: xpack.security.enabled
-                    value: "true"
-                  - name: xpack.security.http.ssl.enabled
-                    value: "true"
-                  - name: xpack.security.http.ssl.certificate
-                    value: /usr/share/elasticsearch/config/certs/tls.crt
-                  - name: xpack.security.http.ssl.key
-                    value: /usr/share/elasticsearch/config/certs/tls.key
-                  - name: xpack.security.http.ssl.certificate_authorities
-                    value: /usr/share/elasticsearch/config/certs/ca.crt
-                  - name: xpack.security.transport.ssl.enabled
-                    value: "true"
-                  - name: xpack.security.transport.ssl.verification_mode
-                    value: certificate
-                  - name: xpack.security.transport.ssl.certificate
-                    value: /usr/share/elasticsearch/config/certs/transport.crt
-                  - name: xpack.security.transport.ssl.key
-                    value: /usr/share/elasticsearch/config/certs/transport.key
-                  - name: xpack.security.transport.ssl.certificate_authorities
-                    value: /usr/share/elasticsearch/config/certs/ca.crt
-                  - name: ES_JAVA_OPTS
-                    value: "-Xms{{ es_master_heap }} -Xmx{{ es_master_heap }}"
-                  - name: bootstrap.memory_lock
-                    value: "false"
-                resources:
-                  requests:
-                    cpu: "{{ es_master_cpu_req }}"
-                    memory: "{{ es_master_memory_req }}"
-                  limits:
-                    cpu: "{{ es_master_cpu_lim }}"
-                    memory: "{{ es_master_memory_lim }}"
-                volumeMounts:
-                  - name: data
-                    mountPath: /usr/share/elasticsearch/data
-                  - name: certs
-                    mountPath: /usr/share/elasticsearch/config/certs
-                    readOnly: true
-                  - name: crack-ready
-                    mountPath: /crack-ready
-                    readOnly: true
-                readinessProbe:
-                  exec:
-                    command:
-                      - bash
-                      - -c
-                      - |
-                        curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                livenessProbe:
-                  exec:
-                    command:
-                      - bash
-                      - -c
-                      - |
-                        curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-                  initialDelaySeconds: 90
-                  periodSeconds: 30
-                  timeoutSeconds: 10
-            volumes:
-              - name: certs
-                secret:
-                  secretName: es-tls-certs
+            - name: patch-xpack
+              image: '{{ es_img }}'
+              command:
+              - bash
+              - /scripts/patch_xpack.sh
+              volumeMounts:
               - name: crack-script
-                configMap:
-                  name: es-crack-script
-                  defaultMode: 0755
+                mountPath: /scripts
               - name: crack-ready
-                emptyDir: {}
-        volumeClaimTemplates:
-          - metadata:
-              name: data
-            spec:
-              accessModes: [ReadWriteOnce]
-              storageClassName: "{{ storage_class }}"
+                mountPath: /crack-ready
+              securityContext:
+                runAsUser: 1000
+            - name: sysctl
+              image: busybox:1.37
+              command:
+              - sh
+              - -c
+              - sysctl -w vm.max_map_count=262144 || true
+              securityContext:
+                privileged: true
+                runAsUser: 0
+                runAsNonRoot: false
+            containers:
+            - name: elasticsearch
+              image: '{{ es_img }}'
+              command:
+              - bash
+              - -c
+              - '[ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack
+                JAR, starting with default license"
+
+                exec /usr/local/bin/docker-entrypoint.sh
+
+                '
+              ports:
+              - containerPort: 9200
+                name: http
+              - containerPort: 9300
+                name: transport
+              env:
+              - name: node.name
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              - name: cluster.name
+                value: '{{ es_cluster }}'
+              - name: node.roles
+                value: master
+              - name: discovery.seed_hosts
+                value: '{{ es_seed_hosts }}'
+              - name: cluster.initial_master_nodes
+                value: '{{ es_initial_master_nodes }}'
+              - name: ELASTIC_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: es-credentials
+                    key: ELASTIC_PASSWORD
+              - name: xpack.security.audit.enabled
+                value: 'true'
+              - name: xpack.security.audit.logfile.events.include
+                value: access_granted,access_denied,authentication_failed,connection_denied
+              - name: xpack.security.enabled
+                value: 'true'
+              - name: xpack.security.http.ssl.enabled
+                value: 'true'
+              - name: xpack.security.http.ssl.certificate
+                value: /usr/share/elasticsearch/config/certs/tls.crt
+              - name: xpack.security.http.ssl.key
+                value: /usr/share/elasticsearch/config/certs/tls.key
+              - name: xpack.security.http.ssl.certificate_authorities
+                value: /usr/share/elasticsearch/config/certs/ca.crt
+              - name: xpack.security.transport.ssl.enabled
+                value: 'true'
+              - name: xpack.security.transport.ssl.verification_mode
+                value: certificate
+              - name: xpack.security.transport.ssl.certificate
+                value: /usr/share/elasticsearch/config/certs/transport.crt
+              - name: xpack.security.transport.ssl.key
+                value: /usr/share/elasticsearch/config/certs/transport.key
+              - name: xpack.security.transport.ssl.certificate_authorities
+                value: /usr/share/elasticsearch/config/certs/ca.crt
+              - name: ES_JAVA_OPTS
+                value: -Xms{{ es_master_heap }} -Xmx{{ es_master_heap }}
+              - name: bootstrap.memory_lock
+                value: 'false'
               resources:
                 requests:
-                  storage: "{{ es_master_storage }}"
+                  cpu: '{{ es_master_cpu_req }}'
+                  memory: '{{ es_master_memory_req }}'
+                limits:
+                  cpu: '{{ es_master_cpu_lim }}'
+                  memory: '{{ es_master_memory_lim }}'
+              volumeMounts:
+              - name: data
+                mountPath: /usr/share/elasticsearch/data
+              - name: certs
+                mountPath: /usr/share/elasticsearch/config/certs
+                readOnly: true
+              - name: crack-ready
+                mountPath: /crack-ready
+                readOnly: true
+              readinessProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
+
+                    '
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+              livenessProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
+
+                    '
+                initialDelaySeconds: 90
+                periodSeconds: 30
+                timeoutSeconds: 10
+            volumes:
+            - name: certs
+              secret:
+                secretName: es-tls-certs
+            - name: crack-script
+              configMap:
+                name: es-crack-script
+                defaultMode: 493
+            - name: crack-ready
+              emptyDir: {}
+        volumeClaimTemplates:
+        - metadata:
+            name: data
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            storageClassName: '{{ storage_class }}'
+            resources:
+              requests:
+                storage: '{{ es_master_storage }}'
   register: _r_master_sts
   retries: 3
   delay: 15
   until: _r_master_sts is not failed
-
-# ============================================
-# Data node StatefulSet
-# ============================================
-
 - name: Deploy ES data StatefulSet
   kubernetes.core.k8s:
     state: present
@@ -499,13 +416,13 @@
       kind: StatefulSet
       metadata:
         name: es-data
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
         labels:
           app: elasticsearch
           role: data
       spec:
         serviceName: es-data-headless
-        replicas: "{{ es_data_replicas | int }}"
+        replicas: '{{ es_data_replicas | int }}'
         podManagementPolicy: Parallel
         updateStrategy:
           type: RollingUpdate
@@ -524,173 +441,175 @@
               runAsUser: 1000
               runAsNonRoot: true
             initContainers:
-              - name: patch-xpack
-                image: "{{ es_img }}"
-                command:
-                  - bash
-                  - /scripts/patch_xpack.sh
-                volumeMounts:
-                  - name: crack-script
-                    mountPath: /scripts
-                  - name: crack-ready
-                    mountPath: /crack-ready
-                securityContext:
-                  runAsUser: 1000
-              - name: sysctl
-                image: busybox:1.37
-                command: ["sh", "-c", "sysctl -w vm.max_map_count=262144 || true"]
-                securityContext:
-                  privileged: true
-                  runAsUser: 0
-                  runAsNonRoot: false
-            containers:
-              - name: elasticsearch
-                image: "{{ es_img }}"
-                command:
-                  - bash
-                  - -c
-                  - |
-                    [ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack JAR, starting with default license"
-                    exec /usr/local/bin/docker-entrypoint.sh
-                ports:
-                  - containerPort: 9200
-                    name: http
-                  - containerPort: 9300
-                    name: transport
-                env:
-                  - name: node.name
-                    valueFrom:
-                      fieldRef:
-                        fieldPath: metadata.name
-                  - name: cluster.name
-                    value: "{{ es_cluster }}"
-                  - name: node.roles
-                    value: "data,ingest"
-                  - name: discovery.seed_hosts
-                    value: "{{ es_seed_hosts }}"
-                  - name: ELASTIC_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: es-credentials
-                        key: ELASTIC_PASSWORD
-                  - name: xpack.security.audit.enabled
-                    value: "true"
-                  - name: xpack.security.audit.logfile.events.include
-                    value: "access_granted,access_denied,authentication_failed,connection_denied"
-                  - name: xpack.security.enabled
-                    value: "true"
-                  - name: xpack.security.http.ssl.enabled
-                    value: "true"
-                  - name: xpack.security.http.ssl.certificate
-                    value: /usr/share/elasticsearch/config/certs/tls.crt
-                  - name: xpack.security.http.ssl.key
-                    value: /usr/share/elasticsearch/config/certs/tls.key
-                  - name: xpack.security.http.ssl.certificate_authorities
-                    value: /usr/share/elasticsearch/config/certs/ca.crt
-                  - name: xpack.security.transport.ssl.enabled
-                    value: "true"
-                  - name: xpack.security.transport.ssl.verification_mode
-                    value: certificate
-                  - name: xpack.security.transport.ssl.certificate
-                    value: /usr/share/elasticsearch/config/certs/transport.crt
-                  - name: xpack.security.transport.ssl.key
-                    value: /usr/share/elasticsearch/config/certs/transport.key
-                  - name: xpack.security.transport.ssl.certificate_authorities
-                    value: /usr/share/elasticsearch/config/certs/ca.crt
-                  - name: ES_JAVA_OPTS
-                    value: "-Xms{{ es_data_heap }} -Xmx{{ es_data_heap }}"
-                  - name: bootstrap.memory_lock
-                    value: "false"
-                resources:
-                  requests:
-                    cpu: "{{ es_data_cpu_req }}"
-                    memory: "{{ es_data_memory_req }}"
-                  limits:
-                    cpu: "{{ es_data_cpu_lim }}"
-                    memory: "{{ es_data_memory_lim }}"
-                volumeMounts:
-                  - name: data
-                    mountPath: /usr/share/elasticsearch/data
-                  - name: certs
-                    mountPath: /usr/share/elasticsearch/config/certs
-                    readOnly: true
-                  - name: crack-ready
-                    mountPath: /crack-ready
-                    readOnly: true
-                readinessProbe:
-                  exec:
-                    command:
-                      - bash
-                      - -c
-                      - |
-                        curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                livenessProbe:
-                  exec:
-                    command:
-                      - bash
-                      - -c
-                      - |
-                        curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-                  initialDelaySeconds: 90
-                  periodSeconds: 30
-                  timeoutSeconds: 10
-            volumes:
-              - name: certs
-                secret:
-                  secretName: es-tls-certs
+            - name: patch-xpack
+              image: '{{ es_img }}'
+              command:
+              - bash
+              - /scripts/patch_xpack.sh
+              volumeMounts:
               - name: crack-script
-                configMap:
-                  name: es-crack-script
-                  defaultMode: 0755
+                mountPath: /scripts
               - name: crack-ready
-                emptyDir: {}
-        volumeClaimTemplates:
-          - metadata:
-              name: data
-            spec:
-              accessModes: [ReadWriteOnce]
-              storageClassName: "{{ storage_class }}"
+                mountPath: /crack-ready
+              securityContext:
+                runAsUser: 1000
+            - name: sysctl
+              image: busybox:1.37
+              command:
+              - sh
+              - -c
+              - sysctl -w vm.max_map_count=262144 || true
+              securityContext:
+                privileged: true
+                runAsUser: 0
+                runAsNonRoot: false
+            containers:
+            - name: elasticsearch
+              image: '{{ es_img }}'
+              command:
+              - bash
+              - -c
+              - '[ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack
+                JAR, starting with default license"
+
+                exec /usr/local/bin/docker-entrypoint.sh
+
+                '
+              ports:
+              - containerPort: 9200
+                name: http
+              - containerPort: 9300
+                name: transport
+              env:
+              - name: node.name
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              - name: cluster.name
+                value: '{{ es_cluster }}'
+              - name: node.roles
+                value: data,ingest
+              - name: discovery.seed_hosts
+                value: '{{ es_seed_hosts }}'
+              - name: ELASTIC_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: es-credentials
+                    key: ELASTIC_PASSWORD
+              - name: xpack.security.audit.enabled
+                value: 'true'
+              - name: xpack.security.audit.logfile.events.include
+                value: access_granted,access_denied,authentication_failed,connection_denied
+              - name: xpack.security.enabled
+                value: 'true'
+              - name: xpack.security.http.ssl.enabled
+                value: 'true'
+              - name: xpack.security.http.ssl.certificate
+                value: /usr/share/elasticsearch/config/certs/tls.crt
+              - name: xpack.security.http.ssl.key
+                value: /usr/share/elasticsearch/config/certs/tls.key
+              - name: xpack.security.http.ssl.certificate_authorities
+                value: /usr/share/elasticsearch/config/certs/ca.crt
+              - name: xpack.security.transport.ssl.enabled
+                value: 'true'
+              - name: xpack.security.transport.ssl.verification_mode
+                value: certificate
+              - name: xpack.security.transport.ssl.certificate
+                value: /usr/share/elasticsearch/config/certs/transport.crt
+              - name: xpack.security.transport.ssl.key
+                value: /usr/share/elasticsearch/config/certs/transport.key
+              - name: xpack.security.transport.ssl.certificate_authorities
+                value: /usr/share/elasticsearch/config/certs/ca.crt
+              - name: ES_JAVA_OPTS
+                value: -Xms{{ es_data_heap }} -Xmx{{ es_data_heap }}
+              - name: bootstrap.memory_lock
+                value: 'false'
               resources:
                 requests:
-                  storage: "{{ es_data_storage }}"
+                  cpu: '{{ es_data_cpu_req }}'
+                  memory: '{{ es_data_memory_req }}'
+                limits:
+                  cpu: '{{ es_data_cpu_lim }}'
+                  memory: '{{ es_data_memory_lim }}'
+              volumeMounts:
+              - name: data
+                mountPath: /usr/share/elasticsearch/data
+              - name: certs
+                mountPath: /usr/share/elasticsearch/config/certs
+                readOnly: true
+              - name: crack-ready
+                mountPath: /crack-ready
+                readOnly: true
+              readinessProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
+
+                    '
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+              livenessProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
+
+                    '
+                initialDelaySeconds: 90
+                periodSeconds: 30
+                timeoutSeconds: 10
+            volumes:
+            - name: certs
+              secret:
+                secretName: es-tls-certs
+            - name: crack-script
+              configMap:
+                name: es-crack-script
+                defaultMode: 493
+            - name: crack-ready
+              emptyDir: {}
+        volumeClaimTemplates:
+        - metadata:
+            name: data
+          spec:
+            accessModes:
+            - ReadWriteOnce
+            storageClassName: '{{ storage_class }}'
+            resources:
+              requests:
+                storage: '{{ es_data_storage }}'
   register: _r_data_sts
   retries: 3
   delay: 15
   until: _r_data_sts is not failed
-
-# ============================================
-# Wait for ES cluster + apply license
-# ============================================
-
 - name: Wait for ES master pods to be ready
   kubernetes.core.k8s_info:
     kind: StatefulSet
-    namespace: "{{ es_ns }}"
+    namespace: '{{ es_ns }}'
     name: es-master
   register: es_master_sts
-  until: >
-    es_master_sts.resources | length > 0 and
-    (es_master_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int)
+  until: 'es_master_sts.resources | length > 0 and (es_master_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int)
+
+    '
   retries: 60
   delay: 15
   failed_when: false
-
 - name: Wait for ES data pods to be ready
   kubernetes.core.k8s_info:
     kind: StatefulSet
-    namespace: "{{ es_ns }}"
+    namespace: '{{ es_ns }}'
     name: es-data
   register: es_data_sts
-  until: >
-    es_data_sts.resources | length > 0 and
-    (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
+  until: 'es_data_sts.resources | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
+
+    '
   retries: 60
   delay: 15
   failed_when: false
-
 - name: Apply Platinum license via Job
   kubernetes.core.k8s:
     state: present
@@ -698,8 +617,8 @@
       apiVersion: batch/v1
       kind: Job
       metadata:
-        name: "es-apply-license-{{ es_ver | replace('.', '-') }}"
-        namespace: "{{ es_ns }}"
+        name: es-apply-license-{{ es_ver | replace('.', '-') }}
+        namespace: '{{ es_ns }}'
       spec:
         ttlSecondsAfterFinished: 600
         backoffLimit: 5
@@ -707,67 +626,46 @@
           spec:
             restartPolicy: Never
             containers:
-              - name: apply-license
-                image: curlimages/curl:8.12.1
-                command:
-                  - sh
-                  - -c
-                  - |
-                    echo "Waiting for ES..."
-                    for i in $(seq 1 60); do
-                      if curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200/_cluster/health" >/dev/null 2>&1; then
-                        echo "ES ready"
-                        break
-                      fi
-                      sleep 5
-                    done
-                    ES="https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200"
-                    CURRENT=$(curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "$ES/_license" 2>/dev/null | grep -o '"type":"[^"]*"' | head -1)
-                    echo "Current license: $CURRENT"
-                    if echo "$CURRENT" | grep -q "{{ es_license_type }}"; then
-                      echo "Already {{ es_license_type }}, done"
-                      exit 0
-                    fi
-                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" -XPUT "$ES/_license?acknowledge=true" \
-                      -H 'Content-Type: application/json' -d @/license/license.json
-                    echo ""
-                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "$ES/_license"
-                env:
-                  - name: ELASTIC_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: es-credentials
-                        key: ELASTIC_PASSWORD
-                volumeMounts:
-                  - name: license
-                    mountPath: /license
-                    readOnly: true
-            volumes:
+            - name: apply-license
+              image: curlimages/curl:8.12.1
+              command:
+              - sh
+              - -c
+              - "echo \"Waiting for ES...\"\nfor i in $(seq 1 60); do\n  if curl -fsSk -u \"elastic:$ELASTIC_PASSWORD\" \"https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200/_cluster/health\"\
+                \ >/dev/null 2>&1; then\n    echo \"ES ready\"\n    break\n  fi\n  sleep 5\ndone\nES=\"https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200\"\nCURRENT=$(curl -fsSk -u\
+                \ \"elastic:$ELASTIC_PASSWORD\" \"$ES/_license\" 2>/dev/null | grep -o '\"type\":\"[^\"]*\"' | head -1)\necho \"Current license: $CURRENT\"\nif echo \"$CURRENT\" | grep -q \"{{ es_license_type\
+                \ }}\"; then\n  echo \"Already {{ es_license_type }}, done\"\n  exit 0\nfi\ncurl -fsSk -u \"elastic:$ELASTIC_PASSWORD\" -XPUT \"$ES/_license?acknowledge=true\" \\\n  -H 'Content-Type: application/json'\
+                \ -d @/license/license.json\necho \"\"\ncurl -fsSk -u \"elastic:$ELASTIC_PASSWORD\" \"$ES/_license\"\n"
+              env:
+              - name: ELASTIC_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: es-credentials
+                    key: ELASTIC_PASSWORD
+              volumeMounts:
               - name: license
-                secret:
-                  secretName: es-platinum-license
+                mountPath: /license
+                readOnly: true
+            volumes:
+            - name: license
+              secret:
+                secretName: es-platinum-license
   register: _r_license_job
   retries: 3
   delay: 10
   until: _r_license_job is not failed
-
 - name: Wait for license application
   kubernetes.core.k8s_info:
     kind: Job
-    namespace: "{{ es_ns }}"
-    name: "es-apply-license-{{ es_ver | replace('.', '-') }}"
+    namespace: '{{ es_ns }}'
+    name: es-apply-license-{{ es_ver | replace('.', '-') }}
   register: license_job
-  until: >
-    license_job.resources | length > 0 and
-    (license_job.resources[0].status.succeeded | default(0) | int) >= 1
+  until: 'license_job.resources | length > 0 and (license_job.resources[0].status.succeeded | default(0) | int) >= 1
+
+    '
   retries: 60
   delay: 10
   failed_when: false
-
-# ============================================
-# Kibana Deployment + Service + Ingress
-# ============================================
-
 - name: Deploy Kibana
   kubernetes.core.k8s:
     state: present
@@ -776,11 +674,11 @@
       kind: Deployment
       metadata:
         name: kibana
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
         labels:
           app: kibana
       spec:
-        replicas: "{{ kibana_replicas | int }}"
+        replicas: '{{ kibana_replicas | int }}'
         selector:
           matchLabels:
             app: kibana
@@ -790,62 +688,61 @@
               app: kibana
           spec:
             containers:
-              - name: kibana
-                image: "{{ kb_img }}"
-                ports:
-                  - containerPort: 5601
-                    name: http
-                env:
-                  - name: ELASTICSEARCH_HOSTS
-                    value: "https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200"
-                  - name: ELASTICSEARCH_USERNAME
-                    value: elastic
-                  - name: ELASTICSEARCH_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: es-credentials
-                        key: ELASTIC_PASSWORD
-                  - name: ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES
-                    value: /usr/share/kibana/config/certs/ca.crt
-                  - name: SERVER_HOST
-                    value: "0.0.0.0"
-                  - name: SERVER_PUBLICBASEURL
-                    value: "https://{{ es_kibana_domain }}"
-                resources:
-                  requests:
-                    cpu: "{{ kibana_cpu_req }}"
-                    memory: "{{ kibana_memory_req }}"
-                  limits:
-                    cpu: "{{ kibana_cpu_lim }}"
-                    memory: "{{ kibana_memory_lim }}"
-                volumeMounts:
-                  - name: certs
-                    mountPath: /usr/share/kibana/config/certs
-                    readOnly: true
-                readinessProbe:
-                  httpGet:
-                    path: /api/status
-                    port: 5601
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                livenessProbe:
-                  httpGet:
-                    path: /api/status
-                    port: 5601
-                  initialDelaySeconds: 60
-                  periodSeconds: 30
-            volumes:
+            - name: kibana
+              image: '{{ kb_img }}'
+              ports:
+              - containerPort: 5601
+                name: http
+              env:
+              - name: ELASTICSEARCH_HOSTS
+                value: https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200
+              - name: ELASTICSEARCH_USERNAME
+                value: elastic
+              - name: ELASTICSEARCH_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: es-credentials
+                    key: ELASTIC_PASSWORD
+              - name: ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES
+                value: /usr/share/kibana/config/certs/ca.crt
+              - name: SERVER_HOST
+                value: 0.0.0.0
+              - name: SERVER_PUBLICBASEURL
+                value: https://{{ es_kibana_domain }}
+              resources:
+                requests:
+                  cpu: '{{ kibana_cpu_req }}'
+                  memory: '{{ kibana_memory_req }}'
+                limits:
+                  cpu: '{{ kibana_cpu_lim }}'
+                  memory: '{{ kibana_memory_lim }}'
+              volumeMounts:
               - name: certs
-                secret:
-                  secretName: es-tls-certs
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
+                mountPath: /usr/share/kibana/config/certs
+                readOnly: true
+              readinessProbe:
+                httpGet:
+                  path: /api/status
+                  port: 5601
+                initialDelaySeconds: 30
+                periodSeconds: 10
+              livenessProbe:
+                httpGet:
+                  path: /api/status
+                  port: 5601
+                initialDelaySeconds: 60
+                periodSeconds: 30
+            volumes:
+            - name: certs
+              secret:
+                secretName: es-tls-certs
+                items:
+                - key: ca.crt
+                  path: ca.crt
   register: _r_kibana
   retries: 3
   delay: 15
   until: _r_kibana is not failed
-
 - name: Create Kibana service
   kubernetes.core.k8s:
     state: present
@@ -854,20 +751,19 @@
       kind: Service
       metadata:
         name: kibana
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       spec:
         type: ClusterIP
         selector:
           app: kibana
         ports:
-          - name: http
-            port: 5601
-            targetPort: 5601
+        - name: http
+          port: 5601
+          targetPort: 5601
   register: _r_kibana_svc
   retries: 3
   delay: 10
   until: _r_kibana_svc is not failed
-
 - name: Create Kibana HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -876,31 +772,26 @@
       kind: HTTPRoute
       metadata:
         name: kibana
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       spec:
         parentRefs:
-          - name: admin-gateway
-            namespace: cilium-system
-            sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
         hostnames:
-          - "{{ es_kibana_domain }}"
+        - '{{ es_kibana_domain }}'
         rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: /
-            backendRefs:
-              - name: kibana
-                port: 5601
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: kibana
+            port: 5601
   register: _r_kibana_httproute
   retries: 3
   delay: 10
   until: _r_kibana_httproute is not failed
-
-# ============================================
-# PodDisruptionBudgets
-# ============================================
-
 - name: Create PDB for ES masters
   kubernetes.core.k8s:
     state: present
@@ -909,7 +800,7 @@
       kind: PodDisruptionBudget
       metadata:
         name: es-master-pdb
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       spec:
         maxUnavailable: 1
         selector:
@@ -921,7 +812,6 @@
   retries: 3
   delay: 10
   until: _r_master_pdb is not failed
-
 - name: Create PDB for ES data nodes
   kubernetes.core.k8s:
     state: present
@@ -930,7 +820,7 @@
       kind: PodDisruptionBudget
       metadata:
         name: es-data-pdb
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       spec:
         maxUnavailable: 1
         selector:
@@ -942,11 +832,6 @@
   retries: 3
   delay: 10
   until: _r_data_pdb is not failed
-
-# ============================================
-# NetworkPolicy
-# ============================================
-
 - name: Create ES NetworkPolicy
   kubernetes.core.k8s:
     state: present
@@ -955,54 +840,52 @@
       kind: NetworkPolicy
       metadata:
         name: es-allow-internal
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       spec:
         podSelector:
           matchLabels:
             app: elasticsearch
         policyTypes:
-          - Ingress
+        - Ingress
         ingress:
-          - from:
-              - podSelector:
-                  matchLabels:
-                    app: elasticsearch
-            ports:
-              - port: 9300
-                protocol: TCP
-          - from:
-              - podSelector:
-                  matchLabels:
-                    app: kibana
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: temporal
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: opwerf
-            ports:
-              - port: 9200
-                protocol: TCP
+        - from:
+          - podSelector:
+              matchLabels:
+                app: elasticsearch
+          ports:
+          - port: 9300
+            protocol: TCP
+        - from:
+          - podSelector:
+              matchLabels:
+                app: kibana
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: temporal
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: opwerf
+          ports:
+          - port: 9200
+            protocol: TCP
   register: _r_es_netpol
   retries: 3
   delay: 10
   until: _r_es_netpol is not failed
-
 - name: Display Elasticsearch deployment summary
   debug:
     msg:
-      - "=========================================="
-      - "  Elasticsearch {{ es_ver }} Deployed (Platinum)"
-      - "=========================================="
-      - "  Cluster: {{ es_cluster }}"
-      - "  Masters: {{ es_master_replicas }}"
-      - "  Data nodes: {{ es_data_replicas }}"
-      - "  License: {{ es_license_type }}"
-      - "  Endpoint: https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200"
-      - "  Kibana: https://{{ es_kibana_domain }}"
-      - "  User: elastic / (from es-credentials secret)"
-      - "=========================================="
-
+    - ==========================================
+    - '  Elasticsearch {{ es_ver }} Deployed (Platinum)'
+    - ==========================================
+    - '  Cluster: {{ es_cluster }}'
+    - '  Masters: {{ es_master_replicas }}'
+    - '  Data nodes: {{ es_data_replicas }}'
+    - '  License: {{ es_license_type }}'
+    - '  Endpoint: https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200'
+    - '  Kibana: https://{{ es_kibana_domain }}'
+    - '  User: elastic / (from es-credentials secret)'
+    - ==========================================
 - name: Create CiliumNetworkPolicy for Filebeat to Elasticsearch
   kubernetes.core.k8s:
     state: present
@@ -1011,23 +894,44 @@
       kind: CiliumNetworkPolicy
       metadata:
         name: allow-filebeat-to-es
-        namespace: "{{ es_ns }}"
+        namespace: '{{ es_ns }}'
       spec:
-        description: "Allow Filebeat DaemonSet to push logs to Elasticsearch"
+        description: Allow Filebeat DaemonSet to push logs to Elasticsearch
         endpointSelector:
           matchLabels:
             app: elasticsearch
         ingress:
-          - fromEndpoints:
-              - matchLabels:
-                  app: filebeat
-            toPorts:
-              - ports:
-                  - port: "9200"
-                    protocol: TCP
+        - fromEndpoints:
+          - matchLabels:
+              app: filebeat
+          toPorts:
+          - ports:
+            - port: '9200'
+              protocol: TCP
   when: log_stack | default('elk') in ['elk', 'efk']
   register: _r_create_filebeat_cnp
   retries: 3
   delay: 10
   until: _r_create_filebeat_cnp is not failed
   ignore_errors: true
+- name: Create Elasticsearch ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: elasticsearch
+        namespace: '{{ es_ns | default("elasticsearch") }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app: elasticsearch
+        endpoints:
+        - port: https
+          scheme: https
+          interval: 30s
+          tlsConfig:
+            insecureSkipVerify: true

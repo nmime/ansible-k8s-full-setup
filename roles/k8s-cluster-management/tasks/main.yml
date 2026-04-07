@@ -598,6 +598,9 @@
       kind: Namespace
       metadata:
         name: cilium-system
+        labels:
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/warn: privileged
   register: _r_create_cilium_system_namespace
   retries: 3
   delay: 10
@@ -611,6 +614,9 @@
       kind: Namespace
       metadata:
         name: cilium-secrets
+        labels:
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
   register: _r_create_cilium_secrets_namespace
   retries: 3
   delay: 10

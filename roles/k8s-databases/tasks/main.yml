@@ -508,6 +508,9 @@
       kind: Namespace
       metadata:
         name: gitlab
+        labels:
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
   register: _r_ensure_gitlab_namespace_exists_for_cross
   retries: 3
   delay: 10

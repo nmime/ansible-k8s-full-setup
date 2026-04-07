@@ -18,6 +18,8 @@
         name: '{{ app_namespace }}'
         labels:
           app.kubernetes.io/part-of: '{{ app_name }}'
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
   register: _r_create_application_namespace
   retries: 3
   delay: 10
