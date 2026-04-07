@@ -1,227 +1,166 @@
-# CDN Routing Modes
+# CDN DNS Provider Options
 
-## The Problem You Asked About
-
-**"If I enter `app.example.com` (without `cdn`), how does it use CDN?"**
-
-Answer: **It doesn't**. By default, `app.example.com` goes through **Hetzner DNS → K8s directly** (no CDN).
-
-**Only `cdn.example.com` goes through Gcore GeoDNS → edges → CDN.**
+NS records for `example.com` can only point to **one DNS provider**.
+You must pick one of the three modes below.
 
 ---
 
-## Two Modes
+## Option 1: All DNS in Gcore (`edge_dns_provider: gcore`)
 
-### Mode 1: Subdomain Only (Current Default)
+**Best choice for production.** Move NS at your registrar to Gcore.
+Gcore handles everything — GeoDNS for CDN domains, plain A records for the rest.
 
+**At your registrar (Namecheap/GoDaddy/etc):**
+```
+example.com  NS  ns1.gcorelabs.net
+example.com  NS  ns2.gcorelabs.net
+```
+
+**What Ansible creates in Gcore:**
+```
+app.example.com    GeoDNS A  -> EU edge / US edge / APAC edge  (CDN)
+dash.example.com   GeoDNS A  -> EU edge / US edge / APAC edge  (CDN)
+www.example.com    GeoDNS A  -> EU edge / US edge / APAC edge  (CDN)
+origin.example.com A         -> 116.203.x.x  (K8s LB, edges fetch from here)
+vpn.example.com    A         -> 49.12.x.x    (bastion, direct)
+api.example.com    A         -> 116.203.x.x  (K8s LB, direct)
+gitlab.example.com A         -> 116.203.x.x  (K8s LB, direct)
+```
+
+**Configure:**
 ```yaml
-edge_mode: "subdomain"  # default
-edge_subdomain: "cdn"
-```
+edge_dns_provider: "gcore"
 
-**DNS Setup:**
-```
-Hetzner DNS:
-  app.example.com  →  116.203.x.x (K8s LB, direct)
-  dash.example.com →  116.203.x.x (K8s LB, direct)
-  api.example.com  →  116.203.x.x (K8s LB, direct)
-
-Gcore DNS:
-  cdn.example.com  →  GeoDNS → nearest edge → cached
-```
-
-**User Experience:**
-- Visit `app.example.com` → direct to K8s (no CDN, ~300ms from Asia)
-- Visit `cdn.example.com` → via edge (~30ms from Asia, cached)
-
-**Use case:** Testing CDN or serving only static assets through CDN.
-
----
-
-### Mode 2: Full CDN (Recommended for Production)
-
-```yaml
-edge_mode: "full"
-edge_cdn_subdomains: ["app", "dash"]  # or [] for all
-```
-
-**DNS Setup:**
-```
-Hetzner DNS:
-  vpn.example.com     →  49.12.x.x (bastion, direct - no CDN for VPN!)
-  gitlab.example.com  →  116.203.x.x (LB, direct - admin via VPN)
-  api.example.com     →  116.203.x.x (LB, direct - optional)
-
-Gcore DNS:
-  app.example.com   →  GeoDNS → edge → cached
-  dash.example.com  →  GeoDNS → edge → cached
-```
-
-**User Experience:**
-- Visit `app.example.com` → via edge (~30ms from Asia) ✓
-- Visit `dash.example.com` → via edge (~30ms from Asia) ✓
-- Visit `api.example.com` → direct to K8s (fresh data)
-
-**Use case:** Production. Users don't need to know about CDN—they use normal URLs.
-
----
-
-## How to Switch to Full CDN Mode
-
-### Step 1: Configure Variables
-
-```yaml
-# group_vars/all.yml or playbook vars
-edge_mode: "full"
-
-# Option A: Route specific subdomains
-edge_cdn_subdomains:
-  - "app"     # app.example.com via CDN
-  - "dash"    # dash.example.com via CDN
-  - "www"     # www.example.com via CDN
-
-# Option B: Route ALL subdomains (wildcard)
-edge_cdn_subdomains: []
-```
-
-### Step 2: Add Subdomains to HTTPRoutes
-
-Your HTTPRoutes already accept the direct domain. No changes needed:
-
-```yaml
-# This works for both direct and CDN routing:
-hostnames:
+edge_cdn_domains:
   - "app.example.com"
-```
+  - "dash.example.com"
+  - "www.example.com"
 
-K8s Gateway doesn't care if the request came from an edge or directly.
-
-### Step 3: Update Nginx Edge Config (Optional)
-
-The edge Nginx already accepts `*.{{ edge_domain }}`. No changes needed.
-
-### Step 4: Deploy Edge CDN with Full Mode
-
-```bash
-ansible-playbook -i inventory/hosts.yml playbooks/edge-cdn.yml \
-  -e "edge_mode=full" \
-  -e "edge_cdn_subdomains=['app','dash']" \
-  -e "domain=example.com" \
-  -e "origin_server_ip=116.203.12.34"
-```
-
-**What this does:**
-
-Creates GeoDNS records in Gcore for:
-- `app.example.com` → GeoDNS → edges
-- `dash.example.com` → GeoDNS → edges
-
-**And leaves in Hetzner DNS:**
-- `vpn.example.com` → bastion (direct)
-- `gitlab.example.com` → LB (direct)
-- `*.example.com` → LB (wildcard catchall for everything else)
-
-### Step 5: Test
-
-```bash
-# Check DNS resolution
-dig +short app.example.com
-# Should return edge IP (not LB IP anymore)
-
-# Check which edge you get
-curl -I https://app.example.com/
-# X-Edge-Region: EU / US / APAC
-# X-Cache-Status: MISS (first) → HIT (second)
-
-# Check direct domain still works
-curl -I https://vpn.example.com/
-# Should resolve to bastion IP (not edge)
+edge_direct_domains:
+  - "vpn.example.com"
+  - "api.example.com"
+  - "gitlab.example.com"
 ```
 
 ---
 
-## DNS Priority Rules
+## Option 2: All DNS in Hetzner + NS delegation (`edge_dns_provider: hetzner`)
 
-When a domain is in **both Hetzner and Gcore**, which wins?
+Keep Hetzner DNS for everything. At your registrar, add NS records to
+delegate specific CDN subdomains to Gcore. Ansible creates the GeoDNS records
+in Gcore and direct A records in Hetzner.
 
-**Answer:** It depends on **NS records** at your domain registrar.
-
-### Option A: Split DNS (current)
-
-**At registrar (e.g., Namecheap, GoDaddy):**
+**At your registrar — add NS delegation for each CDN subdomain:**
 ```
-example.com        NS  ns1.hetzner.com  (Hetzner handles most records)
-cdn.example.com    NS  ns1.gcorelabs.net  (Gcore handles cdn subdomain only)
-```
-
-This is **NS delegation** — Hetzner handles the zone, but Gcore handles a specific subdomain.
-
-**Result:**
-- `app.example.com` → resolved by Hetzner
-- `cdn.example.com` → resolved by Gcore
-
-### Option B: Full Gcore DNS (for full CDN mode)
-
-**At registrar:**
-```
-example.com  NS  ns1.gcorelabs.net  (Gcore handles ALL records)
+app.example.com   NS  ns1.gcorelabs.net
+app.example.com   NS  ns2.gcorelabs.net
+dash.example.com  NS  ns1.gcorelabs.net
+dash.example.com  NS  ns2.gcorelabs.net
 ```
 
-**Gcore DNS zone has ALL records:**
+**What Ansible creates in Gcore (GeoDNS):**
 ```
-app.example.com   A  GeoDNS → edges
-dash.example.com  A  GeoDNS → edges
-vpn.example.com   A  49.12.x.x (bastion, direct)
-origin.example.com A  116.203.x.x (K8s LB)
+app.example.com    GeoDNS A -> EU / US / APAC edges
+dash.example.com   GeoDNS A -> EU / US / APAC edges
 ```
 
-**Result:** Gcore resolves everything. You can use GeoDNS for any subdomain.
-
-### Option C: Keep Hetzner, CNAME to Gcore (simple hybrid)
-
-**Hetzner DNS:**
+**What Ansible creates in Hetzner (direct):**
 ```
-app.example.com   CNAME  app.cdn.example.com  (redirect to CDN)
-cdn.example.com   A      GeoDNS (Gcore)
-vpn.example.com   A      49.12.x.x (direct)
+vpn.example.com    A -> 49.12.x.x
+api.example.com    A -> 116.203.x.x
+origin.example.com A -> 116.203.x.x
+```
+
+**Configure:**
+```yaml
+edge_dns_provider: "hetzner"
+
+edge_cdn_domains:
+  - "app.example.com"
+  - "dash.example.com"
+
+edge_direct_domains:
+  - "vpn.example.com"
+  - "api.example.com"
+```
+
+**Note:** Requires `HCLOUD_TOKEN` env var and `hcloud` CLI on the Ansible controller.
+
+---
+
+## Option 3: Hetzner with CNAME to Gcore (`edge_dns_provider: hetzner_cname`)
+
+Keep all DNS in Hetzner. CDN domains in Hetzner are CNAMEs pointing to
+GeoDNS records in a Gcore zone (`cdn.example.com`). No NS delegation needed.
+
+**Tradeoff:** One extra DNS lookup per CDN request (~10–30ms slower than options 1/2).
+
+**What Ansible creates in Gcore (GeoDNS zone: `cdn.example.com`):**
+```
+app.cdn.example.com   GeoDNS A -> EU / US / APAC edges
+dash.cdn.example.com  GeoDNS A -> EU / US / APAC edges
+```
+
+**What Ansible creates in Hetzner:**
+```
+app.example.com    CNAME -> app.cdn.example.com   (-> Gcore GeoDNS)
+dash.example.com   CNAME -> dash.cdn.example.com  (-> Gcore GeoDNS)
+vpn.example.com    A     -> 49.12.x.x
+api.example.com    A     -> 116.203.x.x
+origin.example.com A     -> 116.203.x.x
 ```
 
 **User visits `app.example.com`:**
-1. Hetzner DNS: `app.example.com` CNAME → `app.cdn.example.com`
-2. Gcore DNS: `app.cdn.example.com` → nearest edge IP
-3. User connects to edge
+1. Hetzner: `app.example.com` → CNAME → `app.cdn.example.com`
+2. Gcore: `app.cdn.example.com` → GeoDNS → nearest edge IP
+3. Browser connects to edge IP
 
-**Problem:** CNAME adds extra DNS lookup (slower). GeoDNS A record is better.
+**Configure:**
+```yaml
+edge_dns_provider: "hetzner_cname"
+
+edge_cdn_domains:
+  - "app.example.com"
+  - "dash.example.com"
+
+edge_direct_domains:
+  - "vpn.example.com"
+  - "api.example.com"
+```
 
 ---
 
-## Recommendation
+## Comparison
 
-### For Testing:
-```yaml
-edge_mode: "subdomain"  # Keep default
-```
-
-Users must use `cdn.example.com` explicitly. Safe, no changes to existing DNS.
-
-### For Production:
-```yaml
-edge_mode: "full"
-edge_cdn_subdomains: ["app", "www", "dash"]  # Public-facing apps
-```
-
-Users use normal URLs (`app.example.com`). CDN is transparent. Admin services stay direct.
+| | gcore | hetzner | hetzner_cname |
+|---|---|---|---|
+| NS at registrar | → Gcore | → Hetzner | → Hetzner |
+| CDN domain DNS | Gcore GeoDNS | Gcore GeoDNS | Gcore GeoDNS |
+| Direct domain DNS | Gcore plain A | Hetzner A | Hetzner A |
+| Setup complexity | Simple | Medium (NS per subdomain) | Simple |
+| DNS speed | Fastest | Fastest | Slightly slower (+1 lookup) |
+| Recommended | ✓ Production | When you must keep Hetzner | When NS delegation is blocked |
 
 ---
 
-## Summary
+## How to run
 
-**Your question: "I enter `app.example.com`, not `cdn.example.com`. How does it use CDN?"**
+```bash
+# Option 1: Gcore
+ansible-playbook playbooks/edge-cdn.yml \
+  -e "edge_dns_provider=gcore" \
+  -e "domain=example.com" \
+  -e "origin_server_ip=116.203.x.x"
 
-**Answer:**
+# Option 2: Hetzner + NS delegation
+ansible-playbook playbooks/edge-cdn.yml \
+  -e "edge_dns_provider=hetzner" \
+  -e "domain=example.com" \
+  -e "origin_server_ip=116.203.x.x"
 
-**Current setup** (mode=subdomain): It **doesn't** use CDN. You must use `cdn.example.com`.
-
-**Full CDN mode**: Change `edge_mode: "full"` and create GeoDNS records for `app.example.com` in Gcore. Then it **does** use CDN when users visit `app.example.com`.
-
-The subdomain mode is for testing. Full mode is for production.
+# Option 3: Hetzner CNAME
+ansible-playbook playbooks/edge-cdn.yml \
+  -e "edge_dns_provider=hetzner_cname" \
+  -e "domain=example.com" \
+  -e "origin_server_ip=116.203.x.x"
+```
