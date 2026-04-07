@@ -7,13 +7,13 @@ upstream origin {
 
 server {
     listen 80;
-    server_name {{ edge_subdomain }}.{{ edge_domain }} {{ edge_domain }} *.{{ edge_domain }};
+    server_name {{ edge_domain }} *.{{ edge_domain }};
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name {{ edge_subdomain }}.{{ edge_domain }} {{ edge_domain }} *.{{ edge_domain }};
+    server_name {{ edge_domain }} *.{{ edge_domain }};
 
     ssl_certificate /etc/letsencrypt/live/{{ edge_domain }}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/{{ edge_domain }}/privkey.pem;

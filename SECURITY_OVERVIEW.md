@@ -157,7 +157,7 @@ User request → Gcore DNS (GeoDNS)
 # group_vars/all.yml
 gcore_api_key: "{{ lookup('env', 'GCORE_API_KEY') }}"
 edge_domain: "example.com"
-edge_subdomain: "cdn"
+edge_dns_provider: "gcore"  # gcore | hetzner | hetzner_cname
 origin_server_ip: "YOUR_K8S_LB_IP"
 edge_cache_size: "10g"
 

@@ -612,7 +612,7 @@ origin_server_ip: "116.203.x.x"  # K8s LB or bastion IP
 
 **Optional:**
 ```yaml
-edge_subdomain: "cdn"  # cdn.example.com
+edge_dns_provider: "gcore"  # gcore | hetzner | hetzner_cname  # cdn.example.com
 edge_cache_size: "10g"
 edge_cache_path: "/var/cache/nginx"
 edge_upstream_host: "origin.{{ domain }}"

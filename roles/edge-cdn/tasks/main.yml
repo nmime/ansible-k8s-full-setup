@@ -358,11 +358,18 @@
   when: edge_dns_provider == "hetzner" and edge_cdn_domains | length > 0
 
 - name: Create A records in Hetzner for direct domains (mode=hetzner)
-  shell: >
-    hcloud dns record-create --zone-id
-    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
-    --name {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}
-    --type A --ttl 300 --value {{ origin_server_ip }}
+  ansible.builtin.shell: |
+    hcloud zone rrset create \
+      --name "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --ttl 300 \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}" || \
+    hcloud zone rrset set-records \
+      --name "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}"
   loop: "{{ edge_direct_domains }}"
   environment:
     HCLOUD_TOKEN: "{{ hcloud_token }}"
@@ -370,11 +377,18 @@
   when: edge_dns_provider == "hetzner" and edge_direct_domains | length > 0
 
 - name: Create origin A record in Hetzner (mode=hetzner)
-  shell: >
-    hcloud dns record-create --zone-id
-    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
-    --name {{ edge_origin_domain | regex_replace('\\.'+ edge_domain +'$', '') }}
-    --type A --ttl 300 --value {{ origin_server_ip }}
+  ansible.builtin.shell: |
+    hcloud zone rrset create \
+      --name "{{ edge_origin_domain | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --ttl 300 \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}" || \
+    hcloud zone rrset set-records \
+      --name "{{ edge_origin_domain | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}"
   environment:
     HCLOUD_TOKEN: "{{ hcloud_token }}"
   ignore_errors: yes
@@ -443,12 +457,18 @@
   when: edge_dns_provider == "hetzner_cname" and edge_cdn_domains | length > 0
 
 - name: Create CNAME records in Hetzner for CDN domains (mode=hetzner_cname)
-  shell: >
-    hcloud dns record-create --zone-id
-    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
-    --name {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}
-    --type CNAME --ttl 300
-    --value {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}.cdn.{{ edge_domain }}.
+  ansible.builtin.shell: |
+    hcloud zone rrset create \
+      --name "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type CNAME \
+      --ttl 300 \
+      --record "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}.cdn.{{ edge_domain }}." \
+      "{{ edge_domain }}" || \
+    hcloud zone rrset set-records \
+      --name "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type CNAME \
+      --record "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}.cdn.{{ edge_domain }}." \
+      "{{ edge_domain }}"
   loop: "{{ edge_cdn_domains }}"
   environment:
     HCLOUD_TOKEN: "{{ hcloud_token }}"
@@ -456,11 +476,18 @@
   when: edge_dns_provider == "hetzner_cname" and edge_cdn_domains | length > 0
 
 - name: Create A records in Hetzner for direct domains (mode=hetzner_cname)
-  shell: >
-    hcloud dns record-create --zone-id
-    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
-    --name {{ item | regex_replace('\\.'+ edge_domain +'$', '') }}
-    --type A --ttl 300 --value {{ origin_server_ip }}
+  ansible.builtin.shell: |
+    hcloud zone rrset create \
+      --name "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --ttl 300 \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}" || \
+    hcloud zone rrset set-records \
+      --name "{{ item | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}"
   loop: "{{ edge_direct_domains }}"
   environment:
     HCLOUD_TOKEN: "{{ hcloud_token }}"
@@ -468,113 +495,22 @@
   when: edge_dns_provider == "hetzner_cname" and edge_direct_domains | length > 0
 
 - name: Create origin A record in Hetzner (mode=hetzner_cname)
-  shell: >
-    hcloud dns record-create --zone-id
-    $(hcloud dns zone describe {{ edge_domain }} -o json | python3 -c "import sys,json; print(json.load(sys.stdin)["id"])")
-    --name {{ edge_origin_domain | regex_replace('\\.'+ edge_domain +'$', '') }}
-    --type A --ttl 300 --value {{ origin_server_ip }}
+  ansible.builtin.shell: |
+    hcloud zone rrset create \
+      --name "{{ edge_origin_domain | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --ttl 300 \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}" || \
+    hcloud zone rrset set-records \
+      --name "{{ edge_origin_domain | regex_replace('\\.' + edge_domain + '$', '') }}" \
+      --type A \
+      --record "{{ origin_server_ip }}" \
+      "{{ edge_domain }}"
   environment:
     HCLOUD_TOKEN: "{{ hcloud_token }}"
   ignore_errors: yes
   when: edge_dns_provider == "hetzner_cname"
-
-# ============================================
-# 4. HEALTH CHECKS
-# ============================================
-
-- name: Configure Gcore health checks for edge servers
-  uri:
-    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_domain }}/A/healthchecks"
-    method: PUT
-    headers:
-      Authorization: "APIKey {{ gcore_api_key }}"
-      Content-Type: application/json
-    body_format: json
-    body:
-      frequency: "{{ edge_health_check_interval }}"
-      timeout: "{{ edge_health_check_timeout }}"
-      protocol: HTTP
-      port: 443
-      tls: true
-      method: GET
-      url: "{{ edge_health_check_path }}"
-      host: "{{ edge_domain }}"
-      expected_http_statuses:
-        - 200
-    status_code: [200, 201]
-  register: _r_gcore_healthcheck
-  retries: 3
-  delay: 5
-  until: _r_gcore_healthcheck is not failed
-
-# ============================================
-# 5. CACHE PURGE CRONJOB (K8s)
-# ============================================
-
-- name: Create cache purge CronJob in K8s
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: CronJob
-      metadata:
-        name: edge-cache-purge
-        namespace: "{{ monitoring_namespace | default('monitoring') }}"
-      spec:
-        schedule: "0 4 * * 0"
-        jobTemplate:
-          spec:
-            template:
-              spec:
-                restartPolicy: Never
-                containers:
-                  - name: purge
-                    image: curlimages/curl:8.5.0
-                    command:
-                      - /bin/sh
-                      - -c
-                      - |
-                        for ip in {{ edge_server_ips.values() | join(' ') }}; do
-                          echo "Purging cache on $ip..."
-                          curl -sf "https://$ip/purge/*" -H "Host: {{ edge_domain }}" --insecure || true
-                        done
-                        echo "Cache purge complete"
-                    resources:
-                      requests:
-                        cpu: 50m
-                        memory: 32Mi
-                      limits:
-                        cpu: 100m
-                        memory: 64Mi
-                    securityContext:
-                      runAsNonRoot: true
-                      readOnlyRootFilesystem: true
-                      allowPrivilegeEscalation: false
-
-# ============================================
-# 6. MONITORING - Edge Server ServiceMonitors
-# ============================================
-
-- name: Create edge server monitoring endpoints (via bastion proxy)
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Endpoints
-      metadata:
-        name: "edge-{{ item.key }}"
-        namespace: "{{ monitoring_namespace | default('monitoring') }}"
-        labels:
-          app: edge-proxy
-          region: "{{ item.key }}"
-      subsets:
-        - addresses:
-            - ip: "{{ item.value }}"
-          ports:
-            - name: metrics
-              port: 9100
-              protocol: TCP
-  loop: "{{ edge_server_ips | dict2items }}"
 
 - name: Create headless services for edge monitoring
   kubernetes.core.k8s:
