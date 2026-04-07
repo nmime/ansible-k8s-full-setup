@@ -6,18 +6,23 @@ gcore_api_key: "{{ lookup('env', 'GCORE_API_KEY') }}"
 # Domain configuration
 edge_domain: "{{ domain }}"
 
-# CDN routing mode:
-#   "subdomain" - Only cdn.example.com goes through edges (default, safest)
-#   "full" - ALL traffic (*.example.com) goes through edges (recommended for production)
-edge_mode: "subdomain"
-
-# Subdomains to route through CDN when mode=full
-# Leave empty for wildcard (all subdomains)
-# Or specify explicit list: ["app", "dash", "static"]
-edge_cdn_subdomains: []
-
-# CDN subdomain (only used when edge_mode=subdomain)
-edge_subdomain: "cdn"  # cdn.example.com
+# ============================================
+# CDN DOMAIN ROUTING
+# ============================================
+# List the FULL domains (app.example.com, NOT just "app") that should go through CDN.
+# These domains get GeoDNS A records in Gcore that route to nearest edge.
+#
+# Examples:
+#   edge_cdn_domains: ["app.example.com", "dash.example.com", "www.example.com"]
+#   edge_cdn_domains: []  # Empty = no CDN routing, all traffic direct to K8s
+#
+# IMPORTANT: You must set this explicitly in your playbook/inventory.
+# The defaults here are placeholders only — replace with your actual domains.
+edge_cdn_domains:
+  - "app.{{ domain }}"      # Main app
+  - "dash.{{ domain }}"     # Dashboard
+  - "www.{{ domain }}"      # Marketing site
+# Remove or comment out domains you DON'T want cached (e.g., API, admin panels)
 
 # Edge proxy configuration
 edge_proxy_port: 443
@@ -68,13 +73,3 @@ edge_cache_rules:
     ttl: "1h"
   - match: "default"
     ttl: "10m"
-
-# Domains to EXCLUDE from CDN (always go direct to origin)
-# Typically: VPN, admin panels, API that can't be cached
-edge_bypass_subdomains:
-  - "vpn"       # VPN must go direct to bastion
-  - "api"       # API usually shouldn't be cached (unless you configure it)
-  - "gitlab"    # Admin services behind VPN
-  - "grafana"
-  - "argocd"
-  - "vault"
