@@ -1,0 +1,547 @@
+---
+# ============================================
+# EDGE CDN ROLE
+# Provisions edge proxy servers across regions,
+# configures Nginx caching proxy, sets up Gcore
+# GeoDNS for geographic traffic routing.
+# ============================================
+
+# ============================================
+# 1. PROVISION EDGE SERVERS (Hetzner Cloud)
+# ============================================
+
+- name: Provision edge proxy servers in each region
+  hetzner.hcloud.server:
+    name: "edge-{{ item.key }}-{{ project_name | default('k8s') }}"
+    server_type: "{{ item.value.server_type }}"
+    image: ubuntu-22.04
+    location: "{{ item.value.hetzner_location }}"
+    ssh_keys:
+      - "{{ ssh_key_name | default('default') }}"
+    labels:
+      role: edge-proxy
+      region: "{{ item.key }}"
+      project: "{{ project_name | default('k8s') }}"
+    state: present
+  loop: "{{ edge_regions | dict2items }}"
+  register: _r_edge_servers
+  retries: 3
+  delay: 10
+  until: _r_edge_servers is not failed
+
+- name: Build edge server inventory
+  set_fact:
+    edge_server_ips: >-
+      {%- set result = {} -%}
+      {%- for item in _r_edge_servers.results -%}
+        {%- set _ = result.update({item.item.key: item.hcloud_server.ipv4_address}) -%}
+      {%- endfor -%}
+      {{ result }}
+
+- name: Wait for SSH on all edge servers
+  wait_for:
+    host: "{{ item.value }}"
+    port: 22
+    timeout: 120
+  loop: "{{ edge_server_ips | dict2items }}"
+
+# ============================================
+# 2. CONFIGURE EDGE SERVERS
+# ============================================
+
+- name: Configure edge servers
+  delegate_to: "{{ item.value }}"
+  block:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install Nginx and Certbot
+      apt:
+        name:
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+          - prometheus-node-exporter
+        state: present
+
+    - name: Configure UFW defaults
+      ufw:
+        direction: incoming
+        default: deny
+
+    - name: Allow SSH via UFW
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: Allow HTTP via UFW
+      ufw:
+        rule: allow
+        port: "80"
+        proto: tcp
+
+    - name: Allow HTTPS via UFW
+      ufw:
+        rule: allow
+        port: "443"
+        proto: tcp
+
+    - name: Allow node-exporter from origin (monitoring)
+      ufw:
+        rule: allow
+        port: "9100"
+        proto: tcp
+        src: "{{ origin_server_ip | default('0.0.0.0/0') }}"
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    - name: Create cache directory
+      file:
+        path: "{{ edge_cache_path }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Deploy Nginx edge proxy config
+      template:
+        src: edge-nginx.conf.j2
+        dest: /etc/nginx/sites-available/edge-proxy
+        mode: "0644"
+      vars:
+        edge_region_name: "{{ item.key }}"
+      notify: reload nginx
+
+    - name: Enable edge proxy site
+      file:
+        src: /etc/nginx/sites-available/edge-proxy
+        dest: /etc/nginx/sites-enabled/edge-proxy
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Obtain Let's Encrypt certificate
+      command: >
+        certbot certonly --nginx
+        -d "{{ edge_subdomain }}.{{ edge_domain }}"
+        -d "{{ edge_domain }}"
+        --email "{{ edge_tls_cert_email }}"
+        --agree-tos
+        --non-interactive
+      args:
+        creates: "/etc/letsencrypt/live/{{ edge_domain }}/fullchain.pem"
+      when: edge_tls_enabled
+
+    - name: Setup certbot auto-renewal cron
+      cron:
+        name: "certbot-renew"
+        minute: "0"
+        hour: "3"
+        day: "*/7"
+        job: "certbot renew --quiet --deploy-hook 'systemctl reload nginx'"
+
+    - name: Enable and start Nginx
+      systemd:
+        name: nginx
+        enabled: yes
+        state: started
+
+    - name: Enable node-exporter for monitoring
+      systemd:
+        name: prometheus-node-exporter
+        enabled: yes
+        state: started
+
+    - name: Configure fail2ban for Nginx
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 5
+
+          [sshd]
+          enabled = true
+
+          [nginx-http-auth]
+          enabled = true
+
+          [nginx-botsearch]
+          enabled = true
+        mode: "0644"
+      notify: restart fail2ban
+
+    - name: Enable unattended-upgrades
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        mode: "0644"
+  loop: "{{ edge_server_ips | dict2items }}"
+
+# ============================================
+# 3. GCORE GeoDNS CONFIGURATION
+# ============================================
+
+- name: Create DNS zone in Gcore (if not exists)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones"
+    method: POST
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      name: "{{ edge_domain }}"
+    status_code: [200, 201, 409]
+  register: _r_gcore_zone
+  retries: 3
+  delay: 5
+  until: _r_gcore_zone is not failed
+
+- name: Get DNS zone ID
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}"
+    method: GET
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+    status_code: 200
+  register: _r_gcore_zone_info
+
+- name: Set zone ID fact
+  set_fact:
+    gcore_zone_id: "{{ _r_gcore_zone_info.json.id }}"
+
+- name: Create GeoDNS A record for app (geodns filter)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_domain }}/A"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      filters:
+        - type: geodns
+        - type: default
+          limit: 1
+        - type: is_healthy
+          strict: false
+      resource_records:
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            continents:
+              - EU
+            default: false
+        - content:
+            - "{{ edge_server_ips.us }}"
+          meta:
+            continents:
+              - NA
+              - SA
+            default: false
+        - content:
+            - "{{ edge_server_ips.apac }}"
+          meta:
+            continents:
+              - AS
+              - OC
+            default: false
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            default: true
+    status_code: [200, 201]
+  register: _r_gcore_geodns
+  retries: 3
+  delay: 5
+  until: _r_gcore_geodns is not failed
+
+- name: Create GeoDNS A record for CDN subdomain
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_subdomain }}.{{ edge_domain }}/A"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      filters:
+        - type: geodns
+        - type: default
+          limit: 1
+        - type: is_healthy
+          strict: false
+      resource_records:
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            continents:
+              - EU
+            default: false
+        - content:
+            - "{{ edge_server_ips.us }}"
+          meta:
+            continents:
+              - NA
+              - SA
+            default: false
+        - content:
+            - "{{ edge_server_ips.apac }}"
+          meta:
+            continents:
+              - AS
+              - OC
+            default: false
+        - content:
+            - "{{ edge_server_ips.eu }}"
+          meta:
+            default: true
+    status_code: [200, 201]
+  register: _r_gcore_cdn_geodns
+  retries: 3
+  delay: 5
+  until: _r_gcore_cdn_geodns is not failed
+
+- name: Create origin A record (direct to K8s cluster)
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/origin.{{ edge_domain }}/A"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      resource_records:
+        - content:
+            - "{{ origin_server_ip }}"
+    status_code: [200, 201]
+  register: _r_gcore_origin
+  retries: 3
+  delay: 5
+  until: _r_gcore_origin is not failed
+
+# ============================================
+# 4. HEALTH CHECKS
+# ============================================
+
+- name: Configure Gcore health checks for edge servers
+  uri:
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_domain }}/A/healthchecks"
+    method: PUT
+    headers:
+      Authorization: "APIKey {{ gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      frequency: "{{ edge_health_check_interval }}"
+      timeout: "{{ edge_health_check_timeout }}"
+      protocol: HTTP
+      port: 443
+      tls: true
+      method: GET
+      url: "{{ edge_health_check_path }}"
+      host: "{{ edge_domain }}"
+      expected_http_statuses:
+        - 200
+    status_code: [200, 201]
+  register: _r_gcore_healthcheck
+  retries: 3
+  delay: 5
+  until: _r_gcore_healthcheck is not failed
+
+# ============================================
+# 5. CACHE PURGE CRONJOB (K8s)
+# ============================================
+
+- name: Create cache purge CronJob in K8s
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: edge-cache-purge
+        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+      spec:
+        schedule: "0 4 * * 0"
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: purge
+                    image: curlimages/curl:8.5.0
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        for ip in {{ edge_server_ips.values() | join(' ') }}; do
+                          echo "Purging cache on $ip..."
+                          curl -sf "https://$ip/purge/*" -H "Host: {{ edge_domain }}" --insecure || true
+                        done
+                        echo "Cache purge complete"
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 32Mi
+                      limits:
+                        cpu: 100m
+                        memory: 64Mi
+                    securityContext:
+                      runAsNonRoot: true
+                      readOnlyRootFilesystem: true
+                      allowPrivilegeEscalation: false
+
+# ============================================
+# 6. MONITORING - Edge Server ServiceMonitors
+# ============================================
+
+- name: Create edge server monitoring endpoints (via bastion proxy)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Endpoints
+      metadata:
+        name: "edge-{{ item.key }}"
+        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+        labels:
+          app: edge-proxy
+          region: "{{ item.key }}"
+      subsets:
+        - addresses:
+            - ip: "{{ item.value }}"
+          ports:
+            - name: metrics
+              port: 9100
+              protocol: TCP
+  loop: "{{ edge_server_ips | dict2items }}"
+
+- name: Create headless services for edge monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "edge-{{ item.key }}"
+        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+        labels:
+          app: edge-proxy
+          region: "{{ item.key }}"
+      spec:
+        type: ClusterIP
+        clusterIP: None
+        ports:
+          - name: metrics
+            port: 9100
+            targetPort: 9100
+  loop: "{{ edge_server_ips | dict2items }}"
+
+- name: Create ServiceMonitor for all edge servers
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: edge-proxies
+        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app: edge-proxy
+        endpoints:
+          - port: metrics
+            interval: 30s
+
+- name: Create edge proxy alerting rules
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: edge-proxy-alerts
+        namespace: "{{ monitoring_namespace | default('monitoring') }}"
+        labels:
+          release: prometheus
+      spec:
+        groups:
+          - name: edge-proxy
+            rules:
+              - alert: EdgeProxyDown
+                expr: up{job=~"edge-.*"} == 0
+                for: 2m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "Edge proxy {{ '{{' }} $labels.instance {{ '}}' }} is down"
+              - alert: EdgeProxyHighLatency
+                expr: nginx_http_request_duration_seconds{quantile="0.99"} > 2
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Edge proxy {{ '{{' }} $labels.instance {{ '}}' }} has high latency"
+              - alert: EdgeCacheHitRateLow
+                expr: rate(nginx_cache_responses_total{status="HIT"}[5m]) / rate(nginx_cache_responses_total[5m]) < 0.5
+                for: 15m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "Edge cache hit rate below 50%"
+
+# ============================================
+# 7. OUTPUT
+# ============================================
+
+- name: Display edge CDN deployment summary
+  debug:
+    msg: |
+      ========================================
+      EDGE CDN DEPLOYMENT COMPLETE
+      ========================================
+      Domain: {{ edge_domain }}
+      CDN: {{ edge_subdomain }}.{{ edge_domain }}
+      Origin: origin.{{ edge_domain }} -> {{ origin_server_ip }}
+
+      Edge Servers:
+      {% for region, ip in edge_server_ips.items() %}
+        {{ region | upper }}: {{ ip }}
+      {% endfor %}
+
+      GeoDNS Routing (Gcore):
+        EU traffic  -> {{ edge_server_ips.eu }}
+        NA/SA traffic -> {{ edge_server_ips.us }}
+        APAC traffic -> {{ edge_server_ips.apac }}
+        Default     -> {{ edge_server_ips.eu }}
+
+      Health Checks: {{ edge_health_check_path }} every {{ edge_health_check_interval }}s
+      Auto-failover: enabled (unhealthy servers removed)
+      TLS: Let's Encrypt (auto-renew weekly)
+      Cache: {{ edge_cache_size }} per edge
+      Monitoring: node-exporter + ServiceMonitor
+      ========================================

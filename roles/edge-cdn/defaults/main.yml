@@ -1,0 +1,58 @@
+---
+# Gcore API Configuration
+gcore_api_url: "https://api.gcore.com"
+gcore_api_key: "{{ lookup('env', 'GCORE_API_KEY') }}"
+
+# Domain configuration
+edge_domain: "{{ domain }}"
+edge_subdomain: "cdn"  # cdn.example.com
+
+# Edge proxy configuration
+edge_proxy_port: 443
+edge_cache_size: "10g"
+edge_cache_path: "/var/cache/nginx"
+edge_upstream_host: "origin.{{ domain }}"
+edge_upstream_port: 443
+
+# GeoDNS regions - edge servers in each region
+edge_regions:
+  eu:
+    name: "Europe"
+    continents: ["EU"]
+    countries: []  # empty = all countries in continent
+    hetzner_location: "fsn1"  # Falkenstein, Germany
+    server_type: "cx21"
+  us:
+    name: "North America"
+    continents: ["NA"]
+    countries: []
+    hetzner_location: "ash"  # Ashburn, US
+    server_type: "cx21"
+  apac:
+    name: "Asia Pacific"
+    continents: ["AS", "OC"]
+    countries: []
+    hetzner_location: "sin"  # Singapore (if available) or closest
+    server_type: "cx21"
+
+# Default/fallback goes to origin
+edge_default_target: "origin"
+
+# Health check configuration
+edge_health_check_path: "/health"
+edge_health_check_interval: 30
+edge_health_check_timeout: 10
+edge_health_check_unhealthy_threshold: 3
+
+# TLS configuration
+edge_tls_enabled: true
+edge_tls_cert_email: "{{ admin_email | default('admin@' + domain) }}"
+
+# Cache rules
+edge_cache_rules:
+  - match: "~* \\.(jpg|jpeg|png|gif|ico|css|js|woff2?)$"
+    ttl: "30d"
+  - match: "~* \\.(html|htm)$"
+    ttl: "1h"
+  - match: "default"
+    ttl: "10m"
