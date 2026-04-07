@@ -226,9 +226,12 @@
   set_fact:
     gcore_zone_id: "{{ _r_gcore_zone_info.json.id }}"
 
-- name: Create GeoDNS A record for app (geodns filter)
+# Create GeoDNS for each domain in edge_cdn_domains list
+# edge_cdn_domains defaults to ["app.example.com", "dash.example.com"] etc.
+# These are your REAL app domains — users visit them directly, CDN is transparent.
+- name: Create GeoDNS A record for each app domain
   uri:
-    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_domain }}/A"
+    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ item }}/A"
     method: PUT
     headers:
       Authorization: "APIKey {{ gcore_api_key }}"
@@ -268,57 +271,12 @@
           meta:
             default: true
     status_code: [200, 201]
-  register: _r_gcore_geodns
+  loop: "{{ edge_cdn_domains }}"
+  register: _r_gcore_app_geodns
   retries: 3
   delay: 5
-  until: _r_gcore_geodns is not failed
-
-- name: Create GeoDNS A record for CDN subdomain
-  uri:
-    url: "{{ gcore_api_url }}/dns/v2/zones/{{ edge_domain }}/{{ edge_subdomain }}.{{ edge_domain }}/A"
-    method: PUT
-    headers:
-      Authorization: "APIKey {{ gcore_api_key }}"
-      Content-Type: application/json
-    body_format: json
-    body:
-      ttl: 300
-      filters:
-        - type: geodns
-        - type: default
-          limit: 1
-        - type: is_healthy
-          strict: false
-      resource_records:
-        - content:
-            - "{{ edge_server_ips.eu }}"
-          meta:
-            continents:
-              - EU
-            default: false
-        - content:
-            - "{{ edge_server_ips.us }}"
-          meta:
-            continents:
-              - NA
-              - SA
-            default: false
-        - content:
-            - "{{ edge_server_ips.apac }}"
-          meta:
-            continents:
-              - AS
-              - OC
-            default: false
-        - content:
-            - "{{ edge_server_ips.eu }}"
-          meta:
-            default: true
-    status_code: [200, 201]
-  register: _r_gcore_cdn_geodns
-  retries: 3
-  delay: 5
-  until: _r_gcore_cdn_geodns is not failed
+  until: _r_gcore_app_geodns is not failed
+  when: edge_cdn_domains | length > 0
 
 - name: Create origin A record (direct to K8s cluster)
   uri:
