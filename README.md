@@ -168,8 +168,9 @@ APAC Edge   EU Edge    US Edge
 | **MongoDB 8.0** | Percona 1.22 | `install_mongodb: true` | HA NoSQL with PBM backups |
 | **Dragonfly** | v1.37 | `install_dragonfly: true` | Redis-compatible (25x faster) |
 | **Temporal** | v1.29 | `install_temporal: true` | Workflow orchestration |
-**Database monitoring**: PMM (Percona Monitoring and Management) is automatically installed when PostgreSQL or MongoDB is enabled.
+| **PMM** | v3 | Auto-enabled with DBs | Percona database monitoring |
 
+**Note**: PMM is auto-enabled when PostgreSQL, MongoDB, or Dragonfly is installed.
 **Enable in `group_vars/all.yml`:**
 ```yaml
 install_postgresql: true
