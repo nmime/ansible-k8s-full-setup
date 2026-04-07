@@ -319,3 +319,22 @@
               protocol: TCP
             - port: '9001'
               protocol: TCP
+- name: Create MinIO ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: minio
+        namespace: '{{ minio_ns | default("storage") }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app: minio
+        endpoints:
+        - port: http
+          path: /minio/health/live
+          interval: 30s

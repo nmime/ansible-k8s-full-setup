@@ -487,6 +487,8 @@
         name: '{{ eso_ns }}'
         labels:
           app.kubernetes.io/part-of: external-secrets
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
   register: _r_create_eso_namespace
   retries: 3
   delay: 15
@@ -535,6 +537,7 @@
     definition:
       apiVersion: v1
       kind: ServiceAccount
+      automountServiceAccountToken: false
       metadata:
         name: external-secrets-vault
         namespace: '{{ eso_ns }}'
@@ -726,3 +729,24 @@
               protocol: TCP
         - toEntities:
           - kube-apiserver
+- name: Create Vault ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: vault
+        namespace: '{{ vault_ns | default("vault") }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: vault
+        endpoints:
+        - port: https
+          scheme: https
+          interval: 30s
+          tlsConfig:
+            insecureSkipVerify: true
