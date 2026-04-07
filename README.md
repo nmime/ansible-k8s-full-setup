@@ -28,7 +28,7 @@
 - VictoriaMetrics + Grafana (monitoring)
 - Loki + Promtail (logging)
 - Headscale VPN (WireGuard)
-- GitLab CE (Git + CI/CD + Registry)
+- GitLab (Git + CI/CD + Registry)
 - ArgoCD (GitOps continuous delivery)
 - Elasticsearch (audit logs + compliance)
 
@@ -156,7 +156,7 @@ APAC Edge   EU Edge    US Edge
 | **Loki + Promtail** | v3.6 | Log aggregation |
 | **Headscale** | v0.28 | WireGuard VPN |
 | **MetalLB** | v0.15 | Bare-metal LB |
-| **GitLab CE** | v18.10 | Git + CI/CD + Registry |
+| **GitLab** | v18.10 | Git + CI/CD + Registry |
 | **ArgoCD** | v3.3 | GitOps continuous delivery |
 | **Elasticsearch** | v8.x | Audit logs + compliance |
 
@@ -318,6 +318,7 @@ worker_count: 2
 server_type: "cx32"  # 4 vCPU, 8GB
 control_server_type: "cx22"
 edge_enabled: true
+gitlab_edition: "ee"
 edge_regions: ["eu"]  # Single edge
 ```
 **Use case**: Pre-production, staging
@@ -329,6 +330,7 @@ worker_count: 3
 server_type: "cx42"  # 8 vCPU, 16GB
 control_server_type: "cx32"
 edge_enabled: true
+gitlab_edition: "ee"
 edge_regions: ["eu", "us", "apac"]  # Global CDN
 ```
 **Use case**: Production workloads, HA required
@@ -340,6 +342,7 @@ worker_count: 5
 server_type: "cx52"  # 16 vCPU, 32GB
 control_server_type: "cx42"
 edge_enabled: true
+gitlab_edition: "ee"
 ```
 **Use case**: HIPAA compliance, high traffic
 
