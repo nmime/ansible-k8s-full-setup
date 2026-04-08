@@ -250,18 +250,11 @@
         - postal
         - mail
 
-    - name: Deploy Brocoders Boilerplate Application
-      ansible.builtin.import_role:
-        name: brocoders-boilerplate-setup
-      when: deploy_boilerplate | default(false) | bool
-      tags:
-        - boilerplate
-        - application
 
     - name: Deploy OpenWerf Platform
       ansible.builtin.import_role:
         name: opwerf-deployment
-      when: deploy_opwerf | default(false) | bool
+      when: deploy_opwerf | default(true) | bool
       tags:
         - opwerf
         - application
@@ -270,7 +263,7 @@
     - name: Apply HIPAA hardening (internal TLS + log redaction)
       ansible.builtin.import_role:
         name: hipaa-hardening
-      when: hipaa_compliance | default(false) | bool
+      # HIPAA hardening always enabled
       tags:
         - hipaa
         - security

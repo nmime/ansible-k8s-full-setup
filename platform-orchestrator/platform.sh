@@ -365,6 +365,39 @@ show_credentials() {
   echo "Vault: https://vault.$DOMAIN"
   echo "  Check: kubectl get secret vault-init-keys -n vault"
   echo ""
+  kubectl get secret pmm-secret -n monitoring -o jsonpath='{.data.PMM_ADMIN_PASSWORD}' &>/dev/null && {
+    echo "PMM: https://pmm.$DOMAIN"
+    echo "  User: admin"
+    echo "  Pass: $(kubectl get secret pmm-secret -n monitoring -o jsonpath='{.data.PMM_ADMIN_PASSWORD}' | base64 -d)"
+    echo ""
+  }
+
+  kubectl get secret elasticsearch-es-elastic-user -n logging -o jsonpath='{.data.elastic}' &>/dev/null && {
+    echo "Elasticsearch/Kibana: https://kibana.$DOMAIN"
+    echo "  User: elastic"
+    echo "  Pass: $(kubectl get secret elasticsearch-es-elastic-user -n logging -o jsonpath='{.data.elastic}' | base64 -d)"
+    echo ""
+  }
+
+  echo "PostgreSQL:"
+  echo "  Host: ${PROJECT_NAME:-k8s}-pg-pgbouncer.databases.svc.cluster.local:5432"
+  echo "  Creds: kubectl get secret ${PROJECT_NAME:-k8s}-pg-pguser-app -n databases -o jsonpath='{.data.password}' | base64 -d"
+  echo ""
+
+  echo "MongoDB:"
+  echo "  Host: ${PROJECT_NAME:-k8s}-mongo-rs0.databases.svc.cluster.local:27017"
+  echo "  Creds: kubectl get secret internal-${PROJECT_NAME:-k8s}-mongo-users -n databases -o jsonpath='{.data.APP_USER_PASSWORD}' | base64 -d"
+  echo ""
+
+  echo "Dragonfly (Redis):"
+  echo "  Host: dragonfly.dragonfly.svc.cluster.local:6379"
+  echo "  Creds: kubectl get secret dragonfly-auth -n dragonfly -o jsonpath='{.data.password}' | base64 -d"
+  echo ""
+
+  echo "Temporal: https://temporal.$DOMAIN"
+  echo "  gRPC: temporal-frontend.temporal.svc.cluster.local:7233"
+  echo ""
+
 }
 
 # ============================================
