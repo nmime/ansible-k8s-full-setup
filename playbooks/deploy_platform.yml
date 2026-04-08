@@ -254,7 +254,7 @@
     - name: Deploy OpenWerf Platform
       ansible.builtin.import_role:
         name: opwerf-deployment
-      when: deploy_opwerf | default(true) | bool
+      when: deploy_opwerf | default(false) | bool
       tags:
         - opwerf
         - application
