@@ -6,7 +6,7 @@ opwerf_gitlab_ns: gitlab
 
 opwerf_github_repo: nmime/opwerf
 opwerf_github_token: ""
-opwerf_mirror_mode: push
+opwerf_mirror_mode: pull
 
 opwerf_environments:
   - name: st
