@@ -1,7 +1,15 @@
 ---
 # Provision Hetzner Bare Metal Servers for e2b Workers
-# Uses hcloud CLI to create AX-series dedicated servers
-# Supports horizontal scaling: add more workers = more sandbox capacity
+# Uses Hetzner Robot API (robot-ws.your-server.de) for dedicated/bare metal servers
+# AX42/AX52 series require KVM for Firecracker - only available on bare metal
+# Cloud API (hcloud) only supports VPS types (CX/CPX/CCX/CAX) - no KVM
+
+- name: Validate Robot API credentials
+  assert:
+    that:
+      - hetzner_robot_user is defined and hetzner_robot_user | length > 0
+      - hetzner_robot_password is defined and hetzner_robot_password | length > 0
+    fail_msg: "Hetzner Robot API credentials required. Set hetzner_robot_user and hetzner_robot_password. Get them at robot.hetzner.com → Settings → Webservice & API"
 
 - name: Set provisioning facts
   set_fact:
@@ -10,81 +18,145 @@
       {{ e2b_hetzner_server_type | default(
         e2b_tier_specs[tier].server_type | default('ax42')
       ) }}
-    e2b_location_val: "{{ e2b_hetzner_location | default('fsn1') }}"
-    e2b_image_val: "{{ e2b_hetzner_image | default('ubuntu-24.04') }}"
+    e2b_location_val: "{{ e2b_hetzner_location | default('FSN') }}"
     e2b_worker_count_val: >-
       {{ e2b_worker_count | default(
         e2b_tier_specs[tier].worker_count | default(1)
       ) }}
+    robot_api: "https://robot-ws.your-server.de"
 
-- name: Get SSH key fingerprint
-  ansible.builtin.command: ssh-keygen -lf {{ ssh_key_path | default('~/.ssh/id_ed25519') }}
-  register: ssh_key_fingerprint
-  changed_when: false
+- name: List available dedicated server products from Robot API
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/order/server/product"
+    method: GET
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: robot_products_raw
+  no_log: true
 
-- name: Get Hetzner SSH key ID
-  ansible.builtin.shell: |
-    hcloud ssh-key list -o json | jq -r '.[0].id'
-  register: hcloud_ssh_key_id
-  changed_when: false
+- name: Find matching product for {{ e2b_server_type }}
+  set_fact:
+    e2b_product: >-
+      {{ robot_products_raw.json | selectattr('product_id', 'defined') |
+         selectattr('product_id', 'search', e2b_server_type) | first | default(None) }}
+  no_log: true
 
-- name: Check for existing e2b worker servers
-  ansible.builtin.shell: |
-    hcloud server list -o json | jq -r '.[] | select(.name | startswith("{{ project }}-e2b-worker")) | .name'
-  register: existing_e2b_workers
-  changed_when: false
+- name: Fail if product not found
+  assert:
+    that:
+      - e2b_product is defined and e2b_product != None
+    fail_msg: >-
+      Server type '{{ e2b_server_type }}' not found in Robot API products.
+      Available: {{ robot_products_raw.json | map(attribute='product_id') | list | join(', ') }}
+
+- name: Display selected product info
+  debug:
+    msg: "Product: {{ e2b_product.product_id }} - {{ e2b_product.name | default('N/A') }} ({{ e2b_product.price | default('N/A') }})"
+
+- name: Get existing dedicated servers from Robot API
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/server"
+    method: GET
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: robot_servers_raw
+  no_log: true
+
+- name: Find existing e2b workers
+  set_fact:
+    existing_e2b_workers: >-
+      {{ robot_servers_raw.json | selectattr('server_name', 'defined') |
+         selectattr('server_name', 'match', '^' + project + '-e2b-worker') | list }}
 
 - name: Set existing worker count
   set_fact:
-    existing_worker_count: "{{ existing_e2b_workers.stdout_lines | length }}"
+    existing_worker_count: "{{ existing_e2b_workers | length }}"
 
 - name: Calculate workers to provision
   set_fact:
     workers_to_provision: >-
       {{ (e2b_worker_count_val | int) - (existing_worker_count | int) }}
 
-- name: Provision e2b worker bare metal servers
-  ansible.builtin.command: >
-    hcloud server create
-    --name {{ project }}-e2b-worker-{{ item }}
-    --type {{ e2b_server_type }}
-    --image {{ e2b_image_val }}
-    --location {{ e2b_location_val }}
-    --ssh-key {{ hcloud_ssh_key_id.stdout | default(ssh_key_path | default('~/.ssh/id_ed25519') | basename) }}
-    --label app=e2b
-    --label role=worker
-    --label tier={{ tier }}
-  loop: "{{ range(existing_worker_count | int + 1, e2b_worker_count_val | int + 1) | list }}"
-  when: (workers_to_provision | int) > 0
-  register: provision_result
+- name: Display provisioning plan
+  debug:
+    msg: >-
+      Existing: {{ existing_worker_count }} workers,
+      Target: {{ e2b_worker_count_val }} workers,
+      To provision: {{ workers_to_provision }}
 
-- name: Get all e2b worker server IPs
-  ansible.builtin.shell: |
-    hcloud server list -o json | jq -r '.[] | select(.name | startswith("{{ project }}-e2b-worker")) | "\(.name) \(.public_net.ipv4.ip)"'
-  register: e2b_worker_ips
+- name: Get SSH key fingerprint for provisioning
+  ansible.builtin.command: >-
+    ssh-keygen -lf {{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+  register: ssh_key_fingerprint
   changed_when: false
 
-- name: Build e2b workers inventory
+- name: Order e2b worker bare metal servers via Robot API
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/order/server/transaction"
+    method: POST
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    body:
+      product_id: "{{ e2b_product.product_id }}"
+      location: "{{ e2b_location_val }}"
+      dist: "{{ e2b_hetzner_image | default('Ubuntu 24.04') }}"
+      authorized_key[]: "{{ ssh_key_fingerprint.stdout.split()[1] }}"
+    body_format: form-urlencoded
+    status_code: 201
+  loop: "{{ range(existing_worker_count | int + 1, e2b_worker_count_val | int + 1) | list }}"
+  when: (workers_to_provision | int) > 0
+  register: order_results
+  no_log: true
+
+- name: Wait for server provisioning to complete
+  ansible.builtin.pause:
+    seconds: 120
+  when: (workers_to_provision | int) > 0
+
+- name: Refresh server list after provisioning
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/server"
+    method: GET
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: robot_servers_refreshed
+  no_log: true
+
+- name: Build e2b workers inventory from Robot API
   set_fact:
     e2b_workers: >-
-      {{ e2b_worker_ips.stdout_lines | map('regex_replace', '^(\S+)\s+(\S+)$', '\1,\2') | map('split', ',') | list }}
+      {{ robot_servers_refreshed.json | selectattr('server_name', 'defined') |
+         selectattr('server_name', 'match', '^' + project + '-e2b-worker') |
+         map(attribute='server') | list }}
+
+- name: Display provisioned workers
+  debug:
+    msg: "Worker {{ item.server_name }}: {{ item.server_ip }}"
+  loop: "{{ e2b_workers }}"
 
 - name: Wait for e2b workers to be SSH accessible
   ansible.builtin.wait_for:
-    host: "{{ item[1] }}"
+    host: "{{ item.server_ip }}"
     port: 22
     delay: 30
-    timeout: 600
+    timeout: 900
   loop: "{{ e2b_workers }}"
   loop_control:
-    label: "{{ item[0] }}"
+    label: "{{ item.server_name }} ({{ item.server_ip }})"
 
 - name: Generate e2b workers Ansible inventory
   ansible.builtin.copy:
     content: |
       [e2b_workers]
       {% for worker in e2b_workers %}
-      {{ worker[0] }} ansible_host={{ worker[1] }} ansible_user=root ansible_ssh_private_key_file={{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+      {{ worker.server_name }} ansible_host={{ worker.server_ip }} ansible_user=root ansible_ssh_private_key_file={{ ssh_key_path | default('~/.ssh/id_ed25519') }}
       {% endfor %}
     dest: /tmp/e2b-workers-inventory.ini
     mode: "0600"
