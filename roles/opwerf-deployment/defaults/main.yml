@@ -4,6 +4,10 @@ opwerf_app_name: opwerf
 opwerf_argocd_ns: argocd
 opwerf_gitlab_ns: gitlab
 
+opwerf_github_repo: nmime/opwerf
+opwerf_github_token: ""
+opwerf_mirror_mode: push
+
 opwerf_environments:
   - name: st
     branch: st
@@ -105,7 +109,7 @@ opwerf_encryption_key: ""
 opwerf_encryption_salt: ""
 opwerf_session_signing_key: ""
 
-opwerf_image_registry: "registry.{{ domain }}"
+opwerf_image_registry: "registry.{{ domain }}/platform/opwerf"
 
 opwerf_dashboard_cpu_request: 50m
 opwerf_dashboard_memory_request: 64Mi
