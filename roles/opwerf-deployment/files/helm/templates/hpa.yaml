@@ -19,21 +19,23 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.api.targetCPUUtilizationPercentage }}
+    {{- if .Values.autoscaling.api.targetMemoryUtilizationPercentage }}
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.api.targetMemoryUtilizationPercentage }}
+    {{- end }}
   behavior:
     scaleDown:
-      stabilizationWindowSeconds: 300
+      stabilizationWindowSeconds: {{ .Values.autoscaling.api.scaleDownStabilization | default 300 }}
       policies:
         - type: Percent
           value: 10
           periodSeconds: 60
     scaleUp:
-      stabilizationWindowSeconds: 0
+      stabilizationWindowSeconds: {{ .Values.autoscaling.api.scaleUpStabilization | default 0 }}
       policies:
         - type: Percent
           value: 100
@@ -65,4 +67,21 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.worker.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.worker.scaleDownStabilization | default 300 }}
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.worker.scaleUpStabilization | default 0 }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 2
+          periodSeconds: 15
+      selectPolicy: Max
 {{- end }}

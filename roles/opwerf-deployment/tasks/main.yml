@@ -139,19 +139,22 @@
   when: gitlab_root_token is defined and platform_group_id is defined
   failed_when: 'gitlab_project_result.status not in [200, 201, 400]'
 
-- name: Push Helm chart to GitLab repository
+- name: Push Helm chart and CI config to GitLab repository
   ansible.builtin.shell: |
     set -e
     TMPDIR=$(mktemp -d)
     trap "rm -rf $TMPDIR" EXIT
     cp -r {{ role_path }}/files/helm/* "$TMPDIR/"
+    cp {{ role_path }}/files/gitlab-ci.yml "$TMPDIR/.gitlab-ci.yml"
+    cp -r {{ role_path }}/files/docker "$TMPDIR/docker"
+    cp {{ role_path }}/files/README.md "$TMPDIR/README.md"
     cd "$TMPDIR"
     git config --global user.email "{{ email }}"
     git config --global user.name "Platform Bot"
     git init
     git checkout -b main
     git add .
-    git commit -m "feat: OpenWerf Helm chart v1.1.0" --allow-empty
+    git commit -m "feat: OpenWerf Helm chart + CI/CD + Dockerfiles v1.1.0" --allow-empty
     git remote add origin https://root:{{ gitlab_root_password }}@gitlab.{{ domain }}/platform/opwerf.git
     git push --force origin main
     {% for env in opwerf_environments %}
@@ -162,6 +165,50 @@
   no_log: true
   register: helm_push_result
   failed_when: helm_push_result.rc != 0
+
+- name: Configure GitLab branch protection for st and pp
+  ansible.builtin.uri:
+    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/projects/{{ gitlab_project_result.json.id }}/protected_branches"
+    method: POST
+    headers:
+      Content-Type: application/json
+      PRIVATE-TOKEN: '{{ gitlab_root_token | default("") }}'
+    body_format: json
+    body:
+      name: "{{ item }}"
+      push_access_level: 0
+      merge_access_level: 30
+      allow_force_push: false
+    status_code:
+    - 200
+    - 201
+    - 409
+  loop:
+    - st
+    - pp
+  when: gitlab_root_token is defined and gitlab_project_result.json.id is defined
+  failed_when: branch_protect_result.status not in [200, 201, 409]
+  register: branch_protect_result
+
+- name: Set CI_REGISTRY_IMAGE variable in GitLab project
+  ansible.builtin.uri:
+    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/projects/{{ gitlab_project_result.json.id }}/variables"
+    method: POST
+    headers:
+      Content-Type: application/json
+      PRIVATE-TOKEN: '{{ gitlab_root_token | default("") }}'
+    body_format: json
+    body:
+      key: "CI_REGISTRY_IMAGE"
+      value: "{{ opwerf_image_registry }}/opwerf"
+      environment_scope: "*"
+    status_code:
+    - 200
+    - 201
+    - 400
+  when: gitlab_root_token is defined and gitlab_project_result.json.id is defined
+  failed_when: ci_var_result.status not in [200, 201, 400]
+  register: ci_var_result
 
 - name: Deploy OpenWerf environments
   include_tasks: deploy_environment.yml
