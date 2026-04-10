@@ -22,7 +22,6 @@
     e2b_pg_conn: "{{ e2b_config_secret.resources[0].data.POSTGRES_CONNECTION_STRING | b64decode }}"
     e2b_redis_url_val: "{{ e2b_config_secret.resources[0].data.REDIS_URL | b64decode }}"
     e2b_clickhouse_conn: "{{ e2b_config_secret.resources[0].data.CLICKHOUSE_CONNECTION_STRING | b64decode }}"
-    e2b_admin_token_val: "{{ e2b_config_secret.resources[0].data.ADMIN_TOKEN | b64decode }}"
   no_log: true
   delegate_to: localhost
   run_once: true
@@ -33,7 +32,6 @@
     e2b_pg_conn: "{{ hostvars['localhost']['e2b_pg_conn'] | default('') }}"
     e2b_redis_url_val: "{{ hostvars['localhost']['e2b_redis_url_val'] | default('') }}"
     e2b_clickhouse_conn: "{{ hostvars['localhost']['e2b_clickhouse_conn'] | default('') }}"
-    e2b_admin_token_val: "{{ hostvars['localhost']['e2b_admin_token_val'] | default('') }}"
   no_log: true
 
 - name: Write orchestrator environment file

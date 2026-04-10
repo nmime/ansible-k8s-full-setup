@@ -125,8 +125,9 @@
     cd /opt/e2b/src/infra
     go build -o /opt/e2b/bin/orchestrator ./packages/orchestrator
     go build -o /opt/e2b/bin/api ./packages/api
-    go build -o /opt/e2b/bin/client-proxy ./packages/proxy
+    go build -o /opt/e2b/bin/client-proxy ./packages/client-proxy
     go build -o /opt/e2b/bin/envd ./packages/envd
+    go build -o /opt/e2b/bin/migrator ./packages/db/scripts/migrator.go
     chmod +x /opt/e2b/bin/*
   args:
     executable: /bin/bash

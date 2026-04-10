@@ -45,6 +45,27 @@
   ansible.builtin.command: docker push {{ registry }}/e2b/api:{{ tag }}
   when: api_image_check.rc != 0
 
+- name: Build migrator image for database migrations
+  ansible.builtin.command: >-
+    docker build
+    --network=host
+    -t {{ e2b_image_registry | default('registry.' + domain) }}/e2b/migrator:{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}
+    -f - {{ build_ctx.path | default('.') }}
+  args:
+    stdin: |
+      FROM golang:1.25.4 AS builder
+      WORKDIR /src
+      RUN git clone --depth 1 --branch main https://github.com/e2b-dev/infra.git .
+      RUN CGO_ENABLED=0 go build -o /migrator ./packages/db/scripts/migrator.go
+      FROM gcr.io/distroless/static-debian12
+      COPY --from=builder /migrator /migrator
+      ENTRYPOINT ["/migrator"]
+  when: api_image_check is defined and api_image_check.rc != 0
+
+- name: Push migrator image
+  ansible.builtin.command: docker push {{ e2b_image_registry | default('registry.' + domain) }}/e2b/migrator:{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}
+  when: api_image_check is defined and api_image_check.rc != 0
+
 - name: Check if Client-Proxy image already exists
   ansible.builtin.command: >-
     skopeo inspect

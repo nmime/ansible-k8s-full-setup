@@ -1,7 +1,7 @@
 FROM golang:1.25.4 AS builder
 WORKDIR /src
 RUN git clone --depth 1 --branch main https://github.com/e2b-dev/infra.git .
-RUN CGO_ENABLED=0 go build -o /client-proxy ./packages/proxy
+RUN CGO_ENABLED=0 go build -o /client-proxy ./packages/client-proxy
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=builder /client-proxy /client-proxy
