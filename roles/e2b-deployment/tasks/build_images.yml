@@ -1,6 +1,6 @@
 ---
 # Build and push e2b container images to registry
-# Builds from source using Dockerfiles in role files/
+# Builds from e2b-dev/infra source using multi-stage Dockerfiles
 
 - name: Set image facts
   set_fact:
@@ -8,8 +8,23 @@
     registry: "{{ e2b_image_registry | default('registry.' + domain) }}"
     tag: "{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}"
 
+- name: Create temporary build context
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: e2b-build-
+  register: build_ctx
+
+- name: Copy Dockerfiles to build context
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ build_ctx.path }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - Dockerfile.api
+    - Dockerfile.client-proxy
+
 - name: Check if API image already exists in registry
-  ansible.builtin.command: >
+  ansible.builtin.command: >-
     skopeo inspect
     docker://{{ registry }}/e2b/api:{{ tag }}
   register: api_image_check
@@ -17,11 +32,12 @@
   changed_when: false
 
 - name: Build e2b API image
-  ansible.builtin.command: >
+  ansible.builtin.command: >-
     docker build
+    --network=host
     -t {{ registry }}/e2b/api:{{ tag }}
-    -f {{ role_path }}/files/Dockerfile.api
-    {{ role_path }}/files
+    -f {{ build_ctx.path }}/Dockerfile.api
+    {{ build_ctx.path }}
   when: api_image_check.rc != 0
   register: api_build
 
@@ -30,7 +46,7 @@
   when: api_image_check.rc != 0
 
 - name: Check if Client-Proxy image already exists
-  ansible.builtin.command: >
+  ansible.builtin.command: >-
     skopeo inspect
     docker://{{ registry }}/e2b/client-proxy:{{ tag }}
   register: cp_image_check
@@ -38,11 +54,12 @@
   changed_when: false
 
 - name: Build e2b Client-Proxy image
-  ansible.builtin.command: >
+  ansible.builtin.command: >-
     docker build
+    --network=host
     -t {{ registry }}/e2b/client-proxy:{{ tag }}
-    -f {{ role_path }}/files/Dockerfile.client-proxy
-    {{ role_path }}/files
+    -f {{ build_ctx.path }}/Dockerfile.client-proxy
+    {{ build_ctx.path }}
   when: cp_image_check.rc != 0
 
 - name: Push e2b Client-Proxy image
@@ -63,3 +80,9 @@
         .dockerconfigjson: |
           {"auths":{"{{ registry }}":{"username":"{{ minio_root_user | default('minioadmin') }}","password":"{{ minio_root_password | default('minioadmin') }}"}}}
   no_log: true
+
+- name: Clean up build context
+  ansible.builtin.file:
+    path: "{{ build_ctx.path }}"
+    state: absent
+  when: build_ctx.path is defined

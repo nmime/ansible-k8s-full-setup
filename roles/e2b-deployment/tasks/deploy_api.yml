@@ -6,7 +6,20 @@
   set_fact:
     e2b_ns: "{{ e2b_namespace | default('e2b') }}"
     e2b_api_replicas_val: "{{ e2b_api_replicas | default(2 if tier in ['medium', 'production'] else 1) }}"
-    e2b_config_checksum: "{{ e2b_config_secret_result | default({}) | default(lookup('file', '/dev/null'), true) | hash('sha1') }}"
+
+- name: Get e2b config secret for checksum
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ e2b_ns }}"
+    name: e2b-config
+  register: e2b_config_secret_info
+  delegate_to: localhost
+  run_once: true
+
+- name: Set config checksum for rolling restart
+  set_fact:
+    e2b_config_checksum: "{{ e2b_config_secret_info.resources[0].data | to_json | hash('sha1') }}"
+  when: e2b_config_secret_info.resources | length > 0
 
 - name: Deploy e2b API
   kubernetes.core.k8s:
@@ -23,7 +36,7 @@
     namespace: "{{ e2b_ns }}"
     name: e2b-api
   register: e2b_api_status
-  until: >
+  until: >-
     e2b_api_status.resources | length > 0 and
     (e2b_api_status.resources[0].status.readyReplicas | default(0)) >= (e2b_api_replicas_val | int)
   retries: 60
