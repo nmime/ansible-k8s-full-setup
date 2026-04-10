@@ -20,10 +20,14 @@ e2b_infra_repo: "https://github.com/e2b-dev/infra.git"
 ## e2b_image_tag: "{{ e2b_version }}"
 
 # === Hetzner Bare Metal Provisioning ===
+# Robot API (robot-ws.your-server.de) for AX-series bare metal
+# Get credentials: robot.hetzner.com → Settings → Webservice & API
+hetzner_robot_user: ""
+hetzner_robot_password: ""
 e2b_hetzner_provision: true
 e2b_hetzner_server_type: "ax42"
-e2b_hetzner_location: "fsn1"
-e2b_hetzner_image: "ubuntu-24.04"
+e2b_hetzner_location: "FSN"
+e2b_hetzner_image: "Ubuntu 24.04"
 
 # Auto-selected server types per tier
 e2b_tier_specs:
