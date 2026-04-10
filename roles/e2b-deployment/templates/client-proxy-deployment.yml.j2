@@ -7,21 +7,31 @@ metadata:
   labels:
     app.kubernetes.io/name: e2b-client-proxy
     app.kubernetes.io/part-of: e2b
+    app.kubernetes.io/version: "{{ e2b_version | default('0.1.4') }}"
+    app.kubernetes.io/managed-by: ansible
 spec:
   replicas: {{ e2b_cp_replicas_val }}
   selector:
     matchLabels:
       app.kubernetes.io/name: e2b-client-proxy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app.kubernetes.io/name: e2b-client-proxy
         app.kubernetes.io/part-of: e2b
+        app.kubernetes.io/version: "{{ e2b_version | default('0.1.4') }}"
+      annotations:
+        checksum/config: "{{ e2b_config_checksum | default('') }}"
     spec:
+      serviceAccountName: e2b-client-proxy
       containers:
         - name: client-proxy
-          image: e2b-client-proxy:{{ e2b_version | default('latest') }}
-          command: ["/opt/e2b/bin/client-proxy"]
+          image: "{{ e2b_image_registry | default('registry.' + domain) }}/e2b/client-proxy:{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}"
           ports:
             - containerPort: {{ e2b_client_proxy_port | default(3002) }}
               name: proxy
@@ -39,10 +49,10 @@ spec:
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef:
-                name: e2b-config
+                  name: e2b-config
                   key: REDIS_URL
             - name: API_GRPC_ADDRESS
-              value: "e2b-api.{{ e2b_ns }}.svc.cluster.local:5009"
+              value: "e2b-api.{{ e2b_ns }}.svc.cluster.local:{{ e2b_api_grpc_port | default(5009) }}"
           resources:
             requests:
               cpu: "{{ e2b_client_proxy_cpu_request | default('100m') }}"
@@ -62,12 +72,26 @@ spec:
               port: {{ e2b_client_proxy_health_port | default(3003) }}
             initialDelaySeconds: 15
             periodSeconds: 30
+      imagePullSecrets:
+        - name: registry-credentials
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: e2b-client-proxy
+  namespace: {{ e2b_ns }}
+  labels:
+    app.kubernetes.io/name: e2b-client-proxy
+    app.kubernetes.io/part-of: e2b
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: e2b-client-proxy
   namespace: {{ e2b_ns }}
+  labels:
+    app.kubernetes.io/name: e2b-client-proxy
+    app.kubernetes.io/part-of: e2b
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -82,3 +106,14 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: e2b-client-proxy
+  namespace: {{ e2b_ns }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: e2b-client-proxy

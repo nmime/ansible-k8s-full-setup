@@ -3,8 +3,8 @@
 # Self-hosted e2b code execution sandboxes on Hetzner bare metal
 # Architecture:
 #   - Orchestrator: bare metal (KVM/Firecracker), systemd
-#   - API/Client-Proxy: K3s pods (scale horizontally)
-#   - PostgreSQL/Redis: reuse existing K3s services
+#   - API/Client-Proxy: Kubernetes Deployments with HPA
+#   - PostgreSQL/Redis: reuse existing Kubernetes services
 #   - ClickHouse: dedicated for e2b analytics
 
 # Namespace
@@ -13,6 +13,11 @@ e2b_namespace: "e2b"
 # E2B version (from infra repo)
 e2b_version: "0.1.4"
 e2b_infra_repo: "https://github.com/e2b-dev/infra.git"
+
+# === Container Images ===
+# Built from source and pushed to registry
+## e2b_image_registry: "registry.{{ domain }}"
+## e2b_image_tag: "{{ e2b_version }}"
 
 # === Hetzner Bare Metal Provisioning ===
 e2b_hetzner_provision: true
@@ -81,6 +86,7 @@ e2b_clickhouse_port: 9000
 # === API Service ===
 e2b_api_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 e2b_api_port: 3000
+e2b_api_grpc_port: 5009
 e2b_api_cpu_request: "200m"
 e2b_api_memory_request: "256Mi"
 e2b_api_cpu_limit: "1000m"

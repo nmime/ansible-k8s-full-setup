@@ -1,11 +1,12 @@
 ---
-# Deploy e2b API as K3s pod
-# Horizontal scaling via replicas
+# Deploy e2b API as Kubernetes Deployment
+# Horizontal scaling via HPA
 
 - name: Set API deployment facts
   set_fact:
     e2b_ns: "{{ e2b_namespace | default('e2b') }}"
     e2b_api_replicas_val: "{{ e2b_api_replicas | default(2 if tier in ['medium', 'production'] else 1) }}"
+    e2b_config_checksum: "{{ e2b_config_secret_result | default({}) | default(lookup('file', '/dev/null'), true) | hash('sha1') }}"
 
 - name: Deploy e2b API
   kubernetes.core.k8s:
