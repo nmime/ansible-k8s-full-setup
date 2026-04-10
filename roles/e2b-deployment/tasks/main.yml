@@ -4,9 +4,10 @@
 #   1. Provision Hetzner bare metal workers (if enabled)
 #   2. Configure worker nodes (KVM, hugepages, build binaries)
 #   3. Deploy infrastructure (ClickHouse, DB, secrets)
-#   4. Deploy orchestrator on workers (systemd)
-#   5. Deploy API + Client-Proxy in K3s
-#   6. Configure networking and service discovery
+#   4. Build and push container images to registry
+#   5. Deploy orchestrator on workers (systemd)
+#   6. Deploy API + Client-Proxy in Kubernetes
+#   7. Configure networking and service discovery
 
 - name: Display e2b deployment banner
   debug:
@@ -14,7 +15,7 @@
       - "=========================================="
       - "  E2B Sandbox Infrastructure Deployment"
       - "  Tier: {{ tier }}"
-      - "  Workers: {{ e2b_worker_count | default(e2b_tier_specs[tier].worker_count | default(1)) }}"
+      - "  Workers: {{ e2b_worker_count | default(e2b_tier_specs[tier | default('small')].worker_count | default(1)) }}"
       - "  Storage: {{ e2b_storage_provider | default('Local') }}"
       - "=========================================="
 
@@ -40,6 +41,11 @@
   ansible.builtin.include_tasks: deploy_infrastructure.yml
   tags:
     - e2b-infra
+
+- name: Build and push e2b container images
+  ansible.builtin.include_tasks: build_images.yml
+  tags:
+    - e2b-images
 
 - name: Deploy e2b orchestrator on workers
   ansible.builtin.include_tasks: deploy_orchestrator.yml

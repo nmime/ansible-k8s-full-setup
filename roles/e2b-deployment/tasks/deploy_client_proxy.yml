@@ -1,5 +1,5 @@
 ---
-# Deploy e2b Client-Proxy as K3s pod
+# Deploy e2b Client-Proxy as Kubernetes Deployment
 # Routes sandbox traffic to orchestrator nodes via catalog
 
 - name: Set client-proxy deployment facts
