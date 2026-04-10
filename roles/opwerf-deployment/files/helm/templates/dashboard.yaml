@@ -20,7 +20,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: dashboard
-          image: "{{ .Values.image.registry }}/opwerf/dashboard:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.registry }}/dashboard:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 80

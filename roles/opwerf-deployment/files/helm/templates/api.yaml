@@ -20,7 +20,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: api
-          image: "{{ .Values.image.registry }}/opwerf/api:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.registry }}/api:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: 3000

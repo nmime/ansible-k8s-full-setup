@@ -139,32 +139,57 @@
   when: gitlab_root_token is defined and platform_group_id is defined
   failed_when: 'gitlab_project_result.status not in [200, 201, 400]'
 
-- name: Push Helm chart and CI config to GitLab repository
+- name: Import OpenWerf source from GitHub and push to GitLab
   ansible.builtin.shell: |
     set -e
     TMPDIR=$(mktemp -d)
     trap "rm -rf $TMPDIR" EXIT
-    cp -r {{ role_path }}/files/helm/* "$TMPDIR/"
-    cp {{ role_path }}/files/gitlab-ci.yml "$TMPDIR/.gitlab-ci.yml"
-    cp -r {{ role_path }}/files/docker "$TMPDIR/docker"
-    cp {{ role_path }}/files/README.md "$TMPDIR/README.md"
-    cd "$TMPDIR"
+
+    git clone --depth=1 https://x-access-token:{{ opwerf_github_token }}@github.com/{{ opwerf_github_repo }}.git "$TMPDIR/repo"
+    cd "$TMPDIR/repo"
+    git fetch --unshallow 2>/dev/null || true
+
+    rm -rf .helm
+    cp -r {{ role_path }}/files/helm/. .helm/
+    cp {{ role_path }}/files/gitlab-ci.yml .gitlab-ci.yml
+
     git config --global user.email "{{ email }}"
     git config --global user.name "Platform Bot"
-    git init
     git checkout -b main
-    git add .
-    git commit -m "feat: OpenWerf Helm chart + CI/CD + Dockerfiles v1.1.0" --allow-empty
-    git remote add origin https://root:{{ gitlab_root_password }}@gitlab.{{ domain }}/platform/opwerf.git
+    git add .helm/ .gitlab-ci.yml
+    git commit -m "feat: platform Helm chart + GitLab CI" --allow-empty
+
+    git remote set-url origin https://root:{{ gitlab_root_password }}@gitlab.{{ domain }}/platform/opwerf.git
     git push --force origin main
     {% for env in opwerf_environments %}
     git checkout -b {{ env.branch }}
     git push --force origin {{ env.branch }}
     {% endfor %}
-  when: gitlab_root_password is defined
+  when: gitlab_root_password is defined and opwerf_github_token | default('')
   no_log: true
-  register: helm_push_result
-  failed_when: helm_push_result.rc != 0
+  register: github_import_result
+  failed_when: github_import_result.rc != 0
+
+- name: Configure GitLab push mirror to GitHub
+  ansible.builtin.uri:
+    url: "http://gitlab-webservice-default.{{ opwerf_gitlab_ns }}.svc.cluster.local:8181/api/v4/projects/{{ gitlab_project_result.json.id }}/remote_mirrors"
+    method: POST
+    headers:
+      Content-Type: application/json
+      PRIVATE-TOKEN: '{{ gitlab_root_token | default("") }}'
+    body_format: json
+    body:
+      url: "https://x-access-token:{{ opwerf_github_token }}@github.com/{{ opwerf_github_repo }}.git"
+      enabled: true
+      only_protected_branches: false
+      keep_divergent_refs: false
+    status_code:
+    - 200
+    - 201
+    - 409
+  when: gitlab_root_token is defined and gitlab_project_result.json.id is defined and opwerf_github_token | default('')
+  failed_when: push_mirror_result.status not in [200, 201, 409]
+  register: push_mirror_result
 
 - name: Configure GitLab branch protection for st and pp
   ansible.builtin.uri:
@@ -200,7 +225,7 @@
     body_format: json
     body:
       key: "CI_REGISTRY_IMAGE"
-      value: "{{ opwerf_image_registry }}/opwerf"
+      value: "{{ opwerf_image_registry }}"
       environment_scope: "*"
     status_code:
     - 200
@@ -223,7 +248,10 @@
       ==========================================
         OpenWerf Multi-Environment Deployment Complete
       ==========================================
-        Helm repo: {{ opwerf_helm_repo_url }}
+        Source:   github.com/{{ opwerf_github_repo }}
+        Primary: {{ opwerf_helm_repo_url }}
+        Mirror:   GitLab → GitHub (push mirror)
+        CI:       GitLab CI with pnpm + Nx monorepo
       {% for env in opwerf_environments %}
         [{{ env.name }}] branch={{ env.branch }} ns={{ env.namespace }}
           Dashboard: https://{{ env.subdomain_prefix }}app.{{ domain }}
