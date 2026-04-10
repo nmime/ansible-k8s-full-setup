@@ -151,11 +151,12 @@
             restartPolicy: OnFailure
             containers:
               - name: migrate
-                image: "e2b-migrate:latest"
-                command: ["/bin/bash", "-c"]
+                image: "{{ e2b_image_registry | default('registry.' + domain) }}/e2b/api:{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}"
+                command: ["/api"]
                 args:
-                  - |
-                    /opt/e2b/bin/api --migrate-only
+                  - "--migrate-only"
                 envFrom:
                   - secretRef:
                       name: e2b-config
+            imagePullSecrets:
+              - name: registry-credentials

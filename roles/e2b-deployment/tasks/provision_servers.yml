@@ -36,11 +36,17 @@
   register: robot_products_raw
   no_log: true
 
+- name: Parse Robot API product response
+  set_fact:
+    robot_products: "{{ robot_products_raw.json if robot_products_raw.json is list else (robot_products_raw.json.product | default(robot_products_raw.json)) }}"
+  no_log: true
+
 - name: Find matching product for {{ e2b_server_type }}
   set_fact:
     e2b_product: >-
-      {{ robot_products_raw.json | selectattr('product_id', 'defined') |
-         selectattr('product_id', 'search', e2b_server_type) | first | default(None) }}
+      {{ robot_products | selectattr('product', 'defined') |
+         selectattr('product.id', 'defined') |
+         selectattr('product.id', 'match', '(?i)' + e2b_server_type) | first | default(None) }}
   no_log: true
 
 - name: Fail if product not found
@@ -49,11 +55,12 @@
       - e2b_product is defined and e2b_product != None
     fail_msg: >-
       Server type '{{ e2b_server_type }}' not found in Robot API products.
-      Available: {{ robot_products_raw.json | map(attribute='product_id') | list | join(', ') }}
+      Response structure: {{ robot_products_raw.json | type_debug }}
+      Available: {{ robot_products | map(attribute='product.id') | list | default([]) | join(', ') }}
 
 - name: Display selected product info
   debug:
-    msg: "Product: {{ e2b_product.product_id }} - {{ e2b_product.name | default('N/A') }} ({{ e2b_product.price | default('N/A') }})"
+    msg: "Product: {{ e2b_product.product.id }} - {{ e2b_product.product.name | default('N/A') }}"
 
 - name: Get existing dedicated servers from Robot API
   ansible.builtin.uri:
@@ -69,8 +76,8 @@
 - name: Find existing e2b workers
   set_fact:
     existing_e2b_workers: >-
-      {{ robot_servers_raw.json | selectattr('server_name', 'defined') |
-         selectattr('server_name', 'match', '^' + project + '-e2b-worker') | list }}
+      {{ robot_servers_raw.json | selectattr('server', 'defined') |
+         json_query('[?contains(server.name, `' + project + '-e2b-worker`)]') | default([]) }}
 
 - name: Set existing worker count
   set_fact:
@@ -102,10 +109,11 @@
     password: "{{ hetzner_robot_password }}"
     force_basic_auth: true
     body:
-      product_id: "{{ e2b_product.product_id }}"
+      product_id: "{{ e2b_product.product.id }}"
       location: "{{ e2b_location_val }}"
       dist: "{{ e2b_hetzner_image | default('Ubuntu 24.04') }}"
       authorized_key[]: "{{ ssh_key_fingerprint.stdout.split()[1] }}"
+      addon[]: "primary_ipv4"
     body_format: form-urlencoded
     status_code: 201
   loop: "{{ range(existing_worker_count | int + 1, e2b_worker_count_val | int + 1) | list }}"
@@ -132,31 +140,30 @@
 - name: Build e2b workers inventory from Robot API
   set_fact:
     e2b_workers: >-
-      {{ robot_servers_refreshed.json | selectattr('server_name', 'defined') |
-         selectattr('server_name', 'match', '^' + project + '-e2b-worker') |
-         map(attribute='server') | list }}
+      {{ robot_servers_refreshed.json | selectattr('server', 'defined') |
+         json_query('[?contains(server.name, `' + project + '-e2b-worker`)].server') | default([]) }}
 
 - name: Display provisioned workers
   debug:
-    msg: "Worker {{ item.server_name }}: {{ item.server_ip }}"
+    msg: "Worker {{ item.name }}: {{ item.ip }}"
   loop: "{{ e2b_workers }}"
 
 - name: Wait for e2b workers to be SSH accessible
   ansible.builtin.wait_for:
-    host: "{{ item.server_ip }}"
+    host: "{{ item.ip }}"
     port: 22
     delay: 30
     timeout: 900
   loop: "{{ e2b_workers }}"
   loop_control:
-    label: "{{ item.server_name }} ({{ item.server_ip }})"
+    label: "{{ item.name }} ({{ item.ip }})"
 
 - name: Generate e2b workers Ansible inventory
   ansible.builtin.copy:
     content: |
       [e2b_workers]
       {% for worker in e2b_workers %}
-      {{ worker.server_name }} ansible_host={{ worker.server_ip }} ansible_user=root ansible_ssh_private_key_file={{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+      {{ worker.name }} ansible_host={{ worker.ip }} ansible_user=root ansible_ssh_private_key_file={{ ssh_key_path | default('~/.ssh/id_ed25519') }}
       {% endfor %}
     dest: /tmp/e2b-workers-inventory.ini
     mode: "0600"

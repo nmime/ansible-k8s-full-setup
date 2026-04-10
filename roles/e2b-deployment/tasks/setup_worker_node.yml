@@ -34,9 +34,14 @@
     params: "nbds_max={{ e2b_nbd_max_devices | default(64) }}"
     state: present
 
+- name: Detect CPU vendor for KVM module
+  ansible.builtin.shell: grep -q 'vmx' /proc/cpuinfo && echo 'kvm_intel' || echo 'kvm_amd'
+  register: kvm_module
+  changed_when: false
+
 - name: Load KVM kernel module
   community.general.modprobe:
-    name: "{{ 'kvm_intel' if ansible_processor[0] | regex_search('Intel') else 'kvm_amd' }}"
+    name: "{{ kvm_module.stdout }}"
     state: present
 
 - name: Persist kernel modules
@@ -44,7 +49,7 @@
     dest: /etc/modules-load.d/e2b.conf
     content: |
       nbd
-      {{ 'kvm_intel' if ansible_processor[0] | regex_search('Intel') else 'kvm_amd' }}
+      {{ kvm_module.stdout }}
     mode: "0644"
 
 - name: Configure hugepages
@@ -59,7 +64,8 @@
   ansible.builtin.command: grep HugePages_Total /proc/meminfo
   register: hugepages_check
   changed_when: false
-  failed_when: not ('HugePages_Total:    ' + (e2b_hugepages_count | default(2048) | string)) in hugepages_check.stdout
+  failed_when: >-
+    not ('HugePages_Total:    ' ~ (e2b_hugepages_count | default(2048) | string)) in hugepages_check.stdout
 
 - name: Create directory structure
   ansible.builtin.file:
