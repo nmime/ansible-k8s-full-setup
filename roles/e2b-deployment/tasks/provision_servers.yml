@@ -1,0 +1,91 @@
+---
+# Provision Hetzner Bare Metal Servers for e2b Workers
+# Uses hcloud CLI to create AX-series dedicated servers
+# Supports horizontal scaling: add more workers = more sandbox capacity
+
+- name: Set provisioning facts
+  set_fact:
+    project: "{{ project_name | default('k8s') }}"
+    e2b_server_type: >-
+      {{ e2b_hetzner_server_type | default(
+        e2b_tier_specs[tier].server_type | default('ax42')
+      ) }}
+    e2b_location_val: "{{ e2b_hetzner_location | default('fsn1') }}"
+    e2b_image_val: "{{ e2b_hetzner_image | default('ubuntu-24.04') }}"
+    e2b_worker_count_val: >-
+      {{ e2b_worker_count | default(
+        e2b_tier_specs[tier].worker_count | default(1)
+      ) }}
+
+- name: Get SSH key fingerprint
+  ansible.builtin.command: ssh-keygen -lf {{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+  register: ssh_key_fingerprint
+  changed_when: false
+
+- name: Get Hetzner SSH key ID
+  ansible.builtin.shell: |
+    hcloud ssh-key list -o json | jq -r '.[0].id'
+  register: hcloud_ssh_key_id
+  changed_when: false
+
+- name: Check for existing e2b worker servers
+  ansible.builtin.shell: |
+    hcloud server list -o json | jq -r '.[] | select(.name | startswith("{{ project }}-e2b-worker")) | .name'
+  register: existing_e2b_workers
+  changed_when: false
+
+- name: Set existing worker count
+  set_fact:
+    existing_worker_count: "{{ existing_e2b_workers.stdout_lines | length }}"
+
+- name: Calculate workers to provision
+  set_fact:
+    workers_to_provision: >-
+      {{ (e2b_worker_count_val | int) - (existing_worker_count | int) }}
+
+- name: Provision e2b worker bare metal servers
+  ansible.builtin.command: >
+    hcloud server create
+    --name {{ project }}-e2b-worker-{{ item }}
+    --type {{ e2b_server_type }}
+    --image {{ e2b_image_val }}
+    --location {{ e2b_location_val }}
+    --ssh-key {{ hcloud_ssh_key_id.stdout | default(ssh_key_path | default('~/.ssh/id_ed25519') | basename) }}
+    --label app=e2b
+    --label role=worker
+    --label tier={{ tier }}
+  loop: "{{ range(existing_worker_count | int + 1, e2b_worker_count_val | int + 1) | list }}"
+  when: (workers_to_provision | int) > 0
+  register: provision_result
+
+- name: Get all e2b worker server IPs
+  ansible.builtin.shell: |
+    hcloud server list -o json | jq -r '.[] | select(.name | startswith("{{ project }}-e2b-worker")) | "\(.name) \(.public_net.ipv4.ip)"'
+  register: e2b_worker_ips
+  changed_when: false
+
+- name: Build e2b workers inventory
+  set_fact:
+    e2b_workers: >-
+      {{ e2b_worker_ips.stdout_lines | map('regex_replace', '^(\S+)\s+(\S+)$', '\1,\2') | map('split', ',') | list }}
+
+- name: Wait for e2b workers to be SSH accessible
+  ansible.builtin.wait_for:
+    host: "{{ item[1] }}"
+    port: 22
+    delay: 30
+    timeout: 600
+  loop: "{{ e2b_workers }}"
+  loop_control:
+    label: "{{ item[0] }}"
+
+- name: Generate e2b workers Ansible inventory
+  ansible.builtin.copy:
+    content: |
+      [e2b_workers]
+      {% for worker in e2b_workers %}
+      {{ worker[0] }} ansible_host={{ worker[1] }} ansible_user=root ansible_ssh_private_key_file={{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+      {% endfor %}
+    dest: /tmp/e2b-workers-inventory.ini
+    mode: "0600"
+  when: e2b_workers | length > 0

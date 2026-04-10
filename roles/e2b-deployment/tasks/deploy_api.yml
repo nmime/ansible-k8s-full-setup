@@ -1,0 +1,29 @@
+---
+# Deploy e2b API as K3s pod
+# Horizontal scaling via replicas
+
+- name: Set API deployment facts
+  set_fact:
+    e2b_ns: "{{ e2b_namespace | default('e2b') }}"
+    e2b_api_replicas_val: "{{ e2b_api_replicas | default(2 if tier in ['medium', 'production'] else 1) }}"
+
+- name: Deploy e2b API
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'api-deployment.yml.j2') | from_yaml_all | list }}"
+  register: e2b_api_deploy
+  retries: 3
+  delay: 10
+  until: e2b_api_deploy is not failed
+
+- name: Wait for e2b API to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ e2b_ns }}"
+    name: e2b-api
+  register: e2b_api_status
+  until: >
+    e2b_api_status.resources | length > 0 and
+    (e2b_api_status.resources[0].status.readyReplicas | default(0)) >= (e2b_api_replicas_val | int)
+  retries: 60
+  delay: 10

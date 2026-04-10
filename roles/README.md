@@ -19,6 +19,7 @@ This directory contains 15 Ansible roles for each platform component:
 | `brocoders-boilerplate-setup/` | Full-stack application setup (optional) | NestJS, React, ArgoCD | - |
 | `dragonfly/` | Redis-compatible in-memory store | Dragonfly Operator, Dragonfly CRD | Operator v1.5.0, Dragonfly v1.37.2 |
 | `opwerf-deployment/` | AI-powered workflow orchestration (optional) | OpenWerf Dashboard, API, Worker, Elasticsearch | - |
+| `e2b-deployment/` | Self-hosted code execution sandboxes (optional) | E2B, Firecracker, KVM, ClickHouse | E2B v0.1.4 |
 
 ## Deployment Order
 
@@ -40,6 +41,7 @@ Roles are deployed sequentially to respect dependencies:
 13. dragonfly              Dragonfly in-memory store (Redis-compatible, operator + instance)
 14. brocoders-boilerplate   Sample NestJS+React app (optional, deploy_boilerplate=true)
 15. opwerf-deployment       OpenWerf AI workflow platform (optional, deploy_opwerf=true)
+16. e2b-deployment          E2B sandbox infrastructure on bare metal (optional, deploy_e2b=true)
 ```
 
 ## Tier Support

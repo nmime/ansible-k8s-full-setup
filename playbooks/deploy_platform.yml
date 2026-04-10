@@ -259,6 +259,14 @@
         - opwerf
         - application
 
+    - name: Deploy E2B Sandbox Infrastructure
+      ansible.builtin.import_role:
+        name: e2b-deployment
+      when: deploy_e2b | default(false) | bool
+      tags:
+        - e2b
+        - sandboxes
+
   post_tasks:
     - name: Apply HIPAA hardening (internal TLS + log redaction)
       ansible.builtin.import_role:
@@ -297,6 +305,8 @@
           - "    - staging: https://st-app.{{ domain }}"
           - "    - pre-prod: https://pp-app.{{ domain }}"
           - "    - production: https://app.{{ domain }}"
+          - "  - E2B API: https://e2b-api.{{ domain }} (if deploy_e2b=true)"
+          - "  - E2B Sandbox: https://sandbox.{{ domain }} (if deploy_e2b=true)"
           - ""
           - "Get credentials:"
           - "  ./platform-orchestrator/platform.sh credentials"

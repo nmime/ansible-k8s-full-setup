@@ -1,0 +1,86 @@
+---
+# Deploy e2b Orchestrator on bare metal worker nodes
+# Runs as systemd service (needs root + KVM + hugepages)
+# Scalable by adding more worker nodes
+
+- name: Set orchestrator facts
+  set_fact:
+    e2b_ns: "{{ e2b_namespace | default('e2b') }}"
+
+- name: Retrieve e2b config secret for connection strings
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ e2b_ns }}"
+    name: e2b-config
+  register: e2b_config_secret
+  delegate_to: localhost
+  run_once: true
+
+- name: Extract connection strings
+  set_fact:
+    e2b_pg_conn: "{{ e2b_config_secret.resources[0].data.POSTGRES_CONNECTION_STRING | b64decode }}"
+    e2b_redis_url_val: "{{ e2b_config_secret.resources[0].data.REDIS_URL | b64decode }}"
+    e2b_clickhouse_conn: "{{ e2b_config_secret.resources[0].data.CLICKHOUSE_CONNECTION_STRING | b64decode }}"
+    e2b_admin_token_val: "{{ e2b_config_secret.resources[0].data.ADMIN_TOKEN | b64decode }}"
+  no_log: true
+  delegate_to: localhost
+  run_once: true
+  when: e2b_config_secret.resources | length > 0
+
+- name: Write orchestrator environment file
+  ansible.builtin.template:
+    src: orchestrator.env.j2
+    dest: /opt/e2b/orchestrator.env
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Install orchestrator systemd service
+  ansible.builtin.template:
+    src: e2b-orchestrator.service.j2
+    dest: /etc/systemd/system/e2b-orchestrator.service
+    mode: "0644"
+  become: true
+  register: orchestrator_service
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: orchestrator_service.changed
+
+- name: Enable and start e2b orchestrator
+  ansible.builtin.systemd:
+    name: e2b-orchestrator
+    state: "{{ 'restarted' if orchestrator_service.changed else 'started' }}"
+    enabled: true
+  register: orchestrator_started
+
+- name: Wait for orchestrator gRPC to be ready
+  ansible.builtin.wait_for:
+    port: "{{ e2b_orchestrator_grpc_port | default(5008) }}"
+    host: "0.0.0.0"
+    delay: 5
+    timeout: 120
+  when: orchestrator_started is success
+
+- name: Register worker node as K8s Endpoints for service discovery
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Endpoints
+      metadata:
+        name: e2b-orchestrator
+        namespace: "{{ e2b_ns }}"
+      subsets:
+        - addresses:
+            - ip: "{{ ansible_host | default(inventory_hostname) }}"
+              nodeName: "{{ inventory_hostname }}"
+          ports:
+            - name: grpc
+              port: "{{ e2b_orchestrator_grpc_port | default(5008) }}"
+              protocol: TCP
+            - name: proxy
+              port: "{{ e2b_orchestrator_proxy_port | default(5007) }}"
+              protocol: TCP
+  delegate_to: localhost
