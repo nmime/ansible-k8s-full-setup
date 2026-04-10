@@ -146,15 +146,13 @@
           app.kubernetes.io/part-of: e2b
       spec:
         ttlSecondsAfterFinished: 300
+        backoffLimit: 3
         template:
           spec:
             restartPolicy: OnFailure
             containers:
               - name: migrate
-                image: "{{ e2b_image_registry | default('registry.' + domain) }}/e2b/api:{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}"
-                command: ["/api"]
-                args:
-                  - "--migrate-only"
+                image: "{{ e2b_image_registry | default('registry.' + domain) }}/e2b/migrator:{{ e2b_image_tag | default(e2b_version | default('0.1.4')) }}"
                 envFrom:
                   - secretRef:
                       name: e2b-config

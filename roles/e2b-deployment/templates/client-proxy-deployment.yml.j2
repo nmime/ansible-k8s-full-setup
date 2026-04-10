@@ -67,8 +67,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet:
-              path: /
+            tcpSocket:
               port: {{ e2b_client_proxy_health_port | default(3003) }}
             initialDelaySeconds: 15
             periodSeconds: 30
