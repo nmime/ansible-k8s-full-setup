@@ -23,3 +23,9 @@ data:
   CREDENTIAL_PROXY_URL: {{ include "opwerf.credentialProxyUrl" . | quote }}
   WORKER_LOG_LEVEL: "info"
   APP_ROOT: "/app"
+  {{- if .Values.elasticsearch.enabled }}
+  ELASTICSEARCH_URL: {{ include "opwerf.elasticsearchUrl" . | quote }}
+  ELASTICSEARCH_HOST: {{ .Values.elasticsearch.host | quote }}
+  ELASTICSEARCH_PORT: {{ .Values.elasticsearch.port | quote }}
+  ELASTICSEARCH_SCHEME: {{ .Values.elasticsearch.scheme | quote }}
+  {{- end }}

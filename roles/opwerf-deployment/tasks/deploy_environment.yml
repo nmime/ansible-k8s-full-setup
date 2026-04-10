@@ -1,0 +1,333 @@
+- name: "Set {{ opwerf_env.name }} environment variables"
+  set_fact:
+    env_namespace: '{{ opwerf_env.namespace }}'
+    env_image_tag: '{{ opwerf_env.image_tag }}'
+    env_subdomain_prefix: '{{ opwerf_env.subdomain_prefix }}'
+    env_branch: '{{ opwerf_env.branch }}'
+
+- name: "Create {{ opwerf_env.name }} ServiceAccount for API"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: opwerf-api
+        namespace: '{{ env_namespace }}'
+      automountServiceAccountToken: false
+
+- name: "Create {{ opwerf_env.name }} ServiceAccount for Dashboard"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: opwerf-frontend
+        namespace: '{{ env_namespace }}'
+      automountServiceAccountToken: false
+
+- name: "Create default-deny NetworkPolicy for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ env_namespace }}'
+      spec:
+        endpointSelector: {}
+
+- name: "Allow API ingress from gateway for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-api-ingress
+        namespace: '{{ env_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-api
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '8000'
+              protocol: TCP
+
+- name: "Allow Dashboard ingress from gateway for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-frontend-ingress
+        namespace: '{{ env_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-frontend
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '3000'
+              protocol: TCP
+
+- name: "Allow API egress for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-api-egress
+        namespace: '{{ env_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-api
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+            - port: '6379'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: storage
+          toPorts:
+          - ports:
+            - port: '9000'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: elasticsearch
+          toPorts:
+          - ports:
+            - port: '9200'
+              protocol: TCP
+        - toEntities:
+          - kube-apiserver
+        - toFQDNs:
+          - matchPattern: '*'
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '53'
+              protocol: UDP
+
+- name: "Allow Dashboard egress to API for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-frontend-to-api
+        namespace: '{{ env_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: opwerf-frontend
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              app.kubernetes.io/name: opwerf-api
+          toPorts:
+          - ports:
+            - port: '8000'
+              protocol: TCP
+        - toFQDNs:
+          - matchPattern: '*'
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '53'
+              protocol: UDP
+
+- name: "Create {{ opwerf_env.name }} namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ env_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: opwerf
+          app.kubernetes.io/environment: '{{ opwerf_env.name }}'
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/enforce-version: latest
+          argocd.argoproj.io/managed-by: '{{ opwerf_argocd_ns }}'
+  register: _r_create_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_namespace is not failed
+
+- name: "Copy Elasticsearch CA certificate to {{ opwerf_env.name }} namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: elasticsearch-ca
+        namespace: '{{ env_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: opwerf
+      type: Opaque
+      data:
+        ca.crt: '{{ lookup("kubernetes.core.k8s", kind="Secret", namespace="elasticsearch", resource_name="elasticsearch-ca").data["ca.crt"] }}'
+  ignore_errors: true
+
+- name: "Create {{ opwerf_env.name }} secrets in namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: opwerf-secrets
+        namespace: '{{ env_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: opwerf
+          app.kubernetes.io/environment: '{{ opwerf_env.name }}'
+      type: Opaque
+      stringData:
+        database.password: '{{ opwerf_pg_password_final }}'
+        redis.password: '{{ opwerf_redis_password_resolved }}'
+        minio.accessKey: '{{ minio_root_user }}'
+        minio.secretKey: '{{ minio_root_password }}'
+        credential.proxy.token: '{{ opwerf_credential_proxy_token_resolved }}'
+        encryption.key: '{{ opwerf_enc_key_resolved }}'
+        encryption.salt: '{{ opwerf_enc_salt_resolved }}'
+        session.signing.key: '{{ opwerf_session_key_resolved }}'
+        e2b.api.key: '{{ opwerf_e2b_api_key | default("") }}'
+        anthropic.api.key: '{{ opwerf_anthropic_api_key | default("") }}'
+  no_log: true
+  register: _r_create_secrets
+  retries: 3
+  delay: 10
+  until: _r_create_secrets is not failed
+
+- name: "Add GitLab repository credentials to ArgoCD for {{ opwerf_env.name }}"
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: opwerf-helm-repo-{{ opwerf_env.name }}
+        namespace: '{{ opwerf_argocd_ns }}'
+        labels:
+          argocd.argoproj.io/secret-type: repository
+      type: Opaque
+      stringData:
+        type: git
+        url: '{{ opwerf_helm_repo_url }}'
+        username: root
+        password: '{{ gitlab_root_password | default("") }}'
+  register: _r_add_repo
+  retries: 3
+  delay: 10
+  until: _r_add_repo is not failed
+  when: gitlab_root_password is defined
+
+- name: "Create ArgoCD AppProject for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha
+      kind: AppProject
+      metadata:
+        name: 'opwerf-{{ opwerf_env.name }}'
+        namespace: '{{ opwerf_argocd_ns }}'
+      spec:
+        description: "OpenWerf {{ opwerf_env.name }} environment"
+        sourceRepos:
+        - '{{ opwerf_helm_repo_url }}'
+        destinations:
+        - namespace: '{{ env_namespace }}'
+          server: https://kubernetes.default.svc
+        clusterResourceWhitelist:
+        - group: '*'
+          kind: Namespace
+        namespaceResourceWhitelist:
+        - group: '*'
+          kind: '*'
+        orphanedResources:
+          warn: true
+  register: _r_create_project
+  retries: 3
+  delay: 10
+  until: _r_create_project is not failed
+
+- name: "Create ArgoCD Application for {{ opwerf_env.name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: 'opwerf-{{ opwerf_env.name }}'
+        namespace: '{{ opwerf_argocd_ns }}'
+        labels:
+          app.kubernetes.io/part-of: opwerf
+          app.kubernetes.io/environment: '{{ opwerf_env.name }}'
+        finalizers:
+        - resources-finalizer.argocd.argoproj.io
+      spec:
+        project: 'opwerf-{{ opwerf_env.name }}'
+        source:
+          repoURL: '{{ opwerf_helm_repo_url }}'
+          targetRevision: '{{ env_branch }}'
+          path: .
+          helm:
+            releaseName: 'opwerf-{{ opwerf_env.name }}'
+            values: "global:\n  domain: {{ domain }}\n  tier: {{ tier }}\n  environment: {{ opwerf_env.name }}\nimage:\n  registry: {{ opwerf_image_registry }}\n  tag: {{ env_image_tag }}\napp:\n  name: opwerf\n  nodeEnv: {{ opwerf_env.node_env }}\n  allowDevAuthBypass: \"{{ opwerf_env.allow_dev_auth_bypass }}\"\nreplicas:\n  api: {{ opwerf_env.api_replicas }}\n  worker: {{ opwerf_env.worker_replicas }}\n  dashboard: {{ opwerf_env.dashboard_replicas }}\n  credentialProxy: 1\nresources:\n  api:\n    requests:\n      cpu: {{ opwerf_env.api_cpu_request }}\n      memory: {{ opwerf_env.api_memory_request }}\n    limits:\n      cpu: {{ opwerf_env.api_cpu_limit }}\n      memory: {{ opwerf_env.api_memory_limit }}\n  worker:\n    requests:\n      cpu: {{ opwerf_env.worker_cpu_request }}\n      memory: {{ opwerf_env.worker_memory_request }}\n    limits:\n      cpu: {{ opwerf_env.worker_cpu_limit }}\n      memory: {{ opwerf_env.worker_memory_limit }}\n  dashboard:\n    requests:\n      cpu: {{ opwerf_dashboard_cpu_request }}\n      memory: {{ opwerf_dashboard_memory_request }}\n    limits:\n      cpu: {{ opwerf_dashboard_cpu_limit }}\n      memory: {{ opwerf_dashboard_memory_limit }}\ndatabase:\n  host: {{ pg_host }}\n  port: {{ opwerf_pg_port }}\n  name: {{ opwerf_db_name }}\n  user: {{ opwerf_db_user }}\n  password: {{ opwerf_pg_password_final }}\ndragonfly:\n  host: {{ opwerf_dragonfly_host }}\n  port: {{ opwerf_dragonfly_port }}\nelasticsearch:\n  enabled: true\n  external: true\n  scheme: {{ opwerf_elasticsearch_scheme }}\n  host: {{ opwerf_elasticsearch_host }}\n  port: {{ opwerf_elasticsearch_port }}\n  user: {{ opwerf_elasticsearch_user }}\n  password: {{ opwerf_elasticsearch_password | default('') }}\ntemporal:\n  address: {{ opwerf_temporal_address }}\n  namespace: {{ opwerf_temporal_namespace }}\nminio:\n  endpoint: {{ opwerf_minio_endpoint }}\n  port: {{ opwerf_minio_port }}\n  bucket: {{ opwerf_minio_bucket }}\n  useSSL: {{ opwerf_minio_use_ssl | string | lower }}\n  accessKey: {{ minio_root_user }}\n  secretKey: {{ minio_root_password }}\nsecurity:\n  redisPassword: {{ opwerf_redis_password_resolved }}\n  credentialProxyToken: {{ opwerf_credential_proxy_token_resolved }}\n  encryptionKey: {{ opwerf_enc_key_resolved }}\n  encryptionSalt: {{ opwerf_enc_salt_resolved }}\n  sessionSigningKey: {{ opwerf_session_key_resolved }}\nexternalAPIs:\n  e2bApiKey: {{ opwerf_e2b_api_key | default('') }}\n  anthropicApiKey: {{ opwerf_anthropic_api_key | default('') }}\ningress:\n  enabled: true\n  gatewayName: main-gateway\n  gatewayNamespace: gateway\n  dashboardHost: {{ env_subdomain_prefix }}app.{{ domain }}\n  apiHost: {{ env_subdomain_prefix }}api.{{ domain }}\nautoscaling:\n  api:\n    enabled: true\n    minReplicas: {{ opwerf_env.hpa_api_min }}\n    maxReplicas: {{ opwerf_env.hpa_api_max }}\n    targetCPUUtilizationPercentage: 70\n    targetMemoryUtilizationPercentage: 80\n  worker:\n    enabled: true\n    minReplicas: {{ opwerf_env.hpa_worker_min }}\n    maxReplicas: {{ opwerf_env.hpa_worker_max }}\n    targetCPUUtilizationPercentage: 70\n"
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: '{{ env_namespace }}'
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          retry:
+            limit: 5
+            backoff:
+              duration: 10s
+              factor: 2
+              maxDuration: 5m
+  no_log: true
+  register: _r_create_application
+  retries: 3
+  delay: 10
+  until: _r_create_application is not failed
+
+- name: "Wait for ArgoCD to sync {{ opwerf_env.name }} application"
+  ansible.builtin.command:
+    cmd: 'kubectl wait application/opwerf-{{ opwerf_env.name }} -n {{ opwerf_argocd_ns }} --for=jsonpath=''{.status.health.status}''=Healthy --timeout=600s'
+  register: argocd_sync_wait
+  retries: 3
+  delay: 30
+  until: argocd_sync_wait.rc == 0
+  failed_when: false
+  changed_when: false
