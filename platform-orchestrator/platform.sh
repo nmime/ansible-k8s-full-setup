@@ -297,6 +297,15 @@ deploy_autoscaling() {
     2>&1 | tee -a "${LOG_DIR}/autoscaling.log"
 }
 
+deploy_opwerf() {
+  log "Installing OpenWerf (st/pp/prod)..."
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    -e "deploy_opwerf=true" \
+    --tags opwerf \
+    2>&1 | tee -a "${LOG_DIR}/opwerf.log"
+}
+
 # ============================================
 # DESTROY
 # ============================================
@@ -396,6 +405,14 @@ show_credentials() {
 
   echo "Temporal: https://temporal.$DOMAIN"
   echo "  gRPC: temporal-frontend.temporal.svc.cluster.local:7233"
+  echo ""
+
+  echo "OpenWerf (multi-environment):"
+  echo "  Production: https://app.$DOMAIN + https://api.$DOMAIN"
+  echo "  Pre-prod:   https://pp-app.$DOMAIN + https://pp-api.$DOMAIN"
+  echo "  Staging:    https://st-app.$DOMAIN + https://st-api.$DOMAIN"
+  echo "  Namespace:  opwerf / opwerf-pp / opwerf-st"
+  echo "  ArgoCD:     opwerf-production / opwerf-pp / opwerf-st"
   echo ""
 
 }
