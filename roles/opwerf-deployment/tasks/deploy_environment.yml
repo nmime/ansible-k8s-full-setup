@@ -185,13 +185,13 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: elasticsearch-ca
+        name: es-tls-certs
         namespace: '{{ env_namespace }}'
         labels:
           app.kubernetes.io/part-of: opwerf
       type: Opaque
       data:
-        ca.crt: '{{ lookup("kubernetes.core.k8s", kind="Secret", namespace="elasticsearch", resource_name="elasticsearch-ca").data["ca.crt"] }}'
+        ca.crt: '{{ lookup("kubernetes.core.k8s", kind="Secret", namespace="elasticsearch", resource_name="es-tls-certs").data["ca.crt"] }}'
   ignore_errors: true
 
 - name: "Create {{ opwerf_env.name }} secrets in namespace"
