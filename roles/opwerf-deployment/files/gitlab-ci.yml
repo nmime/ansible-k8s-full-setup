@@ -1,0 +1,102 @@
+stages:
+  - test
+  - build
+  - promote
+
+variables:
+  DOCKER_BUILDKIT: "1"
+  NODE_VERSION: "24"
+
+.docker_base:
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+  tags:
+    - docker
+
+.test_template:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+  before_script:
+    - npm ci --prefer-offline
+  script:
+    - npm run lint --if-present
+    - npm test --if-present
+
+.build_template:
+  extends: .docker_base
+  stage: build
+  script:
+    - |-
+      case "$CI_COMMIT_REF_NAME" in
+        main) TAG="latest" ;;
+        st)   TAG="st-latest" ;;
+        pp)   TAG="pp-latest" ;;
+        *)    TAG="$CI_COMMIT_REF_SLUG" ;;
+      esac
+    - echo "Building images with tag ${TAG}"
+    - |-
+      for COMPONENT in api worker dashboard credential-proxy; do
+        docker build \
+          --build-arg NODE_VERSION=${NODE_VERSION} \
+          -f docker/Dockerfile.${COMPONENT} \
+          -t ${CI_REGISTRY_IMAGE}/${COMPONENT}:${TAG} \
+          -t ${CI_REGISTRY_IMAGE}/${COMPONENT}:${CI_COMMIT_SHORT_SHA} \
+          .
+        docker push ${CI_REGISTRY_IMAGE}/${COMPONENT}:${TAG}
+        docker push ${CI_REGISTRY_IMAGE}/${COMPONENT}:${CI_COMMIT_SHORT_SHA}
+      done
+
+# ─── st branch: test on MR, build on merge ───
+
+test:st:
+  extends: .test_template
+  rules:
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "st"
+
+build:st:
+  extends: .build_template
+  rules:
+    - if: $CI_COMMIT_BRANCH == "st"
+
+# ─── pp branch: test on MR, build on merge ───
+
+test:pp:
+  extends: .test_template
+  rules:
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "pp"
+
+build:pp:
+  extends: .build_template
+  rules:
+    - if: $CI_COMMIT_BRANCH == "pp"
+
+# ─── main branch: build on push ───
+
+build:production:
+  extends: .build_template
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ─── promote: st → pp ───
+
+promote:st-to-pp:
+  extends: .docker_base
+  stage: promote
+  rules:
+    - if: $CI_COMMIT_BRANCH == "pp"
+  script:
+    - |-
+      for COMPONENT in api worker dashboard credential-proxy; do
+        docker pull ${CI_REGISTRY_IMAGE}/${COMPONENT}:st-latest
+        docker tag ${CI_REGISTRY_IMAGE}/${COMPONENT}:st-latest ${CI_REGISTRY_IMAGE}/${COMPONENT}:pp-latest
+        docker push ${CI_REGISTRY_IMAGE}/${COMPONENT}:pp-latest
+      done

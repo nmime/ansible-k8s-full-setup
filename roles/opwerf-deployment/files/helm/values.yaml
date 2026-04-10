@@ -67,11 +67,6 @@ elasticsearch:
   port: 9200
   user: elastic
 
-elasticsearchCA:
-  enabled: true
-  caSecretName: elasticsearch-ca
-  caSecretNamespace: elasticsearch
-
 temporal:
   address: temporal-frontend.temporal.svc.cluster.local:7233
   namespace: opwerf
@@ -106,19 +101,24 @@ autoscaling:
     maxReplicas: 20
     targetCPUUtilizationPercentage: 70
     targetMemoryUtilizationPercentage: 80
+    scaleUpStabilization: 0
+    scaleDownStabilization: 300
   worker:
     enabled: true
     minReplicas: 1
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
+    scaleUpStabilization: 0
+    scaleDownStabilization: 300
 
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 1000
-  fsGroup: 1000
+  runAsUser: 1001
+  fsGroup: 1001
 
 containerSecurityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
   capabilities:
     drop:
       - ALL
