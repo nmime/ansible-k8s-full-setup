@@ -25,23 +25,23 @@ e2b_infra_repo: "https://github.com/e2b-dev/infra.git"
 hetzner_robot_user: ""
 hetzner_robot_password: ""
 e2b_hetzner_provision: true
-e2b_hetzner_server_type: "ax42"
-e2b_hetzner_location: "FSN"
+e2b_hetzner_server_type: "AX41-NVMe"
+e2b_hetzner_location: "FSN1"
 e2b_hetzner_image: "Ubuntu 24.04"
 
 # Auto-selected server types per tier
 e2b_tier_specs:
   minimal:
-    server_type: "ax42"
+    server_type: "AX41-NVMe"
     worker_count: 1
   small:
-    server_type: "ax42"
+    server_type: "AX41-NVMe"
     worker_count: 1
   medium:
-    server_type: "ax52"
+    server_type: "AX42-U"
     worker_count: 2
   production:
-    server_type: "ax52"
+    server_type: "AX42-U"
     worker_count: 3
 
 e2b_worker_count: "{{ e2b_tier_specs[tier | default('small')].worker_count }}"
