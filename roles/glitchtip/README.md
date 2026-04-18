@@ -7,7 +7,7 @@ Self-hosted GlitchTip — open-source, Sentry-compatible error tracking.
 - **Web + Worker**: Helm chart `glitchtip/glitchtip`
 - **Database**: Reuses existing Percona PostgreSQL cluster (user: `glitchtip`, db: `glitchtip`)
 - **Redis/Celery broker**: Reuses existing Dragonfly (DB 2)
-- **Ingress**: Gateway API HTTPRoute via `platform-gateway` (cilium-system)
+- **Ingress**: Gateway API HTTPRoute via `main-gateway` (cilium-system)
 - **TLS**: cert-manager with `letsencrypt-prod` ClusterIssuer
 - **Email**: Optionally via Postal SMTP
 
@@ -27,5 +27,5 @@ Self-hosted GlitchTip — open-source, Sentry-compatible error tracking.
 
 - `k8s-databases` role must create the `glitchtip` PG user (already configured)
 - `dragonfly` role deployed
-- `platform-gateway` available in `cilium-system` namespace
+- `main-gateway` available in `cilium-system` namespace
 - `cert-manager` + `letsencrypt-prod` ClusterIssuer
