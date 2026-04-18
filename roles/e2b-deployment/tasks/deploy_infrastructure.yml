@@ -68,6 +68,7 @@
       kubernetes.core.helm:
         name: e2b-clickhouse
         chart_ref: bitnami/clickhouse
+        chart_version: "{{ e2b_clickhouse_chart_version }}"
         release_namespace: "{{ e2b_ns }}"
         create_namespace: false
         release_state: present

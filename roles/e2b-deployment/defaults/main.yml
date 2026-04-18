@@ -86,6 +86,7 @@ e2b_clickhouse_user: "e2b"
 e2b_clickhouse_password: ""
 e2b_clickhouse_host: ""
 e2b_clickhouse_port: 9000
+e2b_clickhouse_chart_version: "9.4.4"
 
 # === API Service ===
 e2b_api_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
