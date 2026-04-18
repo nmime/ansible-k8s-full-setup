@@ -1,3 +1,0 @@
-{{- if .Values.redis.enabled }}
-{{- fail "Embedded Redis is removed. Use external Dragonfly (dragonfly.dragonfly.svc.cluster.local:6379)" }}
-{{- end }}

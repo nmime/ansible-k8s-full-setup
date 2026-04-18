@@ -16,6 +16,7 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: opwerf
 app.kubernetes.io/version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+app.kubernetes.io/environment: {{ .Values.global.environment | default "production" }}
 {{- end }}
 
 {{- define "opwerf.selectorLabels" -}}
@@ -29,4 +30,10 @@ redis://:$(REDIS_PASSWORD)@{{ .Values.dragonfly.host }}:{{ .Values.dragonfly.por
 
 {{- define "opwerf.credentialProxyUrl" -}}
 http://{{ include "opwerf.name" . }}-credential-proxy.{{ .Release.Namespace }}.svc.cluster.local:4000
+{{- end }}
+
+{{- define "opwerf.elasticsearchUrl" -}}
+{{- if .Values.elasticsearch.enabled }}
+{{ .Values.elasticsearch.scheme }}://{{ .Values.elasticsearch.host }}:{{ .Values.elasticsearch.port }}
+{{- end }}
 {{- end }}
