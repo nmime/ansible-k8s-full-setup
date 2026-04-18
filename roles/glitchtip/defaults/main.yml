@@ -1,0 +1,50 @@
+---
+# GlitchTip - Open-source Sentry-compatible error tracking
+# https://glitchtip.com/documentation/install
+# Helm chart: https://gitlab.com/glitchtip/glitchtip-helm-chart
+
+glitchtip_namespace: glitchtip
+glitchtip_chart_version: "8.2.0"
+glitchtip_app_version: "v6.1.4"
+glitchtip_domain: "glitchtip.{{ domain }}"
+
+# Web replicas - tier-based (worker is embedded in web by default)
+glitchtip_web_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+glitchtip_web_cpu_request: "{{ '200m' if tier in ['medium', 'production'] else '100m' }}"
+glitchtip_web_memory_request: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+glitchtip_web_cpu_limit: "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
+glitchtip_web_memory_limit: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+
+# Dedicated worker (in addition to embedded) for medium/production
+glitchtip_worker_enabled: "{{ true if tier in ['medium', 'production'] else false }}"
+glitchtip_worker_replicas: "{{ 2 if tier == 'production' else 1 }}"
+glitchtip_worker_cpu_request: "100m"
+glitchtip_worker_memory_request: "350Mi"
+glitchtip_worker_cpu_limit: "900m"
+glitchtip_worker_memory_limit: "768Mi"
+
+# Database (reuses existing Percona PG cluster)
+glitchtip_db_name: "glitchtip"
+glitchtip_db_user: "glitchtip"
+glitchtip_db_namespace: "databases"
+
+# Redis (reuses existing Dragonfly - using DB 2 to avoid conflicts)
+glitchtip_redis_host: "dragonfly.dragonfly.svc.cluster.local"
+glitchtip_redis_port: 6379
+glitchtip_redis_db: 2
+
+# Public signup / invites
+glitchtip_enable_user_registration: false
+glitchtip_enable_organization_creation: false
+
+# Email (reuses Postal if deployed)
+glitchtip_email_backend: "smtp"
+glitchtip_default_from_email: "glitchtip@{{ domain }}"
+glitchtip_smtp_host: "postal-smtp.postal.svc.cluster.local"
+glitchtip_smtp_port: 25
+glitchtip_smtp_user: ""
+glitchtip_smtp_password: ""
+glitchtip_smtp_use_tls: false
+
+# Event retention
+glitchtip_events_retention_days: 90
