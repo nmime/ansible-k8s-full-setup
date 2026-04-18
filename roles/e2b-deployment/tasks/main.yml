@@ -1,0 +1,78 @@
+---
+# Main e2b-deployment role entry point
+# Architecture:
+#   1. Provision Hetzner bare metal workers (if enabled)
+#   2. Configure worker nodes (KVM, hugepages, build binaries)
+#   3. Deploy infrastructure (ClickHouse, DB, secrets)
+#   4. Build and push container images to registry
+#   5. Deploy orchestrator on workers (systemd)
+#   6. Deploy API + Client-Proxy in Kubernetes
+#   7. Configure networking and service discovery
+
+- name: Display e2b deployment banner
+  debug:
+    msg:
+      - "=========================================="
+      - "  E2B Sandbox Infrastructure Deployment"
+      - "  Tier: {{ tier }}"
+      - "  Workers: {{ e2b_worker_count | default(e2b_tier_specs[tier | default('small')].worker_count | default(1)) }}"
+      - "  Storage: {{ e2b_storage_provider | default('Local') }}"
+      - "=========================================="
+
+- name: Validate e2b prerequisites
+  assert:
+    that:
+      - domain is defined and domain | length > 0
+      - tier in ['minimal', 'small', 'medium', 'production']
+    fail_msg: "domain and valid tier are required for e2b deployment"
+
+- name: Provision Hetzner bare metal servers
+  ansible.builtin.include_tasks: provision_servers.yml
+  when: e2b_hetzner_provision | default(true) | bool
+  tags:
+    - e2b-provision
+
+- name: Configure e2b worker nodes
+  ansible.builtin.include_tasks: setup_worker_node.yml
+  tags:
+    - e2b-workers
+
+- name: Deploy e2b infrastructure (DB, ClickHouse, secrets)
+  ansible.builtin.include_tasks: deploy_infrastructure.yml
+  tags:
+    - e2b-infra
+
+- name: Build and push e2b container images
+  ansible.builtin.include_tasks: build_images.yml
+  tags:
+    - e2b-images
+
+- name: Deploy e2b orchestrator on workers
+  ansible.builtin.include_tasks: deploy_orchestrator.yml
+  tags:
+    - e2b-orchestrator
+
+- name: Deploy e2b API
+  ansible.builtin.include_tasks: deploy_api.yml
+  tags:
+    - e2b-api
+
+- name: Deploy e2b client-proxy
+  ansible.builtin.include_tasks: deploy_client_proxy.yml
+  tags:
+    - e2b-client-proxy
+
+- name: Configure e2b networking
+  ansible.builtin.include_tasks: networking.yml
+  tags:
+    - e2b-networking
+
+- name: Display e2b deployment summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  E2B Sandbox Infrastructure Ready"
+      - "  Workers: {{ e2b_workers | default([]) | length }} nodes"
+      - "  API: https://{{ e2b_api_domain | default('e2b-api.' + domain) }}"
+      - "  Orchestrator gRPC: port {{ e2b_orchestrator_grpc_port | default(5008) }}"
+      - "=========================================="

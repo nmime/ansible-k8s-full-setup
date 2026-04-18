@@ -1,0 +1,170 @@
+---
+# Provision Hetzner Bare Metal Servers for e2b Workers
+# Uses Hetzner Robot API (robot-ws.your-server.de) for dedicated/bare metal servers
+# AX42/AX52 series require KVM for Firecracker - only available on bare metal
+# Cloud API (hcloud) only supports VPS types (CX/CPX/CCX/CAX) - no KVM
+
+- name: Validate Robot API credentials
+  assert:
+    that:
+      - hetzner_robot_user is defined and hetzner_robot_user | length > 0
+      - hetzner_robot_password is defined and hetzner_robot_password | length > 0
+    fail_msg: "Hetzner Robot API credentials required. Set hetzner_robot_user and hetzner_robot_password. Get them at robot.hetzner.com → Settings → Webservice & API"
+
+- name: Set provisioning facts
+  set_fact:
+    project: "{{ project_name | default('k8s') }}"
+    e2b_server_type: >-
+      {{ e2b_hetzner_server_type | default(
+        e2b_tier_specs[tier].server_type | default('ax42')
+      ) }}
+    e2b_location_val: "{{ e2b_hetzner_location | default('FSN') }}"
+    e2b_worker_count_val: >-
+      {{ e2b_worker_count | default(
+        e2b_tier_specs[tier].worker_count | default(1)
+      ) }}
+    robot_api: "https://robot-ws.your-server.de"
+
+- name: List available dedicated server products from Robot API
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/order/server/product"
+    method: GET
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: robot_products_raw
+  no_log: true
+
+- name: Parse Robot API product response
+  set_fact:
+    robot_products: "{{ robot_products_raw.json if robot_products_raw.json is list else (robot_products_raw.json.product | default(robot_products_raw.json)) }}"
+  no_log: true
+
+- name: Find matching product for {{ e2b_server_type }}
+  set_fact:
+    e2b_product: >-
+      {{ robot_products | selectattr('product', 'defined') |
+         selectattr('product.id', 'defined') |
+         selectattr('product.id', 'match', '(?i)' + e2b_server_type) | first | default(None) }}
+  no_log: true
+
+- name: Fail if product not found
+  assert:
+    that:
+      - e2b_product is defined and e2b_product != None
+    fail_msg: >-
+      Server type '{{ e2b_server_type }}' not found in Robot API products.
+      Response structure: {{ robot_products_raw.json | type_debug }}
+      Available: {{ robot_products | map(attribute='product.id') | list | default([]) | join(', ') }}
+
+- name: Display selected product info
+  debug:
+    msg: "Product: {{ e2b_product.product.id }} - {{ e2b_product.product.name | default('N/A') }}"
+
+- name: Get existing dedicated servers from Robot API
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/server"
+    method: GET
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: robot_servers_raw
+  no_log: true
+
+- name: Find existing e2b workers
+  set_fact:
+    existing_e2b_workers: >-
+      {{ robot_servers_raw.json | selectattr('server', 'defined') |
+         json_query('[?contains(server.name, `' + project + '-e2b-worker`)]') | default([]) }}
+
+- name: Set existing worker count
+  set_fact:
+    existing_worker_count: "{{ existing_e2b_workers | length }}"
+
+- name: Calculate workers to provision
+  set_fact:
+    workers_to_provision: >-
+      {{ (e2b_worker_count_val | int) - (existing_worker_count | int) }}
+
+- name: Display provisioning plan
+  debug:
+    msg: >-
+      Existing: {{ existing_worker_count }} workers,
+      Target: {{ e2b_worker_count_val }} workers,
+      To provision: {{ workers_to_provision }}
+
+- name: Get SSH key fingerprint for provisioning
+  ansible.builtin.command: >-
+    ssh-keygen -lf {{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+  register: ssh_key_fingerprint
+  changed_when: false
+
+- name: Order e2b worker bare metal servers via Robot API
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/order/server/transaction"
+    method: POST
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    body:
+      product_id: "{{ e2b_product.product.id }}"
+      location: "{{ e2b_location_val }}"
+      dist: "{{ e2b_hetzner_image | default('Ubuntu 24.04') }}"
+      authorized_key[]: "{{ ssh_key_fingerprint.stdout.split()[1] }}"
+      addon[]: "primary_ipv4"
+    body_format: form-urlencoded
+    status_code: 201
+  loop: "{{ range(existing_worker_count | int + 1, e2b_worker_count_val | int + 1) | list }}"
+  when: (workers_to_provision | int) > 0
+  register: order_results
+  no_log: true
+
+- name: Wait for server provisioning to complete
+  ansible.builtin.pause:
+    seconds: 120
+  when: (workers_to_provision | int) > 0
+
+- name: Refresh server list after provisioning
+  ansible.builtin.uri:
+    url: "{{ robot_api }}/server"
+    method: GET
+    user: "{{ hetzner_robot_user }}"
+    password: "{{ hetzner_robot_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: robot_servers_refreshed
+  no_log: true
+
+- name: Build e2b workers inventory from Robot API
+  set_fact:
+    e2b_workers: >-
+      {{ robot_servers_refreshed.json | selectattr('server', 'defined') |
+         json_query('[?contains(server.name, `' + project + '-e2b-worker`)].server') | default([]) }}
+
+- name: Display provisioned workers
+  debug:
+    msg: "Worker {{ item.name }}: {{ item.ip }}"
+  loop: "{{ e2b_workers }}"
+
+- name: Wait for e2b workers to be SSH accessible
+  ansible.builtin.wait_for:
+    host: "{{ item.ip }}"
+    port: 22
+    delay: 30
+    timeout: 900
+  loop: "{{ e2b_workers }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.ip }})"
+
+- name: Generate e2b workers Ansible inventory
+  ansible.builtin.copy:
+    content: |
+      [e2b_workers]
+      {% for worker in e2b_workers %}
+      {{ worker.name }} ansible_host={{ worker.ip }} ansible_user=root ansible_ssh_private_key_file={{ ssh_key_path | default('~/.ssh/id_ed25519') }}
+      {% endfor %}
+    dest: /tmp/e2b-workers-inventory.ini
+    mode: "0600"
+  when: e2b_workers | length > 0
