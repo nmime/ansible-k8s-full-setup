@@ -1,44 +1,36 @@
-# Default values for opwerf
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
-
-# Global settings
 global:
   domain: example.com
   tier: small
+  environment: production
 
-# Image settings
 image:
   registry: registry.example.com
   tag: latest
   pullPolicy: IfNotPresent
 
-# Application settings
 app:
   name: opwerf
   nodeEnv: production
   allowDevAuthBypass: "false"
 
-# Replication
 replicas:
   api: 1
   worker: 1
   dashboard: 1
   credentialProxy: 1
 
-# Resource limits
 resources:
   api:
     requests:
-      cpu: 50m
-      memory: 128Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: 500m
       memory: 512Mi
   worker:
     requests:
-      cpu: 50m
-      memory: 128Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: 500m
       memory: 512Mi
@@ -56,62 +48,45 @@ resources:
     limits:
       cpu: 200m
       memory: 256Mi
-  elasticsearch:
-    requests:
-      cpu: 50m
-      memory: 512Mi
-    limits:
-      cpu: 1000m
-      memory: 2Gi
 
-# Database settings (Percona PostgreSQL)
 database:
   host: k8s-pg-pgbouncer.databases.svc.cluster.local
   port: 5432
   name: opwerf
   user: opwerf
-  # password is provided via secrets
 
-# Dragonfly (Redis-compatible) settings
 dragonfly:
   host: dragonfly.dragonfly.svc.cluster.local
   port: 6379
-  # password provided via opwerf-secrets Secret
 
-# Elasticsearch settings
 elasticsearch:
   enabled: true
-  replicas: 1
-  storageSize: 10Gi
-  storageClass: hcloud-volumes
-  javaOpts: "-Xms512m -Xmx512m"
+  external: true
+  scheme: https
+  host: elasticsearch.elasticsearch.svc.cluster.local
+  port: 9200
+  user: elastic
 
-# Temporal integration
 temporal:
   address: temporal-frontend.temporal.svc.cluster.local:7233
   namespace: opwerf
 
-# MinIO integration
 minio:
   endpoint: minio.storage.svc.cluster.local
   port: 9000
   bucket: opwerf-artifacts
   useSSL: false
-  # accessKey and secretKey provided via secrets
 
-# External API keys (provided via secrets)
-externalAPIs:
-  e2bApiKey: ""
-  anthropicApiKey: ""
-
-# Security (provided via secrets)
 security:
   encryptionKey: ""
   encryptionSalt: ""
   sessionSigningKey: ""
   credentialProxyToken: ""
 
-# Ingress/Gateway API
+externalAPIs:
+  e2bApiKey: ""
+  anthropicApiKey: ""
+
 ingress:
   enabled: true
   gatewayName: main-gateway
@@ -119,7 +94,6 @@ ingress:
   dashboardHost: app.example.com
   apiHost: api.example.com
 
-# Autoscaling
 autoscaling:
   api:
     enabled: true
@@ -127,20 +101,24 @@ autoscaling:
     maxReplicas: 20
     targetCPUUtilizationPercentage: 70
     targetMemoryUtilizationPercentage: 80
+    scaleUpStabilization: 0
+    scaleDownStabilization: 300
   worker:
     enabled: true
     minReplicas: 1
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
+    scaleUpStabilization: 0
+    scaleDownStabilization: 300
 
-# Pod Security
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 1000
-  fsGroup: 1000
+  runAsUser: 1001
+  fsGroup: 1001
 
 containerSecurityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
   capabilities:
     drop:
       - ALL
