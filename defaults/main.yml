@@ -111,6 +111,9 @@ postal_version: "3.3.5"
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30
 
+# E2B Sandboxes
+e2b_enabled: false
+
 # Observability enhancements
 bastion_log_shipping: true  # Ship bastion logs to cluster logging stack
 hetzner_metrics_enabled: true  # Expose Hetzner Cloud API metrics

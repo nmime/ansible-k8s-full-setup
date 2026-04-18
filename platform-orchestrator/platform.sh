@@ -119,6 +119,7 @@ deploy_component() {
     "observability") deploy_observability ;;
     "autoscaling")  deploy_autoscaling ;;
     "opwerf")       deploy_opwerf ;;
+    "e2b")          deploy_e2b ;;
     "all")          deploy_all ;;
     *) error "Unknown: $component"; exit 1 ;;
   esac
@@ -206,6 +207,10 @@ s3 IN 3600 A ${ip}"
 
   is_enabled '.secrets.enabled' && records+="
 vault IN 3600 A ${ip}"
+
+  is_enabled '.e2b.enabled' && records+="
+e2b-api IN 3600 A ${ip}
+sandbox IN 3600 A ${ip}"
 
   echo "$records"
 }
@@ -304,6 +309,16 @@ deploy_opwerf() {
     -e "deploy_opwerf=true" \
     --tags opwerf \
     2>&1 | tee -a "${LOG_DIR}/opwerf.log"
+}
+
+deploy_e2b() {
+  is_enabled '.e2b.enabled' || { log "E2B: disabled"; return 0; }
+  log "Deploying E2B Sandbox Infrastructure..."
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    -e "deploy_e2b=true" \
+    --tags e2b \
+    2>&1 | tee -a "${LOG_DIR}/e2b.log"
 }
 
 # ============================================
