@@ -121,6 +121,8 @@ deploy_component() {
     "opwerf")       deploy_opwerf ;;
     "e2b")          deploy_e2b ;;
     "glitchtip")    deploy_glitchtip ;;
+    "apm")          deploy_apm ;;
+    "blackbox")     deploy_blackbox ;;
     "all")          deploy_all ;;
     *) error "Unknown: $component"; exit 1 ;;
   esac
@@ -133,6 +135,16 @@ deploy_all() {
   local gt_flag="false"
   is_enabled '.glitchtip.enabled' && gt_flag="true"
 
+  local apm_flag="false"
+  is_enabled '.apm.enabled' && apm_flag="true"
+
+  local bb_flag="true"
+  is_enabled '.blackbox.enabled' || bb_flag="$(is_enabled '.blackbox.enabled' && echo true || echo false)"
+  # blackbox defaults to true; only disable if explicitly set false in profile
+  if yq -r '.blackbox.enabled' "${PROFILE}" 2>/dev/null | grep -qx 'false'; then
+    bb_flag="false"
+  fi
+
   # Run Ansible playbook for full deployment
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
     -e "tier=${TIER}" \
@@ -140,6 +152,8 @@ deploy_all() {
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
     -e "deploy_glitchtip=${gt_flag}" \
+    -e "deploy_apm=${apm_flag}" \
+    -e "deploy_blackbox=${bb_flag}" \
     2>&1 | tee -a "${LOG_DIR}/deploy.log"
 
   log "Platform deployed!"
@@ -337,6 +351,25 @@ deploy_glitchtip() {
     -e "deploy_glitchtip=true" \
     --tags glitchtip \
     2>&1 | tee -a "${LOG_DIR}/glitchtip.log"
+}
+
+deploy_apm() {
+  is_enabled '.apm.enabled' || { log "APM: disabled"; return 0; }
+  log "Installing APM Server (Elastic APM / OTLP tracing)..."
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    -e "deploy_apm=true" \
+    --tags apm \
+    2>&1 | tee -a "${LOG_DIR}/apm.log"
+}
+
+deploy_blackbox() {
+  log "Installing Blackbox Exporter + VMProbes (uptime/synthetic monitoring)..."
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    -e "deploy_blackbox=true" \
+    --tags blackbox \
+    2>&1 | tee -a "${LOG_DIR}/blackbox.log"
 }
 
 # ============================================

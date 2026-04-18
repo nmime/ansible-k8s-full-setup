@@ -136,3 +136,15 @@ backup:
 # ---------------------------------------------
 glitchtip:
   enabled: true
+
+# ---------------------------------------------
+# APM Server (distributed tracing via Elasticsearch)
+# ---------------------------------------------
+apm:
+  enabled: true    # Elastic APM; traces written to existing ES, 14d ILM retention
+
+# ---------------------------------------------
+# Blackbox Exporter (uptime/synthetic probes)
+# ---------------------------------------------
+blackbox:
+  enabled: true    # Probes all public URLs + internal TCP every 60s

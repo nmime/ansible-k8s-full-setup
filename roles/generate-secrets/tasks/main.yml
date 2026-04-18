@@ -48,6 +48,12 @@
   set_fact:
     generated_argocd_admin_password: "{{ saved_secrets.argocd_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
 
+- name: Resolve alert notification credentials (Telegram + email)
+  set_fact:
+    generated_alert_telegram_bot_token: "{{ lookup('env', 'ALERT_TELEGRAM_BOT_TOKEN') | default(saved_secrets.alert_telegram_bot_token | default(''), true) }}"
+    generated_alert_telegram_chat_id:   "{{ lookup('env', 'ALERT_TELEGRAM_CHAT_ID')   | default(saved_secrets.alert_telegram_chat_id   | default(''), true) }}"
+    generated_alert_email_to:           "{{ lookup('env', 'ALERT_EMAIL_TO')           | default(saved_secrets.alert_email_to           | default('alerts@' + domain), true) }}"
+
 - name: Generate Headscale API key
   set_fact:
     generated_headscale_api_key: "{{ saved_secrets.headscale_api_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48')) }}"
@@ -96,6 +102,9 @@
     postal_db_password: "{{ generated_postal_db_password }}"
     postal_rails_secret: "{{ generated_postal_rails_secret }}"
     postal_admin_password: "{{ generated_postal_admin_password }}"
+    alert_telegram_bot_token: "{{ generated_alert_telegram_bot_token }}"
+    alert_telegram_chat_id:   "{{ generated_alert_telegram_chat_id }}"
+    alert_email_to:           "{{ generated_alert_email_to }}"
 
 # ============================================
 # Persist secrets to file (idempotent)
@@ -126,6 +135,9 @@
       postal_db_password: "{{ postal_db_password }}"
       postal_rails_secret: "{{ postal_rails_secret }}"
       postal_admin_password: "{{ postal_admin_password }}"
+      alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
+      alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
+      alert_email_to: "{{ alert_email_to }}"
     dest: "{{ secrets_file }}"
     mode: '0600'
   delegate_to: localhost
@@ -156,6 +168,8 @@
       - "  ArgoCD password: ****"
       - "  ES password: ****"
       - "  Postal admin: ****"
+      - "  Alert Telegram: {{ 'configured' if alert_telegram_bot_token | length > 0 else 'NOT SET (silent)' }}"
+      - "  Alert email to: {{ alert_email_to }}"
       - "============================================"
       - "  IMPORTANT: Back up {{ secrets_file }} securely!"
       - "============================================"

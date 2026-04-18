@@ -126,3 +126,15 @@ autoscaling:
 # ---------------------------------------------
 glitchtip:
   enabled: false
+
+# ---------------------------------------------
+# APM Server (distributed tracing via Elasticsearch)
+# ---------------------------------------------
+apm:
+  enabled: false   # Requires Elasticsearch; off in small tiers for footprint
+
+# ---------------------------------------------
+# Blackbox Exporter (uptime/synthetic probes)
+# ---------------------------------------------
+blackbox:
+  enabled: false   # Off by default in small tiers (saves ~50MB RAM)

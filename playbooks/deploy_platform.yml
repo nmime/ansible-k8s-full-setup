@@ -250,6 +250,23 @@
         - postal
         - mail
 
+    - name: Deploy APM Server (Elastic APM / OTLP tracing backend)
+      ansible.builtin.import_role:
+        name: apm-server
+      when: deploy_apm | default(false) | bool
+      tags:
+        - apm
+        - tracing
+        - observability
+
+    - name: Deploy Blackbox Exporter (uptime/synthetic probes)
+      ansible.builtin.import_role:
+        name: blackbox-exporter
+      when: deploy_blackbox | default(true) | bool
+      tags:
+        - blackbox
+        - uptime
+        - observability
 
     - name: Deploy GlitchTip Error Tracking
       ansible.builtin.import_role:
@@ -310,6 +327,9 @@
           - "  - Temporal: https://temporal.{{ domain }}"
           - "  - Elasticsearch: https://kibana.{{ domain }}"
           - "  - Postal: https://mail.{{ domain }}"
+          - "{{ '  - APM Server (tracing): http://apm-server.elasticsearch.svc.cluster.local:8200' if deploy_apm | default(false) | bool else '' }}"
+          - "{{ '  - Blackbox Probes: active on public URLs' if deploy_blackbox | default(true) | bool else '' }}"
+          - "  - Alertmanager (VPN-only): https://alertmanager.{{ domain }}"
           - "  - Headscale VPN"
           - "  - OpenWerf (st/pp/prod): https://app.{{ domain }} (if deploy_opwerf=true)"
           - "    - staging: https://st-app.{{ domain }}"
