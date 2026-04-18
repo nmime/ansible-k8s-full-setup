@@ -149,3 +149,9 @@ backup:
     - gitlab
     - secrets
     - minio
+
+# ---------------------------------------------
+# GlitchTip (Sentry-compatible error tracking)
+# ---------------------------------------------
+glitchtip:
+  enabled: true

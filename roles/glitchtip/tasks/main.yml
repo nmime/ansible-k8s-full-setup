@@ -1,0 +1,253 @@
+---
+# Deploy GlitchTip - Sentry-compatible error tracking
+# Reuses: Percona PostgreSQL, Dragonfly Redis, Gateway API, cert-manager, Postal
+
+- name: Set GlitchTip facts
+  set_fact:
+    gt_ns: "{{ glitchtip_namespace | default('glitchtip') }}"
+    gt_db_ns: "{{ glitchtip_db_namespace | default('databases') }}"
+    gt_pg_cluster: "{{ project_name | default('k8s') }}-pg"
+    gt_pg_host_direct: "{{ project_name | default('k8s') }}-pg-primary.{{ glitchtip_db_namespace | default('databases') }}.svc.cluster.local"
+
+- name: Create GlitchTip namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gt_ns }}"
+        labels:
+          app.kubernetes.io/part-of: glitchtip
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: baseline
+  register: _r_gt_ns
+  retries: 3
+  delay: 10
+  until: _r_gt_ns is not failed
+
+- name: Retrieve Percona-generated GlitchTip PG password
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ gt_db_ns }}"
+    name: "{{ gt_pg_cluster }}-pguser-{{ glitchtip_db_user }}"
+  register: gt_pg_secret
+  until: gt_pg_secret.resources | length > 0
+  retries: 90
+  delay: 10
+  failed_when: false
+
+- name: Fail if GlitchTip PG user not found
+  fail:
+    msg: >-
+      GlitchTip PG user secret not found. Ensure 'glitchtip' user is defined
+      in the PerconaPGCluster spec (k8s-databases role).
+  when: gt_pg_secret.resources | length == 0
+
+- name: Set GlitchTip PG password fact
+  set_fact:
+    gt_pg_password: "{{ gt_pg_secret.resources[0].data.password | b64decode }}"
+  no_log: true
+
+- name: Check if GlitchTip config secret already exists
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ gt_ns }}"
+    name: glitchtip-config
+  register: gt_existing_secret
+
+- name: Generate new SECRET_KEY (first run)
+  set_fact:
+    gt_secret_key: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=64') }}"
+  when: gt_existing_secret.resources | length == 0
+  no_log: true
+
+- name: Reuse existing SECRET_KEY if secret exists
+  set_fact:
+    gt_secret_key: "{{ gt_existing_secret.resources[0].data.SECRET_KEY | b64decode }}"
+  when: gt_existing_secret.resources | length > 0
+  no_log: true
+
+- name: Create GlitchTip config secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: glitchtip-config
+        namespace: "{{ gt_ns }}"
+        labels:
+          app.kubernetes.io/part-of: glitchtip
+      type: Opaque
+      stringData:
+        SECRET_KEY: "{{ gt_secret_key }}"
+        DATABASE_URL: "postgres://{{ glitchtip_db_user }}:{{ gt_pg_password }}@{{ gt_pg_host_direct }}:5432/{{ glitchtip_db_name }}"
+        REDIS_URL: "redis://{{ glitchtip_redis_host }}:{{ glitchtip_redis_port }}/{{ glitchtip_redis_db }}"
+  no_log: true
+  register: _r_gt_config
+  retries: 3
+  delay: 10
+  until: _r_gt_config is not failed
+
+- name: Add GlitchTip Helm repository
+  kubernetes.core.helm_repository:
+    name: glitchtip
+    repo_url: https://gitlab.com/api/v4/projects/16325141/packages/helm/stable
+  register: _r_gt_repo
+  retries: 3
+  delay: 10
+  until: _r_gt_repo is not failed
+
+- name: Install GlitchTip via Helm
+  kubernetes.core.helm:
+    name: glitchtip
+    chart_ref: glitchtip/glitchtip
+    chart_version: "{{ glitchtip_chart_version }}"
+    release_namespace: "{{ gt_ns }}"
+    create_namespace: false
+    release_state: present
+    wait: true
+    timeout: 15m0s
+    values:
+      image:
+        tag: "{{ glitchtip_app_version | regex_replace('^v', '') }}"
+      glitchtip:
+        existingSecret: glitchtip-config
+        existingSecretKey: SECRET_KEY
+        domain: "https://{{ glitchtip_domain }}"
+        database:
+          existingSecret: glitchtip-config
+          existingSecretKey: DATABASE_URL
+        valkey:
+          existingSecret: glitchtip-config
+          existingSecretKey: REDIS_URL
+      valkey:
+        enabled: false
+      postgresql:
+        enabled: false
+      extraEnvVars:
+        - name: ENABLE_USER_REGISTRATION
+          value: "{{ glitchtip_enable_user_registration | string | lower }}"
+        - name: ENABLE_ORGANIZATION_CREATION
+          value: "{{ glitchtip_enable_organization_creation | string | lower }}"
+        - name: DEFAULT_FROM_EMAIL
+          value: "{{ glitchtip_default_from_email }}"
+        - name: GLITCHTIP_MAX_EVENT_LIFE_DAYS
+          value: "{{ glitchtip_events_retention_days | string }}"
+        - name: EMAIL_BACKEND
+          value: "{{ 'django.core.mail.backends.smtp.EmailBackend' if glitchtip_email_backend == 'smtp' else 'django.core.mail.backends.console.EmailBackend' }}"
+        - name: EMAIL_HOST
+          value: "{{ glitchtip_smtp_host }}"
+        - name: EMAIL_PORT
+          value: "{{ glitchtip_smtp_port | string }}"
+        - name: EMAIL_HOST_USER
+          value: "{{ glitchtip_smtp_user }}"
+        - name: EMAIL_HOST_PASSWORD
+          value: "{{ glitchtip_smtp_password }}"
+        - name: EMAIL_USE_TLS
+          value: "{{ glitchtip_smtp_use_tls | string | lower }}"
+      web:
+        replicaCount: "{{ glitchtip_web_replicas | int }}"
+        embedWorker: true
+        service:
+          type: ClusterIP
+          port: 80
+        resources:
+          requests:
+            cpu: "{{ glitchtip_web_cpu_request }}"
+            memory: "{{ glitchtip_web_memory_request }}"
+          limits:
+            cpu: "{{ glitchtip_web_cpu_limit }}"
+            memory: "{{ glitchtip_web_memory_limit }}"
+      worker:
+        enabled: "{{ glitchtip_worker_enabled | bool }}"
+        replicaCount: "{{ glitchtip_worker_replicas | int }}"
+        resources:
+          requests:
+            cpu: "{{ glitchtip_worker_cpu_request }}"
+            memory: "{{ glitchtip_worker_memory_request }}"
+          limits:
+            cpu: "{{ glitchtip_worker_cpu_limit }}"
+            memory: "{{ glitchtip_worker_memory_limit }}"
+      migrationJob:
+        enabled: true
+  register: _r_gt_helm
+  retries: 2
+  delay: 15
+  until: _r_gt_helm is not failed
+
+- name: Create TLS Certificate for GlitchTip domain
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: glitchtip-tls
+        namespace: "{{ gt_ns }}"
+      spec:
+        secretName: glitchtip-tls
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        commonName: "{{ glitchtip_domain }}"
+        dnsNames:
+          - "{{ glitchtip_domain }}"
+  register: _r_gt_cert
+  retries: 3
+  delay: 10
+  until: _r_gt_cert is not failed
+
+- name: Create GlitchTip HTTPRoute via public gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: glitchtip
+        namespace: "{{ gt_ns }}"
+      spec:
+        parentRefs:
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - "{{ glitchtip_domain }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: glitchtip-web
+                port: 80
+  register: _r_gt_route
+  retries: 3
+  delay: 10
+  until: _r_gt_route is not failed
+
+- name: Wait for GlitchTip web deployment to be ready
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ gt_ns }}"
+    name: glitchtip-web
+  register: gt_web_status
+  until: >-
+    gt_web_status.resources | length > 0 and
+    (gt_web_status.resources[0].status.readyReplicas | default(0)) >= (glitchtip_web_replicas | int)
+  retries: 60
+  delay: 10
+
+- name: Display GlitchTip deployment summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  GlitchTip Deployed"
+      - "  URL: https://{{ glitchtip_domain }}"
+      - "  Web replicas: {{ glitchtip_web_replicas }}"
+      - "  Worker replicas: {{ glitchtip_worker_replicas if glitchtip_worker_enabled else 'embedded' }}"
+      - "  DB: {{ glitchtip_db_name }}@{{ gt_pg_host_direct }}"
+      - "  Redis: {{ glitchtip_redis_host }}:{{ glitchtip_redis_port }}/{{ glitchtip_redis_db }}"
+      - "=========================================="
