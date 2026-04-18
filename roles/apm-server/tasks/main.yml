@@ -1,0 +1,233 @@
+---
+- name: Set APM facts
+  set_fact:
+    apm_ns: '{{ apm_namespace }}'
+    apm_img: '{{ apm_image }}:{{ apm_version }}'
+    apm_es_url: '{{ apm_es_scheme }}://{{ apm_es_host }}:{{ apm_es_port }}'
+
+- name: Wait for Elasticsearch to be reachable from cluster
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: '{{ apm_ns }}'
+    name: elasticsearch
+  register: _r_apm_wait_es
+  retries: 30
+  delay: 10
+  until: _r_apm_wait_es.resources | length > 0
+
+- name: Create APM Server ILM policy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: apm-ilm-setup
+        namespace: '{{ apm_ns }}'
+      spec:
+        backoffLimit: 5
+        ttlSecondsAfterFinished: 600
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: setup
+                image: curlimages/curl:8.10.1
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -e
+                    ES_URL="{{ apm_es_url }}"
+                    AUTH="{{ apm_es_user }}:${ELASTIC_PASSWORD}"
+                    for i in $(seq 1 60); do
+                      if curl -k -sf -u "$AUTH" "$ES_URL" >/dev/null; then break; fi
+                      sleep 5
+                    done
+                    curl -k -sf -u "$AUTH" -X PUT "$ES_URL/_ilm/policy/apm-rollover-30-days" \
+                      -H 'Content-Type: application/json' -d '{
+                        "policy": {
+                          "phases": {
+                            "hot":    { "actions": { "rollover": { "max_size": "{{ apm_ilm_hot_max_size }}", "max_age": "{{ apm_ilm_hot_max_age }}" } } },
+                            "delete": { "min_age": "{{ apm_ilm_delete_after }}", "actions": { "delete": {} } }
+                          }
+                        }
+                      }'
+                    echo "ILM policy applied"
+                env:
+                  - name: ELASTIC_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: es-credentials
+                        key: ELASTIC_PASSWORD
+  register: _r_apm_ilm
+  retries: 3
+  delay: 10
+  until: _r_apm_ilm is not failed
+
+- name: Create APM Server config ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: apm-server-config
+        namespace: '{{ apm_ns }}'
+      data:
+        apm-server.yml: |
+          apm-server:
+            host: "0.0.0.0:8200"
+            auth:
+              anonymous:
+                enabled: true
+                allow_agent: [rum-js, js-base, iOS/swift, android/java]
+                rate_limit:
+                  event_limit: 300
+                  ip_limit: 1000
+            rum:
+              enabled: true
+              allow_origins: ['*']
+            kibana:
+              enabled: true
+              host: "https://kibana.{{ apm_ns }}.svc.cluster.local:5601"
+              username: "${ELASTICSEARCH_USERNAME}"
+              password: "${ELASTICSEARCH_PASSWORD}"
+              ssl.verification_mode: none
+
+          output.elasticsearch:
+            hosts: ["{{ apm_es_url }}"]
+            username: "${ELASTICSEARCH_USERNAME}"
+            password: "${ELASTICSEARCH_PASSWORD}"
+            ssl.verification_mode: none
+
+          setup.template.settings:
+            index.lifecycle.name: "apm-rollover-30-days"
+
+          logging.level: info
+          logging.json: true
+          monitoring.enabled: false
+  register: _r_apm_cm
+  retries: 3
+  delay: 10
+  until: _r_apm_cm is not failed
+
+- name: Deploy APM Server
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: apm-server
+        namespace: '{{ apm_ns }}'
+        labels:
+          app: apm-server
+      spec:
+        replicas: '{{ apm_replicas | int }}'
+        selector:
+          matchLabels:
+            app: apm-server
+        template:
+          metadata:
+            labels:
+              app: apm-server
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+            containers:
+              - name: apm-server
+                image: '{{ apm_img }}'
+                args:
+                  - apm-server
+                  - -e
+                  - -c
+                  - /usr/share/apm-server/apm-server.yml
+                ports:
+                  - name: http
+                    containerPort: 8200
+                env:
+                  - name: ELASTICSEARCH_USERNAME
+                    value: '{{ apm_es_user }}'
+                  - name: ELASTICSEARCH_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: es-credentials
+                        key: ELASTIC_PASSWORD
+                volumeMounts:
+                  - name: config
+                    mountPath: /usr/share/apm-server/apm-server.yml
+                    subPath: apm-server.yml
+                    readOnly: true
+                resources:
+                  requests:
+                    cpu: '{{ apm_cpu_req }}'
+                    memory: '{{ apm_memory_req }}'
+                  limits:
+                    cpu: '{{ apm_cpu_lim }}'
+                    memory: '{{ apm_memory_lim }}'
+                readinessProbe:
+                  httpGet:
+                    path: /
+                    port: 8200
+                  initialDelaySeconds: 20
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /
+                    port: 8200
+                  initialDelaySeconds: 60
+                  periodSeconds: 20
+            volumes:
+              - name: config
+                configMap:
+                  name: apm-server-config
+  register: _r_apm_deploy
+  retries: 3
+  delay: 10
+  until: _r_apm_deploy is not failed
+
+- name: Create APM Server Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: apm-server
+        namespace: '{{ apm_ns }}'
+        labels:
+          app: apm-server
+      spec:
+        selector:
+          app: apm-server
+        ports:
+          - name: http
+            port: 8200
+            targetPort: 8200
+  register: _r_apm_svc
+  retries: 3
+  delay: 10
+  until: _r_apm_svc is not failed
+
+- name: Wait for APM Server pods ready
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: '{{ apm_ns }}'
+    label_selectors:
+      - app=apm-server
+  register: _r_apm_pods
+  retries: 30
+  delay: 10
+  until:
+    - _r_apm_pods.resources | length > 0
+    - _r_apm_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length >= (apm_replicas | int)
+
+- name: Print APM Server info
+  debug:
+    msg:
+      - "APM Server ready at apm-server.{{ apm_ns }}.svc.cluster.local:8200"
+      - "Set OTEL_EXPORTER_OTLP_ENDPOINT=http://apm-server.{{ apm_ns }}.svc.cluster.local:8200 in your apps"
+      - "View traces in Kibana APM UI: https://kibana.{{ domain }}"

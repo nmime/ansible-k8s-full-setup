@@ -247,3 +247,29 @@ applications:
 # ---------------------------------------------
 glitchtip:
   enabled: false  # Set true to deploy GlitchTip at glitchtip.<domain>
+
+# ---------------------------------------------
+# APM Server (distributed tracing)
+# ---------------------------------------------
+apm:
+  enabled: false  # Set true to deploy Elastic APM (requires ES). OTLP endpoint: apm-server.elasticsearch:8200
+
+# ---------------------------------------------
+# Blackbox Exporter (uptime/synthetic monitoring)
+# ---------------------------------------------
+blackbox:
+  enabled: true   # Probes all public endpoints + internal TCP health; alerts via Alertmanager
+
+# ---------------------------------------------
+# Alerting (Telegram + email via Postal)
+# ---------------------------------------------
+# Provide ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID as env vars
+# to enable critical-alert delivery to Telegram. Without them, alerts are
+# still evaluated (VMAlert) and visible in Alertmanager UI (VPN-only) +
+# emailed via Postal to alerts@<domain>.
+alerting:
+  telegram:
+    enabled: false       # Set true and export env vars above
+  email:
+    enabled: true        # Uses Postal SMTP; no auth needed internally
+    to: ""               # Defaults to alerts@<domain> if empty
