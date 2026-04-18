@@ -130,3 +130,9 @@ backup:
   enabled: true
   schedule: "0 2 * * *"
   retention_days: 30
+
+# ---------------------------------------------
+# GlitchTip (Sentry-compatible error tracking)
+# ---------------------------------------------
+glitchtip:
+  enabled: true

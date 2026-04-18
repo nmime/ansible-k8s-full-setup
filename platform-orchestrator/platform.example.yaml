@@ -241,3 +241,9 @@ applications:
     image_tag: latest
     e2b_api_key: ""
     anthropic_api_key: ""
+
+# ---------------------------------------------
+# GlitchTip (Sentry-compatible error tracking)
+# ---------------------------------------------
+glitchtip:
+  enabled: false  # Set true to deploy GlitchTip at glitchtip.<domain>
