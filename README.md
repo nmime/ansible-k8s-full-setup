@@ -416,6 +416,8 @@ edge_direct_domains:
 
 **Deploy:**
 ```bash
+# See .env.example for all required environment variables
+# cp .env.example .env && source .env
 export HCLOUD_TOKEN="your-hetzner-token"
 export GCORE_API_KEY="your-gcore-token"
 export GITHUB_TOKEN="your-github-token"  # For GitLab mirrors
