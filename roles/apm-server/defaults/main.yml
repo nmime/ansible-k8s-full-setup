@@ -1,0 +1,23 @@
+---
+apm_namespace: elasticsearch
+apm_version: "9.3.2"
+apm_image: "docker.elastic.co/apm/apm-server"
+apm_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+
+apm_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+apm_memory_lim: "{{ '1Gi'  if tier in ['medium', 'production'] else '512Mi' }}"
+apm_cpu_req:    "{{ '250m' if tier in ['medium', 'production'] else '50m' }}"
+apm_cpu_lim:    "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
+
+apm_es_host: "elasticsearch.elasticsearch.svc.cluster.local"
+apm_es_port: 9200
+apm_es_scheme: "https"
+apm_es_user: "elastic"
+
+# ILM retention (auto-delete old traces)
+apm_ilm_hot_max_size: "30gb"
+apm_ilm_hot_max_age: "7d"
+apm_ilm_delete_after: "14d"
+
+apm_otlp_grpc_port: 8200
+apm_otlp_http_port: 8200
