@@ -32,36 +32,6 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: postgresql
-  namespace: postgres
-spec:
-  selector:
-    matchLabels:
-      postgres-operator.crunchydata.com/role: exporter
-  endpoints:
-    - port: exporter
-      interval: 30s
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: elasticsearch
-  namespace: elasticsearch
-spec:
-  selector:
-    matchLabels:
-      common.k8s.elastic.co/type: elasticsearch
-  endpoints:
-    - port: https
-      path: /_prometheus/metrics
-      scheme: https
-      tlsConfig:
-        insecureSkipVerify: true
-      interval: 30s
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
   name: temporal
   namespace: temporal
 spec:

@@ -194,6 +194,13 @@
         - observability
         - monitoring
 
+    - name: Deploy Elasticsearch with X-Pack Platinum
+      ansible.builtin.import_role:
+        name: elasticsearch
+      tags:
+        - elasticsearch
+        - search
+
     - name: Deploy Databases (PostgreSQL + MongoDB)
       ansible.builtin.import_role:
         name: k8s-databases
@@ -235,13 +242,6 @@
       tags:
         - temporal
         - workflows
-
-    - name: Deploy Elasticsearch with X-Pack Platinum
-      ansible.builtin.import_role:
-        name: elasticsearch
-      tags:
-        - elasticsearch
-        - search
 
     - name: Deploy Postal Mail Server
       ansible.builtin.import_role:
