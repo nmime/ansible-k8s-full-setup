@@ -1,0 +1,324 @@
+---
+# Alerting tasks - included from k8s-observability/tasks/main.yml at the end
+# Provides: VMAlertmanager + VMAlert + default VMRules + Postal SMTP + Telegram webhook
+
+- name: Create alert secrets (Telegram + SMTP)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: alert-secrets
+        namespace: '{{ monitoring_namespace }}'
+      type: Opaque
+      stringData:
+        telegram-bot-token: '{{ alert_telegram_bot_token | default("") }}'
+        telegram-chat-id: '{{ alert_telegram_chat_id | default("") }}'
+        smtp-password: ''  # Postal internal SMTP has no auth from in-cluster services
+  register: _r_alert_secrets
+  retries: 3
+  delay: 10
+  until: _r_alert_secrets is not failed
+
+- name: Create VMAlertmanager config secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: vmalertmanager-platform-config
+        namespace: '{{ monitoring_namespace }}'
+      type: Opaque
+      stringData:
+        alertmanager.yaml: |
+          global:
+            resolve_timeout: 5m
+            smtp_from: 'alerts@{{ domain }}'
+            smtp_smarthost: 'postal-smtp.postal.svc.cluster.local:25'
+            smtp_require_tls: false
+            smtp_hello: '{{ domain }}'
+
+          route:
+            receiver: default
+            group_by: ['alertname', 'namespace', 'severity']
+            group_wait: 30s
+            group_interval: 5m
+            repeat_interval: 4h
+            routes:
+              - receiver: telegram-critical
+                matchers:
+                  - severity="critical"
+                continue: true
+              - receiver: email-warning
+                matchers:
+                  - severity=~"warning|critical"
+
+          receivers:
+            - name: default
+              # silent – Grafana/UI only
+            - name: telegram-critical
+              telegram_configs:
+                - send_resolved: true
+                  bot_token_file: /etc/alertmanager/secrets/alert-secrets/telegram-bot-token
+                  chat_id: {{ alert_telegram_chat_id | default(0) | int }}
+                  parse_mode: HTML
+                  message: |
+                    {% raw %}<b>🚨 {{ .Status | toUpper }}{{ if eq .Status "firing" }} ({{ .Alerts.Firing | len }}){{ end }}</b>
+                    {{ range .Alerts -}}
+                    <b>{{ .Labels.alertname }}</b> [{{ .Labels.severity }}]
+                    <i>{{ .Annotations.summary }}</i>
+                    {{ .Annotations.description }}
+                    <code>{{ .Labels.namespace }}/{{ .Labels.pod }}</code>
+                    {{ end }}{% endraw %}
+            - name: email-warning
+              email_configs:
+                - to: '{{ alert_email_to | default("alerts@" + domain) }}'
+                  send_resolved: true
+                  headers:
+                    Subject: '[{{ "{{ .Status | toUpper }}" }}] {{ "{{ .GroupLabels.alertname }}" }}'
+
+          inhibit_rules:
+            - source_matchers: [severity="critical"]
+              target_matchers: [severity="warning"]
+              equal: [alertname, namespace]
+  register: _r_am_cfg
+  retries: 3
+  delay: 10
+  until: _r_am_cfg is not failed
+
+- name: Deploy VMAlertmanager CR
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMAlertmanager
+      metadata:
+        name: platform
+        namespace: '{{ monitoring_namespace }}'
+      spec:
+        replicaCount: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+        configSecret: vmalertmanager-platform-config
+        secrets:
+          - alert-secrets
+        resources:
+          requests: { cpu: 50m, memory: 128Mi }
+          limits:   { cpu: 200m, memory: 256Mi }
+        storage:
+          volumeClaimTemplate:
+            spec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 5Gi
+  register: _r_am
+  retries: 3
+  delay: 10
+  until: _r_am is not failed
+
+- name: Deploy VMAlert CR
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMAlert
+      metadata:
+        name: platform
+        namespace: '{{ monitoring_namespace }}'
+      spec:
+        replicaCount: 1
+        datasource:
+          url: 'http://vmsingle-platform.{{ monitoring_namespace }}.svc.cluster.local:8429'
+        notifier:
+          url: 'http://vmalertmanager-platform.{{ monitoring_namespace }}.svc.cluster.local:9093'
+        evaluationInterval: 30s
+        selectAllByDefault: true
+        resources:
+          requests: { cpu: 50m, memory: 128Mi }
+          limits:   { cpu: 300m, memory: 512Mi }
+  register: _r_vmalert
+  retries: 3
+  delay: 10
+  until: _r_vmalert is not failed
+
+- name: Deploy default VMRules (platform alerts)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: platform-default
+        namespace: '{{ monitoring_namespace }}'
+      spec:
+        groups:
+          - name: node
+            rules:
+              - alert: NodeNotReady
+                expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+                for: 5m
+                labels: { severity: critical }
+                annotations:
+                  summary: Node {{ "{{ $labels.node }}" }} NotReady
+                  description: Kubernetes node has been NotReady for 5+ minutes
+              - alert: NodeMemoryPressure
+                expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+                for: 10m
+                labels: { severity: warning }
+                annotations:
+                  summary: Node {{ "{{ $labels.node }}" }} under memory pressure
+              - alert: NodeDiskPressure
+                expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+                for: 10m
+                labels: { severity: critical }
+                annotations:
+                  summary: Node {{ "{{ $labels.node }}" }} disk pressure
+              - alert: NodeDiskUsageHigh
+                expr: 100 - ((node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"} / node_filesystem_size_bytes) * 100) > 85
+                for: 15m
+                labels: { severity: warning }
+                annotations:
+                  summary: Disk >85% on {{ "{{ $labels.instance }}" }}
+
+          - name: workload
+            rules:
+              - alert: PodCrashLoopBackOff
+                expr: rate(kube_pod_container_status_restarts_total[5m]) > 0.1
+                for: 10m
+                labels: { severity: warning }
+                annotations:
+                  summary: Pod {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }} crashlooping
+                  description: Container {{ "{{ $labels.container }}" }} restarting frequently
+              - alert: PodOOMKilled
+                expr: increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) > 0
+                for: 1m
+                labels: { severity: warning }
+                annotations:
+                  summary: OOMKill {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}
+              - alert: DeploymentReplicasUnavailable
+                expr: kube_deployment_status_replicas_unavailable > 0
+                for: 15m
+                labels: { severity: warning }
+                annotations:
+                  summary: Deployment {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }} has unavailable replicas
+
+          - name: databases
+            rules:
+              - alert: PostgresDown
+                expr: up{job=~".*postgres.*|.*pg.*"} == 0
+                for: 2m
+                labels: { severity: critical }
+                annotations:
+                  summary: PostgreSQL instance down
+                  description: Target {{ "{{ $labels.instance }}" }} is down
+              - alert: ElasticsearchClusterRed
+                expr: elasticsearch_cluster_health_status{color="red"} == 1
+                for: 5m
+                labels: { severity: critical }
+                annotations:
+                  summary: Elasticsearch cluster RED
+              - alert: ElasticsearchClusterYellow
+                expr: elasticsearch_cluster_health_status{color="yellow"} == 1
+                for: 30m
+                labels: { severity: warning }
+                annotations:
+                  summary: Elasticsearch cluster YELLOW for 30m
+              - alert: RedisDown
+                expr: up{job=~".*dragonfly.*|.*redis.*"} == 0
+                for: 2m
+                labels: { severity: critical }
+                annotations:
+                  summary: Redis/Dragonfly down
+
+          - name: probes
+            rules:
+              - alert: BlackboxProbeFailed
+                expr: probe_success == 0
+                for: 5m
+                labels: { severity: critical }
+                annotations:
+                  summary: Probe failing for {{ "{{ $labels.instance }}" }}
+                  description: HTTPS/TCP probe has failed for 5+ minutes
+              - alert: BlackboxSSLCertExpiringSoon
+                expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+                for: 1h
+                labels: { severity: warning }
+                annotations:
+                  summary: TLS cert expires in <14 days for {{ "{{ $labels.instance }}" }}
+              - alert: BlackboxSSLCertExpiringCritical
+                expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 3
+                for: 15m
+                labels: { severity: critical }
+                annotations:
+                  summary: TLS cert expires in <3 days for {{ "{{ $labels.instance }}" }}
+              - alert: BlackboxHttpSlow
+                expr: probe_duration_seconds > 10
+                for: 10m
+                labels: { severity: warning }
+                annotations:
+                  summary: Probe slow (>10s) for {{ "{{ $labels.instance }}" }}
+
+          - name: certificates
+            rules:
+              - alert: CertManagerCertNotReady
+                expr: certmanager_certificate_ready_status{condition="False"} == 1
+                for: 30m
+                labels: { severity: critical }
+                annotations:
+                  summary: cert-manager cert {{ "{{ $labels.name }}" }} NOT ready
+
+          - name: observability
+            rules:
+              - alert: VMAgentScrapeDrop
+                expr: rate(vmagent_remotewrite_requests_total{status_code=~"4..|5.."}[5m]) > 0
+                for: 10m
+                labels: { severity: warning }
+                annotations:
+                  summary: VMAgent remote-write errors
+              - alert: LokiIngestErrors
+                expr: rate(loki_request_duration_seconds_count{status_code=~"5.."}[5m]) > 0
+                for: 10m
+                labels: { severity: warning }
+                annotations:
+                  summary: Loki returning 5xx errors
+  register: _r_vmrules
+  retries: 3
+  delay: 10
+  until: _r_vmrules is not failed
+
+- name: Create Alertmanager HTTPRoute (VPN-only via admin-gateway)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: alertmanager
+        namespace: '{{ monitoring_namespace }}'
+      spec:
+        parentRefs:
+          - name: admin-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - 'alertmanager.{{ domain }}'
+        rules:
+          - matches:
+              - path: { type: PathPrefix, value: / }
+            backendRefs:
+              - name: vmalertmanager-platform
+                port: 9093
+  register: _r_am_route
+  retries: 3
+  delay: 10
+  until: _r_am_route is not failed
+
+- name: Print Alerting info
+  debug:
+    msg:
+      - 'VMAlertmanager ready at vmalertmanager-platform.{{ monitoring_namespace }}.svc.cluster.local:9093'
+      - 'VMAlert evaluating rules every 30s'
+      - 'Telegram: {{ "enabled" if alert_telegram_bot_token | default("") | length > 0 else "DISABLED (no token in env)" }}'
+      - 'SMTP via Postal: alerts@{{ domain }} -> {{ alert_email_to | default("alerts@" + domain) }}'
+      - 'UI (VPN-only): https://alertmanager.{{ domain }}'

@@ -1510,3 +1510,6 @@
         ingress:
         - fromEntities:
           - cluster
+
+- name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)
+  ansible.builtin.import_tasks: alerting.yml
