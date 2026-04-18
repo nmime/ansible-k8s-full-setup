@@ -387,7 +387,6 @@
   retries: 3
   delay: 10
   until: _r_create_hcloud_token_secret_for_ccm is not failed
-  no_log: true
 
 - name: Install Hetzner Cloud Controller Manager
   kubernetes.core.k8s:
@@ -897,7 +896,6 @@
   retries: 3
   delay: 10
   until: _r_create_hetzner_cloud_api_token_secret_fo is not failed
-  no_log: true
 
 - name: Create Let's Encrypt ClusterIssuer (staging)
   kubernetes.core.k8s:
