@@ -120,6 +120,7 @@ deploy_component() {
     "autoscaling")  deploy_autoscaling ;;
     "opwerf")       deploy_opwerf ;;
     "e2b")          deploy_e2b ;;
+    "glitchtip")    deploy_glitchtip ;;
     "all")          deploy_all ;;
     *) error "Unknown: $component"; exit 1 ;;
   esac
@@ -129,12 +130,16 @@ deploy_all() {
   log "Full deployment: project=$PROJECT, tier=$TIER, domain=$DOMAIN, region=$REGION"
   check_env
 
+  local gt_flag="false"
+  is_enabled '.glitchtip.enabled' && gt_flag="true"
+
   # Run Ansible playbook for full deployment
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
     -e "tier=${TIER}" \
     -e "project_name=${PROJECT}" \
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
+    -e "deploy_glitchtip=${gt_flag}" \
     2>&1 | tee -a "${LOG_DIR}/deploy.log"
 
   log "Platform deployed!"
@@ -211,6 +216,9 @@ vault IN 3600 A ${ip}"
   is_enabled '.e2b.enabled' && records+="
 e2b-api IN 3600 A ${ip}
 sandbox IN 3600 A ${ip}"
+
+  is_enabled '.glitchtip.enabled' && records+="
+glitchtip IN 3600 A ${ip}"
 
   echo "$records"
 }
@@ -319,6 +327,16 @@ deploy_e2b() {
     -e "deploy_e2b=true" \
     --tags e2b \
     2>&1 | tee -a "${LOG_DIR}/e2b.log"
+}
+
+deploy_glitchtip() {
+  is_enabled '.glitchtip.enabled' || { log "GlitchTip: disabled"; return 0; }
+  log "Installing GlitchTip..."
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
+    -e "deploy_glitchtip=true" \
+    --tags glitchtip \
+    2>&1 | tee -a "${LOG_DIR}/glitchtip.log"
 }
 
 # ============================================

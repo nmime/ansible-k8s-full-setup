@@ -251,6 +251,15 @@
         - mail
 
 
+    - name: Deploy GlitchTip Error Tracking
+      ansible.builtin.import_role:
+        name: glitchtip
+      when: deploy_glitchtip | default(false) | bool
+      tags:
+        - glitchtip
+        - monitoring
+        - error-tracking
+
     - name: Deploy OpenWerf Platform
       ansible.builtin.import_role:
         name: opwerf-deployment
@@ -295,6 +304,7 @@
           - "  - VictoriaMetrics + Loki (Observability)"
           - "  - MinIO S3: https://minio.{{ domain }}"
           - "  - Vault: https://vault.{{ domain }}"
+          - "{{ '  - GlitchTip: https://glitchtip.' + domain if deploy_glitchtip | default(false) | bool else '' }}"
           - "  - PostgreSQL HA Cluster"
           - "  - KEDA (Event Autoscaling)"
           - "  - Temporal: https://temporal.{{ domain }}"

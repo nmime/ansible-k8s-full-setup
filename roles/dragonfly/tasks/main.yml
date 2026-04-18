@@ -198,6 +198,32 @@
   delay: 10
   until: _r_create_df_postal_netpol is not failed
 
+- name: Create allow-from-glitchtip NetworkPolicy for Dragonfly
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-glitchtip
+        namespace: "{{ df_ns }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: glitchtip
+            ports:
+              - protocol: TCP
+                port: 6379
+  register: _r_create_df_glitchtip_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_df_glitchtip_netpol is not failed
+
 - name: Create allow-egress-to-dragonfly CiliumNetworkPolicy for opwerf
   kubernetes.core.k8s:
     state: present

@@ -281,6 +281,9 @@
           databases:
           - temporal
           - temporal_visibility
+        - name: glitchtip
+          databases:
+          - glitchtip
         - name: '{{ opwerf_app_name | default(''opwerf'') }}'
           databases:
           - '{{ opwerf_app_name | default(''opwerf'') }}'
