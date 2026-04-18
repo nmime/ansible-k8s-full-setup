@@ -382,7 +382,7 @@
           - name: '{{ ''Loki'' if log_stack == ''loki'' else ''Elasticsearch'' }}'
             type: '{{ ''loki'' if log_stack == ''loki'' else ''elasticsearch'' }}'
             uid: '{{ ''loki'' if log_stack == ''loki'' else ''elasticsearch'' }}'
-            url: '{{ ''http://loki-gateway.'' + monitoring_namespace + ''.svc.cluster.local'' if log_stack == ''loki'' else ''https://es-http.elasticsearch.svc.cluster.local:9200'' }}'
+            url: '{{ ''http://loki-gateway.'' + monitoring_namespace + ''.svc.cluster.local'' if log_stack == ''loki'' else ''https://elasticsearch.elasticsearch.svc.cluster.local:9200'' }}'
             access: proxy
             basicAuth: '{{ false if log_stack == ''loki'' else true }}'
             basicAuthUser: '{{ '''' if log_stack == ''loki'' else ''elastic'' }}'
@@ -993,19 +993,19 @@
         enabled: true
         filebeatConfig:
           filebeat.yml: "filebeat.inputs:\n- type: container\n  paths:\n    - /var/log/containers/*.log\n  processors:\n  - add_kubernetes_metadata:\n      host: ${NODE_NAME}\n      matchers:\n      - logs_path:\n\
-            \          logs_path: \"/var/log/containers/\"\noutput.elasticsearch:\n  hosts: [\"https://es-http.elasticsearch.svc.cluster.local:9200\"]\n  username: \"elastic\"\n  password: \"${ELASTICSEARCH_PASSWORD}\"\
+            \          logs_path: \"/var/log/containers/\"\noutput.elasticsearch:\n  hosts: [\"https://elasticsearch.elasticsearch.svc.cluster.local:9200\"]\n  username: \"elastic\"\n  password: \"${ELASTICSEARCH_PASSWORD}\"\
             \n  ssl.certificate_authorities: [\"/usr/share/filebeat/config/certs/ca.crt\"]\n  index: \"filebeat-%{[agent.version]}-%{+yyyy.MM.dd}\"\nsetup.ilm.enabled: true\nsetup.ilm.rollover_alias: \"\
             filebeat\"\nsetup.ilm.pattern: \"{now/d}-000001\"\nsetup.template.name: \"filebeat\"\nsetup.template.pattern: \"filebeat-*\"\nlogging.level: info\n"
         secretMounts:
         - name: elasticsearch-ca
-          secretName: es-http-certs-public
+          secretName: es-tls-certs
           path: /usr/share/filebeat/config/certs
         extraEnvs:
         - name: ELASTICSEARCH_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: es-elastic-user
-              key: elastic
+              name: es-credentials
+              key: ELASTIC_PASSWORD
         resources:
           requests:
             cpu: 50m
@@ -1042,14 +1042,14 @@
         01_sources.conf: "<source>\n  @type tail\n  @id in_tail_container_logs\n  path /var/log/containers/*.log\n  pos_file /var/log/fluentd-containers.log.pos\n  tag kubernetes.*\n  read_from_head true\n\
           \  <parse>\n    @type json\n    time_format %Y-%m-%dT%H:%M:%S.%NZ\n  </parse>\n</source>\n"
         02_filters.conf: "<filter kubernetes.**>\n  @type kubernetes_metadata\n  @id filter_kube_metadata\n</filter>\n"
-        04_outputs.conf: "<match **>\n  @type elasticsearch\n  @id out_es\n  host es-http.elasticsearch.svc.cluster.local\n  port 9200\n  scheme https\n  ssl_verify true\n  ca_file /fluentd/certs/ca.crt\n\
+        04_outputs.conf: "<match **>\n  @type elasticsearch\n  @id out_es\n  host elasticsearch.elasticsearch.svc.cluster.local\n  port 9200\n  scheme https\n  ssl_verify true\n  ca_file /fluentd/certs/ca.crt\n\
           \  user elastic\n  password \"#{ENV['ELASTICSEARCH_PASSWORD']}\"\n  logstash_format true\n  logstash_prefix fluentd\n  <buffer>\n    @type file\n    path /var/log/fluentd-buffers/kubernetes.system.buffer\n\
           \    flush_mode interval\n    retry_type exponential_backoff\n    flush_interval 5s\n    retry_forever false\n    retry_max_interval 30\n    chunk_limit_size 2M\n    queue_limit_length 8\n   \
           \ overflow_action block\n  </buffer>\n</match>\n"
       extraVolumes:
       - name: elasticsearch-ca
         secret:
-          secretName: es-http-certs-public
+          secretName: es-tls-certs
       extraVolumeMounts:
       - name: elasticsearch-ca
         mountPath: /fluentd/certs
@@ -1058,8 +1058,8 @@
       - name: ELASTICSEARCH_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: es-elastic-user
-            key: elastic
+            name: es-credentials
+            key: ELASTIC_PASSWORD
       resources:
         requests:
           cpu: 50m
