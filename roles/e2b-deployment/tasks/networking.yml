@@ -91,8 +91,9 @@
         namespace: "{{ e2b_ns }}"
       spec:
         parentRefs:
-          - name: platform-gateway
-            namespace: gateway
+          - name: main-gateway
+            namespace: cilium-system
+            sectionName: https
         hostnames:
           - "{{ e2b_api_domain_val }}"
         rules:
