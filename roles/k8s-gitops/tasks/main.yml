@@ -81,7 +81,7 @@
             cpu: 500m
             memory: 512Mi
       applicationSet:
-        replicas: '{{ 2 if argocd_ha else 1 | int }}'
+        replicas: '{{ (2 if (argocd_ha | bool) else 1) | int }}'
         resources:
           requests:
             cpu: 50m
