@@ -2,6 +2,70 @@
   debug:
     msg: Applying HIPAA internal TLS and log redaction. This will restart services.
   when: hipaa_compliance | default(false) | bool
+- name: Check if internal CA secret exists
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: cert-manager
+    name: internal-ca-secret
+  register: _internal_ca_secret_check
+  when: internal_tls_enabled | default(false) | bool
+- name: Create temp directory for internal CA generation
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: internal-ca-
+  register: _internal_ca_tmpdir
+  when:
+    - internal_tls_enabled | default(false) | bool
+    - (_internal_ca_secret_check.resources | default([])) | length == 0
+- name: Generate internal CA keypair
+  ansible.builtin.command: >-
+    openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes
+    -keyout {{ _internal_ca_tmpdir.path }}/ca.key
+    -out {{ _internal_ca_tmpdir.path }}/ca.crt
+    -subj /CN=Internal-CA
+  when:
+    - internal_tls_enabled | default(false) | bool
+    - (_internal_ca_secret_check.resources | default([])) | length == 0
+  changed_when: true
+- name: Read generated CA cert and key
+  ansible.builtin.slurp:
+    src: '{{ _internal_ca_tmpdir.path }}/{{ item }}'
+  register: _internal_ca_files
+  loop:
+    - ca.crt
+    - ca.key
+  when:
+    - internal_tls_enabled | default(false) | bool
+    - (_internal_ca_secret_check.resources | default([])) | length == 0
+- name: Create internal-ca-secret in cert-manager namespace
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: internal-ca-secret
+        namespace: cert-manager
+      type: kubernetes.io/tls
+      data:
+        tls.crt: '{{ _internal_ca_files.results[0].content }}'
+        tls.key: '{{ _internal_ca_files.results[1].content }}'
+  when:
+    - internal_tls_enabled | default(false) | bool
+    - (_internal_ca_secret_check.resources | default([])) | length == 0
+  register: _r_create_internal_ca_secret
+  retries: 3
+  delay: 10
+  until: _r_create_internal_ca_secret is not failed
+- name: Clean up internal CA temp directory
+  ansible.builtin.file:
+    path: '{{ _internal_ca_tmpdir.path }}'
+    state: absent
+  when:
+    - internal_tls_enabled | default(false) | bool
+    - _internal_ca_tmpdir is defined
+    - _internal_ca_tmpdir.path is defined
 - name: Create internal CA issuer for HIPAA TLS
   kubernetes.core.k8s:
     state: present
@@ -14,11 +78,10 @@
         ca:
           secretName: internal-ca-secret
   when: internal_tls_enabled | default(false) | bool
-- name: Generate internal CA certificate secret
-  ansible.builtin.shell: kubectl get secret -n cert-manager internal-ca-secret || (openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes -keyout /tmp/ca.key -out /tmp/ca.crt -subj '/CN=Internal-CA'
-    && kubectl create secret tls internal-ca-secret -n cert-manager --cert=/tmp/ca.crt --key=/tmp/ca.key && rm /tmp/ca.{crt,key})
-  when: internal_tls_enabled | default(false) | bool
-  ignore_errors: true
+  register: _r_create_internal_ca_issuer
+  retries: 3
+  delay: 10
+  until: _r_create_internal_ca_issuer is not failed
 - name: Create internal TLS certificates for HIPAA services
   kubernetes.core.k8s:
     state: present
