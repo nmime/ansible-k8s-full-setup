@@ -90,7 +90,7 @@
               allow_origins: ['*']
             kibana:
               enabled: true
-              host: "https://kibana.{{ apm_ns }}.svc.cluster.local:5601"
+              host: "http://kibana.{{ apm_ns }}.svc.cluster.local:5601"
               username: "${ELASTICSEARCH_USERNAME}"
               password: "${ELASTICSEARCH_PASSWORD}"
               ssl.verification_mode: none
