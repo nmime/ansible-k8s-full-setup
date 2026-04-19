@@ -126,7 +126,7 @@
         namespace: '{{ vault_ns | default(''vault'') }}'
       data:
         vault.hcl: "ui = true\nlistener \"tcp\" {\n  tls_disable = 0\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n  tls_cert_file = \"/vault/tls/tls.crt\"\n  tls_key_file = \"/vault/tls/tls.key\"\
-          \n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n}\n"
+          \n}\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n  unauthenticated_metrics_access = true\n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n}\n"
   when: hipaa_compliance | default(false) | bool and internal_tls_enabled | default(false) | bool
   register: vault_tls
 - name: Restart Vault StatefulSet to apply TLS
