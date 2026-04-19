@@ -386,7 +386,7 @@
         namespace: '{{ db_ns }}'
       spec:
         crVersion: '{{ psmdb_operator_ver }}'
-        image: percona/percona-server-mongodb:8.0
+        image: percona/percona-server-mongodb:8.0.8-3
         imagePullPolicy: IfNotPresent
         unsafeFlags:
           replsetSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
