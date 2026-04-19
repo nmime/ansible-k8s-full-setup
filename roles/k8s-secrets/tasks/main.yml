@@ -274,7 +274,7 @@
     namespace: '{{ vault_ns }}'
     pod: vault-0
     command: vault status -format=json
-  when: vault_ha and vault_init is changed
+  when: vault_ha | bool and vault_init is changed
   register: _r_vault_leader_status
   retries: 12
   delay: 5
@@ -286,7 +286,7 @@
     pod: vault-{{ item }}
     command: vault operator raft join http://vault-0.vault-internal:8200
   loop: '{{ range(1, vault_replicas | int) | list }}'
-  when: vault_ha and vault_init is changed
+  when: vault_ha | bool and vault_init is changed
   register: _r_join_raft_peers__ha_mode_
   retries: 10
   delay: 15
@@ -297,7 +297,7 @@
     pod: vault-{{ item }}
     command: vault status -format=json
   loop: '{{ range(1, vault_replicas | int) | list }}'
-  when: vault_ha and vault_init is changed
+  when: vault_ha | bool and vault_init is changed
   register: _r_wait_raft_init
   retries: 120
   delay: 5
@@ -309,7 +309,7 @@
     pod: vault-{{ item.0 }}
     command: vault operator unseal {{ vault_init_data.unseal_keys_b64[item.1] }}
   loop: '{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}'
-  when: vault_ha and vault_init is changed
+  when: vault_ha | bool and vault_init is changed
   no_log: true
   register: _r_unseal_raft_peers__ha_mode_
   retries: 5
