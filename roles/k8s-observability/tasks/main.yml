@@ -349,6 +349,19 @@
   delay: 10
   until: _r_install_promtail_for_log_collection is not failed
   when: log_stack == "loki"
+- name: Fetch Elasticsearch credentials for Grafana datasource
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: elasticsearch
+    name: es-credentials
+  register: _r_grafana_es_credentials
+  when: log_stack != "loki"
+  no_log: true
+- name: Set Grafana Elasticsearch password fact
+  set_fact:
+    grafana_es_password: '{{ _r_grafana_es_credentials.resources[0].data.ELASTIC_PASSWORD | b64decode }}'
+  when: log_stack != "loki" and _r_grafana_es_credentials.resources | default([]) | length > 0
+  no_log: true
 - name: Install Grafana with Helm
   kubernetes.core.helm:
     name: grafana
@@ -390,6 +403,8 @@
               maxLines: '{{ 1000 if log_stack == ''loki'' else omit }}'
               timeField: '{{ omit if log_stack == ''loki'' else ''@timestamp'' }}'
               esVersion: '{{ omit if log_stack == ''loki'' else ''8.0.0'' }}'
+              tlsSkipVerify: '{{ omit if log_stack == ''loki'' else true }}'
+            secureJsonData: '{{ omit if log_stack == ''loki'' else {''basicAuthPassword'': grafana_es_password} }}'
           - name: PMM
             type: prometheus
             uid: pmm
