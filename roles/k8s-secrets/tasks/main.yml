@@ -229,6 +229,7 @@
   until: vault_init is not failed
   when: not (vault_initialized | default(false) | bool)
   failed_when: vault_init.rc is defined and vault_init.rc != 0
+  no_log: true
 - name: Normalize vault init output
   set_fact:
     vault_init_data: '{{ vault_init.stdout if vault_init.stdout is mapping else vault_init.stdout | from_json }}'
