@@ -1435,10 +1435,6 @@
     state: present
     src: '{{ playbook_dir }}/../roles/k8s-observability/templates/servicemonitors.yml'
   ignore_errors: true
-- name: Enable Vault Prometheus telemetry
-  ansible.builtin.shell: kubectl exec -n {{ vault_ns | default('vault') }} vault-0 -- sh -c 'VAULT_TOKEN=$(cat /vault/token) vault write sys/config/ui-custom-message '|| true && kubectl exec -n {{ vault_ns
-    | default('vault') }} vault-0 -- sh -c 'cat /vault/config/vault.hcl | grep -q telemetry || (echo -e "\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n}" >> /vault/config/vault.hcl)'
-  ignore_errors: true
 - name: Deploy cert-manager alert (cert expiry warning)
   kubernetes.core.k8s:
     state: present
@@ -1456,26 +1452,26 @@
             expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
             for: 1h
             labels:
-              severity: warning
+                severity: warning
             annotations:
-              summary: Certificate {{ $labels.name }} expires in < 7 days
-              description: Namespace {{ $labels.namespace }}, cert {{ $labels.name }}
+                summary: Certificate {{ $labels.name }} expires in < 7 days
+                description: Namespace {{ $labels.namespace }}, cert {{ $labels.name }}
           - alert: CertificateExpiryCritical
             expr: certmanager_certificate_expiration_timestamp_seconds - time() < 24 * 3600
             for: 10m
             labels:
-              severity: critical
+                severity: critical
             annotations:
-              summary: Certificate {{ $labels.name }} expires in < 24 hours!
-              description: Immediate action needed. Namespace {{ $labels.namespace }}
+                summary: Certificate {{ $labels.name }} expires in < 24 hours!
+                description: Immediate action needed. Namespace {{ $labels.namespace }}
           - alert: CertificateRenewalFailed
             expr: certmanager_certificate_ready_status{condition="False"} == 1
             for: 30m
             labels:
-              severity: critical
+                severity: critical
             annotations:
-              summary: Certificate {{ $labels.name }} renewal FAILED
-              description: cert-manager cannot renew {{ $labels.name }} in {{ $labels.namespace }}
+                summary: Certificate {{ $labels.name }} renewal FAILED
+                description: cert-manager cannot renew {{ $labels.name }} in {{ $labels.namespace }}
 - name: Create default-deny for monitoring namespace
   kubernetes.core.k8s:
     state: present
