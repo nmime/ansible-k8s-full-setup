@@ -1,0 +1,33 @@
+baseDomain: {{ daytona_base_domain | to_json }}
+
+services:
+  api:
+    enabled: {{ daytona_services.api.enabled | bool | to_json }}
+    type: {{ daytona_services.api.type | to_json }}
+  proxy:
+    enabled: {{ daytona_services.proxy.enabled | bool | to_json }}
+    type: {{ daytona_services.proxy.type | to_json }}
+  sshGateway:
+    enabled: {{ daytona_services.sshGateway.enabled | bool | to_json }}
+    type: {{ daytona_services.sshGateway.type | to_json }}
+  runnermanager:
+    enabled: {{ daytona_services.runnermanager.enabled | bool | to_json }}
+  runner:
+    enabled: {{ daytona_services.runner.enabled | bool | to_json }}
+
+postgresql:
+  enabled: {{ daytona_dependencies.postgresql | bool | to_json }}
+redis:
+  enabled: {{ daytona_dependencies.redis | bool | to_json }}
+harbor:
+  enabled: {{ daytona_dependencies.harbor | bool | to_json }}
+minio:
+  enabled: {{ daytona_dependencies.minio | bool | to_json }}
+dex:
+  enabled: {{ daytona_dependencies.dex | bool | to_json }}
+pgadmin4:
+  enabled: {{ daytona_dependencies.pgadmin4 | bool | to_json }}
+
+secrets:
+  apiKey: {{ daytona_api_key | default('') | to_json }}
+  encryptionKey: {{ daytona_encryption_key | default('') | to_json }}

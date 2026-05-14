@@ -50,8 +50,6 @@ all:
     # ----------------------------------------
     minio_replicas: 4
     minio_storage_size: 50Gi
-    # minio_root_user: minioadmin        # or set MINIO_ROOT_USER env var
-    # minio_root_password: minioadmin    # or set MINIO_ROOT_PASSWORD env var
 
     # ----------------------------------------
     # Secrets (Vault + ESO)
@@ -71,8 +69,6 @@ all:
     # GitLab
     # ----------------------------------------
     gitlab_runner_concurrent_jobs: 10
-    # gitlab_runner_token: ""  # Set after GitLab is running
-    # gitlab_postgresql_password: ""  # Auto-generated if not set
 
     # ----------------------------------------
     # Observability
@@ -101,12 +97,9 @@ all:
     # git_provider: gitlab-selfhosted
 
     # ----------------------------------------
-    # OpenWerf Platform (optional)
+    # Daytona Workspaces (optional)
     # ----------------------------------------
-    deploy_opwerf: false
-    # opwerf_namespace: opwerf
-    # opwerf_app_name: opwerf
-    # opwerf_e2b_api_key: ""
-    # opwerf_anthropic_api_key: ""
-    # opwerf_image_registry: "registry.{{ domain }}"
-    # opwerf_image_tag: "latest"
+    deploy_daytona: false
+    # daytona_namespace: daytona
+    # daytona_base_domain: "daytona.{{ domain }}"
+    # daytona_values_override: {}

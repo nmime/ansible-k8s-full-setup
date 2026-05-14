@@ -111,20 +111,33 @@ postal_version: "3.3.5"
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30
 
-# E2B Sandboxes
-e2b_enabled: false
+# Daytona workspace platform (optional; disabled by default)
+deploy_daytona: false
+daytona_enabled: "{{ deploy_daytona | default(false) }}"
+daytona_namespace: daytona
+daytona_release_name: daytona
+daytona_chart_repo_name: daytonaio
+daytona_chart_repo_url: https://charts.daytona.io
+daytona_chart_ref: daytonaio/daytona
+daytona_chart_version: "0.0.23"
+daytona_base_domain: "daytona.{{ domain }}"
+daytona_values_override: {}
+
+# Neutral shared Dragonfly credential; generated once by generate-secrets.
+dragonly_password: ""
+dragonfly_password: "{{ dragonfly_password | default('') }}"
 
 # Observability enhancements
-bastion_log_shipping: true  # Ship bastion logs to cluster logging stack
-hetzner_metrics_enabled: true  # Expose Hetzner Cloud API metrics
+bastion_log_shipping: true
+hetzner_metrics_enabled: true
 
 # Distributed Tracing (Tempo)
-tracing_enabled: "{{ tier in ['medium', 'production'] }}"  # Only medium/production by default
+tracing_enabled: "{{ tier in ['medium', 'production'] }}"
 tempo_retention: "{{ '24h' if tier == 'medium' else '72h' if tier == 'production' else '12h' }}"
 tempo_storage_size: "{{ '5Gi' if tier in ['minimal', 'small'] else '10Gi' if tier == 'medium' else '20Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"
 
 # HIPAA Compliance (enable for healthcare/regulated workloads)
-hipaa_compliance: true  # Default ON - disable only for dev/staging with explicit -e hipaa_compliance=false
-internal_tls_enabled: "{{ hipaa_compliance }}"  # TLS for internal services (MinIO, Vault, Loki)
-log_redaction_enabled: "{{ hipaa_compliance }}"  # Redact PII from logs
+hipaa_compliance: true
+internal_tls_enabled: "{{ hipaa_compliance }}"
+log_redaction_enabled: "{{ hipaa_compliance }}"
