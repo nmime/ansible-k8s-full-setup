@@ -4,9 +4,6 @@
 # Complete self-hosted Kubernetes platform
 # ============================================
 
-# ---------------------------------------------
-# Global Settings
-# ---------------------------------------------
 global:
   domain: ""          # REQUIRED: set your domain
   email: ""           # REQUIRED: set your email
@@ -16,9 +13,6 @@ global:
 
 tier: small
 
-# ---------------------------------------------
-# Network Architecture
-# ---------------------------------------------
 network:
   private_network:
     cidr: 10.0.0.0/16
@@ -26,125 +20,100 @@ network:
     control_plane: 10.0.1.0/24
     workers: 10.0.2.0/24
     services: 10.0.10.0/24
-
   bastion:
     enabled: true
     server_type: cx23
     private_ip: 10.0.0.2
-
   load_balancer:
     enabled: true
     type: lb11
-
   vpn:
     enabled: true
     provider: headscale
     domain: vpn.example.com
-
   tls:
     enabled: true
     issuer: letsencrypt
     dns_provider: cloudflare
     wildcard: true
 
-# ---------------------------------------------
-# Service Exposure
-# ---------------------------------------------
 services:
   public:
     - domain: app.example.com
       service: frontend
       namespace: production
       port: 80
-
     - domain: api.example.com
       service: backend
       namespace: production
       port: 8080
-
     - domain: s3.example.com
       service: minio
       namespace: storage
       port: 9000
-
     - domain: registry.example.com
       service: gitlab-registry
       namespace: gitlab
       port: 5000
-
+    - domain: daytona.example.com
+      service: daytona
+      namespace: daytona
+      port: 80
   private:
     - domain: gitlab.example.com
       service: gitlab-webservice-default
       namespace: gitlab
       port: 8181
-
     - domain: argocd.example.com
       service: argocd-server
       namespace: argocd
       port: 443
-
     - domain: grafana.example.com
       service: grafana
       namespace: monitoring
       port: 80
-
     - domain: minio.example.com
       service: minio-console
       namespace: storage
       port: 9001
-
     - domain: vault.example.com
       service: vault
       namespace: vault
       port: 8200
 
-# ---------------------------------------------
-# Infrastructure (Hetzner)
-# ---------------------------------------------
 infrastructure:
   provider: hetzner
   region: hel1
   ssh_key_path: ~/.ssh/id_ed25519
   ssh_user: root
-
   control_plane:
     count: 1
     type: cx23
     public_ip: false
-
   workers:
     count: 2
     type: cx23
     public_ip: false
 
-# ---------------------------------------------
-# Kubernetes Cluster
-# ---------------------------------------------
 kubernetes:
   version: v1.34.3
   cni: cilium
-  cilium_version: v1.18.6
+  cilium_version: v1.19.2
   pod_cidr: 10.233.64.0/18
   service_cidr: 10.233.0.0/18
   features:
     gateway_api: true
-    gateway_api_version: v1.4.0
+    gateway_api_version: v1.5.1
     hubble: true
     encryption: true
     network_policies: true
 
-# ---------------------------------------------
-# Storage (MinIO)
-# ---------------------------------------------
 storage:
   enabled: true
   replicas: 1
   storage_class: hcloud-volumes
   size: 100Gi
 
-# ---------------------------------------------
-# Secrets Management (Vault)
-# ---------------------------------------------
 secrets:
   enabled: true
   vault:
@@ -153,25 +122,18 @@ secrets:
   eso:
     enabled: true
 
-# ---------------------------------------------
-# Databases
-# ---------------------------------------------
 databases:
   postgresql:
     enabled: true
     version: 18
     replicas: 1
     storage_size: 20Gi
-
   mongodb:
     enabled: false
     version: "8.0"
     replicas: 1
     storage_size: 20Gi
 
-# ---------------------------------------------
-# GitLab
-# ---------------------------------------------
 gitlab:
   enabled: true
   domain: gitlab.example.com
@@ -183,48 +145,31 @@ gitlab:
     enabled: true
     concurrent_jobs: 5
 
-# ---------------------------------------------
-# GitOps (ArgoCD)
-# ---------------------------------------------
 gitops:
   enabled: true
   domain: argocd.example.com
   ha_enabled: false
 
-# ---------------------------------------------
-# Observability
-# ---------------------------------------------
 observability:
   metrics:
     enabled: true
     retention: 14d
     storage_size: 20Gi
-
   logging:
     enabled: true
     retention: 7d
-
   grafana:
     enabled: true
     domain: grafana.example.com
 
-# ---------------------------------------------
-# Autoscaling (KEDA)
-# ---------------------------------------------
 autoscaling:
   enabled: true
 
-# ---------------------------------------------
-# Backup
-# ---------------------------------------------
 backup:
   enabled: true
   schedule: "0 2 * * *"
   retention_days: 30
 
-# ---------------------------------------------
-# Optional Applications
-# ---------------------------------------------
 applications:
   boilerplate:
     enabled: false
@@ -232,44 +177,24 @@ applications:
     namespace: production
     git_provider: gitlab-selfhosted
 
-  opwerf:
+  daytona:
     enabled: false
-    namespace: opwerf
-    dashboard_domain: app.example.com
-    api_domain: api.example.com
-    image_registry: registry.example.com
-    image_tag: latest
-    e2b_api_key: ""
-    anthropic_api_key: ""
+    namespace: daytona
+    base_domain: daytona.example.com
+    values_override: {}
 
-# ---------------------------------------------
-# GlitchTip (Sentry-compatible error tracking)
-# ---------------------------------------------
 glitchtip:
-  enabled: false  # Set true to deploy GlitchTip at glitchtip.<domain>
+  enabled: false
 
-# ---------------------------------------------
-# APM Server (distributed tracing)
-# ---------------------------------------------
 apm:
-  enabled: false  # Set true to deploy Elastic APM (requires ES). OTLP endpoint: apm-server.elasticsearch:8200
+  enabled: false
 
-# ---------------------------------------------
-# Blackbox Exporter (uptime/synthetic monitoring)
-# ---------------------------------------------
 blackbox:
-  enabled: true   # Probes all public endpoints + internal TCP health; alerts via Alertmanager
+  enabled: true
 
-# ---------------------------------------------
-# Alerting (Telegram + email via Postal)
-# ---------------------------------------------
-# Provide ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID as env vars
-# to enable critical-alert delivery to Telegram. Without them, alerts are
-# still evaluated (VMAlert) and visible in Alertmanager UI (VPN-only) +
-# emailed via Postal to alerts@<domain>.
 alerting:
   telegram:
-    enabled: false       # Set true and export env vars above
+    enabled: false
   email:
-    enabled: true        # Uses Postal SMTP; no auth needed internally
-    to: ""               # Defaults to alerts@<domain> if empty
+    enabled: true
+    to: ""

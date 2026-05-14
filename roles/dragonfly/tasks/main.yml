@@ -1,7 +1,5 @@
 ---
 # Dragonfly Role - Redis-compatible in-memory store via Dragonfly Operator
-# Deploys Dragonfly Operator v1.5.0 + Dragonfly instance v1.37.2
-# Drop-in Redis replacement with 25x better throughput
 
 - name: Set Dragonfly variables
   set_fact:
@@ -10,12 +8,8 @@
     df_operator_ver: "{{ dragonfly_operator_version }}"
     df_image_ver: "{{ dragonfly_image_version }}"
     df_replicas: "{{ dragonfly_replicas }}"
-    df_password: "{{ opwerf_redis_password }}"
+    df_password: "{{ dragonfly_password }}"
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
-
-# ============================================
-# Ensure Dragonfly namespace exists
-# ============================================
 
 - name: Create Dragonfly namespace
   kubernetes.core.k8s:
@@ -34,10 +28,6 @@
   retries: 3
   delay: 10
   until: _r_create_dragonfly_ns is not failed
-
-# ============================================
-# Install Dragonfly Operator via manifest
-# ============================================
 
 - name: Install Dragonfly Operator via manifest
   kubernetes.core.k8s:
@@ -62,10 +52,6 @@
   delay: 10
   failed_when: false
 
-# ============================================
-# Create Dragonfly auth secret
-# ============================================
-
 - name: Create Dragonfly auth secret
   kubernetes.core.k8s:
     state: present
@@ -85,10 +71,6 @@
   retries: 3
   delay: 10
   until: _r_create_dragonfly_auth_secret is not failed
-
-# ============================================
-# Deploy Dragonfly instance
-# ============================================
 
 - name: Create Dragonfly instance
   kubernetes.core.k8s:
@@ -118,8 +100,7 @@
         snapshot:
           cron: "{{ dragonfly_snapshot_cron }}"
           persistentVolumeClaimSpec:
-            accessModes:
-              - ReadWriteOnce
+            accessModes: [ReadWriteOnce]
             storageClassName: "{{ storage_class }}"
             resources:
               requests:
@@ -137,142 +118,35 @@
   delay: 15
   until: _r_create_dragonfly_instance is not failed
 
-# ============================================
-# NetworkPolicies for Dragonfly
-# ============================================
-
-- name: Create allow-from-opwerf NetworkPolicy for Dragonfly
+- name: Create allow-from-platform NetworkPolicies for Dragonfly
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: networking.k8s.io/v1
       kind: NetworkPolicy
       metadata:
-        name: allow-from-opwerf
+        name: "allow-from-{{ item }}"
         namespace: "{{ df_ns }}"
       spec:
         podSelector: {}
-        policyTypes:
-          - Ingress
+        policyTypes: [Ingress]
         ingress:
           - from:
               - namespaceSelector:
                   matchLabels:
-                    kubernetes.io/metadata.name: opwerf
+                    kubernetes.io/metadata.name: "{{ item }}"
             ports:
               - protocol: TCP
                 port: 6379
-  register: _r_create_df_opwerf_netpol
+  loop:
+    - production
+    - postal
+    - glitchtip
+    - daytona
+  register: _r_create_df_netpols
   retries: 3
   delay: 10
-  until: _r_create_df_opwerf_netpol is not failed
-
-- name: Create allow-from-production NetworkPolicy for Dragonfly
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: networking.k8s.io/v1
-      kind: NetworkPolicy
-      metadata:
-        name: allow-from-production
-        namespace: "{{ df_ns }}"
-      spec:
-        podSelector: {}
-        policyTypes:
-          - Ingress
-        ingress:
-          - from:
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: production
-            ports:
-              - protocol: TCP
-                port: 6379
-  register: _r_create_df_production_netpol
-  retries: 3
-  delay: 10
-  until: _r_create_df_production_netpol is not failed
-
-- name: Create allow-from-postal NetworkPolicy for Dragonfly
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: networking.k8s.io/v1
-      kind: NetworkPolicy
-      metadata:
-        name: allow-from-postal
-        namespace: "{{ df_ns }}"
-      spec:
-        podSelector: {}
-        policyTypes:
-          - Ingress
-        ingress:
-          - from:
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: postal
-            ports:
-              - protocol: TCP
-                port: 6379
-  register: _r_create_df_postal_netpol
-  retries: 3
-  delay: 10
-  until: _r_create_df_postal_netpol is not failed
-
-- name: Create allow-from-glitchtip NetworkPolicy for Dragonfly
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: networking.k8s.io/v1
-      kind: NetworkPolicy
-      metadata:
-        name: allow-from-glitchtip
-        namespace: "{{ df_ns }}"
-      spec:
-        podSelector: {}
-        policyTypes:
-          - Ingress
-        ingress:
-          - from:
-              - namespaceSelector:
-                  matchLabels:
-                    kubernetes.io/metadata.name: glitchtip
-            ports:
-              - protocol: TCP
-                port: 6379
-  register: _r_create_df_glitchtip_netpol
-  retries: 3
-  delay: 10
-  until: _r_create_df_glitchtip_netpol is not failed
-
-- name: Create allow-egress-to-dragonfly CiliumNetworkPolicy for opwerf
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cilium.io/v2
-      kind: CiliumNetworkPolicy
-      metadata:
-        name: allow-egress-to-dragonfly
-        namespace: opwerf
-      spec:
-        endpointSelector: {}
-        egress:
-          - toEndpoints:
-              - matchLabels:
-                  k8s:io.kubernetes.pod.namespace: dragonfly
-            toPorts:
-              - ports:
-                  - port: "6379"
-                    protocol: TCP
-  register: _r_create_opwerf_dragonfly_cnp
-  retries: 3
-  delay: 10
-  until: _r_create_opwerf_dragonfly_cnp is not failed
-  failed_when: false
-
-# ============================================
-# Wait for Dragonfly to be ready
-# ============================================
+  until: _r_create_df_netpols is not failed
 
 - name: Wait for Dragonfly pods to be ready
   kubernetes.core.k8s_info:
@@ -305,10 +179,6 @@
             app: dragonfly
             app.kubernetes.io/part-of: dragonfly
   when: df_replicas | int > 1
-  register: _r_create_dragonfly_pdb
-  retries: 3
-  delay: 10
-  until: _r_create_dragonfly_pdb is not failed
 
 - name: Display Dragonfly deployment summary
   debug:
@@ -323,124 +193,3 @@
       - "  Endpoint: dragonfly.{{ df_ns }}.svc.cluster.local:6379"
       - "  Auth: password from dragonfly-auth secret"
       - "=========================================="
-
-# ============================================
-# PMM Monitoring for Dragonfly (Redis exporter)
-# ============================================
-
-- name: Deploy Redis Exporter for Dragonfly monitoring
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: dragonfly-redis-exporter
-        namespace: "{{ df_ns }}"
-        labels:
-          app: dragonfly-redis-exporter
-      spec:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: dragonfly-redis-exporter
-        template:
-          metadata:
-            labels:
-              app: dragonfly-redis-exporter
-            annotations:
-              prometheus.io/scrape: "true"
-              prometheus.io/port: "9121"
-              prometheus.io/path: "/metrics"
-          spec:
-            securityContext:
-              runAsNonRoot: true
-              runAsUser: 59000
-              fsGroup: 59000
-              seccompProfile:
-                type: RuntimeDefault
-            containers:
-              - name: redis-exporter
-                image: oliver006/redis_exporter:v1.68.0
-                ports:
-                  - containerPort: 9121
-                    name: metrics
-                env:
-                  - name: REDIS_ADDR
-                    value: "dragonfly.{{ df_ns }}.svc.cluster.local:6379"
-                  - name: REDIS_PASSWORD
-                    valueFrom:
-                      secretKeyRef:
-                        name: dragonfly-auth
-                        key: password
-                  - name: REDIS_EXPORTER_SKIP_TLS_VERIFICATION
-                    value: "true"
-                securityContext:
-                  allowPrivilegeEscalation: false
-                  capabilities:
-                    drop:
-                      - ALL
-                  readOnlyRootFilesystem: true
-                resources:
-                  requests:
-                    cpu: 10m
-                    memory: 32Mi
-                  limits:
-                    cpu: 50m
-                    memory: 64Mi
-                readinessProbe:
-                  httpGet:
-                    path: /metrics
-                    port: 9121
-                  initialDelaySeconds: 10
-                  periodSeconds: 10
-  register: _r_deploy_dragonfly_redis_exporter
-  retries: 3
-  delay: 10
-  until: _r_deploy_dragonfly_redis_exporter is not failed
-
-- name: Create Service for Redis Exporter
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: dragonfly-redis-exporter
-        namespace: "{{ df_ns }}"
-        labels:
-          app: dragonfly-redis-exporter
-      spec:
-        selector:
-          app: dragonfly-redis-exporter
-        ports:
-          - name: metrics
-            port: 9121
-            targetPort: 9121
-  register: _r_create_dragonfly_redis_exporter_service
-  retries: 3
-  delay: 10
-  until: _r_create_dragonfly_redis_exporter_service is not failed
-
-- name: Create VMServiceScrape for Dragonfly (VictoriaMetrics)
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: operator.victoriametrics.com/v1beta1
-      kind: VMServiceScrape
-      metadata:
-        name: dragonfly-redis-exporter
-        namespace: "{{ df_ns }}"
-      spec:
-        selector:
-          matchLabels:
-            app: dragonfly-redis-exporter
-        endpoints:
-          - port: metrics
-            interval: 30s
-            path: /metrics
-  register: _r_create_dragonfly_vmservicescrape
-  retries: 3
-  delay: 10
-  until: _r_create_dragonfly_vmservicescrape is not failed
-  failed_when: false

@@ -12,4 +12,5 @@ blackbox_cpu_lim: "200m"
 blackbox_probe_interval: "60s"
 blackbox_probe_timeout: "15s"
 
-# Probe targets are built from deploy_* flags + domain in tasks/main.yml
+# Optional Daytona probe target, included only when deploy_daytona=true.
+blackbox_daytona_target: "https://{{ daytona_base_domain | default('daytona.' + domain) }}"

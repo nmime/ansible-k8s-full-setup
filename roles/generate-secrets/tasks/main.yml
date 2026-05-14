@@ -2,7 +2,6 @@
 # Generate Secrets Role - Centralized credential generation
 # Generates all credentials ONCE and persists them to a local secrets file.
 # On subsequent runs, existing credentials are loaded (never regenerated).
-# This prevents credential drift and ensures consistency across all roles.
 
 - name: Set secrets file path
   set_fact:
@@ -21,65 +20,37 @@
     name: saved_secrets
   when: secrets_file_stat.stat.exists
 
-# ============================================
-# Generate new secrets (only if not already saved)
-# ============================================
+- name: Ensure saved_secrets is defined for first run
+  set_fact:
+    saved_secrets: "{{ saved_secrets | default({}) }}"
 
 - name: Generate MinIO credentials
   set_fact:
     generated_minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default(saved_secrets.minio_root_user | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
     generated_minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default(saved_secrets.minio_root_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
 
-- name: Generate Grafana admin credentials
+- name: Generate platform credentials
   set_fact:
     generated_grafana_admin_user: "{{ saved_secrets.grafana_admin_user | default('admin') }}"
     generated_grafana_admin_password: "{{ saved_secrets.grafana_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
-
-- name: Generate application database password
-  set_fact:
     generated_app_db_password: "{{ saved_secrets.app_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-
-- name: Generate JWT secrets
-  set_fact:
     generated_jwt_secret: "{{ saved_secrets.jwt_secret | default(lookup('password', '/dev/null chars=ascii_letters,digits length=64')) }}"
     generated_jwt_refresh_secret: "{{ saved_secrets.jwt_refresh_secret | default(lookup('password', '/dev/null chars=ascii_letters,digits length=64')) }}"
-
-- name: Generate ArgoCD admin password
-  set_fact:
     generated_argocd_admin_password: "{{ saved_secrets.argocd_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
-
-- name: Resolve alert notification credentials (Telegram + email)
-  set_fact:
-    generated_alert_telegram_bot_token: "{{ lookup('env', 'ALERT_TELEGRAM_BOT_TOKEN') | default(saved_secrets.alert_telegram_bot_token | default(''), true) }}"
-    generated_alert_telegram_chat_id:   "{{ lookup('env', 'ALERT_TELEGRAM_CHAT_ID')   | default(saved_secrets.alert_telegram_chat_id   | default(''), true) }}"
-    generated_alert_email_to:           "{{ lookup('env', 'ALERT_EMAIL_TO')           | default(saved_secrets.alert_email_to           | default('alerts@' + domain), true) }}"
-
-- name: Generate Headscale API key
-  set_fact:
     generated_headscale_api_key: "{{ saved_secrets.headscale_api_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48')) }}"
-
-- name: Generate OpenWerf secrets
-  set_fact:
-    generated_opwerf_db_password: "{{ saved_secrets.opwerf_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-    generated_opwerf_redis_password: "{{ saved_secrets.opwerf_redis_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
-    generated_opwerf_credential_proxy_token: "{{ saved_secrets.opwerf_credential_proxy_token | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48')) }}"
-    generated_opwerf_encryption_key: "{{ saved_secrets.opwerf_encryption_key | default(lookup('password', '/dev/null chars=hex_digits length=32')) }}"
-    generated_opwerf_encryption_salt: "{{ saved_secrets.opwerf_encryption_salt | default(lookup('password', '/dev/null chars=hex_digits length=16')) }}"
-    generated_opwerf_session_signing_key: "{{ saved_secrets.opwerf_session_signing_key | default(lookup('password', '/dev/null chars=hex_digits length=64')) }}"
-
-- name: Generate Elasticsearch secrets
-  set_fact:
+    generated_dragonfly_password: "{{ saved_secrets.dragonfly_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
+    generated_daytona_api_key: "{{ lookup('env', 'DAYTONA_API_KEY') | default(saved_secrets.daytona_api_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48')), true) }}"
+    generated_daytona_encryption_key: "{{ saved_secrets.daytona_encryption_key | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
     generated_es_superuser_password: "{{ saved_secrets.es_superuser_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
-
-- name: Generate Postal secrets
-  set_fact:
     generated_postal_db_password: "{{ saved_secrets.postal_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
     generated_postal_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
     generated_postal_admin_password: "{{ saved_secrets.postal_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=16')) }}"
 
-# ============================================
-# Expose all secrets as unified variables
-# ============================================
+- name: Resolve alert notification credentials (Telegram + email)
+  set_fact:
+    generated_alert_telegram_bot_token: "{{ lookup('env', 'ALERT_TELEGRAM_BOT_TOKEN') | default(saved_secrets.alert_telegram_bot_token | default(''), true) }}"
+    generated_alert_telegram_chat_id: "{{ lookup('env', 'ALERT_TELEGRAM_CHAT_ID') | default(saved_secrets.alert_telegram_chat_id | default(''), true) }}"
+    generated_alert_email_to: "{{ lookup('env', 'ALERT_EMAIL_TO') | default(saved_secrets.alert_email_to | default('alerts@' + domain), true) }}"
 
 - name: Set unified secret variables for all roles
   set_fact:
@@ -92,23 +63,16 @@
     app_refresh_secret: "{{ generated_jwt_refresh_secret }}"
     argocd_admin_password: "{{ generated_argocd_admin_password }}"
     headscale_api_key: "{{ generated_headscale_api_key }}"
-    opwerf_db_password: "{{ generated_opwerf_db_password }}"
-    opwerf_redis_password: "{{ generated_opwerf_redis_password }}"
-    opwerf_credential_proxy_token: "{{ generated_opwerf_credential_proxy_token }}"
-    opwerf_encryption_key: "{{ generated_opwerf_encryption_key }}"
-    opwerf_encryption_salt: "{{ generated_opwerf_encryption_salt }}"
-    opwerf_session_signing_key: "{{ generated_opwerf_session_signing_key }}"
+    dragonfly_password: "{{ generated_dragonfly_password }}"
+    daytona_api_key: "{{ generated_daytona_api_key }}"
+    daytona_encryption_key: "{{ generated_daytona_encryption_key }}"
     es_superuser_password: "{{ generated_es_superuser_password }}"
     postal_db_password: "{{ generated_postal_db_password }}"
     postal_rails_secret: "{{ generated_postal_rails_secret }}"
     postal_admin_password: "{{ generated_postal_admin_password }}"
     alert_telegram_bot_token: "{{ generated_alert_telegram_bot_token }}"
-    alert_telegram_chat_id:   "{{ generated_alert_telegram_chat_id }}"
-    alert_email_to:           "{{ generated_alert_email_to }}"
-
-# ============================================
-# Persist secrets to file (idempotent)
-# ============================================
+    alert_telegram_chat_id: "{{ generated_alert_telegram_chat_id }}"
+    alert_email_to: "{{ generated_alert_email_to }}"
 
 - name: Save all generated secrets to file
   copy:
@@ -125,12 +89,9 @@
       jwt_refresh_secret: "{{ app_refresh_secret }}"
       argocd_admin_password: "{{ argocd_admin_password }}"
       headscale_api_key: "{{ headscale_api_key }}"
-      opwerf_db_password: "{{ opwerf_db_password }}"
-      opwerf_redis_password: "{{ opwerf_redis_password }}"
-      opwerf_credential_proxy_token: "{{ opwerf_credential_proxy_token }}"
-      opwerf_encryption_key: "{{ opwerf_encryption_key }}"
-      opwerf_encryption_salt: "{{ opwerf_encryption_salt }}"
-      opwerf_session_signing_key: "{{ opwerf_session_signing_key }}"
+      dragonfly_password: "{{ dragonfly_password }}"
+      daytona_api_key: "{{ daytona_api_key }}"
+      daytona_encryption_key: "{{ daytona_encryption_key }}"
       es_superuser_password: "{{ es_superuser_password }}"
       postal_db_password: "{{ postal_db_password }}"
       postal_rails_secret: "{{ postal_rails_secret }}"
@@ -164,8 +125,8 @@
       - "  MinIO password: ****"
       - "  Grafana user: {{ grafana_admin_user }}"
       - "  Grafana password: ****"
-      - "  App DB password: ****"
-      - "  ArgoCD password: ****"
+      - "  Dragonfly password: ****"
+      - "  Daytona API key: {{ 'configured' if daytona_api_key | length > 0 else 'NOT SET' }}"
       - "  ES password: ****"
       - "  Postal admin: ****"
       - "  Alert Telegram: {{ 'configured' if alert_telegram_bot_token | length > 0 else 'NOT SET (silent)' }}"

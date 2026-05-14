@@ -1,0 +1,55 @@
+---
+- name: Set Daytona facts
+  set_fact:
+    daytona_effective_values: >-
+      {{ (lookup('template', 'values.yaml.j2') | from_yaml) | combine(daytona_values_override | default({}), recursive=True) }}
+
+- name: Create Daytona namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ daytona_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: daytona
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+
+- name: Add Daytona Helm repository
+  kubernetes.core.helm_repository:
+    name: "{{ daytona_chart_repo_name }}"
+    repo_url: "{{ daytona_chart_repo_url }}"
+  register: _r_daytona_repo
+  retries: 3
+  delay: 10
+  until: _r_daytona_repo is not failed
+
+- name: Install Daytona Helm chart
+  kubernetes.core.helm:
+    name: "{{ daytona_release_name }}"
+    chart_ref: "{{ daytona_chart_ref }}"
+    chart_version: "{{ daytona_chart_version }}"
+    release_namespace: "{{ daytona_namespace }}"
+    create_namespace: true
+    release_state: present
+    wait: "{{ daytona_wait | bool }}"
+    timeout: "{{ daytona_timeout }}"
+    values: "{{ daytona_effective_values }}"
+  register: _r_daytona_helm
+  retries: 3
+  delay: 20
+  until: _r_daytona_helm is not failed
+
+- name: Display Daytona deployment summary
+  debug:
+    msg:
+      - "=========================================="
+      - "  Daytona Deployed"
+      - "=========================================="
+      - "  Namespace: {{ daytona_namespace }}"
+      - "  Chart: {{ daytona_chart_ref }} {{ daytona_chart_version }}"
+      - "  Base domain: {{ daytona_base_domain }}"
+      - "  Overrides: {{ 'yes' if (daytona_values_override | default({}) | length) > 0 else 'no' }}"
+      - "=========================================="
