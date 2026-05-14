@@ -1,7 +1,7 @@
 ---
 - name: Set blackbox facts
   set_fact:
-    bb_ns: '{{ blackbox_namespace }}'
+    bb_ns: "{{ blackbox_namespace }}"
 
 - name: Add prometheus-community Helm repository
   kubernetes.core.helm_repository:
@@ -16,29 +16,29 @@
   kubernetes.core.helm:
     name: blackbox-exporter
     chart_ref: prometheus-community/prometheus-blackbox-exporter
-    chart_version: '{{ blackbox_chart_version }}'
-    release_namespace: '{{ bb_ns }}'
+    chart_version: "{{ blackbox_chart_version }}"
+    release_namespace: "{{ bb_ns }}"
     create_namespace: true
     wait: true
     timeout: 5m
     values:
-      replicas: '{{ blackbox_replicas | int }}'
+      replicas: "{{ blackbox_replicas | int }}"
       image:
-        repository: '{{ blackbox_image }}'
+        repository: "{{ blackbox_image }}"
       resources:
         requests:
-          cpu: '{{ blackbox_cpu_req }}'
-          memory: '{{ blackbox_memory_req }}'
+          cpu: "{{ blackbox_cpu_req }}"
+          memory: "{{ blackbox_memory_req }}"
         limits:
-          cpu: '{{ blackbox_cpu_lim }}'
-          memory: '{{ blackbox_memory_lim }}'
+          cpu: "{{ blackbox_cpu_lim }}"
+          memory: "{{ blackbox_memory_lim }}"
       serviceMonitor:
-        enabled: false  # We use VMProbe instead (VM operator native)
+        enabled: false
       config:
         modules:
           http_2xx:
             prober: http
-            timeout: '{{ blackbox_probe_timeout }}'
+            timeout: "{{ blackbox_probe_timeout }}"
             http:
               preferred_ip_protocol: ip4
               valid_status_codes: [200, 301, 302, 401, 403]
@@ -47,25 +47,9 @@
               fail_if_not_ssl: true
               tls_config:
                 insecure_skip_verify: false
-          http_2xx_insecure:
-            prober: http
-            timeout: '{{ blackbox_probe_timeout }}'
-            http:
-              preferred_ip_protocol: ip4
-              valid_status_codes: [200, 301, 302, 401, 403]
-              follow_redirects: true
-              tls_config:
-                insecure_skip_verify: true
           tcp_connect:
             prober: tcp
-            timeout: '{{ blackbox_probe_timeout }}'
-          dns_udp:
-            prober: dns
-            timeout: '{{ blackbox_probe_timeout }}'
-            dns:
-              query_name: '{{ domain }}'
-              query_type: A
-              preferred_ip_protocol: ip4
+            timeout: "{{ blackbox_probe_timeout }}"
   register: _r_bb_install
   retries: 3
   delay: 15
@@ -82,8 +66,7 @@
         ([ 'https://mail.'    + domain ] if postal_enabled | default(true) | bool else []) +
         ([ 'https://temporal.' + domain ] if temporal_enabled | default(true) | bool else []) +
         ([ 'https://glitchtip.' + domain ] if deploy_glitchtip | default(false) | bool else []) +
-        ([ 'https://app.' + domain, 'https://api.' + domain ] if deploy_opwerf | default(false) | bool else []) +
-        ([ 'https://e2b-api.' + domain, 'https://sandbox.' + domain ] if deploy_e2b | default(false) | bool else [])
+        ([ blackbox_daytona_target ] if deploy_daytona | default(false) | bool else [])
       }}
 
 - name: Create VMProbe for HTTP endpoints
@@ -94,18 +77,18 @@
       kind: VMProbe
       metadata:
         name: blackbox-public-https
-        namespace: '{{ bb_ns }}'
+        namespace: "{{ bb_ns }}"
       spec:
         module: http_2xx
-        interval: '{{ blackbox_probe_interval }}'
-        scrapeTimeout: '{{ blackbox_probe_timeout }}'
+        interval: "{{ blackbox_probe_interval }}"
+        scrapeTimeout: "{{ blackbox_probe_timeout }}"
         vmProberSpec:
-          url: 'blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115'
+          url: "blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115"
           scheme: http
           path: /probe
         targets:
           staticConfig:
-            targets: '{{ bb_public_targets }}'
+            targets: "{{ bb_public_targets }}"
             labels:
               probe: public-https
   register: _r_bb_probe
@@ -121,22 +104,22 @@
       kind: VMProbe
       metadata:
         name: blackbox-internal-tcp
-        namespace: '{{ bb_ns }}'
+        namespace: "{{ bb_ns }}"
       spec:
         module: tcp_connect
-        interval: '{{ blackbox_probe_interval }}'
-        scrapeTimeout: '{{ blackbox_probe_timeout }}'
+        interval: "{{ blackbox_probe_interval }}"
+        scrapeTimeout: "{{ blackbox_probe_timeout }}"
         vmProberSpec:
-          url: 'blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115'
+          url: "blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115"
           scheme: http
           path: /probe
         targets:
           staticConfig:
             targets:
-              - 'platform-pg-haproxy.platform-pg:5432'
-              - 'elasticsearch.elasticsearch:9200'
-              - 'dragonfly.dragonfly:6379'
-              - 'minio.minio-storage:9000'
+              - "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local:5432"
+              - "elasticsearch.elasticsearch.svc.cluster.local:9200"
+              - "dragonfly.dragonfly.svc.cluster.local:6379"
+              - "minio.storage.svc.cluster.local:9000"
             labels:
               probe: internal-tcp
   register: _r_bb_probe_tcp

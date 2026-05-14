@@ -2,9 +2,8 @@
 # ============================================
 # Platform Orchestrator
 # ============================================
-# All services enabled by default
-# Consistent naming: {project}-{resource}
-# DNS: Preserves user records, only manages platform records
+# Daytona is the optional workspace platform.
+# DNS: Preserves user records, only manages platform records.
 # ============================================
 
 set -euo pipefail
@@ -15,13 +14,11 @@ STATE_DIR="${SCRIPT_DIR}/.state"
 LOG_DIR="${SCRIPT_DIR}/logs"
 ANSIBLE_DIR="${SCRIPT_DIR}/.."
 
-# Defaults
 DEFAULT_REGION="hel1"
 DEFAULT_PROJECT="k8s"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -30,10 +27,6 @@ NC='\033[0m'
 log() { echo -e "${GREEN}[$(date +'%H:%M:%S')]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
-
-# ============================================
-# ENVIRONMENT
-# ============================================
 
 check_env() {
   if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
@@ -45,20 +38,13 @@ check_env() {
 
 load_config() {
   [[ ! -f "$CONFIG_FILE" ]] && { error "Run: ./platform.sh init"; exit 1; }
-
   PROJECT=$(yq '.global.project // "k8s"' "$CONFIG_FILE")
   TIER=$(yq '.tier // "small"' "$CONFIG_FILE")
   DOMAIN=$(yq '.global.domain' "$CONFIG_FILE")
   EMAIL=$(yq '.global.email' "$CONFIG_FILE")
-
-  [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "domain is required in config. Set global.domain in $CONFIG_FILE"; exit 1; }
-  [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "email is required in config. Set global.email in $CONFIG_FILE"; exit 1; }
+  [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "global.domain is required in $CONFIG_FILE"; exit 1; }
+  [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "global.email is required in $CONFIG_FILE"; exit 1; }
   REGION=$(yq ".infrastructure.region // \"${DEFAULT_REGION}\"" "$CONFIG_FILE")
-
-  NETWORK_NAME="${PROJECT}-network"
-  BASTION_NAME="${PROJECT}-bastion"
-  LB_NAME="${PROJECT}-lb"
-
   log "Config: project=$PROJECT, tier=$TIER, domain=$DOMAIN, region=$REGION"
 }
 
@@ -69,332 +55,127 @@ is_enabled() {
   [[ "$value" == "true" ]]
 }
 
-# ============================================
-# HEALTH
-# ============================================
-
-heal_check() {
-  log "Health check..."
-  local issues=0
-  local unhealthy
-  unhealthy=$(kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' || true)
-  if [[ -n "$unhealthy" ]]; then
-    warn "Unhealthy pods:"
-    echo "$unhealthy"
-    ((issues++)) || true
-  fi
-  [[ $issues -eq 0 ]] && log "All healthy!" || warn "$issues issue(s) found"
-  return 0
+flag_from_config() {
+  local path="$1" default_value="${2:-false}"
+  local value
+  value=$(yq -r "${path} // \"${default_value}\"" "$CONFIG_FILE" 2>/dev/null || echo "$default_value")
+  [[ "$value" == "true" ]] && echo true || echo false
 }
 
-heal_auto() {
-  warn "Auto-healing: will delete unhealthy pods"
-  local unhealthy
-  unhealthy=$(kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' || true)
-  [[ -z "$unhealthy" ]] && { log "No unhealthy pods"; return 0; }
-  echo "$unhealthy" | while read -r ns name _; do
-    warn "Deleting: $ns/$name"
-    kubectl delete pod "$name" -n "$ns" --grace-period=30 2>/dev/null || true
-  done
-}
-
-# ============================================
-# DEPLOYMENT (via Ansible)
-# ============================================
-
-deploy_component() {
-  local component="$1"
-  log "Deploying: $component"
-  case "$component" in
-    "infra")        deploy_infra ;;
-    "network")      deploy_network ;;
-    "dns")          deploy_dns ;;
-    "cluster")      deploy_cluster ;;
-    "tls")          deploy_tls ;;
-    "minio")        deploy_minio ;;
-    "secrets")      deploy_secrets ;;
-    "databases")    deploy_databases ;;
-    "gitlab")       deploy_gitlab ;;
-    "gitops")       deploy_gitops ;;
-    "observability") deploy_observability ;;
-    "autoscaling")  deploy_autoscaling ;;
-    "opwerf")       deploy_opwerf ;;
-    "e2b")          deploy_e2b ;;
-    "glitchtip")    deploy_glitchtip ;;
-    "apm")          deploy_apm ;;
-    "blackbox")     deploy_blackbox ;;
-    "all")          deploy_all ;;
-    *) error "Unknown: $component"; exit 1 ;;
-  esac
-}
-
-deploy_all() {
-  log "Full deployment: project=$PROJECT, tier=$TIER, domain=$DOMAIN, region=$REGION"
+run_playbook() {
   check_env
-
-  local gt_flag="false"
-  is_enabled '.glitchtip.enabled' && gt_flag="true"
-
-  local apm_flag="false"
-  is_enabled '.apm.enabled' && apm_flag="true"
-
-  local bb_flag="true"
-  is_enabled '.blackbox.enabled' || bb_flag="$(is_enabled '.blackbox.enabled' && echo true || echo false)"
-  # blackbox defaults to true; only disable if explicitly set false in profile
-  if yq -r '.blackbox.enabled' "${PROFILE}" 2>/dev/null | grep -qx 'false'; then
-    bb_flag="false"
-  fi
-
-  # Run Ansible playbook for full deployment
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
     -e "tier=${TIER}" \
     -e "project_name=${PROJECT}" \
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
+    "$@"
+}
+
+heal_check() {
+  log "Health check..."
+  kubectl get pods -A 2>/dev/null || { warn "cluster not accessible"; return 0; }
+}
+
+heal_auto() {
+  warn "Auto-healing: deleting non-running pods"
+  kubectl get pods -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' | while read -r ns name _; do
+    warn "Deleting: $ns/$name"
+    kubectl delete pod "$name" -n "$ns" --grace-period=30 2>/dev/null || true
+  done
+}
+
+deploy_component() {
+  local component="$1"
+  log "Deploying: $component"
+  case "$component" in
+    infra)         run_playbook --tags infrastructure 2>&1 | tee -a "${LOG_DIR}/infra.log" ;;
+    network)       run_playbook --tags network 2>&1 | tee -a "${LOG_DIR}/network.log" ;;
+    dns)           deploy_dns ;;
+    cluster)       run_playbook --tags cluster 2>&1 | tee -a "${LOG_DIR}/cluster.log" ;;
+    tls)           run_playbook --tags tls 2>&1 | tee -a "${LOG_DIR}/tls.log" ;;
+    minio)         run_playbook --tags storage 2>&1 | tee -a "${LOG_DIR}/minio.log" ;;
+    secrets)       run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/secrets.log" ;;
+    databases)     run_playbook --tags databases 2>&1 | tee -a "${LOG_DIR}/databases.log" ;;
+    gitlab)        run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab.log" ;;
+    gitops)        run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
+    observability) run_playbook --tags observability 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
+    autoscaling)   run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;
+    glitchtip)     run_playbook -e deploy_glitchtip=true --tags glitchtip 2>&1 | tee -a "${LOG_DIR}/glitchtip.log" ;;
+    apm)           run_playbook -e deploy_apm=true --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
+    blackbox)      run_playbook -e deploy_blackbox=true --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;
+    daytona)       deploy_daytona ;;
+    all)           deploy_all ;;
+    *) error "Unknown component: $component"; exit 1 ;;
+  esac
+}
+
+deploy_all() {
+  local gt_flag apm_flag bb_flag daytona_flag
+  gt_flag=$(flag_from_config '.glitchtip.enabled' false)
+  apm_flag=$(flag_from_config '.apm.enabled' false)
+  bb_flag=$(flag_from_config '.blackbox.enabled' true)
+  daytona_flag=$(flag_from_config '.applications.daytona.enabled' false)
+
+  run_playbook \
     -e "deploy_glitchtip=${gt_flag}" \
     -e "deploy_apm=${apm_flag}" \
     -e "deploy_blackbox=${bb_flag}" \
+    -e "deploy_daytona=${daytona_flag}" \
     2>&1 | tee -a "${LOG_DIR}/deploy.log"
-
   log "Platform deployed!"
   show_credentials
 }
 
-# Individual component deployments via Ansible roles
-deploy_infra() {
-  log "Deploying infrastructure (project: $PROJECT, region: $REGION)..."
-  check_env
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags infrastructure \
-    2>&1 | tee -a "${LOG_DIR}/infra.log"
-
-  local BASTION_IP=$(hcloud server ip "${BASTION_NAME}" 2>/dev/null || echo "")
-  local LB_IP=$(hcloud load-balancer describe "${LB_NAME}" -o json 2>/dev/null | jq -r '.public_net.ipv4.ip' || echo "")
-
-  cat > "${STATE_DIR}/infra.yaml" << EOF
-project: ${PROJECT}
-domain: ${DOMAIN}
-bastion_ip: ${BASTION_IP}
-lb_ip: ${LB_IP:-$BASTION_IP}
-region: ${REGION}
-EOF
-}
-
-deploy_dns() {
-  log "Setting up DNS (preserves existing records)..."
-  check_env
-
-  local BASTION_IP=$(yq '.bastion_ip' "${STATE_DIR}/infra.yaml" 2>/dev/null || hcloud server ip "${BASTION_NAME}")
-  local LB_IP=$(yq '.lb_ip' "${STATE_DIR}/infra.yaml" 2>/dev/null || echo "$BASTION_IP")
-  local PUBLIC_IP="${LB_IP:-$BASTION_IP}"
-
-  log "DNS target IP: $PUBLIC_IP"
-
-  local RECORDS=$(generate_dns_records "$PUBLIC_IP")
-  log "DNS records generated for $DOMAIN"
+deploy_daytona() {
+  is_enabled '.applications.daytona.enabled' || { log "Daytona: disabled"; return 0; }
+  local base_domain
+  base_domain=$(yq -r ".applications.daytona.base_domain // \"daytona.${DOMAIN}\"" "$CONFIG_FILE")
+  run_playbook \
+    -e "deploy_daytona=true" \
+    -e "daytona_base_domain=${base_domain}" \
+    --tags daytona 2>&1 | tee -a "${LOG_DIR}/daytona.log"
 }
 
 generate_dns_records() {
   local ip="$1"
-
   local records="@ IN 3600 A ${ip}
 * IN 3600 A ${ip}
 vpn IN 3600 A ${ip}
 api IN 3600 A ${ip}
 app IN 3600 A ${ip}"
-
-  is_enabled '.gitlab.enabled' && records+="
-gitlab IN 3600 A ${ip}
-registry IN 3600 A ${ip}"
-
-  is_enabled '.gitops.enabled' && records+="
-argocd IN 3600 A ${ip}"
-
-  is_enabled '.observability.grafana.enabled' && records+="
-grafana IN 3600 A ${ip}"
-
-  is_enabled '.observability.metrics.enabled' && records+="
-victoriametrics IN 3600 A ${ip}"
-
-  is_enabled '.observability.logging.enabled' && records+="
-loki IN 3600 A ${ip}"
-
-  is_enabled '.storage.enabled' && records+="
-minio IN 3600 A ${ip}
-s3 IN 3600 A ${ip}"
-
-  is_enabled '.secrets.enabled' && records+="
-vault IN 3600 A ${ip}"
-
-  is_enabled '.e2b.enabled' && records+="
-e2b-api IN 3600 A ${ip}
-sandbox IN 3600 A ${ip}"
-
-  is_enabled '.glitchtip.enabled' && records+="
-glitchtip IN 3600 A ${ip}"
-
+  is_enabled '.gitlab.enabled' && records+=$'\n'"gitlab IN 3600 A ${ip}"$'\n'"registry IN 3600 A ${ip}"
+  is_enabled '.gitops.enabled' && records+=$'\n'"argocd IN 3600 A ${ip}"
+  is_enabled '.observability.grafana.enabled' && records+=$'\n'"grafana IN 3600 A ${ip}"
+  is_enabled '.storage.enabled' && records+=$'\n'"minio IN 3600 A ${ip}"$'\n'"s3 IN 3600 A ${ip}"
+  is_enabled '.secrets.enabled' && records+=$'\n'"vault IN 3600 A ${ip}"
+  is_enabled '.applications.daytona.enabled' && records+=$'\n'"daytona IN 3600 A ${ip}"$'\n'"*.daytona IN 3600 A ${ip}"
+  is_enabled '.glitchtip.enabled' && records+=$'\n'"glitchtip IN 3600 A ${ip}"
   echo "$records"
 }
 
-deploy_network() {
-  log "Deploying network security (VPN + bastion hardening)..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags network \
-    2>&1 | tee -a "${LOG_DIR}/network.log"
+deploy_dns() {
+  log "Setting up DNS record preview (preserves existing records)..."
+  check_env
+  local bastion_name="${PROJECT}-bastion"
+  local lb_name="${PROJECT}-lb"
+  local bastion_ip lb_ip public_ip
+  bastion_ip=$(hcloud server ip "$bastion_name" 2>/dev/null || echo "")
+  lb_ip=$(hcloud load-balancer describe "$lb_name" -o json 2>/dev/null | jq -r '.public_net.ipv4.ip' || echo "")
+  public_ip="${lb_ip:-$bastion_ip}"
+  [[ -z "$public_ip" ]] && { error "No target IP found"; exit 1; }
+  generate_dns_records "$public_ip"
 }
-
-deploy_cluster() {
-  log "Deploying K8s cluster..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags cluster \
-    2>&1 | tee -a "${LOG_DIR}/cluster.log"
-}
-
-deploy_tls() {
-  log "Setting up TLS..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags tls \
-    2>&1 | tee -a "${LOG_DIR}/tls.log"
-}
-
-deploy_minio() {
-  is_enabled '.storage.enabled' || { log "MinIO: disabled"; return 0; }
-  log "Installing MinIO..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags storage \
-    2>&1 | tee -a "${LOG_DIR}/minio.log"
-}
-
-deploy_secrets() {
-  is_enabled '.secrets.enabled' || { log "Vault: disabled"; return 0; }
-  log "Installing Vault..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags secrets \
-    2>&1 | tee -a "${LOG_DIR}/secrets.log"
-}
-
-deploy_databases() {
-  is_enabled '.databases.postgresql.enabled' || { log "PostgreSQL: disabled"; return 0; }
-  log "Installing PostgreSQL..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags databases \
-    2>&1 | tee -a "${LOG_DIR}/databases.log"
-}
-
-deploy_gitlab() {
-  is_enabled '.gitlab.enabled' || { log "GitLab: disabled"; return 0; }
-  log "Installing GitLab..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags gitlab \
-    2>&1 | tee -a "${LOG_DIR}/gitlab.log"
-}
-
-deploy_gitops() {
-  is_enabled '.gitops.enabled' || { log "ArgoCD: disabled"; return 0; }
-  log "Installing ArgoCD..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags gitops \
-    2>&1 | tee -a "${LOG_DIR}/gitops.log"
-}
-
-deploy_observability() {
-  is_enabled '.observability.metrics.enabled' || { log "Observability: disabled"; return 0; }
-  log "Installing monitoring..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags observability \
-    2>&1 | tee -a "${LOG_DIR}/observability.log"
-}
-
-deploy_autoscaling() {
-  is_enabled '.autoscaling.enabled' || { log "KEDA: disabled"; return 0; }
-  log "Installing KEDA..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    --tags autoscaling \
-    2>&1 | tee -a "${LOG_DIR}/autoscaling.log"
-}
-
-deploy_opwerf() {
-  log "Installing OpenWerf (st/pp/prod)..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    -e "deploy_opwerf=true" \
-    --tags opwerf \
-    2>&1 | tee -a "${LOG_DIR}/opwerf.log"
-}
-
-deploy_e2b() {
-  is_enabled '.e2b.enabled' || { log "E2B: disabled"; return 0; }
-  log "Deploying E2B Sandbox Infrastructure..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    -e "deploy_e2b=true" \
-    --tags e2b \
-    2>&1 | tee -a "${LOG_DIR}/e2b.log"
-}
-
-deploy_glitchtip() {
-  is_enabled '.glitchtip.enabled' || { log "GlitchTip: disabled"; return 0; }
-  log "Installing GlitchTip..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    -e "deploy_glitchtip=true" \
-    --tags glitchtip \
-    2>&1 | tee -a "${LOG_DIR}/glitchtip.log"
-}
-
-deploy_apm() {
-  is_enabled '.apm.enabled' || { log "APM: disabled"; return 0; }
-  log "Installing APM Server (Elastic APM / OTLP tracing)..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    -e "deploy_apm=true" \
-    --tags apm \
-    2>&1 | tee -a "${LOG_DIR}/apm.log"
-}
-
-deploy_blackbox() {
-  log "Installing Blackbox Exporter + VMProbes (uptime/synthetic monitoring)..."
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    -e "deploy_blackbox=true" \
-    --tags blackbox \
-    2>&1 | tee -a "${LOG_DIR}/blackbox.log"
-}
-
-# ============================================
-# DESTROY
-# ============================================
 
 destroy_all() {
   warn "DESTROY project '$PROJECT'?"
-  warn "DNS: Only platform records removed, your records preserved"
   read -rp "Type 'DESTROY': " confirm
   [[ "$confirm" != "DESTROY" ]] && exit 0
-
-  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
-    -e "tier=${TIER}" -e "project_name=${PROJECT}" -e "domain=${DOMAIN}" -e "email=${EMAIL}" \
-    -e "state=absent" \
-    2>&1 | tee -a "${LOG_DIR}/destroy.log"
-
+  run_playbook -e state=absent 2>&1 | tee -a "${LOG_DIR}/destroy.log"
   rm -f ~/.kube/config
   rm -rf "${STATE_DIR:?}"/*
-  log "Destroyed! DNS zone preserved (only platform records removed)"
+  log "Destroyed! DNS zone preserved."
 }
-
-# ============================================
-# STATUS
-# ============================================
 
 show_status() {
   echo "Platform: ${PROJECT:-k8s} / ${DOMAIN:-unknown} (${TIER:-unknown}) [${REGION:-unknown}]"
@@ -405,93 +186,30 @@ show_status() {
 }
 
 show_credentials() {
-  echo ""
   echo "Credentials for $DOMAIN"
   echo "=========================================="
-
   kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' &>/dev/null && {
     echo "GitLab: https://gitlab.$DOMAIN"
     echo "  User: root"
     echo "  Pass: $(kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' | base64 -d)"
-    echo ""
   }
-
-  kubectl get secret minio -n storage -o jsonpath='{.data.rootUser}' &>/dev/null && {
-    echo "MinIO: https://minio.$DOMAIN"
-    echo "  User: $(kubectl get secret minio -n storage -o jsonpath='{.data.rootUser}' | base64 -d 2>/dev/null || echo 'minioadmin')"
-    echo "  Pass: $(kubectl get secret minio -n storage -o jsonpath='{.data.rootPassword}' | base64 -d 2>/dev/null || echo 'minioadmin')"
-    echo ""
-  }
-
   kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' &>/dev/null && {
     echo "ArgoCD: https://argocd.$DOMAIN"
     echo "  User: admin"
     echo "  Pass: $(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
-    echo ""
   }
-
-  kubectl get secret grafana -n monitoring -o jsonpath='{.data.admin-password}' &>/dev/null && {
-    echo "Grafana: https://grafana.$DOMAIN"
-    echo "  User: admin"
-    echo "  Pass: $(kubectl get secret grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 -d)"
-    echo ""
-  }
-
   echo "Vault: https://vault.$DOMAIN"
-  echo "  Check: kubectl get secret vault-init-keys -n vault"
-  echo ""
-  kubectl get secret pmm-secret -n monitoring -o jsonpath='{.data.PMM_ADMIN_PASSWORD}' &>/dev/null && {
-    echo "PMM: https://pmm.$DOMAIN"
-    echo "  User: admin"
-    echo "  Pass: $(kubectl get secret pmm-secret -n monitoring -o jsonpath='{.data.PMM_ADMIN_PASSWORD}' | base64 -d)"
-    echo ""
-  }
-
-  kubectl get secret elasticsearch-es-elastic-user -n logging -o jsonpath='{.data.elastic}' &>/dev/null && {
-    echo "Elasticsearch/Kibana: https://kibana.$DOMAIN"
-    echo "  User: elastic"
-    echo "  Pass: $(kubectl get secret elasticsearch-es-elastic-user -n logging -o jsonpath='{.data.elastic}' | base64 -d)"
-    echo ""
-  }
-
-  echo "PostgreSQL:"
-  echo "  Host: ${PROJECT_NAME:-k8s}-pg-pgbouncer.databases.svc.cluster.local:5432"
-  echo "  Creds: kubectl get secret ${PROJECT_NAME:-k8s}-pg-pguser-app -n databases -o jsonpath='{.data.password}' | base64 -d"
-  echo ""
-
-  echo "MongoDB:"
-  echo "  Host: ${PROJECT_NAME:-k8s}-mongo-rs0.databases.svc.cluster.local:27017"
-  echo "  Creds: kubectl get secret internal-${PROJECT_NAME:-k8s}-mongo-users -n databases -o jsonpath='{.data.APP_USER_PASSWORD}' | base64 -d"
-  echo ""
-
-  echo "Dragonfly (Redis):"
-  echo "  Host: dragonfly.dragonfly.svc.cluster.local:6379"
-  echo "  Creds: kubectl get secret dragonfly-auth -n dragonfly -o jsonpath='{.data.password}' | base64 -d"
-  echo ""
-
-  echo "Temporal: https://temporal.$DOMAIN"
-  echo "  gRPC: temporal-frontend.temporal.svc.cluster.local:7233"
-  echo ""
-
-  echo "OpenWerf (multi-environment):"
-  echo "  Production: https://app.$DOMAIN + https://api.$DOMAIN"
-  echo "  Pre-prod:   https://pp-app.$DOMAIN + https://pp-api.$DOMAIN"
-  echo "  Staging:    https://st-app.$DOMAIN + https://st-api.$DOMAIN"
-  echo "  Namespace:  opwerf / opwerf-pp / opwerf-st"
-  echo "  ArgoCD:     opwerf-production / opwerf-pp / opwerf-st"
-  echo ""
-
+  echo "PostgreSQL: kubectl get secret ${PROJECT:-k8s}-pg-pguser-app -n databases -o jsonpath='{.data.password}' | base64 -d"
+  echo "Dragonfly: kubectl get secret dragonfly-auth -n dragonfly -o jsonpath='{.data.password}' | base64 -d"
+  if is_enabled '.applications.daytona.enabled'; then
+    echo "Daytona: https://$(yq -r ".applications.daytona.base_domain // \"daytona.${DOMAIN}\"" "$CONFIG_FILE")"
+  fi
 }
-
-# ============================================
-# MAIN
-# ============================================
 
 show_help() {
   cat << 'EOF'
 Platform Orchestrator
 =====================
-All services enabled by default.
 DNS: Preserves user records, only manages platform records.
 
 Usage: ./platform.sh <command>
@@ -499,7 +217,7 @@ Usage: ./platform.sh <command>
 Commands:
   init              Create config
   deploy all        Full deployment
-  deploy <comp>     infra|network|dns|cluster|tls|minio|secrets|databases|gitlab|gitops|observability|autoscaling
+  deploy <comp>     infra|network|dns|cluster|tls|minio|secrets|databases|gitlab|gitops|observability|autoscaling|daytona|glitchtip|apm|blackbox
   status            Show status
   credentials       Show passwords
   health / heal     Check/fix
@@ -507,22 +225,12 @@ Commands:
 
 Required:
   export HCLOUD_TOKEN="your-token"
-
-Naming: {project}-{resource}
-  k8s-network, k8s-bastion, k8s-master-1, k8s-worker-1, k8s-lb
-
-DNS Records:
-  Platform records are marked and tracked separately.
-  User's existing DNS records are preserved.
-  Destroy only removes platform records.
-
 EOF
 }
 
 main() {
   local cmd="${1:-help}"
   shift || true
-
   case "$cmd" in
     deploy)       load_config; deploy_component "${1:-all}" ;;
     destroy)      load_config; destroy_all ;;
@@ -532,9 +240,9 @@ main() {
     heal)         heal_check; heal_auto ;;
     init)
       [[ -f "$CONFIG_FILE" ]] && { warn "platform.yaml exists"; exit 0; }
-      cp "${SCRIPT_DIR}/profiles/small.yaml" "$CONFIG_FILE"
+      cp "${SCRIPT_DIR}/platform.example.yaml" "$CONFIG_FILE"
       log "Created platform.yaml"
-      log "Edit 'global.project' and 'global.domain', then: ./platform.sh deploy all"
+      log "Edit global.domain/global.email, then: ./platform.sh deploy all"
       ;;
     *)            show_help ;;
   esac
