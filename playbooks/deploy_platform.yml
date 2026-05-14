@@ -46,7 +46,6 @@
         that:
           - tier in ['minimal', 'small', 'medium', 'production']
         fail_msg: "Invalid tier '{{ tier }}'. Must be: minimal, small, medium, production"
-        quiet: false
 
     - name: Pre-flight check - hcloud CLI installed
       ansible.builtin.command: hcloud version
@@ -76,17 +75,6 @@
         msg: "SSH key not found at {{ ssh_key_path | default('~/.ssh/id_ed25519') }}. Generate with: ssh-keygen -t ed25519"
       when: not ssh_key_stat.stat.exists
 
-    - name: Pre-flight check - kubectl installed
-      ansible.builtin.command: kubectl version --client
-      register: kubectl_check
-      changed_when: false
-      failed_when: false
-
-    - name: Warn if kubectl not found
-      debug:
-        msg: "WARNING: kubectl not installed locally. Install it for post-deployment cluster access."
-      when: kubectl_check.rc != 0
-
     - name: Pre-flight check - required Ansible collections
       ansible.builtin.command: ansible-galaxy collection list kubernetes.core
       register: k8s_collection_check
@@ -102,206 +90,107 @@
     - name: Generate platform secrets
       ansible.builtin.import_role:
         name: generate-secrets
-      tags:
-        - always
+      tags: [always]
 
     - name: Deploy Hetzner Cloud Infrastructure
       ansible.builtin.import_role:
         name: hetzner-infra
-      tags:
-        - infrastructure
-        - infra
+      tags: [infrastructure, infra]
 
     - name: Deploy Network Security (VPN + Firewalls)
       ansible.builtin.import_role:
         name: network-security
-      tags:
-        - network
-        - security
-
-    - name: Restore controller connectivity after network-security role
-      ansible.builtin.shell: |
-        set +e
-        rm -rf /tmp/outer-ansible-cp 2>/dev/null
-        iptables -P INPUT ACCEPT 2>/dev/null
-        iptables -P FORWARD ACCEPT 2>/dev/null
-        iptables -P OUTPUT ACCEPT 2>/dev/null
-        iptables -F 2>/dev/null
-        iptables -X 2>/dev/null
-        iptables -t nat -F 2>/dev/null
-        iptables -t mangle -F 2>/dev/null
-        ip6tables -P INPUT ACCEPT 2>/dev/null
-        ip6tables -P FORWARD ACCEPT 2>/dev/null
-        ip6tables -P OUTPUT ACCEPT 2>/dev/null
-        ip6tables -F 2>/dev/null
-        ip6tables -X 2>/dev/null
-        systemctl stop docker docker.socket 2>/dev/null
-        for br in $(ip link show 2>/dev/null | grep -oP 'br-[a-f0-9]+'); do
-          ip link set "$br" down 2>/dev/null
-          ip link delete "$br" 2>/dev/null
-        done
-        ip link delete docker0 2>/dev/null
-        ip link delete tailscale0 2>/dev/null
-        GW=$(ip route show default | awk '{print $3}' | head -1)
-        if [ -n "$GW" ]; then
-          ip route replace default via "$GW"
-        else
-          ip route replace default via 172.31.1.1 dev eth0
-        fi
-        echo 'nameserver 185.12.64.1' > /etc/resolv.conf && echo 'nameserver 185.12.64.2' >> /etc/resolv.conf
-        for i in $(seq 1 10); do
-          if curl -4 -sI --max-time 5 https://github.com > /dev/null 2>&1; then
-            echo "Controller connectivity restored after $i attempts"
-            exit 0
-          fi
-          sleep 2
-        done
-        echo "WARNING: Controller connectivity not restored after 10 attempts"
-        ip link show
-        ip route show
-        iptables -L -n
-        ss -s
-        exit 0
-      args:
-        executable: /bin/bash
-      ignore_errors: true
+      tags: [network, security]
 
     - name: Deploy Kubernetes Cluster
       ansible.builtin.import_role:
         name: k8s-cluster-management
-      tags:
-        - cluster
-        - kubernetes
+      tags: [cluster, kubernetes]
 
     - name: Deploy Secrets Management (Vault + ESO)
       ansible.builtin.import_role:
         name: k8s-secrets
-      tags:
-        - secrets
-        - vault
+      tags: [secrets, vault]
 
     - name: Deploy MinIO S3 Storage
       ansible.builtin.import_role:
         name: minio-storage
-      tags:
-        - storage
-        - minio
+      tags: [storage, minio]
 
     - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
       ansible.builtin.import_role:
         name: k8s-observability
-      tags:
-        - observability
-        - monitoring
+      tags: [observability, monitoring]
 
     - name: Deploy Elasticsearch with X-Pack Platinum
       ansible.builtin.import_role:
         name: elasticsearch
-      tags:
-        - elasticsearch
-        - search
+      tags: [elasticsearch, search]
 
     - name: Deploy Databases (PostgreSQL + MongoDB)
       ansible.builtin.import_role:
         name: k8s-databases
-      tags:
-        - databases
-        - postgresql
+      tags: [databases, postgresql]
 
     - name: Deploy GitLab CE Self-Hosted
       ansible.builtin.import_role:
         name: gitlab-selfhosted
-      tags:
-        - gitlab
-        - cicd
+      tags: [gitlab, cicd]
 
     - name: Deploy ArgoCD GitOps
       ansible.builtin.import_role:
         name: k8s-gitops
-      tags:
-        - gitops
-        - argocd
+      tags: [gitops, argocd]
 
     - name: Deploy KEDA Event-Driven Autoscaling
       ansible.builtin.import_role:
         name: k8s-autoscaling
-      tags:
-        - autoscaling
-        - keda
+      tags: [autoscaling, keda]
 
     - name: Deploy Dragonfly (Redis-compatible in-memory store)
       ansible.builtin.import_role:
         name: dragonfly
-      tags:
-        - dragonfly
-        - cache
+      tags: [dragonfly, cache]
 
     - name: Deploy Temporal Workflow Engine
       ansible.builtin.import_role:
         name: temporal
-      tags:
-        - temporal
-        - workflows
+      tags: [temporal, workflows]
 
     - name: Deploy Postal Mail Server
       ansible.builtin.import_role:
         name: postal
-      tags:
-        - postal
-        - mail
+      tags: [postal, mail]
 
     - name: Deploy APM Server (Elastic APM / OTLP tracing backend)
       ansible.builtin.import_role:
         name: apm-server
       when: deploy_apm | default(false) | bool
-      tags:
-        - apm
-        - tracing
-        - observability
+      tags: [apm, tracing, observability]
 
     - name: Deploy Blackbox Exporter (uptime/synthetic probes)
       ansible.builtin.import_role:
         name: blackbox-exporter
       when: deploy_blackbox | default(true) | bool
-      tags:
-        - blackbox
-        - uptime
-        - observability
+      tags: [blackbox, uptime, observability]
 
     - name: Deploy GlitchTip Error Tracking
       ansible.builtin.import_role:
         name: glitchtip
       when: deploy_glitchtip | default(false) | bool
-      tags:
-        - glitchtip
-        - monitoring
-        - error-tracking
+      tags: [glitchtip, monitoring, error-tracking]
 
-    - name: Deploy OpenWerf Platform
+    - name: Deploy Daytona workspace platform
       ansible.builtin.import_role:
-        name: opwerf-deployment
-      when: deploy_opwerf | default(false) | bool
-      tags:
-        - opwerf
-        - application
-
-    - name: Deploy E2B Sandbox Infrastructure
-      ansible.builtin.import_role:
-        name: e2b-deployment
-      when: deploy_e2b | default(false) | bool
-      tags:
-        - e2b
-        - sandboxes
+        name: daytona-deployment
+      when: deploy_daytona | default(daytona_enabled | default(false)) | bool
+      tags: [daytona, workspaces, application]
 
   post_tasks:
     - name: Apply HIPAA hardening (internal TLS + log redaction)
       ansible.builtin.import_role:
         name: hipaa-hardening
-      # HIPAA hardening always enabled
-      tags:
-        - hipaa
-        - security
-        - compliance
+      tags: [hipaa, security, compliance]
 
     - name: Display deployment completion summary
       debug:
@@ -312,7 +201,6 @@
           - "  Project: {{ project_name }}"
           - "  Domain: {{ domain }}"
           - "=========================================="
-          - ""
           - "Services deployed:"
           - "  - Kubernetes Cluster with Cilium CNI"
           - "  - GitLab CE: https://gitlab.{{ domain }}"
@@ -321,22 +209,16 @@
           - "  - VictoriaMetrics + Loki (Observability)"
           - "  - MinIO S3: https://minio.{{ domain }}"
           - "  - Vault: https://vault.{{ domain }}"
-          - "{{ '  - GlitchTip: https://glitchtip.' + domain if deploy_glitchtip | default(false) | bool else '' }}"
           - "  - PostgreSQL HA Cluster"
           - "  - KEDA (Event Autoscaling)"
           - "  - Temporal: https://temporal.{{ domain }}"
           - "  - Elasticsearch: https://kibana.{{ domain }}"
           - "  - Postal: https://mail.{{ domain }}"
+          - "{{ '  - Daytona: https://' + daytona_base_domain if deploy_daytona | default(false) | bool else '' }}"
           - "{{ '  - APM Server (tracing): http://apm-server.elasticsearch.svc.cluster.local:8200' if deploy_apm | default(false) | bool else '' }}"
           - "{{ '  - Blackbox Probes: active on public URLs' if deploy_blackbox | default(true) | bool else '' }}"
           - "  - Alertmanager (VPN-only): https://alertmanager.{{ domain }}"
           - "  - Headscale VPN"
-          - "  - OpenWerf (st/pp/prod): https://app.{{ domain }} (if deploy_opwerf=true)"
-          - "    - staging: https://st-app.{{ domain }}"
-          - "    - pre-prod: https://pp-app.{{ domain }}"
-          - "    - production: https://app.{{ domain }}"
-          - "  - E2B API: https://e2b-api.{{ domain }} (if deploy_e2b=true)"
-          - "  - E2B Sandbox: https://sandbox.{{ domain }} (if deploy_e2b=true)"
           - ""
           - "Get credentials:"
           - "  ./platform-orchestrator/platform.sh credentials"

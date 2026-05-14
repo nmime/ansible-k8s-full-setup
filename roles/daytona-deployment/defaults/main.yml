@@ -1,0 +1,38 @@
+---
+daytona_enabled: false
+daytona_namespace: daytona
+daytona_release_name: daytona
+
+daytona_chart_repo_name: daytonaio
+daytona_chart_repo_url: https://charts.daytona.io
+daytona_chart_ref: daytonaio/daytona
+daytona_chart_version: "0.0.23"
+
+daytona_base_domain: "daytona.{{ domain }}"
+daytona_wait: true
+daytona_timeout: 10m0s
+
+daytona_values_override: {}
+
+daytona_services:
+  api:
+    enabled: true
+    type: ClusterIP
+  proxy:
+    enabled: true
+    type: ClusterIP
+  sshGateway:
+    enabled: true
+    type: ClusterIP
+  runnermanager:
+    enabled: true
+  runner:
+    enabled: true
+
+daytona_dependencies:
+  postgresql: false
+  redis: false
+  harbor: false
+  minio: false
+  dex: false
+  pgadmin4: false
