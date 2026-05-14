@@ -59,10 +59,3 @@ ansible-playbook playbooks/deploy_platform.yml \
 ansible-playbook playbooks/deploy_platform.yml \
   --tags daytona -e deploy_daytona=true -e domain=example.com -e email=admin@example.com
 ```
-
-## Legacy role directories pending deletion
-
-The former workspace/sandbox role directories are intentionally left in this branch for a follow-up deletion-only action:
-
-- `roles/opwerf-deployment/`
-- `roles/e2b-deployment/`

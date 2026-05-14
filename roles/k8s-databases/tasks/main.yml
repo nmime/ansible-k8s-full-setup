@@ -62,13 +62,10 @@
   delay: 30
   until: _r_install_percona_pg_operator is not failed
 - name: Increase PG Operator progressDeadlineSeconds for slow image pulls
-  shell: 'DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath=''{.items[0].metadata.name}'' 2>/dev/null)
-
+  shell: |
+    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -z "$DEPLOY" ]; then DEPLOY="percona-pg-operator"; fi
-
-    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p ''{"spec":{"progressDeadlineSeconds":1800}}'' --type=merge
-
-    '
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
   register: _r_patch_pg_operator_progress_deadline
   retries: 10
   delay: 15
@@ -81,9 +78,8 @@
     label_selectors:
     - app.kubernetes.io/name=pg-operator
   register: pg_operator_deploy
-  until: 'pg_operator_deploy.resources | length > 0 and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-
-    '
+  until: >-
+    pg_operator_deploy.resources | length > 0 and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
   failed_when: false
@@ -99,13 +95,10 @@
         namespace: '{{ db_ns }}'
       type: Opaque
       stringData:
-        s3.conf: '[global]
-
+        s3.conf: |
+          [global]
           repo2-s3-key={{ minio_root_user }}
-
           repo2-s3-key-secret={{ minio_root_password }}
-
-          '
   register: _r_create_pgbackrest_s3_credentials_secret
   retries: 3
   delay: 10
@@ -284,9 +277,6 @@
         - name: glitchtip
           databases:
           - glitchtip
-        - name: '{{ opwerf_app_name | default(''opwerf'') }}'
-          databases:
-          - '{{ opwerf_app_name | default(''opwerf'') }}'
   register: _r_create_postgresql_cluster
   retries: 3
   delay: 10
@@ -298,9 +288,8 @@
     namespace: '{{ db_ns }}'
     name: '{{ project_name | default(''k8s'') }}-pg'
   register: pg_cluster
-  until: 'pg_cluster.resources | length > 0 and (pg_cluster.resources[0].status.state | default('''')) == ''ready''
-
-    '
+  until: >-
+    pg_cluster.resources | length > 0 and (pg_cluster.resources[0].status.state | default('')) == 'ready'
   retries: 60
   delay: 15
   failed_when: false
@@ -333,13 +322,10 @@
   delay: 30
   until: _r_install_percona_mongodb_operator is not failed
 - name: Increase MongoDB Operator progressDeadlineSeconds for slow image pulls
-  shell: 'DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath=''{.items[0].metadata.name}'' 2>/dev/null)
-
+  shell: |
+    DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -z "$DEPLOY" ]; then DEPLOY="percona-server-mongodb-operator"; fi
-
-    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p ''{"spec":{"progressDeadlineSeconds":1800}}'' --type=merge
-
-    '
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
   register: _r_patch_mongo_operator_progress_deadline
   retries: 10
   delay: 15
@@ -352,9 +338,8 @@
     label_selectors:
     - app.kubernetes.io/name=psmdb-operator
   register: mongo_operator_deploy
-  until: 'mongo_operator_deploy.resources | length > 0 and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-
-    '
+  until: >-
+    mongo_operator_deploy.resources | length > 0 and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
   failed_when: false
@@ -484,9 +469,8 @@
     namespace: '{{ db_ns }}'
     name: '{{ project_name | default(''k8s'') }}-mongo'
   register: mongo_cluster
-  until: 'mongo_cluster.resources | length > 0 and (mongo_cluster.resources[0].status.state | default('''')) == ''ready''
-
-    '
+  until: >-
+    mongo_cluster.resources | length > 0 and (mongo_cluster.resources[0].status.state | default('')) == 'ready'
   retries: 60
   delay: 15
   failed_when: false

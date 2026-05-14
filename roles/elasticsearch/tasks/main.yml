@@ -36,11 +36,23 @@
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
 - name: Generate ES CA and node TLS certificates
-  ansible.builtin.shell: "cd {{ es_tls_tmpdir.path }}\nopenssl genrsa -out ca.key 4096\nopenssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \\\n  -out ca.crt -subj \"/CN=es-ca\"\nopenssl genrsa\
-    \ -out tls.key 2048\ncat > san.cnf <<'SANEOF'\n[req]\nreq_extensions = v3_req\ndistinguished_name = dn\n[dn]\n[v3_req]\nsubjectAltName = DNS:*.es-master-headless.{{ es_ns }}.svc.cluster.local,DNS:*.es-data-headless.{{\
-    \ es_ns }}.svc.cluster.local,DNS:es-master.{{ es_ns }}.svc.cluster.local,DNS:es-data.{{ es_ns }}.svc.cluster.local,DNS:elasticsearch.{{ es_ns }}.svc.cluster.local,DNS:localhost,IP:127.0.0.1\nSANEOF\n\
-    openssl req -new -key tls.key -out tls.csr -subj \"/CN=elasticsearch\" -config san.cnf\nopenssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \\\n  -out tls.crt -days 3650 -sha256 -extensions\
-    \ v3_req -extfile san.cnf\n"
+  ansible.builtin.shell: |
+    cd {{ es_tls_tmpdir.path }}
+    openssl genrsa -out ca.key 4096
+    openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
+      -out ca.crt -subj "/CN=es-ca"
+    openssl genrsa -out tls.key 2048
+    cat > san.cnf <<'SANEOF'
+    [req]
+    req_extensions = v3_req
+    distinguished_name = dn
+    [dn]
+    [v3_req]
+    subjectAltName = DNS:*.es-master-headless.{{ es_ns }}.svc.cluster.local,DNS:*.es-data-headless.{{ es_ns }}.svc.cluster.local,DNS:es-master.{{ es_ns }}.svc.cluster.local,DNS:es-data.{{ es_ns }}.svc.cluster.local,DNS:elasticsearch.{{ es_ns }}.svc.cluster.local,DNS:localhost,IP:127.0.0.1
+    SANEOF
+    openssl req -new -key tls.key -out tls.csr -subj "/CN=elasticsearch" -config san.cnf
+    openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+      -out tls.crt -days 3650 -sha256 -extensions v3_req -extfile san.cnf
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
 - name: Read generated TLS files
@@ -91,19 +103,57 @@
         name: es-crack-script
         namespace: '{{ es_ns }}'
       data:
-        patch_xpack.sh: "#!/bin/bash\nVERSION=\"{{ es_ver }}\"\nv=( ${VERSION//./ } )\nbranch=\"${v[0]}.${v[1]}\"\nXPACK=\"/usr/share/elasticsearch/modules/x-pack-core/x-pack-core-$VERSION.jar\"\nOUT=\"\
-          /crack-ready/x-pack-core-$VERSION.jar\"\n\nif [ -f \"$OUT\" ]; then\n  echo \"Crack JAR already built, skipping\"\n  exit 0\nfi\n\nJAVAC=\"/usr/share/elasticsearch/jdk/bin/javac\"\nJAR=\"/usr/share/elasticsearch/jdk/bin/jar\"\
-          \n\nmkdir -p /tmp/crack && cd /tmp/crack\n\nDOWNLOAD_OK=1\ncurl -fsSL --connect-timeout 10 --max-time 30 -o License.java \\\n  \"https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/License.java\"\
-          \ || DOWNLOAD_OK=0\ncurl -fsSL --connect-timeout 10 --max-time 30 -o LicenseVerifier.java \\\n  \"https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/LicenseVerifier.java\"\
-          \ || DOWNLOAD_OK=0\ncurl -fsSL --connect-timeout 10 --max-time 30 -o TransportXPackInfoAction.java \\\n  \"https://raw.githubusercontent.com/elastic/elasticsearch/refs/heads/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/action/TransportXPackInfoAction.java\"\
-          \ || DOWNLOAD_OK=0\n\nif [ \"$DOWNLOAD_OK\" = \"0\" ]; then\n  echo \"WARN: GitHub unreachable, skipping xpack crack. ES will start with default license.\"\n  exit 0\nfi\n\nset -e\n\nsed -i '/void\
-          \ validate()/{h;s/validate/validate2/;x;G}' License.java\nsed -i '/void validate()/ s/$/}/' License.java\nsed -i '/boolean verifyLicense(/{h;s/verifyLicense/verifyLicense2/;x;G}' LicenseVerifier.java\n\
-          sed -i '/boolean verifyLicense(/ s/$/return true;}/' LicenseVerifier.java\nsed -E -i 's|^([[:space:]]*)buildInfo = new XPackInfoResponse\\.BuildInfo\\(.*|\\1buildInfo = new XPackInfoResponse.BuildInfo(\"\
-          Unknown\", \"Unknown\");|' TransportXPackInfoAction.java\n\n\"$JAVAC\" -cp \"/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*\" LicenseVerifier.java 2>/dev/null\n\"\
-          $JAVAC\" -cp \"/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*\" TransportXPackInfoAction.java 2>/dev/null\n\"$JAVAC\" -cp \"/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*\"\
-          \ License.java 2>/dev/null\n\ncp \"$XPACK\" .\nmkdir x-pack-core && cd x-pack-core\n\"$JAR\" -xf ../x-pack-core-$VERSION.jar\ncp /tmp/crack/LicenseVerifier.class org/elasticsearch/license/\ncp\
-          \ /tmp/crack/License.class org/elasticsearch/license/\ncp /tmp/crack/TransportXPackInfoAction.class org/elasticsearch/xpack/core/action/\n\"$JAR\" -cf \"$OUT\" .\necho \"Crack JAR built: $OUT\"\
-          \n"
+        patch_xpack.sh: |
+          #!/bin/bash
+          VERSION="{{ es_ver }}"
+          v=( ${VERSION//./ } )
+          branch="${v[0]}.${v[1]}"
+          XPACK="/usr/share/elasticsearch/modules/x-pack-core/x-pack-core-$VERSION.jar"
+          OUT="/crack-ready/x-pack-core-$VERSION.jar"
+
+          if [ -f "$OUT" ]; then
+            echo "Crack JAR already built, skipping"
+            exit 0
+          fi
+
+          JAVAC="/usr/share/elasticsearch/jdk/bin/javac"
+          JAR="/usr/share/elasticsearch/jdk/bin/jar"
+
+          mkdir -p /tmp/crack && cd /tmp/crack
+
+          DOWNLOAD_OK=1
+          curl -fsSL --connect-timeout 10 --max-time 30 -o License.java \
+            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/License.java" || DOWNLOAD_OK=0
+          curl -fsSL --connect-timeout 10 --max-time 30 -o LicenseVerifier.java \
+            "https://raw.githubusercontent.com/elastic/elasticsearch/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/license/LicenseVerifier.java" || DOWNLOAD_OK=0
+          curl -fsSL --connect-timeout 10 --max-time 30 -o TransportXPackInfoAction.java \
+            "https://raw.githubusercontent.com/elastic/elasticsearch/refs/heads/$branch/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/action/TransportXPackInfoAction.java" || DOWNLOAD_OK=0
+
+          if [ "$DOWNLOAD_OK" = "0" ]; then
+            echo "WARN: GitHub unreachable, skipping xpack crack. ES will start with default license."
+            exit 0
+          fi
+
+          set -e
+
+          sed -i '/void validate()/{h;s/validate/validate2/;x;G}' License.java
+          sed -i '/void validate()/ s/$/}/' License.java
+          sed -i '/boolean verifyLicense(/{h;s/verifyLicense/verifyLicense2/;x;G}' LicenseVerifier.java
+          sed -i '/boolean verifyLicense(/ s/$/return true;}/' LicenseVerifier.java
+          sed -E -i 's|^([[:space:]]*)buildInfo = new XPackInfoResponse\.BuildInfo\(.*|\1buildInfo = new XPackInfoResponse.BuildInfo("Unknown", "Unknown");|' TransportXPackInfoAction.java
+
+          "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" LicenseVerifier.java 2>/dev/null
+          "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" TransportXPackInfoAction.java 2>/dev/null
+          "$JAVAC" -cp "/usr/share/elasticsearch/lib/*:/usr/share/elasticsearch/modules/x-pack-core/*" License.java 2>/dev/null
+
+          cp "$XPACK" .
+          mkdir x-pack-core && cd x-pack-core
+          "$JAR" -xf ../x-pack-core-$VERSION.jar
+          cp /tmp/crack/LicenseVerifier.class org/elasticsearch/license/
+          cp /tmp/crack/License.class org/elasticsearch/license/
+          cp /tmp/crack/TransportXPackInfoAction.class org/elasticsearch/xpack/core/action/
+          "$JAR" -cf "$OUT" .
+          echo "Crack JAR built: $OUT"
   register: _r_crack_cm
   retries: 3
   delay: 10
@@ -225,8 +275,7 @@
   until: _r_client_svc is not failed
 - name: Build seed hosts list
   set_fact:
-    es_seed_hosts: '{% set hosts = [] %}{% for i in range(0, es_master_replicas | int) %}{% if hosts.append(''es-master-'' ~ i ~ ''.es-master-headless.'' ~ es_ns ~ ''.svc.cluster.local'') %}{% endif %}{%
-      endfor %}{{ hosts | join('','') }}'
+    es_seed_hosts: '{% set hosts = [] %}{% for i in range(0, es_master_replicas | int) %}{% if hosts.append(''es-master-'' ~ i ~ ''.es-master-headless.'' ~ es_ns ~ ''.svc.cluster.local'') %}{% endif %}{% endfor %}{{ hosts | join('','') }}'
     es_initial_master_nodes: '{% set nodes = [] %}{% for i in range(0, es_master_replicas | int) %}{% if nodes.append(''es-master-'' ~ i) %}{% endif %}{% endfor %}{{ nodes | join('','') }}'
 - name: Deploy ES master StatefulSet
   kubernetes.core.k8s:
@@ -289,12 +338,9 @@
               command:
               - bash
               - -c
-              - '[ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack
-                JAR, starting with default license"
-
+              - |
+                [ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack JAR, starting with default license"
                 exec /usr/local/bin/docker-entrypoint.sh
-
-                '
               ports:
               - containerPort: 9200
                 name: http
@@ -367,9 +413,8 @@
                   command:
                   - bash
                   - -c
-                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-
-                    '
+                  - |
+                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
                 initialDelaySeconds: 30
                 periodSeconds: 10
                 timeoutSeconds: 5
@@ -378,9 +423,8 @@
                   command:
                   - bash
                   - -c
-                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-
-                    '
+                  - |
+                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
                 initialDelaySeconds: 90
                 periodSeconds: 30
                 timeoutSeconds: 10
@@ -469,12 +513,9 @@
               command:
               - bash
               - -c
-              - '[ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack
-                JAR, starting with default license"
-
+              - |
+                [ -f /crack-ready/x-pack-core-{{ es_ver }}.jar ] && cp /crack-ready/x-pack-core-{{ es_ver }}.jar /usr/share/elasticsearch/modules/x-pack-core/x-pack-core-{{ es_ver }}.jar || echo "No crack JAR, starting with default license"
                 exec /usr/local/bin/docker-entrypoint.sh
-
-                '
               ports:
               - containerPort: 9200
                 name: http
@@ -545,9 +586,8 @@
                   command:
                   - bash
                   - -c
-                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-
-                    '
+                  - |
+                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
                 initialDelaySeconds: 30
                 periodSeconds: 10
                 timeoutSeconds: 5
@@ -556,9 +596,8 @@
                   command:
                   - bash
                   - -c
-                  - 'curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-
-                    '
+                  - |
+                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
                 initialDelaySeconds: 90
                 periodSeconds: 30
                 timeoutSeconds: 10
@@ -592,9 +631,8 @@
     namespace: '{{ es_ns }}'
     name: es-master
   register: es_master_sts
-  until: 'es_master_sts.resources | length > 0 and (es_master_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int)
-
-    '
+  until: >-
+    es_master_sts.resources | length > 0 and (es_master_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int)
   retries: 60
   delay: 15
   failed_when: false
@@ -604,9 +642,8 @@
     namespace: '{{ es_ns }}'
     name: es-data
   register: es_data_sts
-  until: 'es_data_sts.resources | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
-
-    '
+  until: >-
+    es_data_sts.resources | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
   retries: 60
   delay: 15
   failed_when: false
@@ -631,11 +668,26 @@
               command:
               - sh
               - -c
-              - "echo \"Waiting for ES...\"\nfor i in $(seq 1 60); do\n  if curl -fsSk -u \"elastic:$ELASTIC_PASSWORD\" \"https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200/_cluster/health\"\
-                \ >/dev/null 2>&1; then\n    echo \"ES ready\"\n    break\n  fi\n  sleep 5\ndone\nES=\"https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200\"\nCURRENT=$(curl -fsSk -u\
-                \ \"elastic:$ELASTIC_PASSWORD\" \"$ES/_license\" 2>/dev/null | grep -o '\"type\":\"[^\"]*\"' | head -1)\necho \"Current license: $CURRENT\"\nif echo \"$CURRENT\" | grep -q \"{{ es_license_type\
-                \ }}\"; then\n  echo \"Already {{ es_license_type }}, done\"\n  exit 0\nfi\ncurl -fsSk -u \"elastic:$ELASTIC_PASSWORD\" -XPUT \"$ES/_license?acknowledge=true\" \\\n  -H 'Content-Type: application/json'\
-                \ -d @/license/license.json\necho \"\"\ncurl -fsSk -u \"elastic:$ELASTIC_PASSWORD\" \"$ES/_license\"\n"
+              - |
+                echo "Waiting for ES..."
+                for i in $(seq 1 60); do
+                  if curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200/_cluster/health" > /dev/null 2>&1; then
+                    echo "ES ready"
+                    break
+                  fi
+                  sleep 5
+                done
+                ES="https://es-master-0.es-master-headless.{{ es_ns }}.svc.cluster.local:9200"
+                CURRENT=$(curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "$ES/_license" 2>/dev/null | grep -o '"type":"[^"]*"' | head -1)
+                echo "Current license: $CURRENT"
+                if echo "$CURRENT" | grep -q "{{ es_license_type }}"; then
+                  echo "Already {{ es_license_type }}, done"
+                  exit 0
+                fi
+                curl -fsSk -u "elastic:$ELASTIC_PASSWORD" -XPUT "$ES/_license?acknowledge=true" \
+                  -H 'Content-Type: application/json' -d @/license/license.json
+                echo ""
+                curl -fsSk -u "elastic:$ELASTIC_PASSWORD" "$ES/_license"
               env:
               - name: ELASTIC_PASSWORD
                 valueFrom:
@@ -660,9 +712,8 @@
     namespace: '{{ es_ns }}'
     name: es-apply-license-{{ es_ver | replace('.', '-') }}
   register: license_job
-  until: 'license_job.resources | length > 0 and (license_job.resources[0].status.succeeded | default(0) | int) >= 1
-
-    '
+  until: >-
+    license_job.resources | length > 0 and (license_job.resources[0].status.succeeded | default(0) | int) >= 1
   retries: 60
   delay: 10
   failed_when: false
@@ -862,9 +913,6 @@
           - namespaceSelector:
               matchLabels:
                 kubernetes.io/metadata.name: temporal
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: opwerf
           ports:
           - port: 9200
             protocol: TCP
