@@ -92,11 +92,11 @@
         ha:
           raft:
             setNodeId: true
-            config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n  retry_join {\n   \
+            config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n  unauthenticated_metrics_access = true\n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n  retry_join {\n   \
               \ leader_api_addr = \"http://vault-0.vault-internal:8200\"\n  }\n  retry_join {\n    leader_api_addr = \"http://vault-1.vault-internal:8200\"\n  }\n  retry_join {\n    leader_api_addr = \"\
               http://vault-2.vault-internal:8200\"\n  }\n}\n"
         standalone:
-          config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\nstorage \"file\" {\n  path = \"/vault/data\"\n}\n"
+          config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n  unauthenticated_metrics_access = true\n}\nstorage \"file\" {\n  path = \"/vault/data\"\n}\n"
         ingress:
           enabled: false
         ui:
