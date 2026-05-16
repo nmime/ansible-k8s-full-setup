@@ -280,11 +280,11 @@
                   name: '{{ app_name }}-backend-secret'
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 256Mi
+                  cpu: 100m
+                  memory: 384Mi
                 limits:
-                  cpu: 500m
-                  memory: 512Mi
+                  cpu: 750m
+                  memory: 768Mi
               livenessProbe:
                 httpGet:
                   path: /api/v1/health
@@ -420,10 +420,10 @@
                 name: http
               resources:
                 requests:
-                  cpu: 50m
-                  memory: 64Mi
+                  cpu: 75m
+                  memory: 128Mi
                 limits:
-                  cpu: 200m
+                  cpu: 300m
                   memory: 256Mi
               livenessProbe:
                 httpGet:

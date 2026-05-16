@@ -3,7 +3,7 @@
 > Zero-to-production Kubernetes on Hetzner Cloud in 3-5 hours. Fully automated, security-hardened, with global GeoDNS edge network.
 
 [![Security](https://img.shields.io/badge/security-100%25%20hardened-brightgreen)](#security-hardening)
-[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.34.3-326ce5?logo=kubernetes&logoColor=white)](#platform-stack)
+[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35.4-326ce5?logo=kubernetes&logoColor=white)](#platform-stack)
 [![HIPAA](https://img.shields.io/badge/HIPAA-ready-blue)](#compliance)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
@@ -147,10 +147,10 @@ APAC Edge   EU Edge    US Edge
 
 | Component | Version | Purpose |
 |-----------|---------|--------|
-| **Kubernetes** | v1.34.3 | Orchestration (Kubespray 2.30) |
-| **Cilium** | v1.19 | eBPF CNI + NetworkPolicies |
+| **Kubernetes** | v1.35.4 | Orchestration (Kubespray 2.31) |
+| **Cilium** | v1.19.4 | eBPF CNI + NetworkPolicies |
 | **Gateway API** | v1.5 | Modern ingress (L7) |
-| **cert-manager** | v1.20 | Automated TLS (Let's Encrypt) |
+| **cert-manager** | v1.20.2 | Automated TLS (Let's Encrypt) |
 | **Vault** | v1.21 | Secrets management (HA Raft) |
 | **SeaweedFS** | v5.4 | S3-compatible storage |
 | **VictoriaMetrics** | v1.133 | Metrics (faster than Prometheus) |
@@ -158,8 +158,8 @@ APAC Edge   EU Edge    US Edge
 | **Loki + Promtail** | v3.6 | Log aggregation |
 | **Headscale** | v0.28 | WireGuard VPN |
 | **MetalLB** | v0.15 | Bare-metal LB |
-| **GitLab** | v18.10 | Git + CI/CD + Registry |
-| **ArgoCD** | v3.3 | GitOps continuous delivery |
+| **GitLab** | v18.11.3 | Git + CI/CD + Registry |
+| **ArgoCD** | v3.4.2 | GitOps continuous delivery |
 | **Elasticsearch** | v8.x | Audit logs + compliance |
 
 ### Optional (Install as Needed)
@@ -317,8 +317,8 @@ edge_enabled: false
 ```yaml
 control_plane_count: 3
 worker_count: 2
-server_type: "cx32"  # 4 vCPU, 8GB
-control_server_type: "cx22"
+server_type: "cx42"  # 8 vCPU, 16GB
+control_server_type: "cx42"
 edge_enabled: true
 gitlab_edition: "ee"
 edge_regions: ["eu"]  # Single edge
@@ -330,7 +330,7 @@ edge_regions: ["eu"]  # Single edge
 control_plane_count: 3
 worker_count: 3
 server_type: "cx42"  # 8 vCPU, 16GB
-control_server_type: "cx32"
+control_server_type: "cx42"
 edge_enabled: true
 gitlab_edition: "ee"
 edge_regions: ["eu", "us", "apac"]  # Global CDN

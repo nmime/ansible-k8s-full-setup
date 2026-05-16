@@ -50,7 +50,7 @@ network:
 # Kubernetes
 # ---------------------------------------------
 kubernetes:
-  version: v1.34.3
+  version: v1.35.4
   cni: cilium
   ha_control_plane: false
 
@@ -70,7 +70,7 @@ secrets:
   enabled: true
   vault:
     replicas: 1
-    storage_size: 10Gi
+    storage_size: 20Gi
 
 # ---------------------------------------------
 # Databases
@@ -79,7 +79,7 @@ databases:
   postgresql:
     enabled: true
     replicas: 1
-    storage_size: 20Gi
+    storage_size: 30Gi
 
 # ---------------------------------------------
 # GitLab
@@ -106,7 +106,7 @@ observability:
   metrics:
     enabled: true
     retention: 14d
-    storage_size: 20Gi
+    storage_size: 40Gi
 
   logging:
     enabled: true

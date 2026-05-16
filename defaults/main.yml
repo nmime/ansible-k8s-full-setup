@@ -49,9 +49,9 @@ ssh_key_path: ~/.ssh/id_ed25519
 storage_class: hcloud-volumes
 
 # Kubernetes
-k8s_version: v1.34.3
+k8s_version: v1.35.4
 k8s_cni: cilium
-cilium_version: v1.19.2
+cilium_version: v1.19.4
 gateway_api_version: v1.5.1
 k8s_pod_cidr: 10.233.64.0/18
 k8s_service_cidr: 10.233.0.0/18
@@ -77,33 +77,34 @@ object_storage_endpoint_hostport: "seaweedfs-filer.{{ object_storage_namespace |
 object_storage_endpoint: "http://{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
 object_storage_console_domain: "{{ ('seaweedfs.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 'seaweedfs.local' }}"
 object_storage_api_domain: "{{ ('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local' }}"
-object_storage_master_size: 2Gi
-object_storage_volume_size: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
-object_storage_idx_size: 2Gi
-object_storage_filer_size: 5Gi
+object_storage_master_size: 4Gi
+object_storage_volume_size: "{{ '20Gi' if tier == 'minimal' else '40Gi' if tier == 'small' else '100Gi' if tier == 'medium' else '150Gi' }}"
+object_storage_idx_size: 4Gi
+object_storage_filer_size: 10Gi
 
 # Secrets (Vault) - tier-specific
 vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
-vault_storage_size: 10Gi
+vault_storage_size: 20Gi
 eso_enabled: true
 
 # Databases - tier-specific
 postgresql_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-postgresql_storage: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' }}"
+postgresql_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' else '50Gi' if tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
-mongodb_storage: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' }}"
+mongodb_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' else '50Gi' if tier == 'medium' else '100Gi' }}"
 
 # GitLab
-gitlab_chart_version: "9.10.0"
+gitlab_chart_version: "9.11.4"
 gitlab_runner_concurrent_jobs: 10
 
 # GitOps (ArgoCD)
-argocd_chart_version: "9.4.15"
+argocd_chart_version: "9.5.14"
+argocd_version: "v3.4.2"
 
 # Observability - tier-specific
 log_stack: "{{ 'loki' if tier in ['minimal', 'small'] else 'elk' }}"  # Options: loki, elk, efk
 metrics_retention: "{{ '7d' if tier == 'minimal' else '14d' if tier == 'small' else '30d' }}"
-metrics_storage: "{{ '10Gi' if tier == 'minimal' else '20Gi' if tier == 'small' else '50Gi' }}"
+metrics_storage: "{{ '20Gi' if tier == 'minimal' else '40Gi' if tier == 'small' else '100Gi' if tier == 'medium' else '150Gi' }}"
 logging_retention: "{{ '3d' if tier == 'minimal' else '7d' if tier == 'small' else '14d' }}"
 
 # Autoscaling
@@ -111,16 +112,16 @@ keda_enabled: true
 keda_chart_version: "2.19.0"
 
 # Temporal
-temporal_chart_version: "0.73.2"
+temporal_chart_version: "1.2.0"
 temporal_num_history_shards: 512
 
 # Elasticsearch
-es_version: "9.3.2"
-kibana_version: "9.3.2"
+es_version: "9.4.1"
+kibana_version: "9.4.1"
 es_cluster_name: "platform-es"
 
 # Postal
-postal_version: "3.3.5"
+postal_version: "3.3.6"
 
 # Backup
 backup_schedule: "0 2 * * *"
@@ -149,7 +150,7 @@ hetzner_metrics_enabled: true
 # Distributed Tracing (Tempo)
 tracing_enabled: "{{ tier in ['medium', 'production'] }}"
 tempo_retention: "{{ '24h' if tier == 'medium' else '72h' if tier == 'production' else '12h' }}"
-tempo_storage_size: "{{ '5Gi' if tier in ['minimal', 'small'] else '10Gi' if tier == 'medium' else '20Gi' }}"
+tempo_storage_size: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' if tier == 'medium' else '40Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"
 
 # HIPAA Compliance (enable for healthcare/regulated workloads)

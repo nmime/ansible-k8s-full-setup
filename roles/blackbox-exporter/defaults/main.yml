@@ -1,13 +1,13 @@
 ---
 blackbox_namespace: monitoring
-blackbox_chart_version: "9.0.1"   # prometheus-community/prometheus-blackbox-exporter
+blackbox_chart_version: "11.10.0"   # prometheus-community/prometheus-blackbox-exporter
 blackbox_image: "prom/blackbox-exporter"
 blackbox_replicas: 1
 
-blackbox_memory_req: "32Mi"
-blackbox_memory_lim: "128Mi"
-blackbox_cpu_req: "20m"
-blackbox_cpu_lim: "200m"
+blackbox_memory_req: "64Mi"
+blackbox_memory_lim: "256Mi"
+blackbox_cpu_req: "50m"
+blackbox_cpu_lim: "300m"
 
 blackbox_probe_interval: "60s"
 blackbox_probe_timeout: "15s"
