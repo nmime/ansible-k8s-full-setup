@@ -151,7 +151,13 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e tier=producti
 ```
 
 ### Tier Upgrade Path
-- minimal (~€16/mo) → small (~€40/mo) → medium (~€52/mo) → production (~€97/mo)
+- minimal (~€18-20/mo) → small (~€28-35/mo) → medium (~€80-100/mo) → production (~€95-125/mo)
+
+Medium and production in this PR use larger 16Gi-class Hetzner nodes (`cx43`) for both
+control planes and workers, plus larger persistent volumes for object storage,
+PostgreSQL, Vault, and observability. Treat the figures above as planning ranges only:
+actual monthly cost depends on current Hetzner pricing, region, backups/snapshots,
+traffic, and optional edge/CDN services.
 
 ## Backup and Restore
 

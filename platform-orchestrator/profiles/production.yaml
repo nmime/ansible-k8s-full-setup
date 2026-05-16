@@ -1,13 +1,15 @@
 # ============================================
-# PRODUCTION TIER - ~€74-100/mo
+# PRODUCTION TIER - ~€95-125/mo
 # ============================================
 # Best for: Full HA, medium-high traffic
-# Nodes: 6+ (3 masters, 3+ workers)
+# Nodes: 6+ x cx43 16Gi-class nodes (3 masters, 3+ workers) + cx23 bastion
 # HA: Full (control plane + workloads)
+# Storage: 4x150Gi object storage, 100Gi PostgreSQL, 150Gi metrics
+# Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
 # ============================================
 
 tier: production
-cost_estimate: "€74-100/mo"
+cost_estimate: "€95-125/mo"
 
 global:
   project: k8s
