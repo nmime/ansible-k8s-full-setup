@@ -45,19 +45,13 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        connection: 'provider: AWS
-
+        connection: |
+          provider: AWS
           region: us-east-1
-
-          aws_access_key_id: "{{ minio_root_user }}"
-
-          aws_secret_access_key: "{{ minio_root_password }}"
-
-          endpoint: "http://minio.storage.svc.cluster.local:9000"
-
+          aws_access_key_id: "{{ object_storage_access_key | default(minio_root_user) }}"
+          aws_secret_access_key: "{{ object_storage_secret_key | default(minio_root_password) }}"
+          endpoint: "{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}"
           path_style: true
-
-          '
   register: _r_create_s3_object_storage_secret_for_gitl
   retries: 3
   delay: 10
@@ -73,7 +67,7 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ minio_root_user }}\"\n  secretkey: \"{{ minio_root_password }}\"\n  region: us-east-1\n  regionendpoint: \"http://minio.storage.svc.cluster.local:9000\"\
+        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ object_storage_access_key | default(minio_root_user) }}\"\n  secretkey: \"{{ object_storage_secret_key | default(minio_root_password) }}\"\n  region: us-east-1\n  regionendpoint: \"{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}\"\
           \n  v4auth: true\n  pathstyle: true\n  rootdirectory: /registry\n"
   register: _r_create_registry_storage_secret
   retries: 3
@@ -471,8 +465,8 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        accesskey: '{{ minio_root_user }}'
-        secretkey: '{{ minio_root_password }}'
+        accesskey: '{{ object_storage_access_key | default(minio_root_user) }}'
+        secretkey: '{{ object_storage_secret_key | default(minio_root_password) }}'
   register: _r_create_s3_cache_secret_for_gitlab_runner
   retries: 3
   delay: 10
@@ -528,7 +522,7 @@
           - ports:
             - port: '5000'
               protocol: TCP
-- name: Allow GitLab egress to PostgreSQL and MinIO
+- name: Allow GitLab egress to PostgreSQL and object storage
   kubernetes.core.k8s:
     state: present
     definition:
@@ -554,7 +548,7 @@
               k8s:io.kubernetes.pod.namespace: storage
           toPorts:
           - ports:
-            - port: '9000'
+            - port: '8333'
               protocol: TCP
         - toEntities:
           - kube-apiserver

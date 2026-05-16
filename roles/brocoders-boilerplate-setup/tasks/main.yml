@@ -140,7 +140,7 @@
               k8s:io.kubernetes.pod.namespace: storage
           toPorts:
           - ports:
-            - port: '9000'
+            - port: '8333'
               protocol: TCP
         - toEntities:
           - kube-apiserver
@@ -176,7 +176,7 @@
         FILE_DRIVER: s3
         AWS_S3_REGION: us-east-1
         AWS_DEFAULT_S3_BUCKET: '{{ app_name }}-uploads'
-        AWS_S3_ENDPOINT: http://minio.storage.svc.cluster.local:9000
+        AWS_S3_ENDPOINT: "{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}"
   register: _r_create_backend_configmap
   retries: 3
   delay: 10
@@ -212,8 +212,8 @@
         AUTH_JWT_TOKEN_EXPIRES_IN: 15m
         AUTH_REFRESH_SECRET: '{{ app_refresh_secret }}'
         AUTH_REFRESH_TOKEN_EXPIRES_IN: 7d
-        ACCESS_KEY_ID: '{{ minio_root_user }}'
-        SECRET_ACCESS_KEY: '{{ minio_root_password }}'
+        ACCESS_KEY_ID: '{{ object_storage_access_key | default(minio_root_user) }}'
+        SECRET_ACCESS_KEY: '{{ object_storage_secret_key | default(minio_root_password) }}'
   register: _r_create_backend_secret
   retries: 3
   delay: 10

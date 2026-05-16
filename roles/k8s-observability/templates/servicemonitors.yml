@@ -2,15 +2,15 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: minio
+  name: seaweedfs
   namespace: storage
 spec:
   selector:
     matchLabels:
-      app: minio
+      app.kubernetes.io/instance: seaweedfs
   endpoints:
     - port: http
-      path: /minio/v2/metrics/cluster
+      path: /metrics
       interval: 30s
 ---
 apiVersion: monitoring.coreos.com/v1
