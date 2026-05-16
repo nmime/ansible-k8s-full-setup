@@ -1,0 +1,496 @@
+---
+- name: Run SeaweedFS object storage tasks
+  when: object_storage_enabled | default(true) | bool
+  block:
+    - name: Set object-storage resolved facts
+      ansible.builtin.set_fact:
+        object_storage_namespace_resolved: "{{ object_storage_namespace | default('storage', true) }}"
+        object_storage_endpoint_hostport_resolved: "{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333', true) }}"
+        object_storage_endpoint_resolved: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333', true) }}"
+        object_storage_console_domain_resolved: "{{ object_storage_console_domain | default(('seaweedfs.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 'seaweedfs.local', true) }}"
+        object_storage_api_domain_resolved: "{{ object_storage_api_domain | default(('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local', true) }}"
+        object_storage_access_key_resolved: "{{ object_storage_access_key | default('seaweedfsadmin', true) }}"
+        object_storage_secret_key_resolved: "{{ object_storage_secret_key | default('seaweedfsadmin123456789', true) }}"
+
+
+    - name: Create object storage namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/part-of: object-storage
+              pod-security.kubernetes.io/enforce: baseline
+              pod-security.kubernetes.io/warn: restricted
+      register: _r_object_storage_namespace
+      retries: 3
+      delay: 10
+      until: _r_object_storage_namespace is not failed
+
+    - name: Create SeaweedFS S3 auth/config secret
+      no_log: true
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: seaweedfs-s3-config
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/instance: "{{ object_storage_release_name | default('seaweedfs') }}"
+          type: Opaque
+          stringData:
+            seaweedfs_s3_config: >-
+              {{
+                {
+                  'identities': [
+                    {
+                      'name': 'admin',
+                      'credentials': [
+                        {
+                          'accessKey': object_storage_access_key_resolved,
+                          'secretKey': object_storage_secret_key_resolved
+                        }
+                      ],
+                      'actions': ['Admin', 'Read', 'Write', 'List', 'Tagging']
+                    }
+                  ]
+                } | to_json
+              }}
+            admin_access_key_id: "{{ object_storage_access_key_resolved }}"
+            admin_secret_access_key: "{{ object_storage_secret_key_resolved }}"
+            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
+            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
+      register: _r_seaweedfs_s3_secret
+      retries: 3
+      delay: 10
+      until: _r_seaweedfs_s3_secret is not failed
+
+    - name: Create object storage credentials secret
+      no_log: true
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ item.name }}"
+            namespace: "{{ item.namespace }}"
+          type: Opaque
+          stringData: "{{ item.stringData }}"
+      loop:
+        - name: object-storage-credentials
+          namespace: "{{ object_storage_namespace_resolved }}"
+          stringData:
+            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
+            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
+            endpoint: "{{ object_storage_endpoint_resolved }}"
+            region: "{{ object_storage_region | default('us-east-1') }}"
+      register: _r_object_storage_compat_secrets
+      retries: 3
+      delay: 10
+      until: _r_object_storage_compat_secrets is not failed
+
+    - name: Add official SeaweedFS Helm repository
+      kubernetes.core.helm_repository:
+        name: "{{ object_storage_chart_repo_name | default('seaweedfs') }}"
+        repo_url: "{{ object_storage_chart_repo_url | default('https://seaweedfs.github.io/seaweedfs/helm') }}"
+      register: _r_seaweedfs_repo
+      retries: 3
+      delay: 10
+      until: _r_seaweedfs_repo is not failed
+
+    - name: Install SeaweedFS via official Helm chart
+      kubernetes.core.helm:
+        name: "{{ object_storage_release_name | default('seaweedfs') }}"
+        chart_ref: "{{ object_storage_chart_ref | default('seaweedfs/seaweedfs') }}"
+        chart_version: "{{ object_storage_chart_version | default('4.25.1') }}"
+        release_namespace: "{{ object_storage_namespace_resolved }}"
+        create_namespace: true
+        release_state: present
+        wait: false
+        timeout: 10m0s
+        values:
+          master:
+            enabled: true
+            replicas: "{{ object_storage_replicas | int }}"
+            data:
+              type: persistentVolumeClaim
+              storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+              size: "{{ object_storage_master_size | default('2Gi') }}"
+            logs:
+              type: emptyDir
+          volume:
+            enabled: true
+            replicas: "{{ object_storage_volume_replicas | int }}"
+            dataDirs:
+              - name: data
+                type: persistentVolumeClaim
+                storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+                size: "{{ object_storage_volume_size | default('50Gi') }}"
+                maxVolumes: 0
+            idx:
+              type: persistentVolumeClaim
+              storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+              size: "{{ object_storage_idx_size | default('2Gi') }}"
+          filer:
+            enabled: true
+            replicas: "{{ object_storage_filer_replicas | int }}"
+            data:
+              type: persistentVolumeClaim
+              storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+              size: "{{ object_storage_filer_size | default('5Gi') }}"
+            logs:
+              type: emptyDir
+            s3:
+              enabled: true
+              port: 8333
+              enableAuth: true
+              existingConfigSecret: seaweedfs-s3-config
+          s3:
+            enabled: false
+          metrics:
+            enabled: true
+      register: _r_install_seaweedfs
+      retries: 3
+      delay: 10
+      until: _r_install_seaweedfs is not failed
+
+    - name: Restart SeaweedFS filer when S3 auth config changes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ns="{{ object_storage_namespace_resolved }}"
+        release="{{ object_storage_release_name | default('seaweedfs') }}"
+        restarted=0
+        for workload in "statefulset/${release}-filer" "deployment/${release}-filer"; do
+          if kubectl -n "$ns" get "$workload" >/dev/null 2>&1; then
+            kubectl -n "$ns" rollout restart "$workload"
+            restarted=1
+          fi
+        done
+        echo "restarted=${restarted}"
+      args:
+        executable: /bin/bash
+      register: _r_restart_seaweedfs_filer_for_s3_config
+      changed_when: "'restarted=1' in _r_restart_seaweedfs_filer_for_s3_config.stdout"
+      when: _r_seaweedfs_s3_secret is changed
+
+    - name: Wait for SeaweedFS master/volume/filer workloads only
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ns="{{ object_storage_namespace_resolved }}"
+        waited=0
+        for workload in \
+          statefulset/{{ object_storage_release_name | default('seaweedfs') }}-master \
+          statefulset/{{ object_storage_release_name | default('seaweedfs') }}-volume \
+          statefulset/{{ object_storage_release_name | default('seaweedfs') }}-filer \
+          deployment/{{ object_storage_release_name | default('seaweedfs') }}-filer; do
+          if kubectl -n "$ns" get "$workload" >/dev/null 2>&1; then
+            kubectl -n "$ns" rollout status "$workload" --timeout=10m
+            waited=$((waited+1))
+          fi
+        done
+        test "$waited" -ge 3
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: _r_wait_seaweedfs_core
+      retries: 3
+      delay: 10
+      until: _r_wait_seaweedfs_core is not failed
+
+    - name: Remove prior object-storage bucket bootstrap Job
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: "{{ object_storage_namespace_resolved }}"
+        name: object-storage-bucket-bootstrap
+      failed_when: false
+
+    - name: Bootstrap object storage buckets idempotently
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: object-storage-bucket-bootstrap
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            ttlSecondsAfterFinished: 300
+            backoffLimit: 6
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: aws-cli
+                    image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:latest') }}"
+                    command: ["/bin/sh", "-ec"]
+                    args:
+                      - |
+                        {% for bucket in object_storage_buckets | default([]) %}
+                        bucket="{{ bucket.name | default(bucket, true) }}"
+                        if ! aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3api head-bucket --bucket "${bucket}" >/dev/null 2>&1; then
+                          aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3api create-bucket --bucket "${bucket}"
+                        fi
+                        {% endfor %}
+                        smoke_bucket="{{ (object_storage_buckets | default(['backups']) | first).name | default((object_storage_buckets | default(['backups']) | first), true) }}"
+                        printf 'object-storage-smoke' >/tmp/object-storage-smoke.txt
+                        aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 cp /tmp/object-storage-smoke.txt "s3://${smoke_bucket}/smoke/object-storage-smoke.txt"
+                        aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 cp "s3://${smoke_bucket}/smoke/object-storage-smoke.txt" /tmp/object-storage-smoke-read.txt
+                        smoke_read=''
+                        IFS= read -r smoke_read </tmp/object-storage-smoke-read.txt || true
+                        test "${smoke_read}" = 'object-storage-smoke'
+                        aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 rm "s3://${smoke_bucket}/smoke/object-storage-smoke.txt"
+                    env:
+                      - name: OBJECT_STORAGE_ENDPOINT
+                        value: "{{ object_storage_endpoint_resolved }}"
+                      - name: AWS_ACCESS_KEY_ID
+                        valueFrom:
+                          secretKeyRef:
+                            name: seaweedfs-s3-config
+                            key: AWS_ACCESS_KEY_ID
+                      - name: AWS_SECRET_ACCESS_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: seaweedfs-s3-config
+                            key: AWS_SECRET_ACCESS_KEY
+                      - name: AWS_DEFAULT_REGION
+                        value: "{{ object_storage_region | default('us-east-1') }}"
+                      - name: AWS_EC2_METADATA_DISABLED
+                        value: "true"
+      register: _r_object_storage_bucket_bootstrap
+      retries: 3
+      delay: 10
+      until: _r_object_storage_bucket_bootstrap is not failed
+
+    - name: Create object storage Console TLS certificate
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: object-storage-console-tls
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            secretName: object-storage-console-tls
+            issuerRef:
+              name: letsencrypt-prod
+              kind: ClusterIssuer
+            dnsNames:
+              - "{{ object_storage_console_domain_resolved }}"
+      when:
+        - object_storage_create_external_routes | default(true) | bool
+        - k8s_create_external_tls | default(true) | bool
+      register: _r_object_storage_console_cert
+      retries: 3
+      delay: 10
+      until: _r_object_storage_console_cert is not failed
+
+    - name: Create object storage S3 API TLS certificate
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: object-storage-api-tls
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            secretName: object-storage-api-tls
+            issuerRef:
+              name: letsencrypt-prod
+              kind: ClusterIssuer
+            dnsNames:
+              - "{{ object_storage_api_domain_resolved }}"
+      when:
+        - object_storage_create_external_routes | default(true) | bool
+        - k8s_create_external_tls | default(true) | bool
+      register: _r_object_storage_api_cert
+      retries: 3
+      delay: 10
+      until: _r_object_storage_api_cert is not failed
+
+    - name: Create object storage Console HTTPRoute
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: object-storage-console
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            parentRefs:
+              - name: admin-gateway
+                namespace: cilium-system
+                sectionName: https
+            hostnames:
+              - "{{ object_storage_console_domain_resolved }}"
+            rules:
+              - backendRefs:
+                  - name: seaweedfs-filer
+                    port: 8888
+      when: object_storage_create_external_routes | default(true) | bool
+      register: _r_object_storage_console_route
+      retries: 3
+      delay: 10
+      until: _r_object_storage_console_route is not failed
+
+    - name: Create object storage S3 API HTTPRoute
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: object-storage-api
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            parentRefs:
+              - name: main-gateway
+                namespace: cilium-system
+                sectionName: https
+            hostnames:
+              - "{{ object_storage_api_domain_resolved }}"
+            rules:
+              - backendRefs:
+                  - name: seaweedfs-filer
+                    port: 8333
+      when: object_storage_create_external_routes | default(true) | bool
+      register: _r_object_storage_api_route
+      retries: 3
+      delay: 10
+      until: _r_object_storage_api_route is not failed
+
+    - name: Discover existing object storage consumer namespaces
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+      loop: "{{ object_storage_consumer_credential_secrets | default([]) | map(attribute='namespace') | unique | list }}"
+      register: _r_object_storage_consumer_namespace_info
+      when: object_storage_consumer_credential_secrets | default([]) | length > 0
+
+    - name: Set existing object storage consumer namespace list
+      ansible.builtin.set_fact:
+        object_storage_existing_consumer_namespaces: >-
+          {{
+            _r_object_storage_consumer_namespace_info.results | default([])
+            | selectattr('resources', 'defined')
+            | selectattr('resources')
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Create object storage credentials in existing consumer namespaces
+      no_log: true
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ item.name }}"
+            namespace: "{{ item.namespace }}"
+          type: Opaque
+          stringData:
+            accesskey: "{{ object_storage_access_key_resolved }}"
+            secretkey: "{{ object_storage_secret_key_resolved }}"
+            endpoint: "{{ object_storage_endpoint_resolved }}"
+            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
+            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
+            connection: |
+              provider: AWS
+              region: {{ object_storage_region | default('us-east-1') }}
+              aws_access_key_id: {{ object_storage_access_key_resolved }}
+              aws_secret_access_key: {{ object_storage_secret_key_resolved }}
+              endpoint: {{ object_storage_endpoint_resolved }}
+              path_style: true
+      loop: >-
+        {{
+          object_storage_consumer_credential_secrets | default([])
+          | selectattr('namespace', 'in', object_storage_existing_consumer_namespaces | default([]))
+          | list
+        }}
+      register: _r_object_storage_consumer_secrets
+      retries: 3
+      delay: 10
+      until: _r_object_storage_consumer_secrets is not failed
+
+    - name: Create default-deny for object storage namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: default-deny
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            endpointSelector: {}
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Allow object storage ingress on SeaweedFS ports
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: allow-object-storage-ingress
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            endpointSelector: {}
+            ingress:
+              - fromEntities: [cluster]
+                toPorts:
+                  - ports:
+                      - { port: '8333', protocol: TCP }
+                      - { port: '8888', protocol: TCP }
+                      - { port: '9333', protocol: TCP }
+                      - { port: '8080', protocol: TCP }
+                      - { port: '18080', protocol: TCP }
+                      - { port: '18888', protocol: TCP }
+                      - { port: '19333', protocol: TCP }
+                      - { port: '9327', protocol: TCP }
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Create SeaweedFS ServiceMonitor
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: seaweedfs
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/instance: "{{ object_storage_release_name | default('seaweedfs') }}"
+            endpoints:
+              - port: metrics
+                interval: 30s
+      failed_when: false
+
+    - name: Display object storage summary
+      ansible.builtin.debug:
+        msg:
+          - '=========================================='
+          - '  SeaweedFS Object Storage Deployed'
+          - '=========================================='
+          - '  Chart: seaweedfs/seaweedfs {{ object_storage_chart_version | default("4.25.1") }}'
+          - '  Namespace: {{ object_storage_namespace_resolved }}'
+          - '  S3 API: {{ object_storage_endpoint_resolved }}'
+          - '  External S3: {{ object_storage_api_domain_resolved }}'
+          - '  Console: {{ object_storage_console_domain_resolved }}'
+          - '  Buckets: {{ object_storage_buckets | default([]) | length }} configured'
+          - '=========================================='

@@ -24,10 +24,10 @@
   set_fact:
     saved_secrets: "{{ saved_secrets | default({}) }}"
 
-- name: Generate MinIO credentials
+- name: Generate object storage credentials
   set_fact:
-    generated_minio_root_user: "{{ lookup('env', 'MINIO_ROOT_USER') | default(saved_secrets.minio_root_user | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
-    generated_minio_root_password: "{{ lookup('env', 'MINIO_ROOT_PASSWORD') | default(saved_secrets.minio_root_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
+    generated_object_storage_access_key: "{{ lookup('env', 'OBJECT_STORAGE_ACCESS_KEY') | default(saved_secrets.object_storage_access_key | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
+    generated_object_storage_secret_key: "{{ lookup('env', 'OBJECT_STORAGE_SECRET_KEY') | default(saved_secrets.object_storage_secret_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
 
 - name: Generate platform credentials
   set_fact:
@@ -54,8 +54,8 @@
 
 - name: Set unified secret variables for all roles
   set_fact:
-    minio_root_user: "{{ generated_minio_root_user }}"
-    minio_root_password: "{{ generated_minio_root_password }}"
+    object_storage_access_key: "{{ generated_object_storage_access_key }}"
+    object_storage_secret_key: "{{ generated_object_storage_secret_key }}"
     grafana_admin_user: "{{ generated_grafana_admin_user }}"
     grafana_admin_password: "{{ generated_grafana_admin_password }}"
     app_db_password: "{{ generated_app_db_password }}"
@@ -80,8 +80,8 @@
       ---
       # Auto-generated platform secrets - DO NOT COMMIT TO GIT
       # Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
-      minio_root_user: "{{ minio_root_user }}"
-      minio_root_password: "{{ minio_root_password }}"
+      object_storage_access_key: "{{ object_storage_access_key }}"
+      object_storage_secret_key: "{{ object_storage_secret_key }}"
       grafana_admin_user: "{{ grafana_admin_user }}"
       grafana_admin_password: "{{ grafana_admin_password }}"
       app_db_password: "{{ app_db_password }}"
@@ -121,8 +121,8 @@
       - "  Platform Secrets Generated"
       - "============================================"
       - "  Secrets file: {{ secrets_file }}"
-      - "  MinIO user: {{ minio_root_user }}"
-      - "  MinIO password: ****"
+      - "  Object storage user: {{ object_storage_access_key }}"
+      - "  Object storage password: ****"
       - "  Grafana user: {{ grafana_admin_user }}"
       - "  Grafana password: ****"
       - "  Dragonfly password: ****"

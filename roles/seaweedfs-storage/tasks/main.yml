@@ -1,0 +1,5 @@
+---
+- name: Deploy SeaweedFS object storage
+  ansible.builtin.import_role:
+    name: object-storage
+  when: object_storage_enabled | default(true) | bool

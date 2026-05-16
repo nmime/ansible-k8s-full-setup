@@ -24,13 +24,15 @@
 - cert-manager (automated TLS)
 - Gateway API (modern ingress)
 - HashiCorp Vault (secrets management)
-- MinIO (S3-compatible storage)
+- SeaweedFS (S3-compatible object storage)
 - VictoriaMetrics + Grafana (monitoring)
 - Loki + Promtail (logging)
 - Headscale VPN (WireGuard)
 - GitLab (Git + CI/CD + Registry)
 - ArgoCD (GitOps continuous delivery)
 - Elasticsearch (audit logs + compliance)
+
+Object storage note: RustFS was evaluated as an Apache-2.0 future/alternative backend, but SeaweedFS is selected for this release because RustFS Helm/app remain beta while SeaweedFS has a mature chart and live validation.
 
 **Optional Components** (install as needed):
 - PostgreSQL 18 HA (Percona Operator)
@@ -75,7 +77,7 @@ ansible-playbook -i inventory/hosts.yml site.yml
 2. Kubernetes cluster (HA, 3 CP + 2 workers)
 3. Core platform (Cilium, Vault, Gateway API, cert-manager)
 4. Monitoring (VictoriaMetrics, Grafana, Loki)
-5. Storage (MinIO S3)
+5. Storage (SeaweedFS S3)
 6. VPN (Headscale)
 7. Edge CDN (optional, if `GCORE_API_KEY` set)
 
@@ -150,7 +152,7 @@ APAC Edge   EU Edge    US Edge
 | **Gateway API** | v1.5 | Modern ingress (L7) |
 | **cert-manager** | v1.20 | Automated TLS (Let's Encrypt) |
 | **Vault** | v1.21 | Secrets management (HA Raft) |
-| **MinIO** | v5.4 | S3-compatible storage |
+| **SeaweedFS** | v5.4 | S3-compatible storage |
 | **VictoriaMetrics** | v1.133 | Metrics (faster than Prometheus) |
 | **Grafana** | v12.3 | Monitoring dashboards |
 | **Loki + Promtail** | v3.6 | Log aggregation |
@@ -280,7 +282,7 @@ kubectl get secret -n monitoring grafana-admin-credentials -o jsonpath='{.data.p
 - Gateway API Traffic
 - PostgreSQL Performance (if enabled)
 - MongoDB Performance (if enabled)
-- MinIO S3 Statistics
+- SeaweedFS S3 Statistics
 - Vault Metrics
 - Edge CDN Cache Hit Rate
 - Certificate Expiry
@@ -350,7 +352,7 @@ gitlab_edition: "ee"
 
 ## Backup & Restore
 
-**Automated backups** (every 6 hours to MinIO S3):
+**Automated backups** (every 6 hours to SeaweedFS S3):
 - PostgreSQL: pgBackRest (PITR)
 - MongoDB: PBM (point-in-time)
 - Vault: Raft snapshots
@@ -393,7 +395,7 @@ server_type: "cx42"
 install_cilium: true
 install_cert_manager: true
 install_vault: true
-install_minio: true
+install_object_storage: true
 install_monitoring: true
 install_vpn: true
 
