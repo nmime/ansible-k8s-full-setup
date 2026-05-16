@@ -46,10 +46,10 @@ all:
     vpn_enabled: true
 
     # ----------------------------------------
-    # Storage (MinIO)
+    # Storage (SeaweedFS object storage)
     # ----------------------------------------
-    minio_replicas: 4
-    minio_storage_size: 50Gi
+    object_storage_replicas: 4
+    object_storage_volume_size: 50Gi
 
     # ----------------------------------------
     # Secrets (Vault + ESO)

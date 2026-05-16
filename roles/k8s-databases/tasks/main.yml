@@ -97,8 +97,8 @@
       stringData:
         s3.conf: |
           [global]
-          repo2-s3-key={{ object_storage_access_key | default(minio_root_user) }}
-          repo2-s3-key-secret={{ object_storage_secret_key | default(minio_root_password) }}
+          repo2-s3-key={{ object_storage_access_key }}
+          repo2-s3-key-secret={{ object_storage_secret_key }}
   register: _r_create_pgbackrest_s3_credentials_secret
   retries: 3
   delay: 10
@@ -208,7 +208,7 @@
                 full: 0 3 * * 0
               s3:
                 bucket: backups
-                endpoint: "{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}"
+                endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
                 region: us-east-1
             configuration:
             - secret:
@@ -354,8 +354,8 @@
         name: object-storage-backup-credentials
         namespace: '{{ db_ns }}'
       stringData:
-        AWS_ACCESS_KEY_ID: '{{ object_storage_access_key | default(minio_root_user) }}'
-        AWS_SECRET_ACCESS_KEY: '{{ object_storage_secret_key | default(minio_root_password) }}'
+        AWS_ACCESS_KEY_ID: '{{ object_storage_access_key }}'
+        AWS_SECRET_ACCESS_KEY: '{{ object_storage_secret_key }}'
   register: _r_create_mongodb_backup_credentials_for_mi
   retries: 3
   delay: 10
@@ -404,11 +404,11 @@
           enabled: true
           image: percona/percona-backup-mongodb:2.13.0
           storages:
-            s3-minio:
+            s3-object-storage:
               type: s3
               s3:
                 bucket: backups
-                endpointUrl: "{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}"
+                endpointUrl: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
                 region: us-east-1
                 credentialsSecret: object-storage-backup-credentials
                 prefix: mongodb/{{ project_name | default('k8s') }}-mongo
@@ -421,13 +421,13 @@
             enabled: true
             schedule: '{{ backup_schedule | default(''0 2 * * *'') }}'
             keep: '{{ backup_retention_days | default(30) }}'
-            storageName: s3-minio
+            storageName: s3-object-storage
             compressionType: gzip
           - name: weekly-full-backup
             enabled: true
             schedule: 0 3 * * 0
             keep: 8
-            storageName: s3-minio
+            storageName: s3-object-storage
             compressionType: gzip
             type: physical
         pmm:

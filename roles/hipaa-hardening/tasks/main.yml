@@ -157,13 +157,13 @@
     msg:
     - 'HIPAA compliance mode ENABLED:'
     - '  - Vault TLS: {{ ''ENABLED'' if vault_tls.changed else ''Already configured'' }}'
-    - '  - object storage TLS: {{ ''ENABLED'' if minio_tls.changed else ''Already configured'' }}'
+    - '  - object storage TLS: {{ ''ENABLED'' if object_storage_tls.changed else ''Already configured'' }}'
     - '  - Log redaction: ConfigMap created (manual Promtail/Filebeat restart required)'
     - ''
     - 'Next steps:'
     - '  1. Verify services: kubectl get pods -A'
     - '  2. Test Vault HTTPS: curl https://vault.vault.svc:8200/v1/sys/health --cacert /path/to/ca.crt'
-    - "  3. Test SeaweedFS S3: mc alias set object-storage {{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }} <access-key> <secret-key>"
+    - "  3. Test SeaweedFS S3: aws --endpoint-url {{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }} s3api list-buckets"
     - '  4. Update client configs to use https:// URLs'
     - '  5. Restart Promtail/Filebeat to apply redaction'
   when: hipaa_compliance | default(false) | bool

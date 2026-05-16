@@ -9,15 +9,9 @@
         object_storage_endpoint_resolved: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333', true) }}"
         object_storage_console_domain_resolved: "{{ object_storage_console_domain | default(('seaweedfs.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 'seaweedfs.local', true) }}"
         object_storage_api_domain_resolved: "{{ object_storage_api_domain | default(('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local', true) }}"
-        object_storage_access_key_resolved: "{{ object_storage_access_key | default(minio_root_user | default('seaweedfsadmin', true), true) }}"
-        object_storage_secret_key_resolved: "{{ object_storage_secret_key | default(minio_root_password | default('seaweedfsadmin123456789', true), true) }}"
+        object_storage_access_key_resolved: "{{ object_storage_access_key | default('seaweedfsadmin', true) }}"
+        object_storage_secret_key_resolved: "{{ object_storage_secret_key | default('seaweedfsadmin123456789', true) }}"
 
-    - name: Set MinIO compatibility alias facts
-      ansible.builtin.set_fact:
-        minio_ns: "{{ object_storage_namespace_resolved }}"
-        minio_endpoint: "{{ object_storage_endpoint_resolved }}"
-        minio_root_user: "{{ object_storage_access_key_resolved }}"
-        minio_root_password: "{{ object_storage_secret_key_resolved }}"
 
     - name: Create object storage namespace
       kubernetes.core.k8s:
@@ -72,14 +66,12 @@
             admin_secret_access_key: "{{ object_storage_secret_key_resolved }}"
             AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
             AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
-            rootUser: "{{ object_storage_access_key_resolved }}"
-            rootPassword: "{{ object_storage_secret_key_resolved }}"
       register: _r_seaweedfs_s3_secret
       retries: 3
       delay: 10
       until: _r_seaweedfs_s3_secret is not failed
 
-    - name: Create compatibility object-storage credentials secrets
+    - name: Create object storage credentials secret
       no_log: true
       kubernetes.core.k8s:
         state: present
@@ -92,15 +84,6 @@
           type: Opaque
           stringData: "{{ item.stringData }}"
       loop:
-        - name: minio-root-credentials
-          namespace: "{{ object_storage_namespace_resolved }}"
-          stringData:
-            admin_access_key_id: "{{ object_storage_access_key_resolved }}"
-            admin_secret_access_key: "{{ object_storage_secret_key_resolved }}"
-            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
-            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
-            rootUser: "{{ object_storage_access_key_resolved }}"
-            rootPassword: "{{ object_storage_secret_key_resolved }}"
         - name: object-storage-credentials
           namespace: "{{ object_storage_namespace_resolved }}"
           stringData:
@@ -149,7 +132,7 @@
               - name: data
                 type: persistentVolumeClaim
                 storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
-                size: "{{ object_storage_volume_size | default(minio_storage_size | default('50Gi')) }}"
+                size: "{{ object_storage_volume_size | default('50Gi') }}"
                 maxVolumes: 0
             idx:
               type: persistentVolumeClaim
@@ -177,6 +160,25 @@
       retries: 3
       delay: 10
       until: _r_install_seaweedfs is not failed
+
+    - name: Restart SeaweedFS filer when S3 auth config changes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ns="{{ object_storage_namespace_resolved }}"
+        release="{{ object_storage_release_name | default('seaweedfs') }}"
+        restarted=0
+        for workload in "statefulset/${release}-filer" "deployment/${release}-filer"; do
+          if kubectl -n "$ns" get "$workload" >/dev/null 2>&1; then
+            kubectl -n "$ns" rollout restart "$workload"
+            restarted=1
+          fi
+        done
+        echo "restarted=${restarted}"
+      args:
+        executable: /bin/bash
+      register: _r_restart_seaweedfs_filer_for_s3_config
+      changed_when: "'restarted=1' in _r_restart_seaweedfs_filer_for_s3_config.stdout"
+      when: _r_seaweedfs_s3_secret is changed
 
     - name: Wait for SeaweedFS master/volume/filer workloads only
       ansible.builtin.shell: |
@@ -227,15 +229,25 @@
               spec:
                 restartPolicy: OnFailure
                 containers:
-                  - name: mc
-                    image: minio/mc:RELEASE.2024-10-02T08-27-28Z
+                  - name: aws-cli
+                    image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:latest') }}"
                     command: ["/bin/sh", "-ec"]
                     args:
                       - |
-                        mc alias set object-storage "${OBJECT_STORAGE_ENDPOINT}" "${AWS_ACCESS_KEY_ID}" "${AWS_SECRET_ACCESS_KEY}"
                         {% for bucket in object_storage_buckets | default([]) %}
-                        mc mb -p "object-storage/{{ bucket.name | default(bucket, true) }}" || true
+                        bucket="{{ bucket.name | default(bucket, true) }}"
+                        if ! aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3api head-bucket --bucket "${bucket}" >/dev/null 2>&1; then
+                          aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3api create-bucket --bucket "${bucket}"
+                        fi
                         {% endfor %}
+                        smoke_bucket="{{ (object_storage_buckets | default(['backups']) | first).name | default((object_storage_buckets | default(['backups']) | first), true) }}"
+                        printf 'object-storage-smoke' >/tmp/object-storage-smoke.txt
+                        aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 cp /tmp/object-storage-smoke.txt "s3://${smoke_bucket}/smoke/object-storage-smoke.txt"
+                        aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 cp "s3://${smoke_bucket}/smoke/object-storage-smoke.txt" /tmp/object-storage-smoke-read.txt
+                        smoke_read=''
+                        IFS= read -r smoke_read </tmp/object-storage-smoke-read.txt || true
+                        test "${smoke_read}" = 'object-storage-smoke'
+                        aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 rm "s3://${smoke_bucket}/smoke/object-storage-smoke.txt"
                     env:
                       - name: OBJECT_STORAGE_ENDPOINT
                         value: "{{ object_storage_endpoint_resolved }}"
@@ -249,6 +261,10 @@
                           secretKeyRef:
                             name: seaweedfs-s3-config
                             key: AWS_SECRET_ACCESS_KEY
+                      - name: AWS_DEFAULT_REGION
+                        value: "{{ object_storage_region | default('us-east-1') }}"
+                      - name: AWS_EC2_METADATA_DISABLED
+                        value: "true"
       register: _r_object_storage_bucket_bootstrap
       retries: 3
       delay: 10
@@ -391,8 +407,6 @@
             endpoint: "{{ object_storage_endpoint_resolved }}"
             AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
             AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
-            rootUser: "{{ object_storage_access_key_resolved }}"
-            rootPassword: "{{ object_storage_secret_key_resolved }}"
             connection: |
               provider: AWS
               region: {{ object_storage_region | default('us-east-1') }}

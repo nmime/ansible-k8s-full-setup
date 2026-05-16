@@ -48,9 +48,9 @@
         connection: |
           provider: AWS
           region: us-east-1
-          aws_access_key_id: "{{ object_storage_access_key | default(minio_root_user) }}"
-          aws_secret_access_key: "{{ object_storage_secret_key | default(minio_root_password) }}"
-          endpoint: "{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}"
+          aws_access_key_id: "{{ object_storage_access_key }}"
+          aws_secret_access_key: "{{ object_storage_secret_key }}"
+          endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
           path_style: true
   register: _r_create_s3_object_storage_secret_for_gitl
   retries: 3
@@ -67,7 +67,7 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ object_storage_access_key | default(minio_root_user) }}\"\n  secretkey: \"{{ object_storage_secret_key | default(minio_root_password) }}\"\n  region: us-east-1\n  regionendpoint: \"{{ object_storage_endpoint | default(minio_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333')) }}\"\
+        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ object_storage_access_key }}\"\n  secretkey: \"{{ object_storage_secret_key }}\"\n  region: us-east-1\n  regionendpoint: \"{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}\"\
           \n  v4auth: true\n  pathstyle: true\n  rootdirectory: /registry\n"
   register: _r_create_registry_storage_secret
   retries: 3
@@ -267,8 +267,6 @@
         enabled: false
       gitlab-runner:
         install: false
-      minio:
-        install: false
       shared-secrets:
         enabled: true
         rbac:
@@ -465,8 +463,8 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        accesskey: '{{ object_storage_access_key | default(minio_root_user) }}'
-        secretkey: '{{ object_storage_secret_key | default(minio_root_password) }}'
+        accesskey: '{{ object_storage_access_key }}'
+        secretkey: '{{ object_storage_secret_key }}'
   register: _r_create_s3_cache_secret_for_gitlab_runner
   retries: 3
   delay: 10

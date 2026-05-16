@@ -1,6 +1,0 @@
----
-# Compatibility wrapper: MinIO has been replaced by SeaweedFS S3-compatible object storage.
-- name: Deploy object storage via SeaweedFS compatibility wrapper
-  ansible.builtin.import_role:
-    name: object-storage
-  when: object_storage_enabled | default(true) | bool

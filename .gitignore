@@ -1,6 +1,6 @@
 # Platform secrets (auto-generated credentials)
 .platform-secrets.yml
-.minio-credentials
+.object-storage-credentials
 
 # GitLab license (generated keys and license files)
 .gitlab-license/

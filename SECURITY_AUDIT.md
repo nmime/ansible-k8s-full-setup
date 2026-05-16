@@ -28,7 +28,7 @@ Repository: ansible-k8s-full-setup
 - `k8s-databases` (pgbackrest S3, PMM, MongoDB backup, GitLab PG, app PG)
 - `k8s-gitops` (ArgoCD repository credentials)
 - `k8s-observability` (Loki S3, PMM admin)
-- `minio-storage` (MinIO credentials for GitLab namespace)
+- `object-storage-storage` (SeaweedFS object storage credentials for GitLab namespace)
 - `postal` (signing key, MariaDB credentials, config secret)
 
 **Fix**: Added `no_log: true` to all affected tasks.
@@ -43,7 +43,7 @@ All passwords are generated securely using Ansible password lookups with high-en
 
 - Elasticsearch: TLS with generated certificates
 - PostgreSQL: TLS-capable connections
-- MinIO: HTTPS through cert-manager
+- SeaweedFS object storage: HTTPS through cert-manager
 - GitLab: HTTPS/TLS ingress
 - External ingress: Gateway API with cert-manager Let's Encrypt
 
