@@ -160,7 +160,7 @@ APAC Edge   EU Edge    US Edge
 | **MetalLB** | v0.15 | Bare-metal LB |
 | **GitLab** | v18.11.3 | Git + CI/CD + Registry |
 | **ArgoCD** | v3.4.2 | GitOps continuous delivery |
-| **Elasticsearch** | v8.x | Audit logs + compliance |
+| **Elasticsearch** | v9.4.1 | Audit logs + compliance |
 
 ### Optional (Install as Needed)
 
@@ -168,8 +168,8 @@ APAC Edge   EU Edge    US Edge
 |-----------|---------|-------------|--------|
 | **PostgreSQL 18** | Percona 2.8 | `install_postgresql: true` | HA database with pgBackRest |
 | **MongoDB 8.0** | Percona 1.22 | `install_mongodb: true` | HA NoSQL with PBM backups |
-| **Dragonfly** | v1.37 | `install_dragonfly: true` | Redis-compatible (25x faster) |
-| **Temporal** | v1.29 | `install_temporal: true` | Workflow orchestration |
+| **Dragonfly** | v1.38.1 | `install_dragonfly: true` | Redis-compatible (25x faster) |
+| **Temporal** | v1.31.0 | `install_temporal: true` | Workflow orchestration |
 | **PMM** | v3 | Auto-enabled with DBs | Percona database monitoring |
 
 **Note**: PMM is auto-enabled when PostgreSQL, MongoDB, or Dragonfly is installed.
@@ -311,9 +311,9 @@ nodes for control planes and workers.
 ```yaml
 control_plane_count: 1
 worker_count: 1
-server_type: "cx22"  # 2 vCPU, 4GB RAM
-control_server_type: "cx22"
-bastion_server_type: "cx11"  # 1 vCPU, 2GB
+server_type: "cx23"  # 2 vCPU, 4GB RAM
+control_server_type: "cx23"
+bastion_server_type: "cx23"  # 2 vCPU, 4GB RAM
 edge_enabled: false
 ```
 **Use case**: Testing, dev environments
