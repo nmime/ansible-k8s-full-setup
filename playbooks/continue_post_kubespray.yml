@@ -44,9 +44,10 @@
       ansible.builtin.import_role:
         name: k8s-secrets
 
-    - name: Deploy MinIO S3 Storage
+    - name: Deploy SeaweedFS Object Storage
       ansible.builtin.import_role:
-        name: minio-storage
+        name: object-storage
+      when: object_storage_enabled | default(true) | bool
 
     - name: Deploy Observability Stack
       ansible.builtin.import_role:
