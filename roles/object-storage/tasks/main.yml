@@ -230,7 +230,7 @@
                 restartPolicy: OnFailure
                 containers:
                   - name: aws-cli
-                    image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:latest') }}"
+                    image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
                     command: ["/bin/sh", "-ec"]
                     args:
                       - |

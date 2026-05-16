@@ -6,7 +6,7 @@
     grafana_chart_version: 10.5.15
     grafana_domain: grafana.{{ domain }}
     vm_retention: '{{ metrics_retention | default(''30d'') }}'
-    vm_storage_size: '{{ metrics_storage | default(''50Gi'') }}'
+    vm_storage_size: '{{ metrics_storage | default(''100Gi'') }}'
     loki_retention: '{{ logging_retention | default(''14d'') }}'
     vm_replicas: '{{ (2 if tier in [''medium'', ''production''] else 1) | int }}'
     grafana_replicas: '{{ 2 if tier == ''production'' else 1 }}'
@@ -103,8 +103,8 @@
                     storage: '{{ vm_storage_size }}'
           resources:
             requests:
-              cpu: 50m
-              memory: 256Mi
+              cpu: 100m
+              memory: 512Mi
             limits:
               cpu: 1000m
               memory: 2Gi
@@ -113,8 +113,8 @@
           cacheMountPath: /cache
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 100m
+              memory: 256Mi
             limits:
               cpu: 500m
               memory: 1Gi
@@ -122,8 +122,8 @@
           replicaCount: '{{ vm_replicas | int }}'
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 100m
+              memory: 256Mi
             limits:
               cpu: 500m
               memory: 512Mi
@@ -152,8 +152,8 @@
                   storage: '{{ vm_storage_size }}'
         resources:
           requests:
-            cpu: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
-            memory: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''256Mi'' }}'
+            cpu: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
+            memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
           limits:
             cpu: 1000m
             memory: 2Gi
@@ -179,8 +179,8 @@
             + ''.svc:8429/api/v1/write'' }}'
         resources:
           requests:
-            cpu: '{{ ''25m'' if tier in [''minimal'', ''small''] else ''50m'' }}'
-            memory: '{{ ''64Mi'' if tier in [''minimal'', ''small''] else ''128Mi'' }}'
+            cpu: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
+            memory: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''256Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
@@ -262,8 +262,8 @@
         replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
-            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
+            cpu: '{{ ''50m'' if tier == ''minimal'' else ''100m'' }}'
+            memory: '{{ ''128Mi'' if tier == ''minimal'' else ''256Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
@@ -278,7 +278,7 @@
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ ''5Gi'' if tier == ''minimal'' else ''10Gi'' }}'
+          size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       backend:
         replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
@@ -291,7 +291,7 @@
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ ''5Gi'' if tier == ''minimal'' else ''10Gi'' }}'
+          size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       singleBinary:
         replicas: '{{ 1 if tier in [''minimal'', ''small''] else 0 | int }}'
@@ -304,7 +304,7 @@
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ ''5Gi'' if tier == ''minimal'' else ''10Gi'' }}'
+          size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       gateway:
         enabled: true
@@ -337,8 +337,8 @@
         - url: http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local/loki/api/v1/push
       resources:
         requests:
-          cpu: 10m
-          memory: 32Mi
+          cpu: 50m
+          memory: 64Mi
         limits:
           cpu: 200m
           memory: 256Mi
@@ -375,7 +375,7 @@
       adminPassword: '{{ grafana_admin_password }}'
       persistence:
         enabled: true
-        size: 5Gi
+        size: 10Gi
         storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       datasources:
         datasources.yaml:
@@ -580,7 +580,7 @@
         storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
         resources:
           requests:
-            storage: '{{ ''10Gi'' if tier in [''minimal'', ''small''] else ''20Gi'' }}'
+            storage: '{{ ''20Gi'' if tier in [''minimal'', ''small''] else ''50Gi'' }}'
   register: _r_create_pmm_server_pvc
   retries: 3
   delay: 10
@@ -1141,11 +1141,11 @@
                 name: metrics
               resources:
                 requests:
-                  cpu: 10m
-                  memory: 32Mi
-                limits:
-                  cpu: 100m
+                  cpu: 50m
                   memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
   when: hetzner_metrics_enabled | default(true) | bool
   register: _r_deploy_hetzner_exporter
   retries: 3
@@ -1240,7 +1240,7 @@
             restartPolicy: OnFailure
             containers:
             - name: aws-cli
-              image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:latest') }}"
+              image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
               command:
               - sh
               - -c
@@ -1311,33 +1311,33 @@
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ tempo_storage_size | default(''5Gi'') }}'
+          size: '{{ tempo_storage_size | default(''10Gi'') }}'
           storageClass: '{{ storage_class }}'
       querier:
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
-          limits:
-            cpu: 200m
+            cpu: 100m
             memory: 256Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
       queryFrontend:
         resources:
           requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 200m
+            cpu: 100m
             memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 256Mi
       gateway:
         enabled: true
         resources:
           requests:
-            cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 200m
+            cpu: 100m
             memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 256Mi
   when: tracing_enabled | default(false) | bool
   register: _r_install_tempo
   retries: 3
@@ -1401,11 +1401,11 @@
               - otlp
       resources:
         requests:
-          cpu: 50m
-          memory: 128Mi
-        limits:
-          cpu: 250m
+          cpu: 100m
           memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
   when: otel_collector_enabled | default(false) | bool
   register: _r_install_otel_collector
   retries: 3

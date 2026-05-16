@@ -1,13 +1,13 @@
 ---
 apm_namespace: elasticsearch
-apm_version: "9.3.2"
+apm_version: "9.4.1"
 apm_image: "docker.elastic.co/apm/apm-server"
 apm_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 
-apm_memory_req: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
-apm_memory_lim: "{{ '1Gi'  if tier in ['medium', 'production'] else '512Mi' }}"
-apm_cpu_req:    "{{ '250m' if tier in ['medium', 'production'] else '50m' }}"
-apm_cpu_lim:    "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
+apm_memory_req: "{{ '768Mi' if tier in ['medium', 'production'] else '384Mi' }}"
+apm_memory_lim: "{{ '1536Mi' if tier in ['medium', 'production'] else '768Mi' }}"
+apm_cpu_req:    "{{ '500m' if tier in ['medium', 'production'] else '100m' }}"
+apm_cpu_lim:    "{{ '1500m' if tier in ['medium', 'production'] else '750m' }}"
 
 apm_es_host: "elasticsearch.elasticsearch.svc.cluster.local"
 apm_es_port: 9200

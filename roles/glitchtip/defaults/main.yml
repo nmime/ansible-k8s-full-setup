@@ -10,18 +10,18 @@ glitchtip_domain: "glitchtip.{{ domain }}"
 
 # Web replicas - tier-based (worker is embedded in web by default)
 glitchtip_web_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-glitchtip_web_cpu_request: "{{ '200m' if tier in ['medium', 'production'] else '100m' }}"
-glitchtip_web_memory_request: "{{ '512Mi' if tier in ['medium', 'production'] else '256Mi' }}"
+glitchtip_web_cpu_request: "{{ '300m' if tier in ['medium', 'production'] else '100m' }}"
+glitchtip_web_memory_request: "{{ '768Mi' if tier in ['medium', 'production'] else '384Mi' }}"
 glitchtip_web_cpu_limit: "{{ '1000m' if tier in ['medium', 'production'] else '500m' }}"
-glitchtip_web_memory_limit: "{{ '1Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+glitchtip_web_memory_limit: "{{ '1536Mi' if tier in ['medium', 'production'] else '768Mi' }}"
 
 # Dedicated worker (in addition to embedded) for medium/production
 glitchtip_worker_enabled: "{{ true if tier in ['medium', 'production'] else false }}"
-glitchtip_worker_replicas: "{{ 2 if tier == 'production' else 1 }}"
-glitchtip_worker_cpu_request: "100m"
-glitchtip_worker_memory_request: "350Mi"
-glitchtip_worker_cpu_limit: "900m"
-glitchtip_worker_memory_limit: "768Mi"
+glitchtip_worker_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
+glitchtip_worker_cpu_request: "200m"
+glitchtip_worker_memory_request: "512Mi"
+glitchtip_worker_cpu_limit: "1000m"
+glitchtip_worker_memory_limit: "1Gi"
 
 # Database (reuses existing Percona PG cluster)
 glitchtip_db_name: "glitchtip"

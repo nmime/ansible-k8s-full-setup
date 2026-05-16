@@ -1,11 +1,11 @@
 ---
 dragonfly_namespace: dragonfly
 dragonfly_operator_version: "v1.5.0"
-dragonfly_image_version: "v1.37.2"
+dragonfly_image_version: "v1.38.1"
 dragonfly_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-dragonfly_memory_request: "{{ '512Mi' if tier in ['medium', 'production'] else '128Mi' }}"
-dragonfly_memory_limit: "{{ '1Gi' if tier in ['medium', 'production'] else '256Mi' }}"
-dragonfly_cpu_request: "{{ '500m' if tier in ['medium', 'production'] else '50m' }}"
-dragonfly_cpu_limit: "{{ '1000m' if tier in ['medium', 'production'] else '200m' }}"
-dragonfly_snapshot_storage: "{{ '10Gi' if tier in ['medium', 'production'] else '5Gi' }}"
+dragonfly_memory_request: "{{ '1Gi' if tier in ['medium', 'production'] else '256Mi' }}"
+dragonfly_memory_limit: "{{ '2Gi' if tier in ['medium', 'production'] else '512Mi' }}"
+dragonfly_cpu_request: "{{ '750m' if tier in ['medium', 'production'] else '100m' }}"
+dragonfly_cpu_limit: "{{ '1500m' if tier in ['medium', 'production'] else '500m' }}"
+dragonfly_snapshot_storage: "{{ '20Gi' if tier in ['medium', 'production'] else '10Gi' }}"
 dragonfly_snapshot_cron: "*/30 * * * *"

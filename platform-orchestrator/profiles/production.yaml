@@ -24,12 +24,12 @@ infrastructure:
 
   control_plane:
     count: 3
-    type: cx33
+    type: cx43
     schedulable: false
 
   workers:
     count: 3
-    type: cx33
+    type: cx43
 
 # ---------------------------------------------
 # Network
@@ -54,7 +54,7 @@ network:
 # Kubernetes
 # ---------------------------------------------
 kubernetes:
-  version: v1.34.3
+  version: v1.35.4
   cni: cilium
   ha_control_plane: true
   features:
@@ -70,7 +70,7 @@ storage:
   enabled: true
   mode: distributed
   replicas: 4
-  size_per_replica: 100Gi
+  size_per_replica: 150Gi
 
 # ---------------------------------------------
 # Secrets
@@ -79,7 +79,7 @@ secrets:
   enabled: true
   vault:
     replicas: 3
-    storage_size: 10Gi
+    storage_size: 20Gi
   eso:
     enabled: true
 
@@ -90,7 +90,7 @@ databases:
   postgresql:
     enabled: true
     replicas: 3
-    storage_size: 50Gi
+    storage_size: 100Gi
 
 # ---------------------------------------------
 # GitLab
@@ -118,7 +118,7 @@ observability:
   metrics:
     enabled: true
     retention: 30d
-    storage_size: 100Gi
+    storage_size: 150Gi
 
   logging:
     enabled: true
