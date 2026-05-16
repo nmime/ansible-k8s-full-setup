@@ -2,7 +2,11 @@
 set -e
 PROJECT=${1:-k8s}
 echo "=== Tearing down project: $PROJECT ==="
-set -a; . ${HOME}/.env; set +a
+if [ -f "${HOME}/.env" ]; then
+  set -a; . "${HOME}/.env"; set +a
+else
+  echo "  No ${HOME}/.env found; continuing with existing environment"
+fi
 
 hcloud load-balancer delete ${PROJECT}-lb 2>/dev/null || echo "  No LB"
 for s in $(hcloud server list -o noheader -o columns=name | grep "^${PROJECT}-"); do
@@ -22,6 +26,6 @@ for sub in $(hcloud network describe ${PROJECT}-network -o json 2>/dev/null | jq
   hcloud network remove-subnet ${PROJECT}-network --ip-range "$sub" 2>/dev/null || true
 done
 hcloud network delete ${PROJECT}-network 2>/dev/null || true
-rm -f /root/ansible-k8s-full-setup-fix/playbooks/${PROJECT}-infra-facts.yml
+rm -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/playbooks/${PROJECT}-infra-facts.yml"
 rm -rf /root/.kube/config
 echo "=== Teardown complete: $PROJECT ==="

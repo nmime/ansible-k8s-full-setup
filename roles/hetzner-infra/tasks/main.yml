@@ -776,6 +776,7 @@
   ansible.builtin.command:
     cmd: hcloud zone describe {{ domain }} -o json
   register: dns_zone_check
+  when: hetzner_manage_dns | default(true) | bool
   changed_when: false
   failed_when: false
 
@@ -786,17 +787,21 @@
       --name {{ domain }}
       --mode primary
   register: dns_zone_create
-  when: dns_zone_check.rc != 0
+  when:
+    - hetzner_manage_dns | default(true) | bool
+    - dns_zone_check.rc != 0
   failed_when: false
 
 - name: Set DNS zone available flag
   set_fact:
-    dns_zone_available: "{{ dns_zone_check.rc == 0 or (dns_zone_create.rc | default(1) == 0) }}"
+    dns_zone_available: "{{ hetzner_manage_dns | default(true) | bool and (dns_zone_check.rc | default(1) == 0 or (dns_zone_create.rc | default(1) == 0)) }}"
 
 - name: Warn if DNS zone creation failed
   debug:
     msg: "WARNING: Could not create Hetzner DNS zone for {{ domain }} ({{ dns_zone_create.stderr | default('skipped') | regex_replace('\n', ' ') }}). Configure DNS manually."
-  when: not dns_zone_available | bool
+  when:
+    - hetzner_manage_dns | default(true) | bool
+    - not dns_zone_available | bool
 
 - name: Create DNS wildcard A record (*.domain -> LB)
   ansible.builtin.command:
@@ -808,7 +813,9 @@
   register: dns_wildcard
   changed_when: dns_wildcard.rc == 0
   failed_when: dns_wildcard.rc != 0 and 'already' not in (dns_wildcard.stderr | default('')) and 'exists' not in (dns_wildcard.stderr | default(''))
-  when: dns_zone_available | bool
+  when:
+    - hetzner_manage_dns | default(true) | bool
+    - dns_zone_available | bool
 
 - name: Create DNS root A record (domain -> LB)
   ansible.builtin.command:
@@ -820,7 +827,9 @@
   register: dns_root
   changed_when: dns_root.rc == 0
   failed_when: dns_root.rc != 0 and 'already' not in (dns_root.stderr | default('')) and 'exists' not in (dns_root.stderr | default(''))
-  when: dns_zone_available | bool
+  when:
+    - hetzner_manage_dns | default(true) | bool
+    - dns_zone_available | bool
 
 - name: Create DNS VPN A record (vpn.domain -> bastion)
   ansible.builtin.command:
@@ -832,7 +841,9 @@
   register: dns_vpn
   changed_when: dns_vpn.rc == 0
   failed_when: dns_vpn.rc != 0 and 'already' not in (dns_vpn.stderr | default('')) and 'exists' not in (dns_vpn.stderr | default(''))
-  when: dns_zone_available | bool
+  when:
+    - hetzner_manage_dns | default(true) | bool
+    - dns_zone_available | bool
 
 # ============================================
 # Write infrastructure state

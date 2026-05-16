@@ -1,0 +1,66 @@
+---
+# SeaweedFS-backed S3-compatible object storage.
+object_storage_enabled: true
+object_storage_namespace: storage
+object_storage_release_name: seaweedfs
+object_storage_chart_repo_name: seaweedfs
+object_storage_chart_repo_url: https://seaweedfs.github.io/seaweedfs/helm
+object_storage_chart_ref: seaweedfs/seaweedfs
+object_storage_chart_version: "4.25.1"
+
+object_storage_storage_class: "{{ storage_class | default('hcloud-volumes') }}"
+object_storage_master_size: 2Gi
+object_storage_volume_size: 50Gi
+object_storage_idx_size: 2Gi
+object_storage_filer_size: 5Gi
+object_storage_replicas: "{{ 3 if tier | default('medium') in ['medium', 'production'] else 1 }}"
+object_storage_volume_replicas: "{{ 3 if tier | default('medium') in ['medium', 'production'] else 1 }}"
+object_storage_filer_replicas: "{{ 2 if tier | default('medium') in ['medium', 'production'] else 1 }}"
+
+object_storage_endpoint_hostport: "seaweedfs-filer.{{ object_storage_namespace | default('storage') }}.svc.cluster.local:8333"
+object_storage_endpoint: "http://{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+object_storage_console_domain: "{{ ('seaweedfs.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 'seaweedfs.local' }}"
+object_storage_api_domain: "{{ ('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local' }}"
+object_storage_region: us-east-1
+# Official AWS CLI v2 container used for neutral S3 bootstrap/smoke jobs.
+# The docker.io amazon/aws-cli repository publishes latest/versioned tags; tag "2" is not published.
+object_storage_aws_cli_image: amazon/aws-cli:latest
+
+# Safe static defaults are intentionally non-production; generate-secrets overrides and persists real values.
+object_storage_access_key: "{{ generated_object_storage_access_key | default('seaweedfsadmin') }}"
+object_storage_secret_key: "{{ generated_object_storage_secret_key | default('seaweedfsadmin123456789') }}"
+
+
+object_storage_create_external_routes: true
+object_storage_network_policy_enabled: false
+
+# Optional object storage credentials for consumer namespaces. Secrets are only
+# created in namespaces that already exist so the role can be validated or used
+# independently before GitLab/monitoring are installed.
+object_storage_consumer_credential_secrets:
+  - name: object-storage-credentials
+    namespace: gitlab
+  - name: object-storage-credentials
+    namespace: monitoring
+
+# Buckets are representative defaults for current S3-compatible consumers. String
+# entries and dict entries with `name` are both supported by the bootstrap job.
+object_storage_buckets:
+  - gitlab-artifacts
+  - gitlab-uploads
+  - gitlab-packages
+  - gitlab-registry
+  - gitlab-lfs
+  - gitlab-terraform-state
+  - gitlab-ci-secure-files
+  - gitlab-dependency-proxy
+  - gitlab-pages
+  - gitlab-backups
+  - gitlab-tmp
+  - loki-chunks
+  - loki-ruler
+  - loki-admin
+  - backups
+  - velero
+  - tempo-traces
+  - name: "{{ app_name | default('myapp') }}-uploads"

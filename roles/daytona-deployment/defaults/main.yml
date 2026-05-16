@@ -33,6 +33,6 @@ daytona_dependencies:
   postgresql: false
   redis: false
   harbor: false
-  minio: false
+  objectStorage: false
   dex: false
   pgadmin4: false

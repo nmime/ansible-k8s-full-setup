@@ -21,8 +21,6 @@ redis:
   enabled: {{ daytona_dependencies.redis | bool | to_json }}
 harbor:
   enabled: {{ daytona_dependencies.harbor | bool | to_json }}
-minio:
-  enabled: {{ daytona_dependencies.minio | bool | to_json }}
 dex:
   enabled: {{ daytona_dependencies.dex | bool | to_json }}
 pgadmin4:

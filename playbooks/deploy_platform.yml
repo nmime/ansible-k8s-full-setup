@@ -112,10 +112,11 @@
         name: k8s-secrets
       tags: [secrets, vault]
 
-    - name: Deploy MinIO S3 Storage
+    - name: Deploy SeaweedFS Object Storage
       ansible.builtin.import_role:
-        name: minio-storage
-      tags: [storage, minio]
+        name: object-storage
+      when: object_storage_enabled | default(true) | bool
+      tags: [storage, object-storage, seaweedfs]
 
     - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
       ansible.builtin.import_role:
@@ -207,7 +208,7 @@
           - "  - ArgoCD: https://argocd.{{ domain }}"
           - "  - Grafana: https://grafana.{{ domain }}"
           - "  - VictoriaMetrics + Loki (Observability)"
-          - "  - MinIO S3: https://minio.{{ domain }}"
+          - "  - SeaweedFS S3: https://s3.{{ domain }}"
           - "  - Vault: https://vault.{{ domain }}"
           - "  - PostgreSQL HA Cluster"
           - "  - KEDA (Event Autoscaling)"

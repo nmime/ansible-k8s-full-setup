@@ -209,8 +209,8 @@
         namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
-        S3_ACCESS_KEY: '{{ minio_root_user }}'
-        S3_SECRET_KEY: '{{ minio_root_password }}'
+        S3_ACCESS_KEY: '{{ object_storage_access_key }}'
+        S3_SECRET_KEY: '{{ object_storage_secret_key }}'
   register: _r_create_loki_s3_credentials_secret
   retries: 3
   delay: 10
@@ -235,10 +235,10 @@
         storage:
           type: s3
           s3:
-            endpoint: http://minio.storage.svc.cluster.local:9000
+            endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
             bucketnames: loki-chunks
-            access_key_id: '{{ minio_root_user }}'
-            secret_access_key: '{{ minio_root_password }}'
+            access_key_id: '{{ object_storage_access_key }}'
+            secret_access_key: '{{ object_storage_secret_key }}'
             s3ForcePathStyle: true
             insecure: true
           bucketNames:
@@ -314,8 +314,6 @@
       chunksCache:
         enabled: false
       resultsCache:
-        enabled: false
-      minio:
         enabled: false
       test:
         enabled: false
@@ -1218,15 +1216,15 @@
         namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
-        S3_ACCESS_KEY: '{{ minio_root_user }}'
-        S3_SECRET_KEY: '{{ minio_root_password }}'
+        S3_ACCESS_KEY: '{{ object_storage_access_key }}'
+        S3_SECRET_KEY: '{{ object_storage_secret_key }}'
   when: tracing_enabled | default(false) | bool
   no_log: true
   register: _r_create_tempo_s3_secret
   retries: 3
   delay: 10
   until: _r_create_tempo_s3_secret is not failed
-- name: Create Tempo MinIO bucket
+- name: Create Tempo object storage bucket
   kubernetes.core.k8s:
     state: present
     definition:
@@ -1241,27 +1239,30 @@
           spec:
             restartPolicy: OnFailure
             containers:
-            - name: mc
-              image: minio/mc:RELEASE.2024-10-02T08-27-28Z
+            - name: aws-cli
+              image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:latest') }}"
               command:
               - sh
               - -c
-              - 'mc alias set minio http://minio.storage.svc.cluster.local:9000 $MINIO_USER $MINIO_PASS
-
-                mc mb -p minio/tempo-traces
-
-                '
+              - |-
+                if ! aws --endpoint-url {{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }} s3api head-bucket --bucket tempo-traces >/dev/null 2>&1; then
+                  aws --endpoint-url {{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }} s3api create-bucket --bucket tempo-traces
+                fi
               env:
-              - name: MINIO_USER
+              - name: AWS_ACCESS_KEY_ID
                 valueFrom:
                   secretKeyRef:
-                    name: minio-root-credentials
-                    key: rootUser
-              - name: MINIO_PASS
+                    name: seaweedfs-s3-config
+                    key: AWS_ACCESS_KEY_ID
+              - name: AWS_SECRET_ACCESS_KEY
                 valueFrom:
                   secretKeyRef:
-                    name: minio-root-credentials
-                    key: rootPassword
+                    name: seaweedfs-s3-config
+                    key: AWS_SECRET_ACCESS_KEY
+              - name: AWS_DEFAULT_REGION
+                value: us-east-1
+              - name: AWS_EC2_METADATA_DISABLED
+                value: "true"
   when: tracing_enabled | default(false) | bool
   register: _r_create_tempo_bucket
   retries: 3
@@ -1283,9 +1284,9 @@
           backend: s3
           s3:
             bucket: tempo-traces
-            endpoint: minio.storage.svc.cluster.local:9000
-            access_key: '{{ minio_root_user }}'
-            secret_key: '{{ minio_root_password }}'
+            endpoint: "{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+            access_key: '{{ object_storage_access_key }}'
+            secret_key: '{{ object_storage_secret_key }}'
             insecure: true
       compactor:
         config:

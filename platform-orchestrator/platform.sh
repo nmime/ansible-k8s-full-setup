@@ -94,7 +94,7 @@ deploy_component() {
     dns)           deploy_dns ;;
     cluster)       run_playbook --tags cluster 2>&1 | tee -a "${LOG_DIR}/cluster.log" ;;
     tls)           run_playbook --tags tls 2>&1 | tee -a "${LOG_DIR}/tls.log" ;;
-    minio)         run_playbook --tags storage 2>&1 | tee -a "${LOG_DIR}/minio.log" ;;
+    object-storage) run_playbook --tags storage,object-storage,seaweedfs 2>&1 | tee -a "${LOG_DIR}/object-storage.log" ;;
     secrets)       run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/secrets.log" ;;
     databases)     run_playbook --tags databases 2>&1 | tee -a "${LOG_DIR}/databases.log" ;;
     gitlab)        run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab.log" ;;
@@ -147,7 +147,7 @@ app IN 3600 A ${ip}"
   is_enabled '.gitlab.enabled' && records+=$'\n'"gitlab IN 3600 A ${ip}"$'\n'"registry IN 3600 A ${ip}"
   is_enabled '.gitops.enabled' && records+=$'\n'"argocd IN 3600 A ${ip}"
   is_enabled '.observability.grafana.enabled' && records+=$'\n'"grafana IN 3600 A ${ip}"
-  is_enabled '.storage.enabled' && records+=$'\n'"minio IN 3600 A ${ip}"$'\n'"s3 IN 3600 A ${ip}"
+  is_enabled '.storage.enabled' && records+=$'\n'"object-storage IN 3600 A ${ip}"$'\n'"s3 IN 3600 A ${ip}"
   is_enabled '.secrets.enabled' && records+=$'\n'"vault IN 3600 A ${ip}"
   is_enabled '.applications.daytona.enabled' && records+=$'\n'"daytona IN 3600 A ${ip}"$'\n'"*.daytona IN 3600 A ${ip}"
   is_enabled '.glitchtip.enabled' && records+=$'\n'"glitchtip IN 3600 A ${ip}"
@@ -217,7 +217,7 @@ Usage: ./platform.sh <command>
 Commands:
   init              Create config
   deploy all        Full deployment
-  deploy <comp>     infra|network|dns|cluster|tls|minio|secrets|databases|gitlab|gitops|observability|autoscaling|daytona|glitchtip|apm|blackbox
+  deploy <comp>     infra|network|dns|cluster|tls|object-storage|secrets|databases|gitlab|gitops|observability|autoscaling|daytona|glitchtip|apm|blackbox
   status            Show status
   credentials       Show passwords
   health / heal     Check/fix

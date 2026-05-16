@@ -87,7 +87,7 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.pas
 kubectl get pods -n monitoring
 kubectl get secret grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 -d
 
-# MinIO
+# SeaweedFS
 kubectl get pods -n storage
 
 # Vault
@@ -157,8 +157,8 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e tier=producti
 
 ### Automated Backups
 - GitLab: Daily at 2 AM (via toolbox CronJob)
-- PostgreSQL: Weekly full + daily incremental (pgbackrest to MinIO)
-- MongoDB: Weekly backups to MinIO (if enabled)
+- PostgreSQL: Weekly full + daily incremental (pgbackrest to SeaweedFS)
+- MongoDB: Weekly backups to SeaweedFS (if enabled)
 
 ### Manual Backup
 ```bash

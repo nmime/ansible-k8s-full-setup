@@ -148,7 +148,7 @@ backup:
     - databases
     - gitlab
     - secrets
-    - minio
+    - object-storage
 
 # ---------------------------------------------
 # GlitchTip (Sentry-compatible error tracking)

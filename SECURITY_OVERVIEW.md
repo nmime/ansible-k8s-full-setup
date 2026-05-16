@@ -20,7 +20,7 @@
   Apps (daytona, brocoders)
     │
   Platform Services
-  (Vault, MinIO, PG, ES, Temporal...)
+  (Vault, SeaweedFS object storage, PG, ES, Temporal...)
 ```
 
 ## Security Coverage
@@ -36,7 +36,7 @@ All application and platform namespaces are assigned Pod Security Admission labe
 | gitlab | baseline enforce | GitLab CE |
 | argocd | baseline enforce | GitOps |
 | vault | baseline enforce | Secrets management |
-| storage | baseline enforce | MinIO |
+| storage | baseline enforce | SeaweedFS object storage |
 | databases | baseline enforce | PostgreSQL, MongoDB |
 | monitoring | baseline enforce | VictoriaMetrics, Grafana |
 | keda | baseline enforce | Autoscaling |
@@ -65,14 +65,14 @@ Every namespace is protected by default-deny behavior plus explicit ingress and 
 | temporal | Temporal server and Web UI |
 | brocoders-boilerplate | App services |
 | postal | Mail services |
-| minio-storage | Object storage |
+| object-storage-storage | Object storage |
 | k8s-autoscaling | KEDA |
 | elasticsearch | Elasticsearch and Kibana |
 | dragonfly | Redis-compatible datastore |
 
 ### 3. Service Monitoring
 
-Critical platform services expose metrics through ServiceMonitor or equivalent observability resources, including GitLab, ArgoCD, PostgreSQL, KEDA, Daytona, VictoriaMetrics, Vault, MinIO, Elasticsearch, Temporal, bastion node-exporter, and edge proxies.
+Critical platform services expose metrics through ServiceMonitor or equivalent observability resources, including GitLab, ArgoCD, PostgreSQL, KEDA, Daytona, VictoriaMetrics, Vault, SeaweedFS object storage, Elasticsearch, Temporal, bastion node-exporter, and edge proxies.
 
 ### 4. Certificate Management
 

@@ -1,8 +1,8 @@
 # HIPAA Compliance Guide
 
-**Date**: April 6, 2026  
-**Status**: Optional hardening for healthcare/regulated workloads  
-**Default**: ON. Disable only for dev/staging with `-e hipaa_compliance=false`  
+**Date**: April 6, 2026
+**Status**: Optional hardening for healthcare/regulated workloads
+**Default**: ON. Disable only for dev/staging with `-e hipaa_compliance=false`
 
 ---
 
@@ -32,7 +32,7 @@ The original rationale:
 ### 1. Internal TLS (Encryption in Transit)
 
 **Currently HTTP (plaintext):**
-- MinIO S3 API: `http://minio.storage.svc.cluster.local:9000`
+- S3-compatible object storage API: `http://seaweedfs-filer.storage.svc.cluster.local:8333`
 - Vault API: `http://vault.vault.svc.cluster.local:8200`
 - Loki Gateway: `http://loki-gateway.monitoring.svc.cluster.local`
 - Tempo: `http://tempo-distributor.monitoring.svc.cluster.local`
@@ -71,7 +71,7 @@ ansible-playbook playbooks/deploy_platform.yml \
 ```
 
 This sets:
-- `internal_tls_enabled: true` (MinIO, Vault, Loki, PostgreSQL, MongoDB use TLS)
+- `internal_tls_enabled: true` (SeaweedFS object storage, Vault, Loki, PostgreSQL, MongoDB use TLS)
 - `log_redaction_enabled: true` (Filebeat/Promtail redact SSN/phone/email patterns)
 
 ### Option 2: Granular Control
@@ -91,16 +91,16 @@ ansible-playbook ... \
 
 ### Internal TLS Changes
 
-#### MinIO
-**Before**: `http://minio.storage.svc.cluster.local:9000`  
-**After**: `https://minio.storage.svc.cluster.local:9000`
+#### SeaweedFS object storage
+**Before**: `http://seaweedfs-filer.storage.svc.cluster.local:8333`
+**After**: `https://seaweedfs-filer.storage.svc.cluster.local:8333`
 
 - Helm chart value: `tls.enabled: true`
 - Uses cert-manager to issue internal CA cert
 - All clients (GitLab, Loki, Vault, PostgreSQL backups) verify CA
 
 #### Vault
-**Before**: `tlsDisable: true` (HTTP on port 8200)  
+**Before**: `tlsDisable: true` (HTTP on port 8200)
 **After**: `tlsDisable: false` (HTTPS on port 8200)
 
 - Uses cert-manager Certificate for `vault.vault.svc.cluster.local`
@@ -108,7 +108,7 @@ ansible-playbook ... \
 - Auto-unseal CronJob uses HTTPS + CA verification
 
 #### Loki
-**Before**: `http://loki-gateway...`  
+**Before**: `http://loki-gateway...`
 **After**: `https://loki-gateway...`
 
 - Gateway pod mounts TLS cert from cert-manager
@@ -116,7 +116,7 @@ ansible-playbook ... \
 - Grafana datasource uses HTTPS endpoint
 
 #### PostgreSQL (Percona Operator)
-**Before**: `sslMode: disable`  
+**Before**: `sslMode: disable`
 **After**: `sslMode: require`
 
 - Operator generates self-signed cert per cluster
@@ -124,7 +124,7 @@ ansible-playbook ... \
 - Temporal, Opwerf connection strings updated
 
 #### MongoDB
-**Before**: `net.tls.mode: disabled`  
+**Before**: `net.tls.mode: disabled`
 **After**: `net.tls.mode: requireTLS`
 
 - MongoDB Operator generates certs
@@ -178,13 +178,13 @@ pipeline_stages:
 
 | Service | HTTP Baseline | TLS Overhead | Recommendation |
 |---------|---------------|--------------|----------------|
-| **MinIO** | 100 MB/s | 85-90 MB/s (~10%) | Accept — PHI must be encrypted |
+| **SeaweedFS object storage** | 100 MB/s | 85-90 MB/s (~10%) | Accept — PHI must be encrypted |
 | **Vault** | <1ms latency | +0.3ms (~30%) | Accept — rarely called (ExternalSecret cache) |
 | **Loki** | 50k logs/sec | 45k logs/sec (~10%) | Accept — use batch writes |
 | **PostgreSQL** | 10k TPS | 9k TPS (~10%) | Accept — connection pooling mitigates |
 | **MongoDB** | 15k ops/sec | 13.5k ops/sec (~10%) | Accept — replica set spreads load |
 
-**Total CPU increase**: ~8-12% cluster-wide (TLS encrypt/decrypt).  
+**Total CPU increase**: ~8-12% cluster-wide (TLS encrypt/decrypt).
 **Mitigation**: For production HIPAA, use cpx41 workers (8 vCPU) instead of cpx31 (4 vCPU).
 
 ---
@@ -211,8 +211,8 @@ ansible-playbook playbooks/deploy_platform.yml -e tier=minimal -e domain=test.lo
 
 ### 2. Verify internal TLS
 ```bash
-# MinIO should refuse HTTP
-curl http://minio.storage.svc.cluster.local:9000
+# SeaweedFS object storage should refuse HTTP
+curl http://seaweedfs-filer.storage.svc.cluster.local:8333
 # Expected: connection refused or redirect to HTTPS
 
 # Vault should serve HTTPS

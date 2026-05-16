@@ -96,7 +96,7 @@
   delay: 10
   until: _r_bb_probe is not failed
 
-- name: Create VMProbe for internal TCP health (PG, ES, Redis, MinIO)
+- name: Create VMProbe for internal TCP health (PG, ES, Redis, object storage)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -119,7 +119,7 @@
               - "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local:5432"
               - "elasticsearch.elasticsearch.svc.cluster.local:9200"
               - "dragonfly.dragonfly.svc.cluster.local:6379"
-              - "minio.storage.svc.cluster.local:9000"
+              - "{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
             labels:
               probe: internal-tcp
   register: _r_bb_probe_tcp
