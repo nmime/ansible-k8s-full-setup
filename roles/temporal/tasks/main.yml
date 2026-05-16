@@ -1,8 +1,8 @@
 - name: Set Temporal tier-specific variables
   set_fact:
     temporal_ns: temporal
-    temporal_chart_ver: 0.73.2
-    temporal_server_ver: 1.29.1
+    temporal_chart_ver: 1.2.0
+    temporal_server_ver: 1.31.0
     temporal_ui_ver: 2.44.0
     temporal_admin_tools_ver: 1.29.1-tctl-1.18.4-cli-1.5.0
     temporal_domain: temporal.{{ domain }}
@@ -12,20 +12,20 @@
     temporal_matching_replicas: '{{ 2 if tier == ''production'' else (1 if tier in [''minimal'', ''small''] else 1) }}'
     temporal_frontend_replicas: '{{ 2 if tier == ''production'' else (1 if tier in [''minimal'', ''small''] else 1) }}'
     temporal_worker_replicas: 1
-    temporal_frontend_cpu_req: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
-    temporal_frontend_mem_req: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+    temporal_frontend_cpu_req: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
+    temporal_frontend_mem_req: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''768Mi'' }}'
     temporal_frontend_cpu_lim: '{{ ''250m'' if tier in [''minimal'', ''small''] else ''500m'' }}'
     temporal_frontend_mem_lim: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''1Gi'' }}'
-    temporal_history_cpu_req: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
-    temporal_history_mem_req: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+    temporal_history_cpu_req: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''300m'' }}'
+    temporal_history_mem_req: '{{ ''512Mi'' if tier in [''minimal'', ''small''] else ''768Mi'' }}'
     temporal_history_cpu_lim: '{{ ''500m'' if tier in [''minimal'', ''small''] else ''1'' }}'
     temporal_history_mem_lim: '{{ ''512Mi'' if tier in [''minimal'', ''small''] else ''2Gi'' }}'
-    temporal_matching_cpu_req: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
-    temporal_matching_mem_req: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''256Mi'' }}'
+    temporal_matching_cpu_req: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
+    temporal_matching_mem_req: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
     temporal_matching_cpu_lim: '{{ ''250m'' if tier in [''minimal'', ''small''] else ''500m'' }}'
     temporal_matching_mem_lim: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''1Gi'' }}'
-    temporal_worker_cpu_req: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
-    temporal_worker_mem_req: '{{ ''64Mi'' if tier in [''minimal'', ''small''] else ''256Mi'' }}'
+    temporal_worker_cpu_req: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
+    temporal_worker_mem_req: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
     temporal_worker_cpu_lim: '{{ ''250m'' if tier in [''minimal'', ''small''] else ''500m'' }}'
     temporal_worker_mem_lim: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''1Gi'' }}'
     temporal_web_replicas: 1
@@ -318,11 +318,11 @@
           tag: '{{ temporal_admin_tools_ver }}'
         resources:
           requests:
-            cpu: 25m
-            memory: 128Mi
-          limits:
-            cpu: 200m
+            cpu: 50m
             memory: 256Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
       web:
         enabled: true
         replicaCount: '{{ temporal_web_replicas | int }}'
@@ -334,11 +334,11 @@
           port: 8080
         resources:
           requests:
-            cpu: 25m
-            memory: 128Mi
-          limits:
-            cpu: 200m
+            cpu: 50m
             memory: 256Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
   register: _r_install_temporal_server_via_helm
   retries: 3
   delay: 10

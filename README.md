@@ -3,7 +3,7 @@
 > Zero-to-production Kubernetes on Hetzner Cloud in 3-5 hours. Fully automated, security-hardened, with global GeoDNS edge network.
 
 [![Security](https://img.shields.io/badge/security-100%25%20hardened-brightgreen)](#security-hardening)
-[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.34.3-326ce5?logo=kubernetes&logoColor=white)](#platform-stack)
+[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35.4-326ce5?logo=kubernetes&logoColor=white)](#platform-stack)
 [![HIPAA](https://img.shields.io/badge/HIPAA-ready-blue)](#compliance)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
@@ -147,10 +147,10 @@ APAC Edge   EU Edge    US Edge
 
 | Component | Version | Purpose |
 |-----------|---------|--------|
-| **Kubernetes** | v1.34.3 | Orchestration (Kubespray 2.30) |
-| **Cilium** | v1.19 | eBPF CNI + NetworkPolicies |
+| **Kubernetes** | v1.35.4 | Orchestration (Kubespray 2.31) |
+| **Cilium** | v1.19.4 | eBPF CNI + NetworkPolicies |
 | **Gateway API** | v1.5 | Modern ingress (L7) |
-| **cert-manager** | v1.20 | Automated TLS (Let's Encrypt) |
+| **cert-manager** | v1.20.2 | Automated TLS (Let's Encrypt) |
 | **Vault** | v1.21 | Secrets management (HA Raft) |
 | **SeaweedFS** | v5.4 | S3-compatible storage |
 | **VictoriaMetrics** | v1.133 | Metrics (faster than Prometheus) |
@@ -158,9 +158,9 @@ APAC Edge   EU Edge    US Edge
 | **Loki + Promtail** | v3.6 | Log aggregation |
 | **Headscale** | v0.28 | WireGuard VPN |
 | **MetalLB** | v0.15 | Bare-metal LB |
-| **GitLab** | v18.10 | Git + CI/CD + Registry |
-| **ArgoCD** | v3.3 | GitOps continuous delivery |
-| **Elasticsearch** | v8.x | Audit logs + compliance |
+| **GitLab** | v18.11.3 | Git + CI/CD + Registry |
+| **ArgoCD** | v3.4.2 | GitOps continuous delivery |
+| **Elasticsearch** | v9.4.1 | Audit logs + compliance |
 
 ### Optional (Install as Needed)
 
@@ -168,8 +168,8 @@ APAC Edge   EU Edge    US Edge
 |-----------|---------|-------------|--------|
 | **PostgreSQL 18** | Percona 2.8 | `install_postgresql: true` | HA database with pgBackRest |
 | **MongoDB 8.0** | Percona 1.22 | `install_mongodb: true` | HA NoSQL with PBM backups |
-| **Dragonfly** | v1.37 | `install_dragonfly: true` | Redis-compatible (25x faster) |
-| **Temporal** | v1.29 | `install_temporal: true` | Workflow orchestration |
+| **Dragonfly** | v1.38.1 | `install_dragonfly: true` | Redis-compatible (25x faster) |
+| **Temporal** | v1.31.0 | `install_temporal: true` | Workflow orchestration |
 | **PMM** | v3 | Auto-enabled with DBs | Percona database monitoring |
 
 **Note**: PMM is auto-enabled when PostgreSQL, MongoDB, or Dragonfly is installed.
@@ -302,35 +302,40 @@ kubectl get secret -n monitoring grafana-admin-credentials -o jsonpath='{.data.p
 
 ## Deployment Tiers
 
-### Tier 1: Development (€16/mo)
+Costs below are approximate planning ranges. Hetzner pricing, region, storage,
+backups/snapshots, traffic, and optional edge/CDN services can change the final bill.
+The medium and production profiles in this release use larger 16Gi-class `cx43`
+nodes for control planes and workers.
+
+### Tier 1: Development (~€18-20/mo)
 ```yaml
 control_plane_count: 1
 worker_count: 1
-server_type: "cx22"  # 2 vCPU, 4GB RAM
-control_server_type: "cx22"
-bastion_server_type: "cx11"  # 1 vCPU, 2GB
+server_type: "cx23"  # 2 vCPU, 4GB RAM
+control_server_type: "cx23"
+bastion_server_type: "cx23"  # 2 vCPU, 4GB RAM
 edge_enabled: false
 ```
 **Use case**: Testing, dev environments
 
-### Tier 2: Staging (€47/mo)
+### Tier 2: Staging / Medium (~€80-100/mo)
 ```yaml
 control_plane_count: 3
 worker_count: 2
-server_type: "cx32"  # 4 vCPU, 8GB
-control_server_type: "cx22"
+server_type: "cx43"  # 16Gi-class RAM
+control_server_type: "cx43"
 edge_enabled: true
 gitlab_edition: "ee"
 edge_regions: ["eu"]  # Single edge
 ```
 **Use case**: Pre-production, staging
 
-### Tier 3: Production (€97/mo, HA)
+### Tier 3: Production (~€95-125/mo, HA)
 ```yaml
 control_plane_count: 3
 worker_count: 3
-server_type: "cx42"  # 8 vCPU, 16GB
-control_server_type: "cx32"
+server_type: "cx43"  # 16Gi-class RAM
+control_server_type: "cx43"
 edge_enabled: true
 gitlab_edition: "ee"
 edge_regions: ["eu", "us", "apac"]  # Global CDN
@@ -342,7 +347,7 @@ edge_regions: ["eu", "us", "apac"]  # Global CDN
 control_plane_count: 5
 worker_count: 5
 server_type: "cx52"  # 16 vCPU, 32GB
-control_server_type: "cx42"
+control_server_type: "cx43"
 edge_enabled: true
 gitlab_edition: "ee"
 ```
@@ -389,7 +394,7 @@ project_name: "prod-k8s"
 # Cluster size
 control_plane_count: 3
 worker_count: 3
-server_type: "cx42"
+server_type: "cx43"
 
 # Core platform (always on)
 install_cilium: true

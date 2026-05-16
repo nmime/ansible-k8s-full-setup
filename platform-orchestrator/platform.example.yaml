@@ -96,9 +96,9 @@ infrastructure:
     public_ip: false
 
 kubernetes:
-  version: v1.34.3
+  version: v1.35.4
   cni: cilium
-  cilium_version: v1.19.2
+  cilium_version: v1.19.4
   pod_cidr: 10.233.64.0/18
   service_cidr: 10.233.0.0/18
   features:
@@ -118,7 +118,7 @@ secrets:
   enabled: true
   vault:
     replicas: 1
-    storage_size: 10Gi
+    storage_size: 20Gi
   eso:
     enabled: true
 
@@ -127,12 +127,12 @@ databases:
     enabled: true
     version: 18
     replicas: 1
-    storage_size: 20Gi
+    storage_size: 30Gi
   mongodb:
     enabled: false
     version: "8.0"
     replicas: 1
-    storage_size: 20Gi
+    storage_size: 30Gi
 
 gitlab:
   enabled: true
@@ -154,7 +154,7 @@ observability:
   metrics:
     enabled: true
     retention: 14d
-    storage_size: 20Gi
+    storage_size: 40Gi
   logging:
     enabled: true
     retention: 7d

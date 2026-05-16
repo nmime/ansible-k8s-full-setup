@@ -9,10 +9,10 @@ object_storage_chart_ref: seaweedfs/seaweedfs
 object_storage_chart_version: "4.25.1"
 
 object_storage_storage_class: "{{ storage_class | default('hcloud-volumes') }}"
-object_storage_master_size: 2Gi
-object_storage_volume_size: 50Gi
-object_storage_idx_size: 2Gi
-object_storage_filer_size: 5Gi
+object_storage_master_size: 4Gi
+object_storage_volume_size: "{{ '20Gi' if tier | default('medium') == 'minimal' else '40Gi' if tier | default('medium') == 'small' else '100Gi' if tier | default('medium') == 'medium' else '150Gi' }}"
+object_storage_idx_size: 4Gi
+object_storage_filer_size: 10Gi
 object_storage_replicas: "{{ 3 if tier | default('medium') in ['medium', 'production'] else 1 }}"
 object_storage_volume_replicas: "{{ 3 if tier | default('medium') in ['medium', 'production'] else 1 }}"
 object_storage_filer_replicas: "{{ 2 if tier | default('medium') in ['medium', 'production'] else 1 }}"
@@ -24,7 +24,7 @@ object_storage_api_domain: "{{ ('s3.' ~ (domain | default('', true))) if (domain
 object_storage_region: us-east-1
 # Official AWS CLI v2 container used for neutral S3 bootstrap/smoke jobs.
 # The docker.io amazon/aws-cli repository publishes latest/versioned tags; tag "2" is not published.
-object_storage_aws_cli_image: amazon/aws-cli:latest
+object_storage_aws_cli_image: amazon/aws-cli:2.34.48
 
 # Safe static defaults are intentionally non-production; generate-secrets overrides and persists real values.
 object_storage_access_key: "{{ generated_object_storage_access_key | default('seaweedfsadmin') }}"
