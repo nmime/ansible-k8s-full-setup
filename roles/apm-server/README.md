@@ -3,7 +3,7 @@
 Distributed tracing backend. Reuses the existing Elasticsearch X-Pack Platinum cluster as trace storage — no new component storage required.
 
 ## What it does
-- Runs Elastic APM Server (matched to ES version)
+- Runs Elastic APM Server `9.4.1` (matched to the Elasticsearch 9.x stack)
 - Accepts **OTLP gRPC + HTTP** on `:8200`, as well as native Elastic APM agents and Jaeger/Zipkin protocols
 - Writes traces → `apm-*` indices in existing Elasticsearch
 - Applies ILM policy `apm-rollover-30-days` (rolls over at 30GB / 7d, deletes after 14d)
@@ -30,3 +30,10 @@ No token required (anonymous OTLP ingest is enabled, RUM origins wildcarded — 
 ## Toggles
 - `deploy_apm: true` in profile to enable
 - Requires ES (`elasticsearch` role, always on)
+
+## Tier defaults
+
+| Tier | Replicas | CPU request/limit | Memory request/limit |
+|------|----------|-------------------|----------------------|
+| minimal/small | 1 | 100m / 750m | 384Mi / 768Mi |
+| medium/production | 2 | 500m / 1500m | 768Mi / 1536Mi |

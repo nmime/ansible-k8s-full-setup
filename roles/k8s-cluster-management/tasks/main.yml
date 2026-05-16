@@ -1,19 +1,19 @@
 ---
-# K8s Cluster Management - Kubespray v2.30.0 + Cilium v1.19.2 + Gateway API v1.5.1
+# K8s Cluster Management - Kubespray v2.31.0 + Cilium v1.19.4 + Gateway API v1.5.1
 # Installs Kubernetes cluster with core addons
-# Components: K8s v1.34.3, Hetzner CCM v1.30.1, Hetzner CSI v2.20.0, cert-manager v1.20.1, MetalLB v0.15.3
+# Components: K8s v1.35.4, Hetzner CCM v1.31.0, Hetzner CSI v2.21.0, cert-manager v1.20.2, MetalLB v0.15.3
 
 - name: Set cluster management variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
-    k8s_ver: "{{ k8s_version | default('v1.34.3') }}"
-    kubespray_version: "v2.30.0"
-    cilium_ver: "{{ cilium_version | default('v1.19.2') }}"
+    k8s_ver: "{{ k8s_version | default('v1.35.4') }}"
+    kubespray_version: "v2.31.0"
+    cilium_ver: "{{ cilium_version | default('v1.19.4') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.5.1') }}"
-    certmanager_ver: "v1.20.1"
+    certmanager_ver: "v1.20.2"
     metallb_ver: "v0.15.3"
-    hetzner_ccm_ver: "v1.30.1"
-    hetzner_csi_ver: "v2.20.0"
+    hetzner_ccm_ver: "v1.31.0"
+    hetzner_csi_ver: "v2.21.0"
     cluster_tier: "{{ tier | default('medium') }}"
     certmanager_replicas: "{{ (tier | default('medium')=='minimal')|ternary(1, (tier | default('medium')=='production')|ternary(3, 2)) }}"
 
@@ -823,7 +823,7 @@
   until: _r_create_networkpolicy_to_restrict_admin_g is not failed
 
 # ============================================
-# cert-manager v1.20.1
+# cert-manager v1.20.2
 # ============================================
 
 - name: Add Jetstack Helm repository

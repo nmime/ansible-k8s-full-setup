@@ -4,10 +4,10 @@
     eso_ns: external-secrets
     vault_chart_ver: 0.32.0
     vault_version: 1.21.2
-    eso_chart_ver: 2.2.0
+    eso_chart_ver: 2.5.0
     vault_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
     vault_ha: '{{ true if tier in [''medium'', ''production''] else false }}'
-    vault_storage: '{{ vault_storage_size | default(''10Gi'') }}'
+    vault_storage: '{{ vault_storage_size | default(''20Gi'') }}'
     vault_domain: vault.{{ domain }}
 - name: Create Vault namespace
   kubernetes.core.k8s:
@@ -84,7 +84,7 @@
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         auditStorage:
           enabled: true
-          size: 10Gi
+          size: 20Gi
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         extraEnvironmentVars:
           VAULT_API_ADDR: http://$(HOSTNAME).vault-internal:8200
@@ -360,11 +360,11 @@
                     readOnly: true
                   resources:
                     requests:
-                      cpu: 10m
-                      memory: 32Mi
-                    limits:
                       cpu: 50m
                       memory: 64Mi
+                    limits:
+                      cpu: 100m
+                      memory: 128Mi
                   securityContext:
                     allowPrivilegeEscalation: false
                     capabilities:
@@ -669,7 +669,7 @@
     - '  Secrets Management Deployed'
     - ==========================================
     - '  Vault: v1.21.2 (chart {{ vault_chart_ver }})'
-    - '  ESO: v0.15.0 (chart {{ eso_chart_ver }})'
+    - '  ESO: chart {{ eso_chart_ver }}'
     - '  HA Mode: {{ vault_ha }}'
     - '  Replicas: {{ vault_replicas }}'
     - '  UI: {{ vault_domain }}'

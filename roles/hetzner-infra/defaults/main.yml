@@ -32,19 +32,19 @@ hetzner_tier_specs:
     lb_enabled: true
   medium:
     cp_count: 3
-    cp_min_cores: 2
-    cp_min_memory: 4
+    cp_min_cores: 4
+    cp_min_memory: 16
     cp_schedulable: true
     worker_count: 2
     worker_min_cores: 4
-    worker_min_memory: 8
+    worker_min_memory: 16
     lb_enabled: true
   production:
     cp_count: 3
     cp_min_cores: 4
-    cp_min_memory: 8
+    cp_min_memory: 16
     cp_schedulable: false
     worker_count: 3
     worker_min_cores: 4
-    worker_min_memory: 8
+    worker_min_memory: 16
     lb_enabled: true
