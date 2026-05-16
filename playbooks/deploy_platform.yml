@@ -116,7 +116,7 @@
       ansible.builtin.import_role:
         name: object-storage
       when: object_storage_enabled | default(true) | bool
-      tags: [storage, object-storage, seaweedfs, minio]
+      tags: [storage, object-storage, seaweedfs]
 
     - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
       ansible.builtin.import_role:

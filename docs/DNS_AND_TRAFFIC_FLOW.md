@@ -140,7 +140,7 @@ User in Japan requests cdn.example.com:
 | Certificate | Issuer | Domains | Used by |
 |-------------|--------|---------|--------|
 | Wildcard cert | Let's Encrypt (DNS01) | `*.example.com`, `example.com` | Cilium Gateway |
-| Internal CA certs | Self-signed CA | Service-specific | Internal mTLS (Vault, MinIO) |
+| Internal CA certs | Self-signed CA | Service-specific | Internal mTLS (Vault, SeaweedFS object storage) |
 
 **How DNS01 validation works:**
 ```

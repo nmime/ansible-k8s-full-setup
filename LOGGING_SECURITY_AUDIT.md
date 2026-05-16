@@ -1,7 +1,7 @@
 # Logging Stack Security Audit
 
-**Date**: April 6, 2026  
-**Auditor**: AI Agent (Claude)  
+**Date**: April 6, 2026
+**Auditor**: AI Agent (Claude)
 **Scope**: Loki (minimal/small) and ELK (medium/production) security configuration
 
 ---
@@ -27,7 +27,7 @@
 
 ### Architecture
 ```
-Pods → Loki Gateway (HTTP) → Loki (Storage: MinIO S3)
+Pods → Loki Gateway (HTTP) → Loki (Storage: S3-compatible object storage)
                 ↓
           Grafana Explore
            (VPN-only)
@@ -38,19 +38,19 @@ Pods → Loki Gateway (HTTP) → Loki (Storage: MinIO S3)
 #### ✅ Strengths
 1. **No public exposure**: Loki gateway is `ClusterIP` only (internal service)
 2. **VPN-only access**: Grafana accessible ONLY via `admin-gateway` (VPN required)
-3. **S3 backend storage**: Logs stored in MinIO with access key authentication
+3. **S3 backend storage**: Logs stored in SeaweedFS object storage with access key authentication
 4. **NetworkPolicy**: (assumed — verify Cilium policies applied)
 
 #### ⚠️ Considerations (Acceptable for internal use)
-1. **No TLS between pods and Loki**: Internal HTTP communication  
+1. **No TLS between pods and Loki**: Internal HTTP communication
    - **Rationale**: Within private cluster network, no external exposure
    - **Risk**: LOW (Kubernetes network is trusted, no multi-tenant workloads)
 
-2. **No authentication** (`auth_enabled: false`):  
+2. **No authentication** (`auth_enabled: false`):
    - **Rationale**: Single-tenant cluster, access controlled at Grafana level
    - **Risk**: LOW (Grafana requires login, Loki not directly accessible)
 
-3. **MinIO S3 endpoint uses HTTP** (`http://minio.storage.svc.cluster.local:9000`):  
+3. **S3-compatible object storage endpoint uses HTTP** (`http://seaweedfs-filer.storage.svc.cluster.local:8333`):
    - **Rationale**: Internal cluster traffic only
    - **Risk**: LOW (same rationale as #1)
 
@@ -63,8 +63,8 @@ Pods → Loki Gateway (HTTP) → Loki (Storage: MinIO S3)
 ```yaml
 auth_enabled: false  # Single-tenant cluster
 object_store: s3
-endpoint: http://minio.storage.svc.cluster.local:9000  # Internal
-access_key_id: <minio-root-user>
+endpoint: http://seaweedfs-filer.storage.svc.cluster.local:8333  # Internal
+access_key_id: <object-storage-root-user>
 secret_access_key: <from-secret>  # ✅ Stored in K8s Secret
 ```
 
@@ -74,7 +74,7 @@ secret_access_key: <from-secret>  # ✅ Stored in K8s Secret
 **Future hardening** (if multi-tenancy or compliance required):
 1. Enable TLS for Loki gateway: `loki.server.http_tls_config.cert_file`
 2. Enable auth: `auth_enabled: true` + tenant headers
-3. MinIO TLS: Switch to `https://minio.storage.svc.cluster.local:9000` (requires MinIO TLS setup)
+3. SeaweedFS object storage TLS: Switch to `https://seaweedfs-filer.storage.svc.cluster.local:8333` (requires SeaweedFS object storage TLS setup)
 
 ---
 
@@ -188,12 +188,12 @@ The logging stack captures **all** container logs. Applications MUST:
 
 | Tier | Stack | Retention | Storage Backend | Encryption at Rest |
 |------|-------|-----------|-----------------|--------------------|
-| Minimal | Loki | 3 days | MinIO (emptyDir) | ❌ (ephemeral) |
-| Small | Loki | 7 days | MinIO (PVC) | ✅ (Hetzner encrypted volumes) |
+| Minimal | Loki | 3 days | SeaweedFS object storage (emptyDir) | ❌ (ephemeral) |
+| Small | Loki | 7 days | SeaweedFS object storage (PVC) | ✅ (Hetzner encrypted volumes) |
 | Medium | ELK | 14 days | ES (PVC) | ✅ (Hetzner encrypted volumes) |
 | Production | ELK | 14 days | ES (PVC) | ✅ (Hetzner encrypted volumes) |
 
-**Note**: Minimal tier MinIO uses `emptyDir` (no persistent storage for logs).
+**Note**: Minimal tier SeaweedFS object storage uses `emptyDir` (no persistent storage for logs).
 
 ---
 
@@ -225,23 +225,23 @@ The logging stack captures **all** container logs. Applications MUST:
 
 ### Attack Vectors (Mitigated)
 
-✅ **Internet exposure**: NONE (all admin UIs behind VPN)  
-✅ **Man-in-the-middle** (ELK): TLS prevents MITM on ES traffic  
-✅ **Credential theft**: Secrets protected with `no_log`, stored encrypted at rest  
-⚠️ **Malicious pod** (Loki): Could query logs if it guesses the Loki URL (no auth)  
-✅ **Malicious pod** (ELK): Blocked by NetworkPolicy  
+✅ **Internet exposure**: NONE (all admin UIs behind VPN)
+✅ **Man-in-the-middle** (ELK): TLS prevents MITM on ES traffic
+✅ **Credential theft**: Secrets protected with `no_log`, stored encrypted at rest
+⚠️ **Malicious pod** (Loki): Could query logs if it guesses the Loki URL (no auth)
+✅ **Malicious pod** (ELK): Blocked by NetworkPolicy
 
 ---
 
 ## 5. Compliance Considerations
 
 ### GDPR / Privacy
-- ❌ **No PII redaction**: Application logs may contain user data  
+- ❌ **No PII redaction**: Application logs may contain user data
   **Recommendation**: Implement log scrubbing/redaction at application level
 
 - ✅ **Right to deletion**: Logs auto-expire (3-14 days retention)
 
-- ⚠️ **Data residency**: Logs stored in Hetzner Cloud (Germany/Finland)  
+- ⚠️ **Data residency**: Logs stored in Hetzner Cloud (Germany/Finland)
   **Status**: EU-compliant for most use cases
 
 ### SOC 2 / ISO 27001
@@ -302,6 +302,6 @@ The logging stack captures **all** container logs. Applications MUST:
 
 ---
 
-**Audit Completed**: April 6, 2026  
-**Reviewed by**: AI Agent (Claude)  
+**Audit Completed**: April 6, 2026
+**Reviewed by**: AI Agent (Claude)
 **Status**: APPROVED ✅

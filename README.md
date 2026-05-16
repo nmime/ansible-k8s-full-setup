@@ -395,7 +395,7 @@ server_type: "cx42"
 install_cilium: true
 install_cert_manager: true
 install_vault: true
-install_minio: true
+install_object_storage: true
 install_monitoring: true
 install_vpn: true
 

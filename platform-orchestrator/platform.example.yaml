@@ -48,9 +48,9 @@ services:
       namespace: production
       port: 8080
     - domain: s3.example.com
-      service: minio
+      service: seaweedfs-filer
       namespace: storage
-      port: 9000
+      port: 8333
     - domain: registry.example.com
       service: gitlab-registry
       namespace: gitlab
@@ -72,10 +72,10 @@ services:
       service: grafana
       namespace: monitoring
       port: 80
-    - domain: minio.example.com
-      service: minio-console
+    - domain: object-storage.example.com
+      service: seaweedfs-filer
       namespace: storage
-      port: 9001
+      port: 8888
     - domain: vault.example.com
       service: vault
       namespace: vault
