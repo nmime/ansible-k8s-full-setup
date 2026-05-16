@@ -1,13 +1,15 @@
 # ============================================
-# MEDIUM TIER - ~€48-55/mo
+# MEDIUM TIER - ~€80-100/mo
 # ============================================
 # Best for: Small-medium traffic, teams
-# Nodes: 5 (3 masters HA, 2 workers)
+# Nodes: 5 x cx43 16Gi-class nodes (3 masters HA, 2 workers) + cx23 bastion
 # HA: Yes (control plane)
+# Storage: 4x100Gi object storage, 50Gi PostgreSQL, 100Gi metrics
+# Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
 # ============================================
 
 tier: medium
-cost_estimate: "€48-55/mo"
+cost_estimate: "€80-100/mo"
 
 global:
   project: k8s

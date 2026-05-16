@@ -5,6 +5,7 @@ Self-hosted GlitchTip — open-source, Sentry-compatible error tracking.
 ## Architecture
 
 - **Web + Worker**: Helm chart `glitchtip/glitchtip`
+- **Version**: GlitchTip app `v6.1.4`, Helm chart `8.2.0`
 - **Database**: Reuses existing Percona PostgreSQL cluster (user: `glitchtip`, db: `glitchtip`)
 - **Redis/Celery broker**: Reuses existing Dragonfly (DB 2)
 - **Ingress**: Gateway API HTTPRoute via `main-gateway` (cilium-system)
@@ -18,10 +19,12 @@ Self-hosted GlitchTip — open-source, Sentry-compatible error tracking.
 
 ## Tier scaling
 
-| Tier | Web replicas | Worker replicas |
-|------|-------------|-----------------|
-| minimal/small | 1 | 1 |
-| medium/production | 2 | 2 |
+| Tier | Web replicas | Dedicated worker | Web resources |
+|------|--------------|------------------|---------------|
+| minimal/small | 1 | Disabled | 100m/500m CPU, 384Mi/768Mi memory |
+| medium/production | 2 | 2 replicas | 300m/1000m CPU, 768Mi/1536Mi memory |
+
+Dedicated workers, when enabled, use 200m/1000m CPU and 512Mi/1Gi memory.
 
 ## Prerequisites
 

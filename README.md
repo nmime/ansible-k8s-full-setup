@@ -302,7 +302,12 @@ kubectl get secret -n monitoring grafana-admin-credentials -o jsonpath='{.data.p
 
 ## Deployment Tiers
 
-### Tier 1: Development (€16/mo)
+Costs below are approximate planning ranges. Hetzner pricing, region, storage,
+backups/snapshots, traffic, and optional edge/CDN services can change the final bill.
+The medium and production profiles in this release use larger 16Gi-class `cx43`
+nodes for control planes and workers.
+
+### Tier 1: Development (~€18-20/mo)
 ```yaml
 control_plane_count: 1
 worker_count: 1
@@ -313,24 +318,24 @@ edge_enabled: false
 ```
 **Use case**: Testing, dev environments
 
-### Tier 2: Staging (€47/mo)
+### Tier 2: Staging / Medium (~€80-100/mo)
 ```yaml
 control_plane_count: 3
 worker_count: 2
-server_type: "cx42"  # 8 vCPU, 16GB
-control_server_type: "cx42"
+server_type: "cx43"  # 16Gi-class RAM
+control_server_type: "cx43"
 edge_enabled: true
 gitlab_edition: "ee"
 edge_regions: ["eu"]  # Single edge
 ```
 **Use case**: Pre-production, staging
 
-### Tier 3: Production (€97/mo, HA)
+### Tier 3: Production (~€95-125/mo, HA)
 ```yaml
 control_plane_count: 3
 worker_count: 3
-server_type: "cx42"  # 8 vCPU, 16GB
-control_server_type: "cx42"
+server_type: "cx43"  # 16Gi-class RAM
+control_server_type: "cx43"
 edge_enabled: true
 gitlab_edition: "ee"
 edge_regions: ["eu", "us", "apac"]  # Global CDN
@@ -342,7 +347,7 @@ edge_regions: ["eu", "us", "apac"]  # Global CDN
 control_plane_count: 5
 worker_count: 5
 server_type: "cx52"  # 16 vCPU, 32GB
-control_server_type: "cx42"
+control_server_type: "cx43"
 edge_enabled: true
 gitlab_edition: "ee"
 ```
@@ -389,7 +394,7 @@ project_name: "prod-k8s"
 # Cluster size
 control_plane_count: 3
 worker_count: 3
-server_type: "cx42"
+server_type: "cx43"
 
 # Core platform (always on)
 install_cilium: true
