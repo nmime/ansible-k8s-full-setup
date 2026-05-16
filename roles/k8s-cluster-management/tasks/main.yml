@@ -638,6 +638,7 @@
         to:
           - group: ""
             kind: Secret
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_referencegrant_for_gateway_to_acc
   retries: 3
   delay: 10
@@ -673,6 +674,7 @@
             allowedRoutes:
               namespaces:
                 from: All
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_cilium_main_gateway
   retries: 3
   delay: 10
@@ -684,6 +686,7 @@
     namespace: cilium-system
     label_selectors:
       - "io.cilium.gateway/owning-gateway=main-gateway"
+  when: k8s_create_external_tls | default(true) | bool
   register: gw_svc
   until: gw_svc.resources | length > 0
   retries: 30
@@ -711,7 +714,9 @@
             targetPort: 443
             nodePort: 30443
             protocol: TCP
-  when: gw_svc.resources | length > 0
+  when:
+    - gw_svc.resources | length > 0
+    - k8s_create_external_tls | default(true) | bool
   register: _r_patch_gateway_service_to_use_fixed_nodep
   retries: 3
   delay: 10
@@ -747,6 +752,7 @@
             allowedRoutes:
               namespaces:
                 from: All
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_admin_gateway_vpn_only_for_gitlab
   retries: 3
   delay: 10
@@ -758,6 +764,7 @@
     namespace: cilium-system
     label_selectors:
       - "io.cilium.gateway/owning-gateway=admin-gateway"
+  when: k8s_create_external_tls | default(true) | bool
   register: admin_gw_svc
   until: admin_gw_svc.resources | length > 0
   retries: 30
@@ -785,7 +792,9 @@
             targetPort: 8443
             nodePort: 31443
             protocol: TCP
-  when: admin_gw_svc.resources | default([]) | length > 0
+  when:
+    - admin_gw_svc.resources | default([]) | length > 0
+    - k8s_create_external_tls | default(true) | bool
   register: _r_patch_admin_gateway_service_to_use_nodep
   retries: 3
   delay: 10
@@ -875,6 +884,7 @@
     release_namespace: cert-manager
     release_state: present
     wait: true
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_install_official_hetzner_cloud_dns_webho
   retries: 3
   delay: 10
@@ -892,6 +902,7 @@
         namespace: cert-manager
       stringData:
         api-token: "{{ hcloud_token | default(lookup('env', 'HCLOUD_TOKEN')) }}"
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_hetzner_cloud_api_token_secret_fo
   retries: 3
   delay: 10
@@ -920,6 +931,7 @@
                     tokenSecretKeyRef:
                       name: hetzner-secret
                       key: api-token
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_let_s_encrypt_clusterissuer_stagi
   retries: 3
   delay: 10
@@ -948,6 +960,7 @@
                     tokenSecretKeyRef:
                       name: hetzner-secret
                       key: api-token
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_let_s_encrypt_clusterissuer_produ
   retries: 3
   delay: 10
@@ -970,6 +983,7 @@
         dnsNames:
           - "{{ domain }}"
           - "*.{{ domain }}"
+  when: k8s_create_external_tls | default(true) | bool
   register: _r_create_wildcard_tls_certificate
   retries: 3
   delay: 10
@@ -1733,9 +1747,9 @@
                     kubernetes.io/metadata.name: production
             ports:
               - protocol: TCP
-                port: 9000
+                port: 8333
               - protocol: TCP
-                port: 9001
+                port: 8888
   register: _r_create_storage_netpol
   retries: 3
   delay: 10
