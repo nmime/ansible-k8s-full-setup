@@ -191,12 +191,16 @@ pipeline_stages:
 
 ## Cost Impact (Monthly)
 
-| Tier | Current Cost | HIPAA Cost (cpx41 workers) | Increase |
-|------|--------------|---------------------------|----------|
-| **Minimal** | €16 | €22 (+1 cpx41 worker) | +€6 (37%) |
-| **Small** | €40 | €52 (+2 cpx41 workers) | +€12 (30%) |
-| **Medium** | €52 | €72 (+2 cpx41 workers) | +€20 (38%) |
-| **Production** | €97 | €137 (+3 cpx41 workers) | +€40 (41%) |
+The base figures below use the current CX server prices from the deployment profiles.
+Recalculate the HIPAA total from current Hetzner `cpx41` pricing before procurement,
+because `cpx41` is outside the CX selector used for the base estimates.
+
+| Tier | Base Server Compute | HIPAA Sizing Delta |
+|------|---------------------|--------------------|
+| **Minimal** | €16.47/mo | Add/resize 1 `cpx41` worker, plus higher audit-log storage |
+| **Small** | €21.96/mo server compute; ~€27.96/mo with lb11 | Add/resize 2 `cpx41` workers, plus higher audit-log storage |
+| **Medium** | €85.44/mo server compute; ~€91.44/mo with lb11 | Add/resize 2 `cpx41` workers, plus higher audit-log storage |
+| **Production** | €101.43/mo server compute; ~€107.43/mo with lb11 | Add/resize 3 `cpx41` workers, plus higher audit-log storage |
 
 **Why the cost increase?** HIPAA's TLS overhead + higher audit log retention (90d vs 14d) require more CPU/storage.
 

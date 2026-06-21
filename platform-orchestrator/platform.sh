@@ -65,11 +65,40 @@ flag_from_config() {
 run_playbook() {
   check_env
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+    -e "@${CONFIG_FILE}" \
     -e "tier=${TIER}" \
     -e "project_name=${PROJECT}" \
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
     "$@"
+}
+
+init_config() {
+  local profile="${1:-example}"
+  local source_file
+
+  [[ -f "$CONFIG_FILE" ]] && { warn "platform.yaml exists"; exit 0; }
+
+  if [[ "$profile" == "example" || "$profile" == "default" ]]; then
+    source_file="${SCRIPT_DIR}/platform.example.yaml"
+  else
+    source_file="${SCRIPT_DIR}/profiles/${profile}.yaml"
+  fi
+
+  if [[ ! -f "$source_file" ]]; then
+    error "Unknown profile: $profile"
+    echo "Available profiles:"
+    echo "  example"
+    for file in "${SCRIPT_DIR}"/profiles/*.yaml; do
+      [[ -e "$file" ]] || continue
+      echo "  $(basename "$file" .yaml)"
+    done
+    exit 1
+  fi
+
+  cp "$source_file" "$CONFIG_FILE"
+  log "Created platform.yaml from profile: $profile"
+  log "Edit global.domain/global.email, then: ./platform.sh deploy all"
 }
 
 heal_check() {
@@ -215,7 +244,7 @@ DNS: Preserves user records, only manages platform records.
 Usage: ./platform.sh <command>
 
 Commands:
-  init              Create config
+  init [profile]    Create config from platform.example.yaml or profiles/<profile>.yaml
   deploy all        Full deployment
   deploy <comp>     infra|network|dns|cluster|tls|object-storage|secrets|databases|gitlab|gitops|observability|autoscaling|daytona|glitchtip|apm|blackbox
   status            Show status
@@ -238,12 +267,7 @@ main() {
     credentials)  load_config; show_credentials ;;
     health)       heal_check ;;
     heal)         heal_check; heal_auto ;;
-    init)
-      [[ -f "$CONFIG_FILE" ]] && { warn "platform.yaml exists"; exit 0; }
-      cp "${SCRIPT_DIR}/platform.example.yaml" "$CONFIG_FILE"
-      log "Created platform.yaml"
-      log "Edit global.domain/global.email, then: ./platform.sh deploy all"
-      ;;
+    init)         init_config "${1:-example}" ;;
     *)            show_help ;;
   esac
 }
