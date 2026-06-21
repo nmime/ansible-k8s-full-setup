@@ -28,7 +28,7 @@ export HCLOUD_TOKEN="your-hetzner-api-token"
 ### Option A: Platform Orchestrator (Recommended)
 ```bash
 cd platform-orchestrator
-./platform.sh init                # Creates platform.yaml from small profile
+./platform.sh init                # Creates platform.yaml from platform.example.yaml
 vim platform.yaml                 # Set domain, project, tier
 ./platform.sh deploy all          # Full deployment
 ./platform.sh credentials        # Show all passwords
@@ -151,13 +151,22 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e tier=producti
 ```
 
 ### Tier Upgrade Path
-- minimal (~€18-20/mo) → small (~€28-35/mo) → medium (~€80-100/mo) → production (~€95-125/mo)
+- medium-optimized full tool set (~€55.92/mo server compute, ~€61.92/mo with lb11)
+- minimal (~€16.47/mo server compute)
+- small (~€21.96/mo server compute, ~€27.96/mo with lb11)
+- medium (~€85.44/mo server compute, ~€91.44/mo with lb11)
+- production (~€101.43/mo server compute, ~€107.43/mo with lb11)
 
-Medium and production in this PR use larger 16Gi-class Hetzner nodes (`cx43`) for both
-control planes and workers, plus larger persistent volumes for object storage,
-PostgreSQL, Vault, and observability. Treat the figures above as planning ranges only:
-actual monthly cost depends on current Hetzner pricing, region, backups/snapshots,
-traffic, and optional edge/CDN services.
+Current observed K8s footprint: `4 x cx23 + 4 x cx33 = €55.92/mo` server compute
+(`€0.092/h`, `€671.04/year`). Medium and production use larger 16Gi-class Hetzner
+nodes (`cx43`) for both control planes and workers, plus larger persistent volumes
+for object storage, PostgreSQL, Vault, and observability. Treat the figures above
+as server-compute subtotals only: storage volumes, backups/snapshots, traffic overage,
+IPv4/floating IPs, edge/CDN services, and tax/VAT can change the final bill.
+Use `platform-orchestrator/profiles/medium-optimized.yaml` to keep the
+medium/production tool set while matching the current CX23/CX33 server budget.
+Run `./platform.sh init medium-optimized`, set `global.domain` and `global.email`,
+then run `./platform.sh deploy all`.
 
 ## Backup and Restore
 

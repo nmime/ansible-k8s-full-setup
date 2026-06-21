@@ -302,12 +302,47 @@ kubectl get secret -n monitoring grafana-admin-credentials -o jsonpath='{.data.p
 
 ## Deployment Tiers
 
-Costs below are approximate planning ranges. Hetzner pricing, region, storage,
-backups/snapshots, traffic, and optional edge/CDN services can change the final bill.
-The medium and production profiles in this release use larger 16Gi-class `cx43`
-nodes for control planes and workers.
+Costs below use the current Hetzner server prices from the CX selector:
+`cx23` = €5.49/mo (€0.009/h), `cx33` = €8.49/mo (€0.014/h), and `cx43` = €15.99/mo.
+They are server-compute subtotals only unless a load balancer is called out separately.
+Storage volumes, backups/snapshots, traffic overage, IPv4/floating IPs, edge/CDN
+services, and tax/VAT can change the final bill.
 
-### Tier 1: Development (~€18-20/mo)
+### Current observed K8s footprint
+
+```text
+4 x cx23 = €21.96/mo
+4 x cx33 = €33.96/mo
+Server compute subtotal = €55.92/mo (€0.092/h, €671.04/year)
+```
+
+### Medium-Optimized / Production Tool Set
+
+Use `platform-orchestrator/profiles/medium-optimized.yaml` when you want the
+medium/production platform tools without paying for `cx43` nodes. It keeps
+`tier: medium` so the platform still deploys the medium tool set, but overrides
+the Hetzner shape to:
+
+```text
+3 x cx23 control plane
+4 x cx33 workers
+1 x cx23 bastion
+1 x lb11
+Baseline = €55.92/mo server compute, ~€61.92/mo with lb11
+```
+
+This profile enables GitLab, ArgoCD, Vault/ESO, distributed SeaweedFS, databases,
+observability, Elasticsearch/APM, Dragonfly, Temporal, Postal, GlitchTip, Blackbox,
+KEDA, and backups. For stricter production isolation, set
+`hetzner_tier_specs.medium.cp_schedulable=false` and
+`hetzner_tier_specs.medium.worker_count=5` for ~€70.41/mo with lb11.
+
+```bash
+cd platform-orchestrator
+./platform.sh init medium-optimized
+```
+
+### Tier 1: Minimal / Development (~€16.47/mo server compute)
 ```yaml
 control_plane_count: 1
 worker_count: 1
@@ -318,7 +353,19 @@ edge_enabled: false
 ```
 **Use case**: Testing, dev environments
 
-### Tier 2: Staging / Medium (~€80-100/mo)
+### Tier 2: Small / Staging (~€21.96/mo server compute, ~€27.96/mo with lb11)
+```yaml
+control_plane_count: 1
+worker_count: 2
+server_type: "cx23"  # 2 vCPU, 4GB RAM
+control_server_type: "cx23"
+bastion_server_type: "cx23"  # 2 vCPU, 4GB RAM
+edge_enabled: false
+load_balancer: "lb11"
+```
+**Use case**: Small teams, staging
+
+### Tier 3: Medium / HA Staging (~€85.44/mo server compute, ~€91.44/mo with lb11)
 ```yaml
 control_plane_count: 3
 worker_count: 2
@@ -330,7 +377,7 @@ edge_regions: ["eu"]  # Single edge
 ```
 **Use case**: Pre-production, staging
 
-### Tier 3: Production (~€95-125/mo, HA)
+### Tier 4: Production (~€101.43/mo server compute, ~€107.43/mo with lb11)
 ```yaml
 control_plane_count: 3
 worker_count: 3
@@ -342,7 +389,7 @@ edge_regions: ["eu", "us", "apac"]  # Global CDN
 ```
 **Use case**: Production workloads, HA required
 
-### Tier 4: Enterprise (€200+/mo)
+### Tier 5: Enterprise (€200+/mo)
 ```yaml
 control_plane_count: 5
 worker_count: 5

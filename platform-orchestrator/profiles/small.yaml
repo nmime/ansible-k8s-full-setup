@@ -1,13 +1,14 @@
 # ============================================
-# SMALL TIER - ~€28-35/mo
+# SMALL TIER - ~€21.96/mo server compute, ~€27.96/mo with lb11
 # ============================================
 # Best for: Startups, small teams, staging
-# Nodes: 3 (1 master, 2 workers)
+# Kubernetes nodes: 3 (1 master, 2 workers)
+# Extra servers: 1 cx23 bastion, 1 lb11 load balancer
 # HA: No (single master)
 # ============================================
 
 tier: small
-cost_estimate: "€28-35/mo"
+cost_estimate: "€21.96/mo server compute; ~€27.96/mo with lb11"
 
 global:
   project: k8s

@@ -1,15 +1,15 @@
 # ============================================
-# PRODUCTION TIER - ~€101.43/mo server compute, ~€107.43/mo with lb11
+# MEDIUM-OPTIMIZED TIER - €55.92/mo server compute, ~€61.92/mo with lb11
 # ============================================
-# Best for: Full HA, medium-high traffic
-# Nodes: 6+ x cx43 16Gi-class nodes (3 masters, 3+ workers) + cx23 bastion + lb11
-# HA: Full (control plane + workloads)
-# Storage: 4x150Gi object storage, 100Gi PostgreSQL, 150Gi metrics
-# Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
+# Best for: Full platform tool set on the current CX23/CX33 budget shape
+# Nodes: 3 x cx23 control plane + 4 x cx33 workers + 1 x cx23 bastion + lb11
+# HA: Control plane HA, medium-tier platform behavior
+# Tradeoff: control planes are schedulable to reuse CPU/RAM. For stricter
+# production isolation, set cp_schedulable=false and worker_count=5 (+€8.49/mo).
 # ============================================
 
-tier: production
-cost_estimate: "€101.43/mo server compute; ~€107.43/mo with lb11"
+tier: medium
+cost_estimate: "€55.92/mo server compute; ~€61.92/mo with lb11"
 
 global:
   project: k8s
@@ -18,20 +18,35 @@ global:
   environment: production
 
 # ---------------------------------------------
-# Infrastructure
+# Hetzner infrastructure overrides
 # ---------------------------------------------
+hetzner_region: hel1
+hetzner_bastion_type: cx23
+hetzner_cp_type: cx23
+hetzner_worker_type: cx33
+
+hetzner_tier_specs:
+  medium:
+    cp_count: 3
+    cp_min_cores: 2
+    cp_min_memory: 4
+    cp_schedulable: true
+    worker_count: 4
+    worker_min_cores: 4
+    worker_min_memory: 8
+    lb_enabled: true
+
+# Kept for readability and UI-oriented config consumers.
 infrastructure:
   provider: hetzner
   region: hel1
-
   control_plane:
     count: 3
-    type: cx43
-    schedulable: false
-
+    type: cx23
+    schedulable: true
   workers:
-    count: 3
-    type: cx43
+    count: 4
+    type: cx33
 
 # ---------------------------------------------
 # Network
@@ -47,10 +62,6 @@ network:
 
   vpn:
     enabled: true
-    groups:
-      admin: []
-      dev: []
-      readonly: []
 
 # ---------------------------------------------
 # Kubernetes
@@ -68,15 +79,22 @@ kubernetes:
 # ---------------------------------------------
 # Storage
 # ---------------------------------------------
+object_storage_enabled: true
+object_storage_replicas: 3
+object_storage_volume_size: 80Gi
+
 storage:
   enabled: true
   mode: distributed
-  replicas: 4
-  size_per_replica: 150Gi
+  replicas: 3
+  size_per_replica: 80Gi
 
 # ---------------------------------------------
 # Secrets
 # ---------------------------------------------
+vault_storage_size: 20Gi
+eso_enabled: true
+
 secrets:
   enabled: true
   vault:
@@ -88,23 +106,31 @@ secrets:
 # ---------------------------------------------
 # Databases
 # ---------------------------------------------
+postgresql_storage: 50Gi
+mongodb_storage: 30Gi
+
 databases:
   postgresql:
     enabled: true
     replicas: 3
-    storage_size: 100Gi
+    storage_size: 50Gi
+  mongodb:
+    enabled: true
+    replicas: 3
+    storage_size: 30Gi
 
 # ---------------------------------------------
 # GitLab
 # ---------------------------------------------
+gitlab_runner_concurrent_jobs: 4
+
 gitlab:
   enabled: true
-  webservice_replicas: 2
-  sidekiq_replicas: 2
-  gitaly_replicas: 1
+  webservice_replicas: 1
+  sidekiq_replicas: 1
   runner:
     enabled: true
-    concurrent_jobs: 20
+    concurrent_jobs: 4
 
 # ---------------------------------------------
 # GitOps
@@ -116,28 +142,29 @@ gitops:
 # ---------------------------------------------
 # Observability
 # ---------------------------------------------
+log_stack: elk
+metrics_retention: 14d
+metrics_storage: 60Gi
+logging_retention: 7d
+
 observability:
   metrics:
     enabled: true
-    retention: 30d
-    storage_size: 150Gi
+    retention: 14d
+    storage_size: 60Gi
 
   logging:
     enabled: true
-    retention: 14d
+    retention: 7d
 
   grafana:
     enabled: true
-    replicas: 2
 
 # ---------------------------------------------
 # Autoscaling
 # ---------------------------------------------
 autoscaling:
   enabled: true
-  defaults:
-    min_replicas: 2
-    max_replicas: 20
 
 # ---------------------------------------------
 # Backup
@@ -152,20 +179,29 @@ backup:
     - secrets
     - object-storage
 
+backup_schedule: "0 2 * * *"
+backup_retention_days: 30
+
 # ---------------------------------------------
-# GlitchTip (Sentry-compatible error tracking)
+# Cache, workflows, mail, tracing, probes
 # ---------------------------------------------
+dragonfly_replicas: 1
+dragonfly_snapshot_storage: 10Gi
+postal_smtp_replicas: 1
+postal_worker_replicas: 1
+apm_replicas: 1
+glitchtip_web_replicas: 1
+glitchtip_worker_replicas: 1
+
+deploy_glitchtip: true
+deploy_apm: true
+deploy_blackbox: true
+
 glitchtip:
   enabled: true
 
-# ---------------------------------------------
-# APM Server (distributed tracing via Elasticsearch)
-# ---------------------------------------------
 apm:
-  enabled: true    # Elastic APM; traces written to existing ES, 14d ILM retention
+  enabled: true
 
-# ---------------------------------------------
-# Blackbox Exporter (uptime/synthetic probes)
-# ---------------------------------------------
 blackbox:
-  enabled: true    # Probes all public URLs + internal TCP every 60s
+  enabled: true
