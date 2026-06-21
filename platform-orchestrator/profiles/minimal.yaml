@@ -1,13 +1,14 @@
 # ============================================
-# MINIMAL TIER - ~€18-20/mo
+# MINIMAL TIER - ~€16.47/mo server compute
 # ============================================
 # Best for: Development, learning, testing
-# Nodes: 2 (1 master+worker, 1 worker)
+# Kubernetes nodes: 2 (1 master+worker, 1 worker)
+# Extra servers: 1 cx23 bastion
 # HA: No
 # ============================================
 
 tier: minimal
-cost_estimate: "€18-20/mo"
+cost_estimate: "€16.47/mo server compute"
 
 global:
   project: k8s
