@@ -20,7 +20,6 @@ Repository: ansible-k8s-full-setup
 **Issue**: 19 tasks creating Kubernetes Secrets with `stringData` were missing `no_log: true`, causing plaintext passwords/tokens to appear in Ansible output logs.
 
 **Affected roles**:
-- `brocoders-boilerplate-setup` (backend secret)
 - `dragonfly` (Redis auth)
 - `elasticsearch` (ES credentials)
 - `gitlab-selfhosted` (S3 storage, runner cache)

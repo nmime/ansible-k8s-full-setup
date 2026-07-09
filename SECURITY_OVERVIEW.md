@@ -17,7 +17,7 @@
     ┌──────────┴──────────┐
   Gateway (Cilium)       VPN
     │
-  Apps (daytona, brocoders)
+  Apps (daytona)
     │
   Platform Services
   (Vault, SeaweedFS object storage, PG, ES, Temporal...)
@@ -63,7 +63,6 @@ Every namespace is protected by default-deny behavior plus explicit ingress and 
 | k8s-observability | Monitoring and logging |
 | gitlab-selfhosted | GitLab services |
 | temporal | Temporal server and Web UI |
-| brocoders-boilerplate | App services |
 | postal | Mail services |
 | object-storage-storage | Object storage |
 | k8s-autoscaling | KEDA |
