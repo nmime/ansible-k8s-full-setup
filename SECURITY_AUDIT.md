@@ -1,15 +1,16 @@
 # Security, Cost, and Code Quality Audit Report
 
-Date: April 6, 2026  
+Date: April 6, 2026
 Repository: ansible-k8s-full-setup
 
 ## Executive Summary
 
-✅ All 4 deployment tiers validated successfully  
-✅ 19 critical secret logging vulnerabilities fixed  
-✅ Security posture: GOOD (firewalls, TLS, network policies in place)  
-⚠️ Code reuse opportunities identified  
+✅ All 4 deployment tiers validated successfully
+✅ 19 critical secret logging vulnerabilities fixed
+✅ Security posture: GOOD (firewalls, TLS, network policies in place)
+⚠️ Code reuse opportunities identified
 ✅ Cost-efficient infrastructure sizing
+✅ Elasticsearch license compliance verified (Basic license only)
 
 ---
 
@@ -53,6 +54,33 @@ Hetzner firewalls restrict internal services to private/VPN networks, and Cilium
 ### 1.5 RBAC and Pod Security
 
 Namespaces use pod-security admission labels. Privileged containers are limited to components that need host/kernel access, such as Elasticsearch sysctl init containers and CNI components.
+
+### 1.6 License Compliance (CRITICAL - FIXED)
+
+**Issue**: The Elasticsearch role previously included X-Pack license crack/bypass code:
+- `platinum_license.json` — forged Platinum license payload in `files/`
+- `es-crack-script` ConfigMap — shell script to download and compile Elasticsearch source to bypass license verification
+- `es-platinum-license` Secret — Kubernetes secret holding the forged license
+- License application Job — deployed the forged Platinum license at runtime
+- Init containers (`patch-xpack`) that replaced `x-pack-core` JAR with cracked version
+
+**Risk**: Using forged Elasticsearch licenses violates Elastic's license terms and may constitute copyright infringement. The cracked JAR also introduces supply-chain risk by compiling arbitrary code from GitHub into the runtime.
+
+**Fix**:
+- Removed `platinum_license.json` from `roles/elasticsearch/files/`
+- Removed `es-crack-script` ConfigMap creation task
+- Removed `es-platinum-license` Secret creation task
+- Removed license application Job
+- Removed `patch-xpack` init containers from master and data StatefulSets
+- Removed `crack-script` and `crack-ready` volume mounts
+- Removed custom container commands that copied cracked JARs
+- Set `es_license_type: "basic"` in defaults
+- Added `xpack.license.self_generated.type: basic` environment variable to ES containers
+- Updated deployment summary to reflect Basic license
+
+**Verification**: Static tests in `tests/test_elasticsearch_license_compliance.sh` fail if any crack/bypass artifacts are reintroduced. See `tests/` directory for full test suite.
+
+**Migration Impact**: Existing clusters running with the Platinum crack will need to be re-deployed. The Basic license includes core search, security (TLS, authentication), and monitoring features. Features requiring paid licenses (machine learning, graph exploration, rollups) are not available.
 
 ---
 
