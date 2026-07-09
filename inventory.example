@@ -89,10 +89,12 @@ all:
     backup_retention_days: 30
 
     # ----------------------------------------
-    # Boilerplate Application (optional)
+    # nest-react-boilerplate Application (optional)
     # ----------------------------------------
-    deploy_boilerplate: false
-    # app_name: myapp
+    # Deployed via ArgoCD from nest-react-boilerplate/deploy/k8s/
+    # Requires Node.js 24 on the build environment
+    deploy_nest_react_boilerplate: false
+    # app_name: nest-react-boilerplate
     # app_namespace: production
     # git_provider: gitlab-selfhosted
 

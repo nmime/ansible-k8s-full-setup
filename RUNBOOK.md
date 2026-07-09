@@ -67,6 +67,7 @@
 | Helm | 3.14 | <https://helm.sh/docs/intro/install/> |
 | hcloud CLI | latest | `brew install hcloud` / `snap install hcloud` |
 | yq | 4.0 | `brew install yq` (for platform orchestrator) |
+| Node.js | 24.x | `nvm install 24` (for nest-react-boilerplate build) |
 
 ```bash
 # One-shot install (Linux / Debian-based)
@@ -387,6 +388,7 @@ kubectl create secret generic nest-react-boilerplate-production-secrets \
   --from-literal=REDIS_HOST=dragonfly.dragonfly.svc.cluster.local \
   --from-literal=REDIS_PORT=6379 \
   --from-literal=REDIS_PASSWORD="<dragonfly_password>" \
+  # Dragonfly provides Redis v6-compatible interface
   --from-literal=JWT_SECRET="<jwt_secret_value>" \
   --from-literal=JWT_REFRESH_SECRET="<jwt_refresh_secret_value>" \
   --from-literal=APP_BASE_URL="https://app.example.com" \

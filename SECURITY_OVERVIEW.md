@@ -67,7 +67,7 @@ Every namespace is protected by default-deny behavior plus explicit ingress and 
 | object-storage-storage | Object storage |
 | k8s-autoscaling | KEDA |
 | elasticsearch | Elasticsearch and Kibana |
-| dragonfly | Redis-compatible datastore |
+| dragonfly | Redis v6-compatible datastore |
 
 ### 3. Service Monitoring
 
