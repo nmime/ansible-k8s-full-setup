@@ -1,0 +1,59 @@
+# Pre-commit configuration for ansible-k8s-full-setup
+# Install: pip install pre-commit && pre-commit install
+
+repos:
+  # ── File hygiene ────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+        exclude: "^platform-orchestrator/profiles/"
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+      - id: check-shebang-scripts-are-executable
+
+  # ── YAML linting ────────────────────────────────────────────
+  - repo: https://github.com/adrienverge/yamllint.git
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+        args: ["-c", ".yamllint.yaml"]
+        verbose: true
+
+  # ── ShellCheck ──────────────────────────────────────────────
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ["--severity=warning"]
+
+  # ── Ansible lint ────────────────────────────────────────────
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v25.2.3
+    hooks:
+      - id: ansible-lint
+        additional_dependencies:
+          - ansible-core>=2.18,<2.19
+          - ansible-compat>=24.10
+        args: ["-c", ".ansible-lint.yml"]
+        files: "^(playbooks|roles)/"
+
+  # ── Python linting ──────────────────────────────────────────
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.2.0
+    hooks:
+      - id: flake8
+        files: "^tests/"
+        args: ["--max-line-length=120", "--ignore=E501,W503"]
+
+  # ── Secrets detection ───────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.0
+    hooks:
+      - id: gitleaks
+        args: ["--baseline-path="]
