@@ -73,6 +73,16 @@ kubectl get svc -A
 kubectl get pvc -A
 ```
 
+### Check Application (nest-react-boilerplate)
+```bash
+# Application pods
+kubectl get pods -n production
+# Expected: nest-react-boilerplate pods Running
+
+# ArgoCD application status
+kubectl get application nest-react-boilerplate -n argocd
+# Expected: Synced, Healthy
+
 ### Check Services
 ```bash
 # GitLab
@@ -205,3 +215,5 @@ ansible-playbook playbooks/deploy_platform.yml -i inventory.yml -e state=absent
 5. Keep all configuration in version control
 6. Use External Secrets Operator for application secrets
 7. Use ArgoCD ApplicationSets for multi-environment deployments
+8. Ensure Node.js 24 is available in the build environment for nest-react-boilerplate
+9. Dragonfly provides Redis v6-compatible caching for the application

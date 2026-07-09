@@ -16,7 +16,7 @@ This directory contains Ansible roles for each platform component.
 | `k8s-observability/` | Monitoring, logging, dashboards, alerting | VictoriaMetrics, Loki, Grafana, PMM | - |
 | `k8s-autoscaling/` | Event-driven autoscaling | KEDA | Chart 2.19.0 |
 | `temporal/` | Workflow orchestration engine | Temporal Server, Web UI | Chart 1.2.0 |
-| `dragonfly/` | Redis-compatible in-memory store | Dragonfly Operator, Dragonfly CRD | Operator v1.5.0, Dragonfly v1.38.1 |
+| `dragonfly/` | Redis v6-compatible in-memory store | Dragonfly Operator, Dragonfly CRD | Operator v1.5.0, Dragonfly v1.38.1 |
 | `postal/` | Mail server | Postal, MariaDB, Dragonfly | v3.3.6 |
 | `glitchtip/` | Sentry-compatible error tracking | GlitchTip Helm chart, PostgreSQL, Dragonfly | App v6.1.4, Chart 8.2.0 |
 | `apm-server/` | Distributed tracing ingest | Elastic APM / OTLP, Elasticsearch | APM Server 9.4.1 |
@@ -53,7 +53,7 @@ Roles are deployed sequentially to respect dependencies:
  9. gitlab-selfhosted       GitLab CE + Runner + Registry + KAS
 10. k8s-gitops              ArgoCD and ApplicationSets
 11. k8s-autoscaling         KEDA event-driven autoscaler
-12. dragonfly               Dragonfly in-memory store
+12. dragonfly               Dragonfly Redis v6-compatible store
 13. temporal                Temporal workflow engine + Web UI
 14. postal                  Postal mail server
 15. blackbox-exporter       Synthetic probes

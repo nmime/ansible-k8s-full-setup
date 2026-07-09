@@ -216,7 +216,7 @@ certbot certonly --nginx \
    └─→ Certificate: *.example.com wildcard from cert-manager
 
 5. HTTPRoute matches Host: app.example.com
-   └─→ Routes to backend service: boilerplate-frontend
+   └─→ Routes to backend service: nest-react-boilerplate-frontend
 
 6. Service load balances to pod
    └─→ Pod serves response

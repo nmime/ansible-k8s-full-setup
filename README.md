@@ -19,6 +19,9 @@
 - ✅ Automated backups (S3)
 - ✅ Full monitoring stack (Grafana + 12 dashboards)
 
+**Application:**
+- nest-react-boilerplate (deployed via ArgoCD from `nest-react-boilerplate/deploy/k8s/`)
+
 **Required Components** (always installed):
 - Cilium CNI (eBPF networking + policies)
 - cert-manager (automated TLS)
@@ -37,7 +40,7 @@ Object storage note: RustFS was evaluated as an Apache-2.0 future/alternative ba
 **Optional Components** (install as needed):
 - PostgreSQL 18 HA (Percona Operator)
 - MongoDB 8.0 HA (Percona Operator)
-- Dragonfly (Redis-compatible, 25x faster)
+- Dragonfly (Redis v6-compatible, 25x faster)
 - Temporal (workflow orchestration)
 
 ---
@@ -45,6 +48,15 @@ Object storage note: RustFS was evaluated as an Apache-2.0 future/alternative ba
 ## Quick Start
 
 ### Prerequisites
+
+### Application: nest-react-boilerplate
+
+The platform deploys the **nest-react-boilerplate** application via ArgoCD GitOps.
+The application manifests are located in the `nest-react-boilerplate/deploy/k8s/` directory.
+
+**Requirements:**
+- **Node.js 24** — required for the build environment
+- **Dragonfly** — provides Redis v6-compatible caching (deployed by default)
 
 ```bash
 # 1. Create Hetzner API token
@@ -79,7 +91,8 @@ ansible-playbook -i inventory/hosts.yml site.yml
 4. Monitoring (VictoriaMetrics, Grafana, Loki)
 5. Storage (SeaweedFS S3)
 6. VPN (Headscale)
-7. Edge CDN (optional, if `GCORE_API_KEY` set)
+7. Application: nest-react-boilerplate (via ArgoCD GitOps)
+8. Edge CDN (optional, if `GCORE_API_KEY` set)
 
 ---
 
@@ -168,7 +181,7 @@ APAC Edge   EU Edge    US Edge
 |-----------|---------|-------------|--------|
 | **PostgreSQL 18** | Percona 2.8 | `install_postgresql: true` | HA database with pgBackRest |
 | **MongoDB 8.0** | Percona 1.22 | `install_mongodb: true` | HA NoSQL with PBM backups |
-| **Dragonfly** | v1.38.1 | `install_dragonfly: true` | Redis-compatible (25x faster) |
+| **Dragonfly** | v1.38.1 | `install_dragonfly: true` | Redis v6-compatible (25x faster) |
 | **Temporal** | v1.31.0 | `install_temporal: true` | Workflow orchestration |
 | **PMM** | v3 | Auto-enabled with DBs | Percona database monitoring |
 
