@@ -1,6 +1,6 @@
 - name: Set GitLab tier-specific variables
   set_fact:
-    gitlab_chart_version: 9.11.4
+    gitlab_chart_version: 10.1.2
     gitlab_namespace: gitlab
     gitlab_domain: gitlab.{{ domain }}
     registry_domain: registry.{{ domain }}
@@ -101,7 +101,7 @@
     values:
       global:
         edition: "{{ gitlab_edition | default('ce') }}"
-        gitlabVersion: 18.11.3
+        gitlabVersion: 19.1.2
         hosts:
           domain: '{{ domain }}'
           gitlab:
@@ -121,15 +121,17 @@
           from: gitlab@{{ domain }}
           display_name: GitLab
           reply_to: noreply@{{ domain }}
-        psql:
-          host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
-          port: 5432
-          database: gitlabhq_production
-          username: gitlab
-          password:
-            secret: gitlab-postgresql-password
-            key: postgresql-password
-          preparedStatements: false
+        database:
+          managed: false
+          external:
+            host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
+            port: 5432
+            database: gitlabhq_production
+            username: gitlab
+            password:
+              secret: gitlab-postgresql-password
+              key: postgresql-password
+            preparedStatements: false
         registry:
           enabled: true
           bucket: gitlab-registry
@@ -166,18 +168,10 @@
           backups:
             bucket: gitlab-backups
             tmpBucket: gitlab-tmp
-      postgresql:
-        install: false
       redis:
-        install: true
-        architecture: standalone
-        networkPolicy:
+        enabled: true
+        replication:
           enabled: false
-        primary:
-          persistence:
-            enabled: true
-            size: 8Gi
-            storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       gitlab:
         webservice:
           replicaCount: '{{ gitlab_webservice_replicas | int }}'
@@ -213,10 +207,13 @@
               cpu: 500m
               memory: 256Mi
         gitaly:
-          persistence:
-            enabled: true
-            size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' if tier == ''small'' else ''50Gi'' }}'
-            storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
+          storages:
+            default:
+              persistentVolumeClaim:
+                size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' if tier == ''small'' else ''50Gi'' }}'
+                storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
+              tags:
+                - default
           resources:
             requests:
               cpu: '{{ ''50m'' if gitlab_mode == ''light'' else ''200m'' }}'
@@ -230,14 +227,11 @@
         toolbox:
           enabled: true
           backups:
-            cron:
-              enabled: true
-              schedule: 0 2 * * *
-              extraArgs: ''
             objectStorage:
               config:
                 secret: gitlab-object-storage
                 key: connection
+            schedule: 0 2 * * *
       registry:
         enabled: true
         replicaCount: '{{ gitlab_webservice_replicas | int }}'

@@ -176,7 +176,7 @@ class TestIntegration:
         assert d.get("k8s_version") == "v1.35.4"
         assert d.get("cilium_version") == "v1.19.4"
         assert d.get("es_version") == "9.4.1"
-        assert d.get("gitlab_chart_version") == "9.11.4"
+        assert d.get("gitlab_chart_version") == "10.1.2"
         assert d.get("argocd_chart_version") == "9.5.14"
         assert d.get("object_storage_chart_version") == "4.25.1"
         assert d.get("keda_chart_version") == "2.19.0"
