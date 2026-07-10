@@ -153,8 +153,11 @@
       become: false
       no_log: true
 
-    - name: Encrypt secrets file with Ansible Vault
-      ansible.builtin.command: "ansible-vault encrypt {{ secrets_file }}.tmp {{ '--vault-password-file ' + (vault_password_file | default('~/.vault_pass') | expanduser) if (vault_password_file | default('', true) | length > 0 and lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE') | length == 0) else '' }}"
+    - name: "Encrypt secrets file with Ansible Vault"
+      ansible.builtin.command:
+        cmd: "ansible-vault encrypt {{ secrets_file }}.tmp"
+        args:
+          - "{{ '--vault-password-file ' + (vault_password_file | default('~/.vault_pass') | expanduser) if (vault_password_file | default('', true) | length > 0 and lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE') | length == 0) else '' }}"
       delegate_to: localhost
       become: false
       no_log: true
@@ -162,7 +165,7 @@
       changed_when: vault_encrypt_result.rc == 0
       failed_when: false
 
-    - name: Fallback: copy unencrypted secrets if vault encryption unavailable
+    - name: "Fallback: copy unencrypted secrets if vault encryption unavailable"
       ansible.builtin.command: mv {{ secrets_file }}.tmp {{ secrets_file }}
       delegate_to: localhost
       become: false
