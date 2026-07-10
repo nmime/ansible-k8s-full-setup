@@ -2,7 +2,6 @@
 # restore-drill.sh - Disaster recovery drill with safety gates
 # Usage: ./scripts/restore-drill.sh --component <name> --backup <ref> [--force] [--dry-run]
 set -euo pipefail
-PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
