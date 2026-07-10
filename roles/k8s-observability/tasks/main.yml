@@ -1,7 +1,7 @@
 - name: Set observability tier-specific variables
   set_fact:
     monitoring_namespace: monitoring
-    vm_operator_version: 0.59.3
+    vm_operator_version: "0.66.2"
     loki_chart_version: 6.55.0
     grafana_chart_version: 10.5.15
     grafana_domain: grafana.{{ domain }}

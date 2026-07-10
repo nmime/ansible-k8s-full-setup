@@ -1,6 +1,6 @@
 ---
 apm_namespace: elasticsearch
-apm_version: "9.4.1"
+apm_version: "9.4.3"
 apm_image: "docker.elastic.co/apm/apm-server"
 apm_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 

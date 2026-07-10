@@ -1,8 +1,8 @@
 ---
 es_namespace: elasticsearch
-es_version: "9.4.1"
+es_version: "9.4.3"
 es_image: "docker.elastic.co/elasticsearch/elasticsearch"
-kibana_version: "9.4.1"
+kibana_version: "9.4.3"
 kibana_image: "docker.elastic.co/kibana/kibana"
 es_cluster_name: "platform-es"
 es_license_type: "platinum"

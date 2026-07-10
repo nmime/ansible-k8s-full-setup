@@ -51,7 +51,7 @@ network:
 # Kubernetes
 # ---------------------------------------------
 kubernetes:
-  version: v1.35.4
+  version: v1.35.6
   cni: cilium
   ha_control_plane: false
 

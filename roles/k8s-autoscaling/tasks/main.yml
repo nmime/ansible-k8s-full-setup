@@ -1,7 +1,7 @@
 - name: Set KEDA tier-specific variables
   set_fact:
     keda_namespace: keda
-    keda_chart_version: 2.19.0
+    keda_chart_version: "2.20.1"
     keda_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
     keda_min_replicas_default: '{{ 2 if tier == ''production'' else 1 }}'
     keda_max_replicas_default: '{{ 20 if tier == ''production'' else 10 }}'
