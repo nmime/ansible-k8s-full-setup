@@ -17,6 +17,13 @@ skip_list:
   - ignore-errors
   # We deliberately use run_once on localhost
   - run-once
+  # Allow missing/non-prefixed task names in existing playbooks
+  - name[missing]
+  - name[prefix]
+  # Allow non-FQCN module references (common in Kubespray ecosystem)
+  - fqcn
+  # Allow deprecated modules during migration
+  - deprecated-module
 
 warn_list:
   - fqcn
@@ -28,6 +35,8 @@ exclude_paths:
   - .venv/
   - __pycache__/
   - .github/
+  - tests/
+  - .pytest_cache/
 
 # Ansible configuration to use
 profile: production

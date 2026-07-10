@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Trivy config scanner
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@v0.31.0
         with:
           scan-type: config
           scan-ref: "."
@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Trivy filesystem scanner
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@v0.31.0
         with:
           scan-type: fs
           scan-ref: "."
