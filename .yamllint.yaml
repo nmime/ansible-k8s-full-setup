@@ -1,0 +1,45 @@
+# yamllint configuration for ansible-k8s-full-setup
+# Balances strictness with Ansible/Kubernetes YAML realities
+
+extends: default
+
+rules:
+  # Allow longer lines for complex Jinja2 expressions and K8s manifests
+  line-length:
+    max: 200
+    level: warning
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+
+  # Allow multi-document files (Ansible standard)
+  document-start:
+    level: warning
+
+  # K8s/Ansible use deep nesting – relax indentation
+  indentation:
+    indent: 2
+    spaces: 2
+    check-multi-line-strings: false
+
+  # False positives on Jinja2 templating
+  truthy:
+    level: warning
+    allowed-values: ["yes", "no", "true", "false"]
+
+  comments:
+    min-spaces-from-content: 1
+
+  # Allow anchors and aliases (common in K8s YAML)
+  trailing-spaces: enable
+  empty-lines:
+    max: 2
+  new-lines:
+    type: unix
+
+ignore: |
+  # Generated / third-party content
+  kubespray/
+  .venv/
+  __pycache__/
+  *.tfstate
+  platform-orchestrator/.state/

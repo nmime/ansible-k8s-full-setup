@@ -72,10 +72,10 @@ Version variables in `defaults/main.yml` use inline comments for Renovate:
 gitlab_chart_version: "9.11.4"
 
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-k8s_version: v1.35.6
+k8s_version: v1.35.4
 
 # renovate: datasource=docker depName=elasticsearch
-es_version: "9.4.3"
+es_version: "9.4.1"
 ```
 
 Datasources used:

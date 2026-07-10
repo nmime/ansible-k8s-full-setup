@@ -1,0 +1,42 @@
+# Ansible-lint configuration
+# https://ansible-lint.readthedocs.io
+
+skip_list:
+  # We use localhost tasks by design (platform orchestrator pattern)
+  - risky-local-tmp
+  # Kubespray inventory is dynamic
+  - no-handler
+  # Jinja2 templating in vars_files
+  - var-naming[no-role-prefix]
+  # Commands are sometimes required (hcloud CLI, kubectl)
+  - command-instead-of-module
+  - no-changed-when
+  # Role naming follows infra convention, not galaxy convention
+  - role-name
+  # Debug tasks used for deployment banners
+  - ignore-errors
+  # We deliberately use run_once on localhost
+  - run-once
+  # Allow missing/non-prefixed task names in existing playbooks
+  - name[missing]
+  - name[prefix]
+  # Allow non-FQCN module references (common in Kubespray ecosystem)
+  - fqcn
+  # Allow deprecated modules during migration
+  - deprecated-module
+
+warn_list:
+  - fqcn
+  - latest
+
+exclude_paths:
+  - .git/
+  - kubespray/
+  - .venv/
+  - __pycache__/
+  - .github/
+  - tests/
+  - .pytest_cache/
+
+# Ansible configuration to use
+profile: production

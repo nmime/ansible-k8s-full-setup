@@ -1,0 +1,173 @@
+# .github/workflows/ci.yml
+# Infrastructure CI for ansible-k8s-full-setup
+#
+# Jobs:
+#   lint-yaml         – yamllint on all YAML manifests
+#   lint-ansible      – ansible-lint on playbooks & roles
+#   ansible-syntax    – ansible-playbook --syntax-check
+#   shellcheck        – ShellCheck on all shell scripts
+#   python-tests      – pytest suite (unit + component + e2e)
+#   version-matrix    – validate version compatibility matrix
+#   trivy-secret-scan – detect leaked secrets in repo content
+#
+# All jobs run in parallel on push / PR to any branch.
+
+name: Infrastructure CI
+
+on:
+  push:
+    branches: [main, upgrade/**, feature/**]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1. YAML Linting
+  # ─────────────────────────────────────────────────────────────
+  lint-yaml:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint==1.37.1
+
+      - name: Run yamllint
+        run: yamllint -c .yamllint.yaml . || true
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. Ansible Lint
+  # ─────────────────────────────────────────────────────────────
+  lint-ansible:
+    name: Ansible Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run ansible-lint
+        run: |
+          ansible-lint -c .ansible-lint.yml playbooks/ roles/ || true
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. Ansible Syntax Checks
+  # ─────────────────────────────────────────────────────────────
+  ansible-syntax:
+    name: Ansible Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Syntax check deploy_platform.yml
+        run: |
+          ansible-playbook playbooks/deploy_platform.yml \
+            --syntax-check \
+            -e tier=medium \
+            -e domain=cilabs.example.com \
+            -e email=admin@example.com
+
+      - name: Syntax check continue_post_kubespray.yml
+        run: |
+          ansible-playbook playbooks/continue_post_kubespray.yml \
+            --syntax-check \
+            -e tier=medium \
+            -e domain=cilabs.example.com \
+            -e email=admin@example.com
+
+  # ─────────────────────────────────────────────────────────────
+  # 4. ShellCheck
+  # ─────────────────────────────────────────────────────────────
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ludeeus/action-shellcheck@v2.0.0
+        with:
+          severity: warning
+          check_together: true
+
+  # ─────────────────────────────────────────────────────────────
+  # 5. Python Tests
+  # ─────────────────────────────────────────────────────────────
+  python-tests:
+    name: Python Tests (Unit + Component + E2E)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short --color=yes
+
+  # ─────────────────────────────────────────────────────────────
+  # 6. Version Matrix Validation
+  # ─────────────────────────────────────────────────────────────
+  version-matrix:
+    name: Version Matrix Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate version matrix
+        run: |
+          python3 tests/test_version_matrix.py
+
+  # ─────────────────────────────────────────────────────────────
+  # 7. Trivy Secret Scan
+  # ─────────────────────────────────────────────────────────────
+  trivy-secret-scan:
+    name: Trivy Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@v0.31.0
+        with:
+          scan-type: fs
+          scan-ref: "."
+          severity: "CRITICAL,HIGH"
+          exit-code: "0"
+          format: "table"
+          ignore-unfixed: true

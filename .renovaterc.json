@@ -1,0 +1,140 @@
+{
+  "extends": [
+    "config:recommended"
+  ],
+  "enabledManagers": [
+    "github-actions",
+    "pip-requirements",
+    "custom.regex"
+  ],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 10,
+  "separateMajorMinor": true,
+  "separatePatchReleases": false,
+  "schedule": [
+    "on Monday"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true
+  },
+  "regexManagers": [
+    {
+      "description": "Detect Helm chart versions in Ansible defaults",
+      "fileMatch": [
+        "(^|/)defaults/main\\.yml$",
+        "(^|/)defaults\\.yml$"
+      ],
+      "matchStrings": [
+        "#\\s*renovate: datasource=helm depName=(?<depName>.*?)\\n\\s*\\w+_chart_version:\\s*[\"']?(?<currentValue>[\\w.]+)[\"']?"
+      ],
+      "datasourceTemplate": "helm"
+    },
+    {
+      "description": "Detect container image versions in Ansible defaults",
+      "fileMatch": [
+        "(^|/)defaults/main\\.yml$",
+        "(^|/)defaults\\.yml$"
+      ],
+      "matchStrings": [
+        "#\\s*renovate: datasource=docker depName=(?<depName>.*?)\\n\\s*\\w+_version:\\s*[\"']?(?<currentValue>.+?)[\"']?"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "Detect Kubernetes / CNI version variables in defaults/main.yml",
+      "fileMatch": [
+        "^defaults/main\\.yml$"
+      ],
+      "matchStrings": [
+        "k8s_version:\\s*[\"']?(?<currentValue>v[\\d.]+)[\"']?\\n",
+        "cilium_version:\\s*[\"']?(?<currentValue>v[\\d.]+)[\"']?\\n",
+        "gateway_api_version:\\s*[\"']?(?<currentValue>v[\\d.]+)[\"']?\\n"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes/kubernetes"
+    },
+    {
+      "description": "Detect version variables in platform profile YAML files",
+      "fileMatch": [
+        "platform-orchestrator/profiles/.*\\.yaml$"
+      ],
+      "matchStrings": [
+        "version:\\s*(?<currentValue>v[\\d.]+)\\n"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "kubernetes/kubernetes"
+    },
+    {
+      "description": "Detect Trivy version in CI templates",
+      "fileMatch": [
+        "(^|/)gitlab-ci-trivy\\.yml$"
+      ],
+      "matchStrings": [
+        "TRIVY_VERSION:\\s*[\"']?(?<currentValue>[\\d.]+)[\"']?\\n"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "aquasecurity/trivy"
+    },
+    {
+      "description": "Detect Elasticsearch / Kibana version variables",
+      "fileMatch": [
+        "^defaults/main\\.yml$"
+      ],
+      "matchStrings": [
+        "es_version:\\s*[\"']?(?<currentValue>[\\d.]+)[\"']?\\n",
+        "kibana_version:\\s*[\"']?(?<currentValue>[\\d.]+)[\"']?\\n"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "elasticsearch"
+    },
+    {
+      "description": "Detect Postal version variable",
+      "fileMatch": [
+        "^defaults/main\\.yml$"
+      ],
+      "matchStrings": [
+        "postal_version:\\s*[\"']?(?<currentValue>[\\d.]+)[\"']?\\n"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "postalserver/postal"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Auto-merge minor/patch Helm chart updates",
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Group Helm chart updates together",
+      "matchDatasources": ["helm"],
+      "groupName": "Helm chart dependencies"
+    },
+    {
+      "description": "Group Python dependencies together",
+      "matchManagers": ["pip-requirements"],
+      "groupName": "Python dependencies"
+    },
+    {
+      "description": "Group GitHub Actions updates together",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Separate major version bumps",
+      "matchUpdateTypes": ["major"],
+      "separateMajorMinor": true,
+      "labels": ["dependencies", "major"]
+    },
+    {
+      "description": "Pin Python dependencies exactly in requirements.txt",
+      "matchManagers": ["pip-requirements"],
+      "rangeStrategy": "pin"
+    }
+  ]
+}
