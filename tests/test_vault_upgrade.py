@@ -705,3 +705,24 @@ class TestVaultUpgradeImplemented:
         content = tasks.read_text()
         assert "v2.0.3" in content
         assert "v1.21.2" not in content
+
+
+class TestDefaultsVaultVersions:
+    """Unit: defaults/main.yml contains correct Vault version defaults."""
+
+    @pytest.fixture(autouse=True)
+    def _content(self):
+        self.content = (REPO_ROOT / "defaults/main.yml").read_text(encoding="utf-8")
+
+    def test_vault_version_default_is_v2(self):
+        assert 'vault_version' in self.content
+        assert '2.0.3' in self.content
+
+    def test_vault_chart_version_default(self):
+        assert 'vault_chart_version' in self.content
+        assert '0.34.0' in self.content
+
+    def test_has_renovate_comment_for_vault(self):
+        assert '# renovate:' in self.content
+        # Should reference vault as datasource
+        assert 'depName=vault' in self.content or 'depName=hashicorp/vault' in self.content
