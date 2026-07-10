@@ -106,7 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ludeeus/action-shellcheck@v2.0.0
+      - uses: ludeeus/action-shellcheck@2.0.0
         with:
           severity: warning
           check_together: true
@@ -163,7 +163,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Trivy filesystem scanner
-        uses: aquasecurity/trivy-action@v0.31.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: "."
