@@ -2,6 +2,8 @@
 # Generate Secrets Role - Centralized credential generation
 # Generates all credentials ONCE and persists them to a local secrets file.
 # On subsequent runs, existing credentials are loaded (never regenerated).
+# SECRETS are encrypted with Ansible Vault to prevent plaintext persistence.
+# See SECURITY_HARDENING.md section 2 for migration from plaintext .platform-secrets.yml
 
 - name: Set secrets file path
   set_fact:
@@ -14,11 +16,23 @@
   delegate_to: localhost
   become: false
 
-- name: Load existing secrets
+- name: Load existing secrets (Ansible Vault encrypted)
   include_vars:
     file: "{{ secrets_file }}"
     name: saved_secrets
-  when: secrets_file_stat.stat.exists
+  no_log: true
+  when:
+    - secrets_file_stat.stat.exists
+    - vault_encrypt_secrets | default(true) | bool
+
+- name: Load existing secrets (plaintext fallback for migration)
+  include_vars:
+    file: "{{ secrets_file }}"
+    name: saved_secrets
+  no_log: true
+  when:
+    - secrets_file_stat.stat.exists
+    - not (vault_encrypt_secrets | default(true) | bool)
 
 - name: Ensure saved_secrets is defined for first run
   set_fact:
@@ -74,7 +88,7 @@
     alert_telegram_chat_id: "{{ generated_alert_telegram_chat_id }}"
     alert_email_to: "{{ generated_alert_email_to }}"
 
-- name: Save all generated secrets to file
+- name: Save all generated secrets to file (plaintext migration only)
   copy:
     content: |
       ---
@@ -104,6 +118,77 @@
   delegate_to: localhost
   become: false
   no_log: true
+  when: not (vault_encrypt_secrets | default(true) | bool)
+
+- name: Save all generated secrets to file (Ansible Vault encrypted)
+  block:
+    - name: Write secrets to temporary unencrypted file
+      copy:
+        content: |
+          ---
+          # Auto-generated platform secrets - DO NOT COMMIT TO GIT
+          # Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+          object_storage_access_key: "{{ object_storage_access_key }}"
+          object_storage_secret_key: "{{ object_storage_secret_key }}"
+          grafana_admin_user: "{{ grafana_admin_user }}"
+          grafana_admin_password: "{{ grafana_admin_password }}"
+          app_db_password: "{{ app_db_password }}"
+          jwt_secret: "{{ app_jwt_secret }}"
+          jwt_refresh_secret: "{{ app_refresh_secret }}"
+          argocd_admin_password: "{{ argocd_admin_password }}"
+          headscale_api_key: "{{ headscale_api_key }}"
+          dragonfly_password: "{{ dragonfly_password }}"
+          daytona_api_key: "{{ daytona_api_key }}"
+          daytona_encryption_key: "{{ daytona_encryption_key }}"
+          es_superuser_password: "{{ es_superuser_password }}"
+          postal_db_password: "{{ postal_db_password }}"
+          postal_rails_secret: "{{ postal_rails_secret }}"
+          postal_admin_password: "{{ postal_admin_password }}"
+          alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
+          alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
+          alert_email_to: "{{ alert_email_to }}"
+        dest: "{{ secrets_file }}.tmp"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Encrypt secrets file with Ansible Vault
+      ansible.builtin.command: >-
+        ansible-vault encrypt {{ secrets_file }}.tmp
+        {{ '--vault-password-file ' + (vault_password_file | default('~/.vault_pass') | expanduser) if (vault_password_file | default('', true) | length > 0 and lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE') | length == 0) else '' }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+      register: vault_encrypt_result
+      changed_when: vault_encrypt_result.rc == 0
+      failed_when: false
+
+    - name: Fallback: copy unencrypted secrets if vault encryption unavailable
+      ansible.builtin.command: mv {{ secrets_file }}.tmp {{ secrets_file }}
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: vault_encrypt_result.failed | default(false) or vault_encrypt_result.rc != 0
+
+    - name: Move encrypted secrets to final location
+      ansible.builtin.command: mv {{ secrets_file }}.tmp.enc {{ secrets_file }}
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: vault_encrypt_result.rc == 0
+  when: vault_encrypt_secrets | default(true) | bool
+
+- name: Warn if Ansible Vault encryption unavailable
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Ansible Vault encryption was requested but could not encrypt {{ secrets_file }}.
+      Secrets were saved unencrypted. To fix: create a vault password file
+      and set ANSIBLE_VAULT_PASSWORD_FILE, or use --ask-vault-pass.
+      See SECURITY_HARDENING.md section 2 for migration steps.
+  when:
+    - vault_encrypt_secrets | default(true) | bool
+    - vault_encrypt_result.failed | default(false) or vault_encrypt_result.rc != 0
 
 - name: Ensure secrets file is in .gitignore
   ansible.builtin.lineinfile:
