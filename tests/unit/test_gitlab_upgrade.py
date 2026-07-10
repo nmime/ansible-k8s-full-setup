@@ -78,18 +78,25 @@ class TestGitLabTasksChart10:
 
     @pytest.mark.unit
     def test_redis_no_install_key(self):
-        redis_section = ""
+        # Extract just the redis block by indentation
+        redis_block = []
         in_redis = False
+        base_indent = None
         for line in self.lines:
-            if line.strip().startswith("redis:"):
+            m = re.match(r'^(\s+)redis:\s*$', line)
+            if m:
                 in_redis = True
-                redis_section += line + "\n"
+                base_indent = len(m.group(1))
+                redis_block.append(line)
                 continue
             if in_redis:
-                if line and not line.startswith(" ") and not line.startswith("-"):
+                stripped = line.lstrip()
+                cur_indent = len(line) - len(stripped)
+                if stripped and cur_indent <= base_indent:
                     break
-                redis_section += line + "\n"
-        assert "install:" not in redis_section
+                redis_block.append(line)
+        block_text = "\n".join(redis_block)
+        assert "install:" not in block_text, f"redis.install found in: {block_text[:200]}"
 
     @pytest.mark.unit
     def test_redis_enabled_true(self):
