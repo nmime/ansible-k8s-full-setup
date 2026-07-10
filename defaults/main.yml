@@ -104,6 +104,8 @@ vault_storage_size: 20Gi
 eso_enabled: true
 
 # Databases - tier-specific
+# renovate: datasource=github-releases depName=percona/percona-postgresql-operator
+pg_operator_version: "3.0.0"
 postgresql_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 postgresql_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' else '50Gi' if tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
