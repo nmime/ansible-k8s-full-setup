@@ -59,6 +59,18 @@ gateway_api_version: v1.6.0
 k8s_pod_cidr: 10.233.64.0/18
 k8s_service_cidr: 10.233.0.0/18
 
+# Cluster addons (patch/minor-safe upgrades)
+cert_manager_version: v1.21.0
+metallb_version: v0.16.1
+hetzner_ccm_version: v1.33.0
+hetzner_csi_version: v2.22.0
+kubespray_version: v2.31.0
+
+# CLI tool versions (pinned for reproducibility)
+kubectl_version: "{{ k8s_version }}"
+hcloud_cli_version: v1.42.0
+yq_version: v4.44.6
+
 # Network
 private_network_cidr: 10.0.0.0/16
 infrastructure_subnet: 10.0.0.0/24
@@ -129,11 +141,25 @@ temporal_num_history_shards: 512
 es_version: "9.4.3"
 # renovate: datasource=docker depName=kibana
 kibana_version: "9.4.3"
+apm_server_version: "9.4.3"
 es_cluster_name: "platform-es"
 
 # Postal
 # renovate: datasource=github-releases depName=postalserver/postal
 postal_version: "3.3.7"
+
+# Blackbox exporter
+blackbox_chart_version: "11.15.1"
+
+# Dragonfly (Redis-compatible cache)
+dragonfly_operator_version: "v1.6.1"
+dragonfly_image_version: "v1.39.0"
+
+# VictoriaMetrics Operator
+vm_operator_version: "0.66.2"
+
+# External Secrets Operator
+eso_chart_version: "2.7.0"
 
 # Backup and Restore
 backup_schedule: "0 2 * * *"
@@ -193,3 +219,4 @@ otel_collector_enabled: "{{ tracing_enabled }}"
 hipaa_compliance: true
 internal_tls_enabled: "{{ hipaa_compliance }}"
 log_redaction_enabled: "{{ hipaa_compliance }}"
+
