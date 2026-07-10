@@ -10,7 +10,7 @@
 #   --snapshot-bucket   S3 bucket with Vault snapshots (default: vault-snapshots)
 #   --snapshot-name     Specific snapshot file name (default: latest)
 #   --s3-endpoint       S3-compatible endpoint URL
-#   --vault-version     Vault image version to use (default: 1.21.2)
+#   --vault-version     Vault image version to use (default: 2.0.3)
 #   --namespace         Drill namespace (default: vault-restore-drill)
 #   --ttl-hours         Auto-cleanup after N hours (default: 24)
 #   --skip-cleanup      Don't clean up after verification
@@ -40,7 +40,7 @@ section() { echo -e "\n${BOLD}── $* ──${NC}"; }
 SNAPSHOT_BUCKET="${VAULT_SNAPSHOT_BUCKET:-vault-snapshots}"
 SNAPSHOT_NAME="latest"
 S3_ENDPOINT="${OBJECT_STORAGE_ENDPOINT:-}"
-VAULT_VERSION="${VAULT_VERSION:-1.21.2}"
+VAULT_VERSION="${VAULT_VERSION:-2.0.3}"
 DRILL_NS="vault-restore-drill"
 TTL_HOURS=24
 SKIP_CLEANUP=false
