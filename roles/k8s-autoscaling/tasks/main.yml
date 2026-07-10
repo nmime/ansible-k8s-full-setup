@@ -243,7 +243,30 @@
         - toEntities:
           - cluster
           - kube-apiserver
-- name: Create KEDA ServiceMonitor
+- name: Create KEDA VMServiceScrape for VictoriaMetrics metrics collection
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: keda
+        namespace: '{{ keda_namespace }}'
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: keda-operator
+        endpoints:
+          - port: metrics
+            interval: 30s
+  when: vmscrape_crd.resources | default([]) | length > 0
+  register: _r_create_vmservicescrape_for_keda
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_keda is not failed
+  ignore_errors: true
+
+- name: Create optional Prometheus ServiceMonitor for KEDA (when prometheus_enabled=true)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -251,7 +274,7 @@
       kind: ServiceMonitor
       metadata:
         name: keda
-        namespace: keda
+        namespace: '{{ keda_namespace }}'
         labels:
           release: prometheus
       spec:
@@ -259,6 +282,8 @@
           matchLabels:
             app: keda-operator
         endpoints:
-        - port: http
-          interval: 30s
-          path: /metrics
+          - port: http
+            interval: 30s
+            path: /metrics
+  when: prometheus_enabled | default(false) | bool
+  ignore_errors: true
