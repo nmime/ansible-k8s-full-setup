@@ -157,3 +157,122 @@ otel_collector_enabled: "{{ tracing_enabled }}"
 hipaa_compliance: true
 internal_tls_enabled: "{{ hipaa_compliance }}"
 log_redaction_enabled: "{{ hipaa_compliance }}"
+
+# ============================================================
+# Security Hardening Defaults
+# ============================================================
+
+# SSH host key checking enforcement
+ansible_ssh_strict_host_key_checking: true
+
+# Vault TLS (auto: disabled for minimal/small, enabled for medium/production)
+vault_tls_disabled: "{{ true if tier in ['minimal', 'small'] else false }}"
+
+# ESO Vault TLS verification
+vault_verify_tls: true
+
+# ArgoCD insecure mode (should be false; TLS via Gateway API)
+argocd_insecure_mode: false
+
+# ArgoCD AppProject source repo allowlist (specific repos only; no wildcards)
+argocd_allowed_source_repos:
+  - "https://gitlab.{{ domain | default('example.com') }}/platform/*"
+  - "https://charts.helm.sh/stable"
+  - "https://argoproj.github.io/argo-helm"
+  - "https://helm.releases.hashicorp.com"
+  - "https://grafana.github.io/helm-charts"
+  - "https://victoriametrics.github.io/helm-charts/"
+  - "https://postfinance.github.io/charts"
+  - "https://sealed-secrets.pages.dev"
+  - "https://backube.github.io/helm-charts"
+  - "https://keda.sh"
+
+# ArgoCD AppProject destination namespace allowlist
+argocd_allowed_namespaces:
+  - default
+  - monitoring
+  - vault
+  - external-secrets
+  - storage
+  - argocd
+  - cilium-system
+  - cilium-secrets
+  - gitlab
+  - temporal
+  - databases
+  - mail
+
+# ArgoCD AppProject cluster-scoped resource allowlist
+argocd_allowed_cluster_resources:
+  - group: ""
+    kind: Namespace
+
+# ArgoCD AppProject namespace-scoped resource allowlist
+argocd_allowed_namespace_resources:
+  - group: "apps"
+    kind: Deployment
+  - group: "apps"
+    kind: StatefulSet
+  - group: "apps"
+    kind: DaemonSet
+  - group: "apps"
+    kind: ReplicaSet
+  - group: ""
+    kind: Service
+  - group: ""
+    kind: ConfigMap
+  - group: ""
+    kind: Secret
+  - group: "networking.k8s.io"
+    kind: Ingress
+  - group: "gateway.networking.k8s.io"
+    kind: HTTPRoute
+  - group: "gateway.networking.k8s.io"
+    kind: Gateway
+  - group: ""
+    kind: ServiceAccount
+  - group: "rbac.authorization.k8s.io"
+    kind: Role
+  - group: "rbac.authorization.k8s.io"
+    kind: RoleBinding
+  - group: "batch"
+    kind: CronJob
+  - group: "batch"
+    kind: Job
+  - group: "autoscaling"
+    kind: HorizontalPodAutoscaler
+  - group: "argoproj.io"
+    kind: Application
+  - group: "argoproj.io"
+    kind: AppProject
+  - group: "external-secrets.io"
+    kind: ExternalSecret
+  - group: "cert-manager.io"
+    kind: Certificate
+  - group: "cert-manager.io"
+    kind: Issuer
+  - group: "cert-manager.io"
+    kind: ClusterIssuer
+  - group: "operator.victoriametrics.com"
+    kind: VMServiceMonitor
+  - group: "operator.victoriametrics.com"
+    kind: VMPodScrape
+  - group: "operator.victoriametrics.com"
+    kind: VMAlert
+  - group: "operator.victoriametrics.com"
+    kind: VMCluster
+  - group: "operator.victoriametrics.com"
+    kind: VMSingle
+  - group: "operator.victoriametrics.com"
+    kind: VMAgent
+  - group: "policy"
+    kind: PodDisruptionBudget
+  - group: ""
+    kind: PodDisruptionBudget
+  - group: ""
+    kind: PersistentVolumeClaim
+
+# Ansible Vault encryption for .platform-secrets.yml
+vault_encrypt_secrets: true
+# Path to vault password file (fallback: --ask-vault-pass)
+vault_password_file: "~/.vault_pass"

@@ -53,8 +53,8 @@
         replicas: '{{ argocd_server_replicas | int }}'
         ingress:
           enabled: false
-        extraArgs:
-        - --insecure
+        extraArgs: {% if argocd_insecure_mode | default(false) | bool %}
+        - --insecure{% endif %}
         resources:
           requests:
             cpu: 100m
@@ -116,7 +116,7 @@
           exec.enabled: 'false'
           application.resourceTrackingMethod: annotation
         params:
-          server.insecure: true
+          server.insecure: '{{ argocd_insecure_mode | default(false) | lower }}'
         rbac:
           policy.default: role:readonly
           policy.csv: 'g, admin, role:admin
@@ -174,7 +174,7 @@
   retries: 3
   delay: 10
   until: _r_create_tls_certificate_for_argocd is not failed
-- name: Create default ArgoCD AppProject
+- name: Create default ArgoCD AppProject (locked down with explicit allowlists)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -184,18 +184,11 @@
         name: platform
         namespace: '{{ argocd_namespace }}'
       spec:
-        description: Platform applications
-        sourceRepos:
-        - '*'
-        destinations:
-        - namespace: '*'
-          server: https://kubernetes.default.svc
-        clusterResourceWhitelist:
-        - group: '*'
-          kind: '*'
-        namespaceResourceWhitelist:
-        - group: '*'
-          kind: '*'
+        description: Platform applications (security-hardened: explicit source/destination/resource allowlists)
+        sourceRepos: '{{ argocd_allowed_source_repos | default(["*"]) }}'
+        destinations: '{{ argocd_allowed_namespaces | default(["*"]) | map("regex_replace", "^(.*)$", "{ namespace: \\1, server: https://kubernetes.default.svc }") | list }}'
+        clusterResourceWhitelist: '{{ argocd_allowed_cluster_resources | default([{"group": "*", "kind": "*"}]) }}'
+        namespaceResourceWhitelist: '{{ argocd_allowed_namespace_resources | default([{"group": "*", "kind": "*"}]) }}'
   register: _r_create_default_argocd_appproject
   retries: 3
   delay: 10
