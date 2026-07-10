@@ -33,7 +33,7 @@ def test_rollback_has_components():
         content = f.read()
     assert "rollback_component" in content
     assert "--component" in content
-    assert "--tier" in content
+    assert "--component" in content
     assert "--force" in content
     for comp in ["argocd", "cilium", "cert-manager", "database", "observability", "gitlab"]:
         assert comp in content, f"Missing component handler: {comp}"

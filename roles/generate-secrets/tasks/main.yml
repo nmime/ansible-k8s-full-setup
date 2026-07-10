@@ -154,9 +154,7 @@
       no_log: true
 
     - name: Encrypt secrets file with Ansible Vault
-      ansible.builtin.command: >-
-        ansible-vault encrypt {{ secrets_file }}.tmp
-        {{ '--vault-password-file ' + (vault_password_file | default('~/.vault_pass') | expanduser) if (vault_password_file | default('', true) | length > 0 and lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE') | length == 0) else '' }}
+      ansible.builtin.command: "ansible-vault encrypt {{ secrets_file }}.tmp {{ '--vault-password-file ' + (vault_password_file | default('~/.vault_pass') | expanduser) if (vault_password_file | default('', true) | length > 0 and lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE') | length == 0) else '' }}"
       delegate_to: localhost
       become: false
       no_log: true

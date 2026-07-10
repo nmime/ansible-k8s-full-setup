@@ -1,0 +1,4 @@
+# Default Vault configuration
+vault_password_file: "~/.vault_pass"
+vault_tls_disabled: false
+vault_encrypt_secrets: true

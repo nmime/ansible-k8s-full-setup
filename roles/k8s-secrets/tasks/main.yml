@@ -50,7 +50,7 @@
     - value: server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}
     values:
       global:
-        tlsDisable: true
+        tlsDisable: "{{ vault_tls_disabled | default(false) }}"
       injector:
         enabled: false
       server:

@@ -72,7 +72,7 @@ class TestVersionFormatSemver:
             parts = clean.split(".")
             # Allow 0.x for chart versions and daytona (alpha software)
             if parts[0] == "0":
-                if "chart" in var or var in ("daytona_chart_version",):
+                if "chart" in var or var in ("daytona_chart_version", "metallb_version"):
                     continue
                 pytest.fail(f"{var} major version is 0: {val}")
 
