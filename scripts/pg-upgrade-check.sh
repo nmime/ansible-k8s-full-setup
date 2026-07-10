@@ -107,10 +107,12 @@ else
     || check_warn "Helm release status: $STATUS"
   info "Chart version: $VERSION"
 
-  if [ "$VERSION" = "2.8.2" ]; then
-    check_pass "Operator at 2.8.2 — eligible for upgrade"
+  if [ "$VERSION" = "3.0.0" ]; then
+    check_pass "Operator at 3.0.0 — upgrade complete"
+  elif [ "$VERSION" = "2.8.2" ]; then
+    check_warn "Operator at 2.8.2 — run PG Operator 2→3 upgrade"
   else
-    check_warn "Operator version $VERSION (expected 2.8.2)"
+    check_warn "Operator version $VERSION (expected 3.0.0)"
   fi
 fi
 
