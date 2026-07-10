@@ -99,6 +99,10 @@ object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
 
 # Secrets (Vault) - tier-specific
+# renovate: datasource=github-releases depName=hashicorp/vault
+vault_version: "2.0.3"
+# renovate: datasource=helm depName=vault
+vault_chart_version: "0.34.0"
 vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 20Gi
 eso_enabled: true

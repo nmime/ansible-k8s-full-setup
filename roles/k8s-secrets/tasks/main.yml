@@ -2,8 +2,8 @@
   set_fact:
     vault_ns: vault
     eso_ns: external-secrets
-    vault_chart_ver: 0.34.0
-    vault_version: 2.0.3
+    vault_chart_ver: "{{ vault_chart_version | default('0.34.0') }}"
+    vault_version: "{{ vault_version | default('2.0.3') }}"
     eso_chart_ver: 2.7.0
     vault_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
     vault_ha: '{{ true if tier in [''medium'', ''production''] else false }}'

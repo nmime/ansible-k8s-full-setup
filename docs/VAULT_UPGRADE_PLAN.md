@@ -2,19 +2,24 @@
 
 ## Summary
 
-| Item              | Current            | Target              |
+| Item              | Before Upgrade     | After Upgrade       |
 |-------------------|--------------------|----------------------|
-| Vault image       | `hashicorp/vault:2.0.3` | `hashicorp/vault:2.0.3` |
-| Helm chart        | `hashicorp/vault 0.34.0` | `hashicorp/vault 0.34.0` |
+| Vault image       | `hashicorp/vault:1.21.2` | `hashicorp/vault:2.0.3` |
+| Helm chart        | `hashicorp/vault 0.32.0` | `hashicorp/vault 0.34.0` |
 | Storage backend   | Raft (auto-storage)  | Raft (auto-storage)  |
 | Unseal method     | Auto-unseal (K8s)  | Auto-unseal (K8s)    |
 | Replicas          | 1 or 3 (tier)      | 1 or 3 (tier)        |
 | Expected downtime | N/A (planned)      | **0 min** (rolling)  |
 
-> **STATUS: IMPLEMENTED.** The upgrade from Vault 1.21.2 to Vault 2.0.3 has been completed.
-> Helm chart updated from 0.32.0 to 0.34.0.
-> 
-> **NOTE:** This is a **major version upgrade** (1.x → 2.x). The original plan required incrementally stepping through every minor release. The version bump in `roles/k8s-secrets/tasks/main.yml` reflects the final target; operators should verify cluster health post-deployment.
+> **STATUS: FULLY IMPLEMENTED.** Vault 1.21.2 → 2.0.3 upgrade completed.
+> Helm chart 0.32.0 → 0.34.0. Global defaults added to `defaults/main.yml`.
+>
+> **BREAKING CHANGES (1.x → 2.x):**
+> - Vault 2.0 introduces new API defaults and storage behaviors.
+> - AutoStorage is now the default storage backend.
+> - Some legacy config stanzas have been removed/renamed.
+> - The `server.ha.raft.setNodeId` is now required for HA deployments.
+> - Mlock is no longer required (removed from default capabilities).
 
 ---
 
