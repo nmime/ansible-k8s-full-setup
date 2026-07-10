@@ -173,7 +173,7 @@ class TestIntegration:
     def test_defaults_valid(self): assert isinstance(load_yaml(DEFAULTS_FILE), dict)
     def test_no_version_changes(self):
         d = load_yaml(PROJECT_DEFAULTS)
-        assert d.get("k8s_version") == "v1.35.4"
+        assert d.get("k8s_version") == "v1.35.6"
         assert d.get("cilium_version") == "v1.19.4"
         assert d.get("es_version") == "9.4.1"
         assert d.get("gitlab_chart_version") == "9.11.4"

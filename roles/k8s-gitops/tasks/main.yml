@@ -53,8 +53,8 @@
         replicas: '{{ argocd_server_replicas | int }}'
         ingress:
           enabled: false
-        extraArgs: {% if argocd_insecure_mode | default(false) | bool %}
-        - --insecure{% endif %}
+        extraArgs:
+          {{ "--insecure" if argocd_insecure_mode | default(false) | bool else [] }}
         resources:
           requests:
             cpu: 100m

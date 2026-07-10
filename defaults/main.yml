@@ -225,3 +225,17 @@ log_redaction_enabled: "{{ hipaa_compliance }}"
 vault_password_file: "~/.vault_pass"
 vault_tls_disabled: false
 vault_encrypt_secrets: true
+
+# Security defaults
+vault_verify_tls: true
+argocd_insecure_mode: false
+argocd_allowed_source_repos:
+  - "https://github.com/*"
+argocd_allowed_namespaces:
+  - "argocd"
+  - "kube-system"
+argocd_allowed_namespace_resources:
+  - "Deployment"
+  - "Service"
+  - "ConfigMap"
+ansible_ssh_strict_host_key_checking: true
