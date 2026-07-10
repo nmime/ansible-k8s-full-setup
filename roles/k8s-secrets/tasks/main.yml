@@ -4,7 +4,7 @@
     eso_ns: external-secrets
     vault_chart_ver: 0.32.0
     vault_version: 1.21.2
-    eso_chart_ver: 2.5.0
+    eso_chart_ver: 2.7.0
     vault_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
     vault_ha: '{{ true if tier in [''medium'', ''production''] else false }}'
     vault_storage: '{{ vault_storage_size | default(''20Gi'') }}'
@@ -50,7 +50,7 @@
     - value: server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}
     values:
       global:
-        tlsDisable: '{{ vault_tls_disabled | default(true if tier in ["minimal", "small"] else false) | lower }}'
+        tlsDisable: true
       injector:
         enabled: false
       server:

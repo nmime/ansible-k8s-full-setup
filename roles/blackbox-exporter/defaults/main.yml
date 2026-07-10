@@ -1,6 +1,6 @@
 ---
 blackbox_namespace: monitoring
-blackbox_chart_version: "11.10.0"   # prometheus-community/prometheus-blackbox-exporter
+blackbox_chart_version: "11.15.1"   # prometheus-community/prometheus-blackbox-exporter
 blackbox_image: "prom/blackbox-exporter"
 blackbox_replicas: 1
 

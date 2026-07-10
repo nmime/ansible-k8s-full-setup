@@ -49,10 +49,13 @@ ssh_key_path: ~/.ssh/id_ed25519
 storage_class: hcloud-volumes
 
 # Kubernetes
-k8s_version: v1.35.4
+# renovate: datasource=github-releases depName=kubernetes/kubernetes
+k8s_version: v1.35.6
 k8s_cni: cilium
-cilium_version: v1.19.4
-gateway_api_version: v1.5.1
+# renovate: datasource=github-releases depName=cilium/cilium
+cilium_version: v1.19.5
+# renovate: datasource=github-releases depName=kubernetes-sigs/gateway-api
+gateway_api_version: v1.6.0
 k8s_pod_cidr: 10.233.64.0/18
 k8s_service_cidr: 10.233.0.0/18
 
@@ -70,6 +73,7 @@ object_storage_create_external_routes: true
 object_storage_enabled: true
 
 # Storage (SeaweedFS-backed S3-compatible object storage)
+# renovate: datasource=helm depName=seaweedfs
 object_storage_chart_version: "4.25.1"
 object_storage_namespace: storage
 object_storage_release_name: seaweedfs
@@ -94,11 +98,14 @@ postgresql_version: 18
 mongodb_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' else '50Gi' if tier == 'medium' else '100Gi' }}"
 
 # GitLab
+# renovate: datasource=helm depName=gitlab
 gitlab_chart_version: "9.11.4"
 gitlab_runner_concurrent_jobs: 10
 
 # GitOps (ArgoCD)
+# renovate: datasource=helm depName=argo-cd
 argocd_chart_version: "9.5.14"
+# renovate: datasource=github-releases depName=argoproj/argo-cd
 argocd_version: "v3.4.2"
 
 # Observability - tier-specific
@@ -109,23 +116,51 @@ logging_retention: "{{ '3d' if tier == 'minimal' else '7d' if tier == 'small' el
 
 # Autoscaling
 keda_enabled: true
-keda_chart_version: "2.19.0"
+# renovate: datasource=helm depName=keda
+keda_chart_version: "2.20.1"
 
 # Temporal
+# renovate: datasource=helm depName=temporal
 temporal_chart_version: "1.2.0"
 temporal_num_history_shards: 512
 
 # Elasticsearch
-es_version: "9.4.1"
-kibana_version: "9.4.1"
+# renovate: datasource=docker depName=elasticsearch
+es_version: "9.4.3"
+# renovate: datasource=docker depName=kibana
+kibana_version: "9.4.3"
 es_cluster_name: "platform-es"
 
 # Postal
-postal_version: "3.3.6"
+# renovate: datasource=github-releases depName=postalserver/postal
+postal_version: "3.3.7"
 
-# Backup
+# Backup and Restore
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30
+backup_storage_type: s3
+backup_storage_bucket: "{{ 'backups.' ~ (domain | default('local', true)) }}"
+backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
+backup_storage_path_style: true
+backup_verify_all: true
+backup_verification_timeout: 3600
+backup_alert_enabled: false
+backup_alert_webhook_url: ""
+backup_alert_channel: "#alerts"
+backup_alert_on_failure_only: false
+backup_cron_timezone: UTC
+backup_cron_concurrency_policy: Forbid
+backup_cron_successful_jobs_history: 3
+backup_cron_failed_jobs_history: 1
+backup_job_cpu_request: 100m
+backup_job_cpu_limit: 500m
+backup_job_memory_request: 128Mi
+backup_job_memory_limit: 512Mi
+restore_drill_namespace: restore-drill
+restore_drill_auto_cleanup: true
+restore_drill_cleanup_after_hours: 24
+restore_safety_gate_skip_verification: false
+restore_safety_gate_confirm_required: true
 
 # Daytona workspace platform (optional; disabled by default)
 deploy_daytona: false
@@ -135,6 +170,7 @@ daytona_release_name: daytona
 daytona_chart_repo_name: daytonaio
 daytona_chart_repo_url: https://charts.daytona.io
 daytona_chart_ref: daytonaio/daytona
+# renovate: datasource=helm depName=daytona
 daytona_chart_version: "0.0.23"
 daytona_base_domain: "daytona.{{ domain }}"
 daytona_values_override: {}
@@ -157,122 +193,3 @@ otel_collector_enabled: "{{ tracing_enabled }}"
 hipaa_compliance: true
 internal_tls_enabled: "{{ hipaa_compliance }}"
 log_redaction_enabled: "{{ hipaa_compliance }}"
-
-# ============================================================
-# Security Hardening Defaults
-# ============================================================
-
-# SSH host key checking enforcement
-ansible_ssh_strict_host_key_checking: true
-
-# Vault TLS (auto: disabled for minimal/small, enabled for medium/production)
-vault_tls_disabled: "{{ true if tier in ['minimal', 'small'] else false }}"
-
-# ESO Vault TLS verification
-vault_verify_tls: true
-
-# ArgoCD insecure mode (should be false; TLS via Gateway API)
-argocd_insecure_mode: false
-
-# ArgoCD AppProject source repo allowlist (specific repos only; no wildcards)
-argocd_allowed_source_repos:
-  - "https://gitlab.{{ domain | default('example.com') }}/platform/*"
-  - "https://charts.helm.sh/stable"
-  - "https://argoproj.github.io/argo-helm"
-  - "https://helm.releases.hashicorp.com"
-  - "https://grafana.github.io/helm-charts"
-  - "https://victoriametrics.github.io/helm-charts/"
-  - "https://postfinance.github.io/charts"
-  - "https://sealed-secrets.pages.dev"
-  - "https://backube.github.io/helm-charts"
-  - "https://keda.sh"
-
-# ArgoCD AppProject destination namespace allowlist
-argocd_allowed_namespaces:
-  - default
-  - monitoring
-  - vault
-  - external-secrets
-  - storage
-  - argocd
-  - cilium-system
-  - cilium-secrets
-  - gitlab
-  - temporal
-  - databases
-  - mail
-
-# ArgoCD AppProject cluster-scoped resource allowlist
-argocd_allowed_cluster_resources:
-  - group: ""
-    kind: Namespace
-
-# ArgoCD AppProject namespace-scoped resource allowlist
-argocd_allowed_namespace_resources:
-  - group: "apps"
-    kind: Deployment
-  - group: "apps"
-    kind: StatefulSet
-  - group: "apps"
-    kind: DaemonSet
-  - group: "apps"
-    kind: ReplicaSet
-  - group: ""
-    kind: Service
-  - group: ""
-    kind: ConfigMap
-  - group: ""
-    kind: Secret
-  - group: "networking.k8s.io"
-    kind: Ingress
-  - group: "gateway.networking.k8s.io"
-    kind: HTTPRoute
-  - group: "gateway.networking.k8s.io"
-    kind: Gateway
-  - group: ""
-    kind: ServiceAccount
-  - group: "rbac.authorization.k8s.io"
-    kind: Role
-  - group: "rbac.authorization.k8s.io"
-    kind: RoleBinding
-  - group: "batch"
-    kind: CronJob
-  - group: "batch"
-    kind: Job
-  - group: "autoscaling"
-    kind: HorizontalPodAutoscaler
-  - group: "argoproj.io"
-    kind: Application
-  - group: "argoproj.io"
-    kind: AppProject
-  - group: "external-secrets.io"
-    kind: ExternalSecret
-  - group: "cert-manager.io"
-    kind: Certificate
-  - group: "cert-manager.io"
-    kind: Issuer
-  - group: "cert-manager.io"
-    kind: ClusterIssuer
-  - group: "operator.victoriametrics.com"
-    kind: VMServiceMonitor
-  - group: "operator.victoriametrics.com"
-    kind: VMPodScrape
-  - group: "operator.victoriametrics.com"
-    kind: VMAlert
-  - group: "operator.victoriametrics.com"
-    kind: VMCluster
-  - group: "operator.victoriametrics.com"
-    kind: VMSingle
-  - group: "operator.victoriametrics.com"
-    kind: VMAgent
-  - group: "policy"
-    kind: PodDisruptionBudget
-  - group: ""
-    kind: PodDisruptionBudget
-  - group: ""
-    kind: PersistentVolumeClaim
-
-# Ansible Vault encryption for .platform-secrets.yml
-vault_encrypt_secrets: true
-# Path to vault password file (fallback: --ask-vault-pass)
-vault_password_file: "~/.vault_pass"

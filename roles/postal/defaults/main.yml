@@ -1,6 +1,6 @@
 ---
 postal_namespace: postal
-postal_version: "3.3.6"
+postal_version: "3.3.7"
 postal_image: "ghcr.io/postalserver/postal"
 postal_web_hostname: "mail.{{ domain }}"
 postal_smtp_hostname: "smtp.{{ domain }}"

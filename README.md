@@ -3,7 +3,7 @@
 > Zero-to-production Kubernetes on Hetzner Cloud in 3-5 hours. Fully automated, security-hardened, with global GeoDNS edge network.
 
 [![Security](https://img.shields.io/badge/security-100%25%20hardened-brightgreen)](#security-hardening)
-[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35.4-326ce5?logo=kubernetes&logoColor=white)](#platform-stack)
+[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.35.6-326ce5?logo=kubernetes&logoColor=white)](#platform-stack)
 [![HIPAA](https://img.shields.io/badge/HIPAA-ready-blue)](#compliance)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
@@ -160,20 +160,20 @@ APAC Edge   EU Edge    US Edge
 
 | Component | Version | Purpose |
 |-----------|---------|--------|
-| **Kubernetes** | v1.35.4 | Orchestration (Kubespray 2.31) |
-| **Cilium** | v1.19.4 | eBPF CNI + NetworkPolicies |
-| **Gateway API** | v1.5 | Modern ingress (L7) |
-| **cert-manager** | v1.20.2 | Automated TLS (Let's Encrypt) |
+| **Kubernetes** | v1.35.6 | Orchestration (Kubespray 2.31) |
+| **Cilium** | v1.19.5 | eBPF CNI + NetworkPolicies |
+| **Gateway API** | v1.6 | Modern ingress (L7) |
+| **cert-manager** | v1.21.0 | Automated TLS (Let's Encrypt) |
 | **Vault** | v1.21 | Secrets management (HA Raft) |
 | **SeaweedFS** | v5.4 | S3-compatible storage |
 | **VictoriaMetrics** | v1.133 | Metrics (faster than Prometheus) |
 | **Grafana** | v12.3 | Monitoring dashboards |
 | **Loki + Promtail** | v3.6 | Log aggregation |
 | **Headscale** | v0.28 | WireGuard VPN |
-| **MetalLB** | v0.15 | Bare-metal LB |
+| **MetalLB** | v0.16 | Bare-metal LB |
 | **GitLab** | v18.11.3 | Git + CI/CD + Registry |
 | **ArgoCD** | v3.4.2 | GitOps continuous delivery |
-| **Elasticsearch** | v9.4.1 | Audit logs + compliance |
+| **Elasticsearch** | v9.4.3 | Audit logs + compliance |
 
 ### Optional (Install as Needed)
 
@@ -181,7 +181,7 @@ APAC Edge   EU Edge    US Edge
 |-----------|---------|-------------|--------|
 | **PostgreSQL 18** | Percona 2.8 | `install_postgresql: true` | HA database with pgBackRest |
 | **MongoDB 8.0** | Percona 1.22 | `install_mongodb: true` | HA NoSQL with PBM backups |
-| **Dragonfly** | v1.38.1 | `install_dragonfly: true` | Redis v6-compatible (25x faster) |
+| **Dragonfly** | v1.39.0 | `install_dragonfly: true` | Redis v6-compatible (25x faster) |
 | **Temporal** | v1.31.0 | `install_temporal: true` | Workflow orchestration |
 | **PMM** | v3 | Auto-enabled with DBs | Percona database monitoring |
 
