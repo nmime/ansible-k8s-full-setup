@@ -1,27 +1,35 @@
-# CI Automation
+# Local Validation (formerly CI Automation)
 
-This document describes the CI/CD automation for the ansible-k8s-full-setup platform infrastructure.
+> **GitHub Actions CI has been removed.** All validation is performed locally
+> or as pre-deployment gates. The checks below are the authoritative source of
+> truth for code quality.
 
 ## Overview
 
-The CI pipeline validates all infrastructure code before changes are merged. It runs on every push to `main`, `upgrade/*`, and `feature/*` branches, and on all pull requests targeting `main`.
+All infrastructure code must pass local validation before being committed or
+merged. These checks replace the former GitHub Actions CI pipeline and are run
+manually or via pre-commit hooks.
 
-## CI Jobs
+## Running All Checks
 
-| Job | Purpose | Tool |
-|-----|---------|------|
-| `lint-yaml` | YAML syntax & style validation | [yamllint](https://yamllint.readthedocs.io/) |
-| `lint-ansible` | Ansible best practices & anti-patterns | [ansible-lint](https://ansible-lint.readthedocs.io/) |
-| `ansible-syntax` | Playbook syntax validation | `ansible-playbook --syntax-check` |
-| `shellcheck` | Shell script static analysis | [ShellCheck](https://www.shellcheck.net/) |
-| `python-tests` | Unit, component, and E2E tests | [pytest](https://pytest.org/) |
-| `version-matrix` | Version compatibility validation | Custom Python script |
-| `trivy-secret-scan` | Secret leak detection | [Trivy](https://trivy.dev/) |
+```bash
+# Run the full local validation suite
+bash scripts/validate-local.sh
 
-## Workflow Files
+# Exit non-zero on first failure
+bash scripts/validate-local.sh --fail-fast
+```
 
-- `.github/workflows/ci.yml` – Main CI pipeline (all jobs above)
-- `.github/workflows/trivy.yml` – Scheduled Trivy security scans (weekly)
+## Individual Checks
+
+| Check | Purpose | Tool | Command |
+|-------|---------|------|---------|
+| YAML Lint | YAML syntax & style | [yamllint](https://yamllint.readthedocs.io/) | `yamllint -c .yamllint.yaml .` |
+| Pre-commit | Whitespace, merge conflicts, symlinks | [pre-commit](https://pre-commit.com/) | `pre-commit run --all-files` |
+| Ansible Lint | Ansible best practices | [ansible-lint](https://ansible-lint.readthedocs.io/) | `ansible-lint` |
+| ShellCheck | Shell script static analysis | [ShellCheck](https://www.shellcheck.net/) | `shellcheck scripts/*.sh` |
+| Version Matrix | Version compatibility | Custom Python | `python3 scripts/verify-version-matrix.py` |
+| Python Tests | Unit, component, E2E | [pytest](https://pytest.org/) | `pytest tests/ -v` |
 
 ## Configuration Files
 
@@ -32,6 +40,7 @@ The CI pipeline validates all infrastructure code before changes are merged. It 
 | `.pre-commit-config.yaml` | Pre-commit hooks (run locally before committing) |
 | `.renovaterc.json` | Renovate auto-update configuration |
 | `requirements.txt` | Pinned Python dependencies |
+| `scripts/validate-local.sh` | Orchestrates all local validation checks |
 
 ## Pre-Commit Hooks
 
@@ -60,7 +69,6 @@ Override: `git commit --no-verify`
 - Run weekly on Mondays
 - Group Helm chart updates together
 - Group Python dependency updates together
-- Group GitHub Actions updates together
 - Auto-detect version variables in `defaults/main.yml` via `# renovate:` markers
 
 ### Version Variable Markers
@@ -83,17 +91,6 @@ Datasources used:
 - `github-releases` – GitHub release versions (Kubernetes, Cilium, Gateway API, ArgoCD CLI, Postal)
 - `docker` – Docker image versions (Elasticsearch, Kibana)
 
-## Trivy Security Scanning
-
-### CI Scan (on every PR)
-- Scans the repository filesystem for known vulnerability patterns
-- Exits with code 0 (informational only – no auto-fail)
-
-### Scheduled Scan (weekly, Monday 06:00 UTC)
-- Full filesystem scan for CRITICAL/HIGH severities
-- Configuration misconfiguration scan
-- Results uploaded to GitHub Security tab as SARIF
-
 ## Running Tests Locally
 
 ```bash
@@ -109,7 +106,7 @@ pytest tests/ -v -m component   # Component tests only
 pytest tests/ -v -m e2e         # End-to-end tests only
 
 # Run version matrix validation
-python3 tests/test_version_matrix.py
+python3 scripts/verify-version-matrix.py
 ```
 
 ## Test Structure
@@ -129,9 +126,9 @@ tests/
 ## Branch Protection
 
 Recommended rules for `main`:
-- Require CI checks to pass (`ci` workflow)
 - Require pull request reviews (minimum 1)
-- Require status checks: `lint-yaml`, `lint-ansible`, `ansible-syntax`, `shellcheck`, `python-tests`, `version-matrix`
+- Run `scripts/validate-local.sh` locally before pushing
+- Use pre-commit hooks to catch issues before commit
 
 ## Adding New Version Variables
 
