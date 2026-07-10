@@ -1,0 +1,76 @@
+---
+# Backup Alert Configuration - Slack-compatible webhook alerts
+
+- name: "Backup-Alerts | Create alert webhook secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: backup-alert-config
+        namespace: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: alerts
+      type: Opaque
+      stringData:
+        WEBHOOK_URL: "{{ backup_alert_webhook_url | default('') }}"
+        CHANNEL: "{{ backup_alert_channel | default('#alerts') }}"
+        ON_FAILURE_ONLY: "{{ backup_alert_on_failure_only | default(false) | lower }}"
+  tags: [backup, backup-alerts]
+
+- name: "Backup-Alerts | Deploy backup alert CronJob"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: backup-alert-check
+        namespace: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: alerts
+      spec:
+        schedule: "0 7 * * *"
+        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 1
+        jobTemplate:
+          spec:
+            ttlSecondsAfterFinished: 120
+            backoffLimit: 1
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: alert
+                    image: "{{ backup_alpine_image | default('alpine:3.22') }}"
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+                        TS=$(date -u +%Y%m%dT%H%M%SZ)
+                        [ -z "${WEBHOOK_URL}" ] && echo "No webhook, skipping" && exit 0
+                        PS=$(kubectl get pods -n {{ _backup_ns }} -l app.kubernetes.io/component=verification --field-selector=status.phase!=Running -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
+                        S="UNKNOWN"
+                        echo "$PS" | grep -q "Succeeded" && S="PASS"
+                        echo "$PS" | grep -q "Failed" && S="FAIL"
+                        [ "${ON_FAILURE_ONLY}" = "true" ] && [ "$S" != "FAIL" ] && exit 0
+                        C="#36a64f"; [ "$S" = "FAIL" ] && C="#ff0000"
+                        apk add --no-cache curl >/dev/null 2>&1
+                        curl -sf -X POST -H 'Content-type: application/json'                               -d "{\"channel\":\"${CHANNEL}\",\"attachments\":[{\"color\":\"${C}\",\"title\":\"Backup: ${S}\",\"text\":\"${TS}\"}]}"                               "${WEBHOOK_URL}" || echo "WARN: alert failed"
+                    envFrom:
+                      - secretRef:
+                          name: backup-alert-config
+                    resources:
+                      requests:
+                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
+                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                      limits:
+                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
+                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+  tags: [backup, backup-alerts]

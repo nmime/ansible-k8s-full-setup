@@ -1,0 +1,57 @@
+---
+backup_storage_type: s3
+backup_storage_endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333', true) }}"
+backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
+backup_storage_bucket: "{{ 'backups.' ~ (domain | default('local', true)) }}"
+backup_storage_access_key: "{{ object_storage_access_key | default('seaweedfsadmin', true) }}"
+backup_storage_secret_key: "{{ object_storage_secret_key | default('seaweedfsadmin123456789', true) }}"
+backup_storage_path_style: true
+backup_schedule: "{{ backup_schedule | default('0 2 * * *') }}"
+backup_retention_days: "{{ backup_retention_days | default(30) }}"
+backup_retention_count: 7
+backup_compression: true
+backup_namespace: backups
+backup_label: backup-restore
+backup_project_name: "{{ project_name | default('k8s') }}"
+backup_mongodb_enabled: true
+backup_mongodb_namespace: databases
+backup_mongodb_cluster_name: "{{ backup_project_name }}-mongodb"
+backup_mongodb_pbm_config_map: pbm-s3-creds
+backup_mongodb_verify_after: true
+backup_vault_enabled: true
+backup_vault_namespace: vault
+backup_vault_server: http://vault.{{ backup_vault_namespace }}.svc.cluster.local:8200
+backup_vault_snapshot_bucket: "{{ backup_storage_bucket }}/{{ backup_project_name }}/vault"
+backup_vault_snapshot_retention: "{{ backup_retention_days }}"
+backup_vault_verify_after: true
+backup_seaweedfs_enabled: true
+backup_seaweedfs_namespace: "{{ object_storage_namespace | default('storage') }}"
+backup_seaweedfs_filer_endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+backup_seaweedfs_verify_after: true
+backup_gitlab_enabled: true
+backup_gitlab_namespace: gitlab
+backup_gitlab_chart: gitlab
+backup_gitlab_verify_after: true
+backup_verify_all: true
+backup_verification_timeout: 3600
+backup_alert_enabled: false
+backup_alert_webhook_url: ""
+backup_alert_on_failure_only: false
+backup_alert_channel: "#alerts"
+restore_drill_namespace: restore-drill
+restore_drill_auto_cleanup: true
+restore_drill_cleanup_after_hours: 24
+restore_safety_gate_skip_verification: false
+restore_safety_gate_confirm_required: true
+backup_cron_timezone: UTC
+backup_cron_concurrency_policy: Forbid
+backup_cron_successful_jobs_history: 3
+backup_cron_failed_jobs_history: 1
+backup_job_cpu_request: 100m
+backup_job_cpu_limit: 500m
+backup_job_memory_request: 128Mi
+backup_job_memory_limit: 512Mi
+backup_alpine_image: alpine:3.22
+backup_vault_image: hashicorp/vault:1.21.2
+backup_mongo_image: mongodb/mongodb-community-server:7.0.15
+backup_s3cli_image: amazon/aws-cli:2.34.48

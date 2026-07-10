@@ -1,0 +1,90 @@
+---
+# SeaweedFS Metadata Backup - idempotent
+
+- name: "Backup-SeaweedFS | Create SeaweedFS backup credentials"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: seaweedfs-backup-credentials
+        namespace: "{{ backup_seaweedfs_namespace | default('storage') }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: seaweedfs
+      type: Opaque
+      stringData:
+        AWS_ACCESS_KEY_ID: "{{ backup_storage_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
+        SEAWEEDFS_ENDPOINT: "{{ backup_seaweedfs_filer_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+  tags: [backup, backup-seaweedfs]
+
+- name: "Backup-SeaweedFS | Deploy backup CronJob"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: seaweedfs-backup-check
+        namespace: "{{ backup_seaweedfs_namespace | default('storage') }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: seaweedfs
+      spec:
+        schedule: "{{ _backup_schedule }}"
+        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
+        successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
+        failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
+        jobTemplate:
+          spec:
+            ttlSecondsAfterFinished: 300
+            backoffLimit: 3
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: seaweedfs-backup
+                    image: "{{ backup_s3cli_image | default('amazon/aws-cli:2.34.48') }}"
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+                        TS=$(date -u +%Y%m%dT%H%M%SZ)
+                        BUCKET="${_BACKUP_BUCKET:-backups-local}"
+                        BP="{{ _backup_project }}/seaweedfs"
+                        MASTER="seaweedfs-master.${backup_seaweedfs_namespace}.svc.cluster.local:9333"
+                        TOP=$(curl -s "http://${MASTER}/volume/topology" 2>/dev/null || echo "{}")
+                        echo "$TOP" > /tmp/sw-topology-${TS}.json
+                        aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 cp /tmp/sw-topology-${TS}.json "s3://${BUCKET}/${BP}/topology-${TS}.json" 2>/dev/null || true
+                        VC=$(echo "$TOP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('Volumes',[])))" 2>/dev/null || echo 0)
+                        echo "SeaweedFS volume count: ${VC}"
+                        RETENTION=${_BACKUP_RETENTION:-30}
+                        aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${BUCKET}/${BP}/" 2>/dev/null | awk '{print $4}' | while read -r F; do
+                          D=$(echo "$F" | grep -oP '\d{8}T\d{6}Z' || echo "")
+                          [ -z "$D" ] && continue
+                          E=$(date -d "$D" +%s 2>/dev/null || echo 0)
+                          C=$(( $(date +%s) - (RETENTION * 86400) ))
+                          [ "$E" -gt 0 ] && [ "$E" -lt "$C" ] && aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 rm "s3://${BUCKET}/${BP}/${F}"
+                        done
+                        rm -f /tmp/sw-*.json
+                        echo "=== SeaweedFS backup completed ==="
+                    env:
+                      - name: _BACKUP_BUCKET
+                        value: "{{ _backup_bucket }}"
+                      - name: _BACKUP_RETENTION
+                        value: "{{ _backup_retention | string }}"
+                    envFrom:
+                      - secretRef:
+                          name: seaweedfs-backup-credentials
+                    resources:
+                      requests:
+                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
+                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                      limits:
+                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
+                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+  tags: [backup, backup-seaweedfs]

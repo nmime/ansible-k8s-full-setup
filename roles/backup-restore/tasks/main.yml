@@ -1,0 +1,72 @@
+---
+- name: "Backup | Set backup resolved facts"
+  ansible.builtin.set_fact:
+    _backup_project: "{{ backup_project_name | default('k8s') }}"
+    _backup_bucket: "{{ backup_storage_bucket | default('backups.local') }}"
+    _backup_ns: "{{ backup_namespace | default('backups') }}"
+    _backup_retention: "{{ backup_retention_days | default(30) }}"
+    _backup_schedule: "{{ backup_schedule | default('0 2 * * *') }}"
+  tags: [backup, backup-setup]
+
+- name: "Backup | Create backup metadata namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/managed-by: ansible
+          pod-security.kubernetes.io/enforce: baseline
+  tags: [backup, backup-setup]
+
+- name: "Backup | Create backup storage credentials secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: backup-storage-credentials
+        namespace: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+      type: Opaque
+      stringData:
+        AWS_ACCESS_KEY_ID: "{{ backup_storage_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
+        AWS_ENDPOINT_URL: "{{ backup_storage_endpoint }}"
+        AWS_DEFAULT_REGION: "{{ backup_storage_region }}"
+  tags: [backup, backup-setup]
+
+- name: "Backup | Include MongoDB backup tasks"
+  ansible.builtin.include_tasks: mongodb_pbm.yml
+  when: backup_mongodb_enabled | bool
+  tags: [backup, backup-mongodb]
+
+- name: "Backup | Include Vault Raft snapshot tasks"
+  ansible.builtin.include_tasks: vault_raft.yml
+  when: backup_vault_enabled | bool
+  tags: [backup, backup-vault]
+
+- name: "Backup | Include SeaweedFS backup tasks"
+  ansible.builtin.include_tasks: seaweedfs.yml
+  when: backup_seaweedfs_enabled | bool
+  tags: [backup, backup-seaweedfs]
+
+- name: "Backup | Include GitLab backup tasks"
+  ansible.builtin.include_tasks: gitlab.yml
+  when: backup_gitlab_enabled | bool
+  tags: [backup, backup-gitlab]
+
+- name: "Backup | Include verification jobs"
+  ansible.builtin.include_tasks: verification.yml
+  when: backup_verify_all | bool
+  tags: [backup, backup-verify]
+
+- name: "Backup | Include alerting configuration"
+  ansible.builtin.include_tasks: alerts.yml
+  when: backup_alert_enabled | bool
+  tags: [backup, backup-alerts]

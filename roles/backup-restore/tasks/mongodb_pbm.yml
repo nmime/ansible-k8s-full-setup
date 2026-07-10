@@ -1,0 +1,89 @@
+---
+# MongoDB / Percona MongoDB Backup (PBM) - idempotent
+
+- name: "Backup-MongoDB | Ensure PBM S3 backup credentials exist"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ backup_mongodb_pbm_config_map | default('pbm-s3-creds') }}"
+        namespace: "{{ backup_mongodb_namespace | default('databases') }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: mongodb-pbm
+      type: Opaque
+      stringData:
+        PBM_BINARY: /usr/bin/mongodump
+        PBMOPTIONS: --logLevel=2
+        PBMS3PREFIX: "{{ _backup_project }}/mongodb"
+        PBMS3BUCKET: "{{ _backup_bucket }}"
+        PBMS3REGION: "{{ backup_storage_region | default('us-east-1') }}"
+        AWS_ACCESS_KEY_ID: "{{ backup_storage_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
+        AWS_S3_FORCE_PATH_STYLE: "true"
+  tags: [backup, backup-mongodb]
+
+- name: "Backup-MongoDB | Deploy PBM backup CronJob"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: mongodb-backup
+        namespace: "{{ backup_mongodb_namespace | default('databases') }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: mongodb-pbm
+      spec:
+        schedule: "{{ _backup_schedule }}"
+        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
+        successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
+        failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
+        jobTemplate:
+          spec:
+            ttlSecondsAfterFinished: 300
+            backoffLimit: 3
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: pbm-backup
+                    image: "{{ backup_mongo_image | default('mongodb/mongodb-community-server:7.0.15') }}"
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+                        echo "=== MongoDB PBM Backup $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+                        HOUR=$(date -u +%-H)
+                        EXISTING=$(pbm backups-list 2>/dev/null | grep "daily-${HOUR}" || true)
+                        [ -n "$EXISTING" ] && echo "Already backed up this hour, skipping." && exit 0
+                        pbm configure --config <<EOF
+                        oplog: true
+                        pitr:
+                          enabled: false
+                        storage:
+                          type: s3
+                          s3:
+                            bucket: {{ _backup_bucket }}
+                            region: {{ backup_storage_region | default('us-east-1') }}
+                            endpoint_url: "{{ backup_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}/{{ _backup_bucket }}"
+                            credentials:
+                              env: AWS_CREDENTIALS
+                            config:
+                              force_path_style: true
+                        EOF
+                        pbm backup --name "daily-$(date -u +%Y%m%d-%H)"
+                        echo "=== MongoDB PBM Backup completed ==="
+                    resources:
+                      requests:
+                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
+                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                      limits:
+                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
+                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+  tags: [backup, backup-mongodb]

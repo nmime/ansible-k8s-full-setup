@@ -1,0 +1,63 @@
+---
+# Backup Verification - checks all backup artifacts exist in S3
+
+- name: "Backup-Verify | Deploy backup verification CronJob"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: backup-verification
+        namespace: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: verification
+      spec:
+        schedule: "0 6 * * *"
+        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
+        successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
+        failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
+        jobTemplate:
+          spec:
+            ttlSecondsAfterFinished: 600
+            backoffLimit: 2
+            activeDeadlineSeconds: "{{ backup_verification_timeout | default(3600) }}"
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: verify
+                    image: "{{ backup_s3cli_image | default('amazon/aws-cli:2.34.48') }}"
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+                        TS=$(date -u +%Y%m%dT%H%M%SZ); FAIL=0
+                        B="${_BACKUP_BUCKET:-backups-local}"; P="{{ _backup_project:-k8s }}"; E="${AWS_ENDPOINT_URL}"
+                        echo "=== Backup Verification ${TS} ==="
+                        for comp in mongodb vault seaweedfs gitlab; do
+                          N=$(aws --endpoint-url="$E" s3 ls "s3://${B}/${P}/${comp}/" 2>/dev/null | wc -l || echo 0)
+                          if [ "$N" -gt 0 ]; then echo "OK: ${N} ${comp} artifacts"; else echo "FAIL: no ${comp} artifacts"; FAIL=$((FAIL+1)); fi
+                        done
+                        echo "Failures: ${FAIL}"
+                        [ "$FAIL" -gt 0 ] && echo "STATUS: FAIL" && exit 1
+                        echo "STATUS: PASS"
+                    env:
+                      - name: _BACKUP_BUCKET
+                        value: "{{ _backup_bucket }}"
+                      - name: _BACKUP_PROJECT
+                        value: "{{ _backup_project }}"
+                    envFrom:
+                      - secretRef:
+                          name: backup-storage-credentials
+                    resources:
+                      requests:
+                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
+                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                      limits:
+                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
+                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+  tags: [backup, backup-verify]
