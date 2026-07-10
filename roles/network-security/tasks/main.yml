@@ -33,7 +33,7 @@
   until: bastion_pkg_result is success
 - name: Install tools directly on bastion
   ansible.builtin.shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nset -e\nif ! command -v kubectl &>/dev/null; then\n  curl --retry\
-    \ 5 --retry-delay 5 --retry-all-errors -fsSL \"https://dl.k8s.io/release/v1.35.4/bin/linux/amd64/kubectl\" -o /usr/local/bin/kubectl\n  chmod +x /usr/local/bin/kubectl\nfi\nif ! command -v helm &>/dev/null;\
+    \ 5 --retry-delay 5 --retry-all-errors -fsSL \"https://dl.k8s.io/release/{{ k8s_version | default('v1.35.6') }}/bin/linux/amd64/kubectl\" -o /usr/local/bin/kubectl\n  chmod +x /usr/local/bin/kubectl\nfi\nif ! command -v helm &>/dev/null;\
     \ then\n  curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL \"https://get.helm.sh/helm-v3.20.1-linux-amd64.tar.gz\" | tar xz -C /usr/local/bin/ linux-amd64/helm --strip-components=1\n  chmod +x\
     \ /usr/local/bin/helm\nfi\nif ! command -v hcloud &>/dev/null; then\n  curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL \"https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz\"\
     \ | tar xz -C /usr/local/bin/ hcloud\n  chmod +x /usr/local/bin/hcloud\nfi\nif ! command -v yq &>/dev/null; then\n  curl --retry 5 --retry-delay 5 --retry-all-errors -fsSL \"https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64\"\

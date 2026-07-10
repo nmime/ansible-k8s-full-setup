@@ -508,11 +508,11 @@ hcloud firewall list
 kubectl get nodes
 # Expected:
 # NAME             STATUS   ROLES           AGE   VERSION
-# k8s-cp-1         Ready    control-plane   45m   v1.35.4
-# k8s-cp-2         Ready    control-plane   45m   v1.35.4
-# k8s-cp-3         Ready    control-plane   45m   v1.35.4
-# k8s-worker-1     Ready    <none>          44m   v1.35.4
-# k8s-worker-2     Ready    <none>          44m   v1.35.4
+# k8s-cp-1         Ready    control-plane   45m   v1.35.6
+# k8s-cp-2         Ready    control-plane   45m   v1.35.6
+# k8s-cp-3         Ready    control-plane   45m   v1.35.6
+# k8s-worker-1     Ready    <none>          44m   v1.35.6
+# k8s-worker-2     Ready    <none>          44m   v1.35.6
 
 # Pods — no non-Running / non-Completed
 kubectl get pods -A | grep -vE 'Running|Completed'

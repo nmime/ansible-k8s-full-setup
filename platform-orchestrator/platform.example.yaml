@@ -96,14 +96,14 @@ infrastructure:
     public_ip: false
 
 kubernetes:
-  version: v1.35.4
+  version: v1.35.6
   cni: cilium
-  cilium_version: v1.19.4
+  cilium_version: v1.19.5
   pod_cidr: 10.233.64.0/18
   service_cidr: 10.233.0.0/18
   features:
     gateway_api: true
-    gateway_api_version: v1.5.1
+    gateway_api_version: v1.6.0
     hubble: true
     encryption: true
     network_policies: true

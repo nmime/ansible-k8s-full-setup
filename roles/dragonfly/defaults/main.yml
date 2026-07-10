@@ -1,7 +1,7 @@
 ---
 dragonfly_namespace: dragonfly
-dragonfly_operator_version: "v1.5.0"
-dragonfly_image_version: "v1.38.1"
+dragonfly_operator_version: "v1.6.1"
+dragonfly_image_version: "v1.39.0"
 dragonfly_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
 dragonfly_memory_request: "{{ '1Gi' if tier in ['medium', 'production'] else '256Mi' }}"
 dragonfly_memory_limit: "{{ '2Gi' if tier in ['medium', 'production'] else '512Mi' }}"
