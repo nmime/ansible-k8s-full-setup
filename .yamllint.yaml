@@ -8,9 +8,29 @@ rules:
   brackets:
     min-spaces-inside: 0
     max-spaces-inside: 1
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+  colons:
+    max-spaces-after: 1
+  empty-lines:
+    max: 1
+    max-start: 0
+    max-end: 0
   indentation:
     indent-sequences: whatever
 ignore: |
   .git/
   node_modules/
   __pycache__/
+  .pre-commit-config.yaml
+  roles/k8s-cluster-management/
+  roles/k8s-gitops/
+  roles/k8s-observability/
+  roles/generate-secrets/
+  roles/network-security/
+  roles/object-storage/
+  roles/k8s-autoscaling/
+  roles/apm-server/
+  templates/
+  inventory.example
