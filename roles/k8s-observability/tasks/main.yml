@@ -1431,17 +1431,19 @@
   retries: 3
   delay: 10
   until: _r_add_tempo_grafana_datasource is not failed
-- name: Deploy ServiceMonitors for platform services
+- name: Deploy VMServiceScrapes for platform services (VictoriaMetrics)
   kubernetes.core.k8s:
     state: present
-    src: '{{ playbook_dir }}/../roles/k8s-observability/templates/servicemonitors.yml'
+    src: '{{ playbook_dir }}/../roles/k8s-observability/templates/vmservicescrapes.yml'
   ignore_errors: true
+  vars:
+    prometheus_enabled: '{{ prometheus_enabled | default(false) }}'
 - name: Deploy cert-manager alert (cert expiry warning)
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: monitoring.coreos.com/v1
-      kind: PrometheusRule
+      kind: VMRule
       metadata:
         name: cert-expiry-alerts
         namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
@@ -1455,24 +1457,24 @@
             labels:
                 severity: warning
             annotations:
-                summary: Certificate {{ $labels.name }} expires in < 7 days
-                description: Namespace {{ $labels.namespace }}, cert {{ $labels.name }}
+                summary: Certificate {{ '{{ $labels.name }}' }} expires in < 7 days
+                description: Namespace {{ '{{ $labels.namespace }}' }}, cert {{ '{{ $labels.name }}' }}
           - alert: CertificateExpiryCritical
             expr: certmanager_certificate_expiration_timestamp_seconds - time() < 24 * 3600
             for: 10m
             labels:
                 severity: critical
             annotations:
-                summary: Certificate {{ $labels.name }} expires in < 24 hours!
-                description: Immediate action needed. Namespace {{ $labels.namespace }}
+                summary: Certificate {{ '{{ $labels.name }}' }} expires in < 24 hours!
+                description: Immediate action needed. Namespace {{ '{{ $labels.namespace }}' }}
           - alert: CertificateRenewalFailed
             expr: certmanager_certificate_ready_status{condition="False"} == 1
             for: 30m
             labels:
                 severity: critical
             annotations:
-                summary: Certificate {{ $labels.name }} renewal FAILED
-                description: cert-manager cannot renew {{ $labels.name }} in {{ $labels.namespace }}
+                summary: Certificate {{ '{{ $labels.name }}' }} renewal FAILED
+                description: cert-manager cannot renew {{ '{{ $labels.name }}' }} in {{ '{{ $labels.namespace }}' }}
 - name: Create default-deny for monitoring namespace
   kubernetes.core.k8s:
     state: present
@@ -1525,3 +1527,9 @@
 
 - name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)
   ansible.builtin.import_tasks: alerting.yml
+
+- name: Include distributed tracing (Tempo + OTel Collector)
+  ansible.builtin.import_tasks: tracing.yml
+
+- name: Include observability health checks
+  ansible.builtin.import_tasks: health_checks.yml

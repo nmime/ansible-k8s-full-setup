@@ -1,0 +1,116 @@
+---
+# Observability component health checks
+
+- name: Check VictoriaMetrics Operator health
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    label_selectors:
+      - app.kubernetes.io/name=victoria-metrics-operator
+  register: _r_check_vm_operator
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_vm_operator.resources | length > 0
+    - _r_check_vm_operator.resources[0].status.phase | default('') == 'Running'
+  ignore_errors: true
+
+- name: Check VMSingle health (minimal/small)
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    label_selectors:
+      - app: vmsingle
+  register: _r_check_vmsingle
+  retries: 10
+  delay: 10
+  until: [_r_check_vmsingle.resources | length > 0]
+  ignore_errors: true
+  when: tier in ['minimal', 'small']
+
+- name: Check VMCluster health (medium/production)
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+  register: _r_check_vmcluster
+  retries: 10
+  delay: 10
+  until: [_r_check_vmcluster.resources | length > 0]
+  ignore_errors: true
+  when: tier in ['medium', 'production']
+
+- name: Check Loki health
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    label_selectors:
+      - app.kubernetes.io/name=loki
+  register: _r_check_loki
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_loki.resources | length > 0
+    - _r_check_loki.resources[0].status.phase | default('') == 'Running'
+  ignore_errors: true
+  when: log_stack == 'loki'
+
+- name: Check Grafana health
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    label_selectors:
+      - app.kubernetes.io/name=grafana
+  register: _r_check_grafana
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_grafana.resources | length > 0
+    - _r_check_grafana.resources[0].status.phase | default('') == 'Running'
+  ignore_errors: true
+
+- name: Check Tempo health
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    label_selectors:
+      - app.kubernetes.io/name=tempo
+  register: _r_check_tempo
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_tempo.resources | length > 0
+    - _r_check_tempo.resources[0].status.phase | default('') == 'Running'
+  ignore_errors: true
+  when: tracing_enabled | bool
+
+- name: Check OTel Collector health
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    label_selectors:
+      - app.kubernetes.io/name=otel-collector
+  register: _r_check_otel
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_otel.resources | length > 0
+    - _r_check_otel.resources[0].status.phase | default('') == 'Running'
+  ignore_errors: true
+  when: tracing_enabled | bool
+
+- name: Display observability health summary
+  debug:
+    msg:
+      - "  VM Operator: {{ 'OK' if _r_check_vm_operator.resources | default([]) | length > 0 else 'CHECK' }}"
+      - "  Metrics: DEPLOYED ({{ 'VMCluster' if tier in ['medium', 'production'] else 'VMSingle' }})"
+      - "  Loki: {{ 'OK' if log_stack == 'loki' else 'N/A (ELK)' }}"
+      - "  Grafana: {{ 'OK' if _r_check_grafana.resources | default([]) | length > 0 else 'CHECK' }}"
+      - "  Tempo: {{ 'OK' if (tracing_enabled | bool) else 'DISABLED' }}"
+      - "  OTel:   {{ 'OK' if (tracing_enabled | bool) else 'DISABLED' }}"
