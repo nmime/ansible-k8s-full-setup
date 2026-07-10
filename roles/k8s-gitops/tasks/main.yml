@@ -53,8 +53,7 @@
         replicas: '{{ argocd_server_replicas | int }}'
         ingress:
           enabled: false
-        extraArgs:
-          {{ "--insecure" if argocd_insecure_mode | default(false) | bool else [] }}
+        extraArgs: []
         resources:
           requests:
             cpu: 100m
@@ -184,11 +183,11 @@
         name: platform
         namespace: '{{ argocd_namespace }}'
       spec:
-        description: Platform applications (security-hardened: explicit source/destination/resource allowlists)
+        description: "Platform applications (security-hardened: explicit source/destination/resource allowlists)"
         sourceRepos: '{{ argocd_allowed_source_repos | default(["*"]) }}'
-        destinations: '{{ argocd_allowed_namespaces | default(["*"]) | map("regex_replace", "^(.*)$", "{ namespace: \\1, server: https://kubernetes.default.svc }") | list }}'
-        clusterResourceWhitelist: '{{ argocd_allowed_cluster_resources | default([{"group": "*", "kind": "*"}]) }}'
-        namespaceResourceWhitelist: '{{ argocd_allowed_namespace_resources | default([{"group": "*", "kind": "*"}]) }}'
+        destinations: '{{ argocd_allowed_namespaces | default(["*"]) | default([]) }}'
+        clusterResourceWhitelist: '{{ argocd_allowed_cluster_resources | default([]) }}'
+        namespaceResourceWhitelist: '{{ argocd_allowed_namespace_resources | default([]) }}'
   register: _r_create_default_argocd_appproject
   retries: 3
   delay: 10
