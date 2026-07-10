@@ -1,0 +1,303 @@
+---
+# Tempo + OpenTelemetry Collector deployment
+# Gated by tracing_enabled (default true for medium/production)
+
+- name: Set tracing tier-specific variables
+  set_fact:
+    tempo_namespace: '{{ monitoring_namespace }}'
+    tempo_chart_version: '1.6.1'
+    tempo_image_tag: '2.6.1'
+    otel_collector_chart_version: '0.102.1'
+    otel_collector_image_tag: '0.112.0'
+
+- name: Add Grafana Helm repository for Tempo
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: 'https://grafana.github.io/helm-charts'
+  register: _r_add_grafana_helm_repo_for_tempo
+  retries: 3
+  delay: 10
+  until: _r_add_grafana_helm_repo_for_tempo is not failed
+  when: tracing_enabled | bool
+
+- name: Add OpenTelemetry Helm repository
+  kubernetes.core.helm_repository:
+    name: open-telemetry
+    repo_url: 'https://open-telemetry.github.io/opentelemetry-helm-charts'
+  register: _r_add_otel_helm_repo
+  retries: 3
+  delay: 10
+  until: _r_add_otel_helm_repo is not failed
+  when: tracing_enabled | bool
+
+- name: Create Tempo S3 credentials secret
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: tempo-s3-credentials
+        namespace: '{{ tempo_namespace }}'
+      type: Opaque
+      stringData:
+        S3_ACCESS_KEY: '{{ object_storage_access_key }}'
+        S3_SECRET_KEY: '{{ object_storage_secret_key }}'
+  register: _r_create_tempo_s3_credentials_secret
+  retries: 3
+  delay: 10
+  until: _r_create_tempo_s3_credentials_secret is not failed
+  when: tracing_enabled | bool
+
+- name: Deploy Tempo with Helm
+  kubernetes.core.helm:
+    name: tempo
+    chart_ref: grafana/tempo
+    chart_version: '{{ tempo_chart_version }}'
+    release_namespace: '{{ tempo_namespace }}'
+    create_namespace: true
+    release_state: present
+    wait: true
+    timeout: 10m0s
+    values:
+      image:
+        tag: '{{ tempo_image_tag }}'
+      config:
+        auth_enabled: false
+        server:
+          http_listen_port: 3200
+        ingester:
+          trace_idle_period: 10s
+          max_block_bytes: 1073741824
+          max_block_duration: 5m
+        compiler:
+          inline_functions: 0
+        storage:
+          trace:
+            backend: s3
+            s3:
+              bucket: tempo-traces
+              endpoint: '{{ object_storage_endpoint | default("http://seaweedfs-filer.storage.svc.cluster.local:8333") }}'
+              access_key: '{{ object_storage_access_key }}'
+              secret_key: '{{ object_storage_secret_key }}'
+              insecure: true
+            wal:
+              path: /var/tempo/wal
+            stream_idle_timeout: 10s
+          backend: s3
+        distributor:
+          receivers:
+            zipkin: {}
+            jaeger:
+              protocols:
+                thrift_http: {}
+                grpc: {}
+            opencensus: {}
+            otlp:
+              protocols:
+                http:
+                  endpoint: '0.0.0.0:4318'
+                grpc:
+                  endpoint: '0.0.0.0:4317'
+        compactor:
+          compaction:
+            compaction_window: 1h
+            max_compaction_objects: 1000000
+            block_retention: '{{ tempo_retention | default("24h") }}'
+            global_compaction:
+              deletion_delay: 10s
+        metrics_generator:
+          registry:
+            external_labels:
+              source: tempo
+              cluster: k8s
+          storage:
+            path: /var/tempo/generator
+            remote_write:
+              - url: '{{ "http://vminsert-vmcluster." + monitoring_namespace + ".svc:8480/insert/0/prometheus/api/v1/write" if tier in ["medium", "production"] else "http://vmsingle-vmsingle." + monitoring_namespace + ".svc:8429/api/v1/write" }}'
+      storage:
+        size: '{{ tempo_storage_size | default("20Gi") }}'
+        storageClass: '{{ storage_class | default("hcloud-volumes") }}'
+      ingester:
+        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+      queryFrontend:
+        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+      querier:
+        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+      distributor:
+        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+      compactor:
+        replicaCount: 1
+      metricsGenerator:
+        enabled: true
+        replicaCount: 1
+      gateway:
+        enabled: false
+  register: _r_install_tempo_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_tempo_with_helm is not failed
+  when: tracing_enabled | bool
+
+- name: Deploy OpenTelemetry Collector with Helm
+  kubernetes.core.helm:
+    name: otel-collector
+    chart_ref: open-telemetry/opentelemetry-collector
+    chart_version: '{{ otel_collector_chart_version }}'
+    release_namespace: '{{ tempo_namespace }}'
+    create_namespace: true
+    release_state: present
+    wait: true
+    timeout: 10m0s
+    values:
+      image:
+        tag: '{{ otel_collector_image_tag }}'
+      mode: deployment
+      config:
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: '0.0.0.0:4317'
+              http:
+                endpoint: '0.0.0.0:4318'
+          zipkin:
+            endpoint: '0.0.0.0:9411'
+          jaeger:
+            protocols:
+              grpc:
+                endpoint: '0.0.0.0:14250'
+              thrift_http:
+                endpoint: '0.0.0.0:14268'
+        processors:
+          batch:
+            timeout: 10s
+            send_batch_size: 1024
+          memory_limiter:
+            check_interval: 5s
+            limit_mib: 256
+        exporters:
+          otlp:
+            endpoint: 'tempo-distributor.{{ tempo_namespace }}.svc.cluster.local:4317'
+            tls:
+              insecure: true
+          logging:
+            loglevel: debug
+        service:
+          pipelines:
+            traces:
+              receivers: [otlp, jaeger, zipkin]
+              processors: [memory_limiter, batch]
+              exporters: [otlp]
+            metrics:
+              receivers: [otlp]
+              processors: [memory_limiter, batch]
+              exporters: [otlp]
+        observability:
+          metrics:
+            address: '0.0.0.0:8888'
+      service:
+        - name: otlp
+          ports:
+            - name: otlp-grpc
+              port: 4317
+              targetPort: 4317
+            - name: otlp-http
+              port: 4318
+              targetPort: 4318
+            - name: zipkin
+              port: 9411
+              targetPort: 9411
+            - name: jaeger-grpc
+              port: 14250
+              targetPort: 14250
+            - name: jaeger-http
+              port: 14268
+              targetPort: 14268
+        - name: metrics
+          ports:
+            - name: http-metrics
+              port: 8888
+              targetPort: 8888
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+      podSecurityContext:
+        runAsNonRoot: true
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+  register: _r_install_otel_collector_with_helm
+  retries: 3
+  delay: 10
+  until: _r_install_otel_collector_with_helm is not failed
+  when: tracing_enabled | bool
+
+- name: Create VMServiceScrape for Tempo
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: tempo
+        namespace: '{{ tempo_namespace }}'
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: tempo
+        endpoints:
+          - port: http
+            interval: 30s
+  register: _r_create_vmservicescrape_for_tempo
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_tempo is not failed
+  ignore_errors: true
+  when: tracing_enabled | bool
+
+- name: Create VMServiceScrape for OTel Collector
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: otel-collector
+        namespace: '{{ tempo_namespace }}'
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: otel-collector
+        endpoints:
+          - port: metrics
+            interval: 30s
+  register: _r_create_vmservicescrape_for_otel_collector
+  retries: 3
+  delay: 10
+  until: _r_create_vmservicescrape_for_otel_collector is not failed
+  ignore_errors: true
+  when: tracing_enabled | bool
+
+- name: Display Tempo + OTel deployment info
+  debug:
+    msg:
+      - "  Tempo: chart {{ tempo_chart_version }} / image {{ tempo_image_tag }}"
+      - "  OTel Collector: chart {{ otel_collector_chart_version }} / image {{ otel_collector_image_tag }}"
+      - "  Retention: {{ tempo_retention }}"
+      - "  Protocols: OTLP, Jaeger, Zipkin, OpenCensus"
+  when: tracing_enabled | bool
+
+- name: Display tracing disabled notice
+  debug:
+    msg:
+      - "Distributed tracing DISABLED for tier {{ tier }}. Enable with: -e tracing_enabled=true"
+  when: not (tracing_enabled | bool)
