@@ -113,7 +113,7 @@ mongodb_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' 
 
 # GitLab
 # renovate: datasource=helm depName=gitlab
-gitlab_chart_version: "9.11.4"
+gitlab_chart_version: "10.1.2"
 gitlab_runner_concurrent_jobs: 10
 
 # GitOps (ArgoCD)
