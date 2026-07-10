@@ -1,0 +1,88 @@
+---
+# GitLab Toolbox Backup - idempotent
+
+- name: "Backup-GitLab | Create GitLab backup credentials"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-backup-credentials
+        namespace: "{{ backup_gitlab_namespace | default('gitlab') }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: gitlab
+      type: Opaque
+      stringData:
+        AWS_ACCESS_KEY_ID: "{{ backup_storage_access_key }}"
+        AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
+        OBJECT_STORE_ENDPOINT: "{{ backup_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+  tags: [backup, backup-gitlab]
+
+- name: "Backup-GitLab | Deploy GitLab toolbox backup CronJob"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: gitlab-backup
+        namespace: "{{ backup_gitlab_namespace | default('gitlab') }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          app.kubernetes.io/component: gitlab
+      spec:
+        schedule: "{{ _backup_schedule }}"
+        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
+        successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
+        failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
+        jobTemplate:
+          spec:
+            ttlSecondsAfterFinished: 600
+            backoffLimit: 1
+            activeDeadlineSeconds: 7200
+            template:
+              spec:
+                restartPolicy: OnFailure
+                containers:
+                  - name: gitlab-backup
+                    image: gitlab/gitlab-rails:latest-ce.0
+                    command:
+                      - /bin/bash
+                      - -c
+                      - |
+                        set -euo pipefail
+                        TS=$(date -u +%Y%m%d_%H%M%S)
+                        BD="/tmp/backups"; mkdir -p "$BD"
+                        [ "$(pgrep -cf gitlab-backup 2>/dev/null || echo 0)" -gt 1 ] && echo "Already running" && exit 0
+                        export BACKUP_DIR="$BD"
+                        bundle exec rake gitlab:backup:create RAILS_ENV=production 2>&1 | tail -20
+                        BF=$(ls -t "$BD"/*.tar 2>/dev/null | head -1)
+                        [ -z "$BF" ] && echo "ERROR: no backup" && exit 1
+                        aws --endpoint-url="${OBJECT_STORE_ENDPOINT}" s3 cp "$BF" "s3://{{ _backup_bucket }}/{{ _backup_project }}/gitlab/gitlab-${TS}.tar"
+                        RETENTION=${_BACKUP_RETENTION:-30}
+                        aws --endpoint-url="${OBJECT_STORE_ENDPOINT}" s3 ls "s3://{{ _backup_bucket }}/{{ _backup_project }}/gitlab/" 2>/dev/null | awk '{print $4}' | while read -r F; do
+                          D=$(echo "$F" | grep -oP '\d{8}_\d{6}' || echo "")
+                          [ -z "$D" ] && continue
+                          E=$(date -d "${D//_/T}" +%s 2>/dev/null || echo 0)
+                          C=$(( $(date +%s) - (RETENTION * 86400) ))
+                          [ "$E" -gt 0 ] && [ "$E" -lt "$C" ] && aws --endpoint-url="${OBJECT_STORE_ENDPOINT}" s3 rm "s3://{{ _backup_bucket }}/{{ _backup_project }}/gitlab/${F}"
+                        done
+                        rm -f "$BF"
+                        echo "=== GitLab backup completed ==="
+                    env:
+                      - name: _BACKUP_RETENTION
+                        value: "{{ _backup_retention | string }}"
+                    envFrom:
+                      - secretRef:
+                          name: gitlab-backup-credentials
+                    resources:
+                      requests:
+                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
+                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                      limits:
+                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
+                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+  tags: [backup, backup-gitlab]
