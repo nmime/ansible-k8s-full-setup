@@ -219,4 +219,3 @@ otel_collector_enabled: "{{ tracing_enabled }}"
 hipaa_compliance: true
 internal_tls_enabled: "{{ hipaa_compliance }}"
 log_redaction_enabled: "{{ hipaa_compliance }}"
-

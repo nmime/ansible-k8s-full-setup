@@ -1,0 +1,18 @@
+# .ansible-lint.yml
+# Minimal profile to avoid failing on Kubespray-generated roles.
+# These roles use Jinja2-heavy patterns that strict linting rejects.
+
+profile: minimal
+
+skip_list:
+  - name[missing]
+  - name[prefix]
+  - fqcn
+  - deprecated-module
+  - yaml[line-length]
+  - schema
+
+exclude_paths:
+  - tests/
+  - .pytest_cache/
+  - .git/

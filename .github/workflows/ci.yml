@@ -1,0 +1,52 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-yaml:
+    name: YAML Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: pip install yamllint
+      - run: yamllint -c .yamllint.yaml .
+
+  pre-commit:
+    name: Pre-commit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pre-commit
+      - run: pre-commit run check-json --all-files --hook-stage manual
+      - run: pre-commit run check-merge-conflict --all-files --hook-stage manual
+      - run: pre-commit run check-symlinks --all-files --hook-stage manual
+
+  version-matrix:
+    name: Version Matrix
+    runs-on: ubuntu-24.04
+    if: hashFiles('scripts/verify-version-matrix.py') != ''
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyyaml requests
+      - run: python3 scripts/verify-version-matrix.py
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          bash_exec: '/usr/bin/env bash'
