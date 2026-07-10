@@ -1,0 +1,12 @@
+profile: minimal
+skip_list:
+  - name[missing]
+  - name[prefix]
+  - fqcn
+  - deprecated-module
+  - yaml[line-length]
+  - schema
+exclude_paths:
+  - tests/
+  - .pytest_cache/
+  - .git/

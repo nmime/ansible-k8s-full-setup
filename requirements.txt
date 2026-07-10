@@ -1,0 +1,4 @@
+yamllint>=1.35.0
+ansible-lint==25.2.1
+pytest>=8.0.0
+python-vault==1.1.2

@@ -306,7 +306,7 @@ _acme-challenge.example.com. TXT "<random>"  ; Deleted after cert issued
 
 cdn.example.com.  A  GeoIP:
   EU users        → 49.12.100.1    (edge-eu)
-  NA/SA users     → 142.132.50.2   (edge-us) 
+  NA/SA users     → 142.132.50.2   (edge-us)
   AS/OC users     → 138.201.30.3   (edge-apac)
   Default         → 49.12.100.1    (edge-eu)
 
