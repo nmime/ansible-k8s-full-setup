@@ -1,7 +1,7 @@
 ---
 # K8s Cluster Management - Kubespray v2.31.0 + Cilium v1.19.5 + Gateway API v1.6.0
 # Installs Kubernetes cluster with core addons
-# Components: K8s v1.35.6, Hetzner CCM v1.33.0, Hetzner CSI v2.22.0, cert-manager v1.21.0, MetalLB v0.16.0
+# Components: K8s v1.35.6, Hetzner CCM v1.33.0, Hetzner CSI v2.22.0, cert-manager v1.21.0, MetalLB v0.16.1
 
 - name: Set cluster management variables
   set_fact:
@@ -10,10 +10,10 @@
     kubespray_version: "v2.31.0"
     cilium_ver: "{{ cilium_version | default('v1.19.5') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.6.0') }}"
-    certmanager_ver: "v1.21.0"
-    metallb_ver: "v0.16.0"
-    hetzner_ccm_ver: "v1.33.0"
-    hetzner_csi_ver: "v2.22.0"
+    certmanager_ver: "{{ cert_manager_version | default('v1.21.0') }}"
+    metallb_ver: "{{ metallb_version | default('v0.16.1') }}"
+    hetzner_ccm_ver: "{{ hetzner_ccm_version | default('v1.33.0') }}"
+    hetzner_csi_ver: "{{ hetzner_csi_version | default('v2.22.0') }}"
     cluster_tier: "{{ tier | default('medium') }}"
     certmanager_replicas: "{{ (tier | default('medium')=='minimal')|ternary(1, (tier | default('medium')=='production')|ternary(3, 2)) }}"
 
@@ -991,7 +991,7 @@
 
 
 # ============================================
-# MetalLB v0.14.9
+# MetalLB v0.16.1
 # ============================================
 
 - name: Add MetalLB Helm repository
@@ -1796,3 +1796,4 @@
       - "  MetalLB: {{ metallb_ver }}"
       - "  Tier: {{ cluster_tier }}"
       - "=========================================="
+
