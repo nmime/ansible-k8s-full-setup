@@ -1,7 +1,7 @@
 - name: Set database tier-specific variables
   set_fact:
     db_ns: databases
-    pg_operator_ver: 2.8.2
+    pg_operator_ver: '{{ pg_operator_version | default("3.0.0") }}'
     psmdb_operator_ver: 1.22.0
     pg_version: '{{ postgresql_version | default(18) }}'
     pg_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
@@ -122,7 +122,7 @@
   delay: 10
   until: _r_create_pmm_credentials_secret_for_databa is not failed
   no_log: true
-- name: Create PostgreSQL cluster
+- name: Create PostgreSQL cluster (PG Operator 3.x — v2 API)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -131,6 +131,9 @@
       metadata:
         name: '{{ project_name | default(''k8s'') }}-pg'
         namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: percona-pg-operator
+          app.kubernetes.io/version: '{{ pg_operator_ver }}'
       spec:
         crVersion: '{{ pg_operator_ver }}'
         image: percona/percona-distribution-postgresql:{{ pg_version }}.3-1
@@ -167,10 +170,9 @@
             replicas: '{{ pg_proxy_replicas | int }}'
             image: percona/percona-pgbouncer:1.25.1-1
             config:
-              global:
-                pool_mode: transaction
-                max_client_conn: '1000'
-                default_pool_size: '25'
+              poolMode: transaction
+              maxClientConn: 1000
+              defaultPoolSize: 25
             resources:
               requests:
                 cpu: 50m
@@ -190,6 +192,16 @@
         backups:
           pgbackrest:
             image: percona/percona-pgbackrest:2.58.0-1
+            repoConfiguration:
+            - secret:
+                name: pgbackrest-s3-creds
+            repoHostConfiguration: []
+            global:
+              repo1-retention-full: '7'
+              repo1-retention-diff: '4'
+              repo2-s3-uri-style: path
+              repo2-retention-full: '4'
+              repo2-retention-full-type: count
             repos:
             - name: repo1
               schedules:
@@ -210,16 +222,7 @@
                 bucket: backups
                 endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
                 region: us-east-1
-            configuration:
-            - secret:
-                name: pgbackrest-s3-creds
-            global:
-              repo1-retention-full: '7'
-              repo1-retention-diff: '4'
-              repo2-path: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
-              repo2-s3-uri-style: path
-              repo2-retention-full: '4'
-              repo2-retention-full-type: count
+                keyPrefix: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
         pmm:
           enabled: true
           image: percona/pmm-client:2.44.0
@@ -235,6 +238,7 @@
         extensions:
           builtin:
             pg_stat_statements: true
+        customLibraries: {}
         patroni:
           dynamicConfiguration:
             postgresql:

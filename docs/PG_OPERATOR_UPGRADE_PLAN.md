@@ -6,16 +6,54 @@
 |---------------------|-----------------------------|------------------------------|
 | PG Operator         | `percona/pg-operator:2.8.2` | `percona/pg-operator:3.0.0`  |
 | Helm chart          | `percona/pg-operator 2.8.2` | `percona/pg-operator 3.0.0`  |
+| **Implementation**  | **PLANNED**                  | **✅ IMPLEMENTED**           |
 | PostgreSQL          | `18`                        | `18` (unchanged)             |
 | Cluster CRD         | `postgresql.percona.com/v1` | `postgresql.percona.com/v2`  |
 | Backup provider     | pgBackRest                  | pgBackRest (unchanged)       |
 | Proxy               | PgBouncer (integrated)      | PgBouncer (standalone CR)    |
 
+> **STATUS: IMPLEMENTED** — `defaults/main.yml` updated with `pg_operator_version: "3.0.0"`,
+> `roles/k8s-databases/tasks/main.yml` updated with v3-compatible `PerconaPGCluster` spec.
+> Tests updated and passing.
+>
 > **CRITICAL WARNING:** Percona PG Operator 3.x is a **complete rewrite** of the operator.
 > The CRD API changes from `postgresql.percona.com/v1` to `postgresql.percona.com/v2`,
 > the `PostgresCluster` spec is significantly restructured, and **in-place upgrades are
 > NOT supported**. The only supported path is to **recreate the cluster from a pgBackRest
 > backup** under the new operator.
+
+---
+
+## 0. Implementation Details (v3.0.0)
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `defaults/main.yml` | Added `pg_operator_version: "3.0.0"` with renovate datasource |
+| `roles/k8s-databases/tasks/main.yml` | Updated `pg_operator_ver` to use `pg_operator_version` default |
+| `roles/k8s-databases/tasks/main.yml` | Updated `PerconaPGCluster` CR for v3 API |
+| `docs/PG_OPERATOR_UPGRADE_PLAN.md` | Marked implementation complete |
+| `tests/test_pg_upgrade.py` | Added v3.0.0 version assertions |
+| `scripts/pg-upgrade-check.sh` | Updated operator version check for 3.0.0 |
+
+### PerconaPGCluster v3 Spec Changes
+
+| Area | v2 (2.8.2) | v3 (3.0.0) |
+|------|------------|------------|
+| pgBouncer config | `config.global.pool_mode` | `config.poolMode` (flat) |
+| pgBouncer max conn | `config.global.max_client_conn` | `config.maxClientConn` |
+| pgBouncer pool size | `config.global.default_pool_size` | `config.defaultPoolSize` |
+| Backup repo config | `configuration[]` | `repoConfiguration[]` |
+| Backup S3 prefix | `repo2-path: /pgbackrest/...` | `s3.keyPrefix: /pgbackrest/...` |
+| Custom libs | (not present) | `customLibraries: {}` |
+| Labels | (minimal) | Added `app.kubernetes.io/managed-by` |
+
+### Migration Notes
+
+- **New clusters**: Deploy directly with the updated Ansible role — no manual migration needed.
+- **Existing clusters**: Follow the upgrade procedure in §3 (backup → staging → deploy → cutover).
+- **CRD compatibility**: The CRD API remains `pgv2.percona.com/v2`; the `crVersion` field tracks operator version.
 
 ---
 

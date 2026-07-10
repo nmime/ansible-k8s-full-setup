@@ -43,6 +43,12 @@ class TestPlanStructure:
         assert "2.8.2" in self.text
         assert "3.0.0" in self.text
 
+    def test_implementation_status(self):
+        assert "IMPLEMENTED" in self.text
+
+    def test_implementation_section(self):
+        assert "Implementation Details" in self.text
+
     def test_crd_version_change(self):
         assert "postgresql.percona.com/v1" in self.text
         assert "postgresql.percona.com/v2" in self.text
@@ -130,6 +136,52 @@ class TestPlanStructure:
         assert "pg-restore-drill.sh" in self.text
 
 
+class TestAnsibleRoleVersion:
+    """Verify Ansible role has been updated for PG Operator 3.0.0."""
+
+    @pytest.fixture(autouse=True)
+    def load(self):
+        defaults_path = REPO_ROOT / "defaults" / "main.yml"
+        tasks_path = REPO_ROOT / "roles" / "k8s-databases" / "tasks" / "main.yml"
+        self.defaults_text = defaults_path.read_text()
+        self.tasks_text = tasks_path.read_text()
+
+    def test_defaults_has_pg_operator_version(self):
+        assert 'pg_operator_version' in self.defaults_text
+        assert '"3.0.0"' in self.defaults_text
+
+    def test_tasks_uses_pg_operator_version(self):
+        assert 'pg_operator_version' in self.tasks_text or 'pg_operator_ver' in self.tasks_text
+
+    def test_tasks_cr_version_3(self):
+        # The tasks should reference version 3.0.0 as default
+        assert '"3.0.0"' in self.tasks_text or '3.0.0' in self.tasks_text
+
+    def test_cr_has_v3_labels(self):
+        assert 'app.kubernetes.io/managed-by' in self.tasks_text
+
+    def test_cr_has_custom_libraries(self):
+        assert 'customLibraries' in self.tasks_text
+
+    def test_pgbouncer_flat_config(self):
+        # v3 uses flat config: poolMode, maxClientConn, defaultPoolSize
+        assert 'poolMode' in self.tasks_text
+        assert 'maxClientConn' in self.tasks_text
+        assert 'defaultPoolSize' in self.tasks_text
+
+    def test_backup_repo_configuration(self):
+        # v3 uses repoConfiguration instead of configuration
+        assert 'repoConfiguration' in self.tasks_text
+
+    def test_s3_key_prefix(self):
+        # v3 uses s3.keyPrefix instead of repo2-path
+        assert 'keyPrefix' in self.tasks_text
+
+    def test_no_old_v2_pgbouncer_global_config(self):
+        # Old style: config.global.pool_mode (nested) — should not be in CR
+        assert 'config:\n              global:\n                pool_mode' not in self.tasks_text
+
+
 class TestCheckScriptUnit:
     """pg-upgrade-check.sh — syntax and required structure."""
 
@@ -196,10 +248,13 @@ class TestCheckScriptUnit:
 
     def test_section_count(self):
         sections = re.findall(r'section\s+"?\d+\.', self.text)
-        assert len(sections) >= 8, f"Expected ≥8 sections, got {len(sections)}"
+        assert len(sections) >= 10, f"Expected ≥10 sections, got {len(sections)}"
 
     def test_checks_operator_version(self):
         assert "PG Operator" in self.text or "operator" in self.text.lower()
+
+    def test_checks_version_3_0_0(self):
+        assert "3.0.0" in self.text or "3.0" in self.text
 
     def test_checks_cr(self):
         assert "PostgresCluster" in self.text
@@ -224,6 +279,9 @@ class TestCheckScriptUnit:
 
     def test_checks_chart_availability(self):
         assert "helm search" in self.text or "helm repo" in self.text
+
+    def test_checks_v3_chart(self):
+        assert "3.0" in self.text
 
     def test_dry_run_blocks(self):
         dry_runs = re.findall(r'DRY_RUN.*?true.*?skipped', self.text, re.IGNORECASE | re.DOTALL)
@@ -455,6 +513,21 @@ class TestCheckScriptDryRun:
             [str(CHECK_SH), "--bogus"], capture_output=True, text=True, timeout=10,
         )
         assert r.returncode == 2
+
+
+class TestVersionConsistency:
+    """Verify version consistency across all files."""
+
+    def test_defaults_matches_tasks(self):
+        defaults_text = (REPO_ROOT / "defaults" / "main.yml").read_text()
+        tasks_text = (REPO_ROOT / "roles" / "k8s-databases" / "tasks" / "main.yml").read_text()
+        # Both should reference 3.0.0
+        assert "3.0.0" in defaults_text
+        assert "3.0.0" in tasks_text
+
+    def test_drill_script_default_version(self):
+        drill_text = DRILL_SH.read_text()
+        assert "3.0.0" in drill_text
 
 
 class TestDrillScriptDryRun:
