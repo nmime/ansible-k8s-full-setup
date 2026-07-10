@@ -97,9 +97,9 @@ class TestPlanDocumentStructure:
         assert "checklist" in self.content.lower() or "- [ ]" in self.content
 
     def test_has_version_mapping_table(self):
-        # Should have version/chart mapping
-        assert "0.32.0" in self.content
-        assert "0.34" in self.content
+        # Should have version/chart mapping — both legacy (pre-upgrade) and current
+        assert "0.32.0" in self.content  # Legacy reference
+        assert "0.34" in self.content    # Current chart version
 
     def test_has_auto_unseal_reference(self):
         assert "auto-unseal" in self.content.lower() or "auto_unseal" in self.content.lower()
@@ -615,29 +615,93 @@ class TestScriptsIntegration:
         assert "set -euo pipefail" in rd
 
 
-class TestConstraintsNotViolated:
-    """Verify constraints: defaults/main.yml and k8s-secrets tasks not changed."""
+class TestVaultUpgradeImplemented:
+    """Verify the Vault 2.0.3 upgrade was applied correctly."""
 
-    def test_defaults_main_not_modified(self):
+    def test_defaults_main_exists(self):
         defaults = REPO_ROOT / "defaults" / "main.yml"
-        content = defaults.read_text()
-        # Vault version should still be 1.21.2 in the tasks file, not defaults
-        # The constraint is about NOT changing defaults/main.yml
         assert defaults.is_file()
 
-    def test_k8s_secrets_tasks_not_modified(self):
+    def test_k8s_secrets_tasks_has_new_version(self):
         tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
         content = tasks.read_text()
-        # Should still reference 1.21.2
-        assert "1.21.2" in content
-        assert "0.32.0" in content
+        # Should now reference 2.0.3 and 0.34.0
+        assert "2.0.3" in content, "vault_version should be 2.0.3"
+        assert "0.34.0" in content, "vault_chart_ver should be 0.34.0"
+        # Old versions should not be the active values
+        assert "vault_version: 1.21.2" not in content
+        assert "vault_chart_ver: 0.32.0" not in content
 
-    def test_new_files_only(self):
-        # Only docs, scripts, and tests should be new
-        new_files = [
-            VAULT_PLAN,
-            UPGRADE_CHECK,
-            RESTORE_DRILL,
-        ]
-        for f in new_files:
-            assert f.is_file(), f"New file missing: {f}"
+    def test_backup_restore_defaults_has_new_version(self):
+        defaults = REPO_ROOT / "roles" / "backup-restore" / "defaults" / "main.yml"
+        content = defaults.read_text()
+        assert "hashicorp/vault:2.0.3" in content
+        assert "hashicorp/vault:1.21.2" not in content
+
+    def test_backup_restore_raft_task_has_new_version(self):
+        task = REPO_ROOT / "roles" / "backup-restore" / "tasks" / "vault_raft.yml"
+        content = task.read_text()
+        assert "hashicorp/vault:2.0.3" in content
+
+    def test_restore_drill_script_default_version(self):
+        content = RESTORE_DRILL.read_text()
+        assert "2.0.3" in content
+        # Should not default to 1.21.2 anymore
+        assert ":-1.21.2" not in content
+
+    def test_roles_readme_has_updated_version(self):
+        readme = REPO_ROOT / "roles" / "README.md"
+        content = readme.read_text()
+        assert "0.34.0" in content
+
+    def test_plan_marks_upgrade_as_implemented(self):
+        content = VAULT_PLAN.read_text()
+        assert "IMPLEMENTED" in content.upper() or "implemented" in content.lower()
+        assert "2.0.3" in content
+
+    def test_new_artifacts_still_exist(self):
+        # Docs, scripts, and tests from original plan
+        for f in [VAULT_PLAN, UPGRADE_CHECK, RESTORE_DRILL]:
+            assert f.is_file(), f"Artifact missing: {f}"
+
+    def test_vault_config_still_uses_raft_ha(self):
+        """Raft HA config should remain intact for Vault 2.0."""
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        content = tasks.read_text()
+        assert "server.ha.raft.enabled" in content
+        assert "setNodeId: true" in content
+        assert "storage " in content and "raft" in content
+
+    def test_auto_unseal_cronjob_uses_new_image(self):
+        """The auto-unseal CronJob image ref should use vault_version variable."""
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        content = tasks.read_text()
+        assert "hashicorp/vault:{{ vault_version }}" in content
+
+    def test_eso_integration_unchanged(self):
+        """ESO ClusterSecretStore should still reference Vault correctly."""
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        content = tasks.read_text()
+        assert "ClusterSecretStore" in content
+        assert "vault-backend" in content
+
+    def test_vault_tls_certificate_creation(self):
+        """TLS cert creation task should still exist."""
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        content = tasks.read_text()
+        assert "vault-tls" in content
+        assert "cert-manager.io" in content
+
+    def test_vault_network_policies_intact(self):
+        """Cilium network policies for Vault should be present."""
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        content = tasks.read_text()
+        assert "default-deny" in content
+        assert "allow-vault-ingress" in content
+
+    def test_debug_summary_shows_new_version(self):
+        """The debug summary should display the new version."""
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        content = tasks.read_text()
+        assert "v2.0.3" in content
+        assert "v1.21.2" not in content

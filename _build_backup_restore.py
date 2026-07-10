@@ -74,7 +74,7 @@ w("roles/backup-restore/defaults/main.yml", """
     backup_job_memory_request: 128Mi
     backup_job_memory_limit: 512Mi
     backup_alpine_image: alpine:3.22
-    backup_vault_image: hashicorp/vault:1.21.2
+    backup_vault_image: hashicorp/vault:2.0.3
     backup_mongo_image: mongodb/mongodb-community-server:7.0.15
     backup_s3cli_image: amazon/aws-cli:2.34.48
 """)
@@ -301,7 +301,7 @@ w("roles/backup-restore/tasks/vault_raft.yml", """
                     restartPolicy: OnFailure
                     containers:
                       - name: vault-snapshot
-                        image: "{{ backup_vault_image | default('hashicorp/vault:1.21.2') }}"
+                        image: "{{ backup_vault_image | default('hashicorp/vault:2.0.3') }}"
                         command:
                           - /bin/sh
                           - -c

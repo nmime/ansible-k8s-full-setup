@@ -2,8 +2,8 @@
   set_fact:
     vault_ns: vault
     eso_ns: external-secrets
-    vault_chart_ver: 0.32.0
-    vault_version: 1.21.2
+    vault_chart_ver: 0.34.0
+    vault_version: 2.0.3
     eso_chart_ver: 2.7.0
     vault_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
     vault_ha: '{{ true if tier in [''medium'', ''production''] else false }}'
@@ -668,7 +668,7 @@
     - ==========================================
     - '  Secrets Management Deployed'
     - ==========================================
-    - '  Vault: v1.21.2 (chart {{ vault_chart_ver }})'
+    - '  Vault: v2.0.3 (chart {{ vault_chart_ver }})'
     - '  ESO: chart {{ eso_chart_ver }}'
     - '  HA Mode: {{ vault_ha }}'
     - '  Replicas: {{ vault_replicas }}'

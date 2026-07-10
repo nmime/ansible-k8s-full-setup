@@ -52,6 +52,6 @@ backup_job_cpu_limit: 500m
 backup_job_memory_request: 128Mi
 backup_job_memory_limit: 512Mi
 backup_alpine_image: alpine:3.22
-backup_vault_image: hashicorp/vault:1.21.2
+backup_vault_image: hashicorp/vault:2.0.3
 backup_mongo_image: mongodb/mongodb-community-server:7.0.15
 backup_s3cli_image: amazon/aws-cli:2.34.48
