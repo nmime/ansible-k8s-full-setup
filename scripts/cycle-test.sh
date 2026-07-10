@@ -17,7 +17,8 @@ verify_cluster() {
         if ssh -o StrictHostKeyChecking=no -o ProxyCommand='ssh -o StrictHostKeyChecking=no -W %h:%p root@95.216.147.95' root@10.0.2.2 'kubectl get nodes' 2>/dev/null | grep -q 'Ready'; then
             echo "Cluster nodes ready"
             ssh -o StrictHostKeyChecking=no -o ProxyCommand='ssh -o StrictHostKeyChecking=no -W %h:%p root@95.216.147.95' root@10.0.2.2 'kubectl get nodes -o wide; kubectl get pods -A' 2>/dev/null
-            local not_running=$(ssh -o StrictHostKeyChecking=no -o ProxyCommand='ssh -o StrictHostKeyChecking=no -W %h:%p root@95.216.147.95' root@10.0.2.2 'kubectl get pods -A --no-headers 2>/dev/null | grep -v Running | grep -v Completed | wc -l' 2>/dev/null)
+            local not_running
+            not_running=$(ssh -o StrictHostKeyChecking=no -o ProxyCommand='ssh -o StrictHostKeyChecking=no -W %h:%p root@95.216.147.95' root@10.0.2.2 'kubectl get pods -A --no-headers 2>/dev/null | grep -v Running | grep -v Completed | wc -l' 2>/dev/null)
             if [ "$not_running" -eq 0 ] 2>/dev/null; then
                 echo "All pods running - cluster healthy"
                 return 0

@@ -15,7 +15,6 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 ANSIBLE_DIR="${SCRIPT_DIR}/.."
 
 DEFAULT_REGION="hel1"
-DEFAULT_PROJECT="k8s"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 

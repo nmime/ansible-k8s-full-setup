@@ -11,7 +11,7 @@ SNAPSHOT_DIR="${PROJECT_ROOT}/snapshot"
 LOG_DIR="${PROJECT_ROOT}/logs"
 LOG_FILE="${LOG_DIR}/rollback.log"
 
-DRY_RUN=false; TARGET_TIER=""; COMPONENTS="all"; FORCE=false
+DRY_RUN=false; COMPONENTS="all"; FORCE=false
 CUSTOM_SNAPSHOT=""
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -43,7 +43,6 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run)     DRY_RUN=true; shift ;;
-      --tier)        TARGET_TIER="$2"; shift 2 ;;
       --component)   COMPONENTS="${COMPONENTS:+${COMPONENTS},}$2"; shift 2 ;;
       --force)       FORCE=true; shift ;;
       --snapshot)    CUSTOM_SNAPSHOT="$2"; shift 2 ;;

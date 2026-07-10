@@ -24,7 +24,7 @@ jinja2-time==0.2.0
 # ── Cryptography / secrets ──────────────────────────────────────────
 cryptography==44.0.1
 passlib==1.7.4
-python-vault==1.1.1
+python-vault==1.1.2
 
 # ── HTTP / networking ───────────────────────────────────────────────
 requests==2.32.3
