@@ -1534,3 +1534,5 @@
 - name: Include observability health checks
   ansible.builtin.import_tasks: health_checks.yml
 
+- name: Include Coroot (auto-discovering application observability)
+  ansible.builtin.import_tasks: coroot.yml

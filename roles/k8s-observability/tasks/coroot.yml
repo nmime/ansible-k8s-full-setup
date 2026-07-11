@@ -1,0 +1,60 @@
+---
+# Coroot tasks - included from k8s-observability/tasks/main.yml
+# Provides: Coroot auto-discovering application observability
+
+- name: Create Coroot namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: coroot
+        labels:
+          app.kubernetes.io/part-of: observability
+          pod-security.kubernetes.io/enforce: baseline
+  register: _r_create_coroot_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_coroot_namespace is not failed
+
+- name: Deploy Coroot via helm
+  kubernetes.core.helm:
+    name: coroot
+    chart_ref: oci://ghcr.io/coroot/helm/coroot
+    release_namespace: coroot
+    create_namespace: true
+    release_state: present
+    wait: true
+    timeout: 5m0s
+    values:
+      replicaCount: 1
+      image:
+        repository: coroot/coroot
+        tag: "{{ coroot_image_tag | default('latest') }}"
+        pullPolicy: IfNotPresent
+      service:
+        type: ClusterIP
+      coroot:
+        prometheusUrl: "http://vmcluster-vmsingle.{{ monitoring_namespace }}.svc.cluster.local:8429"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      podSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+  register: _r_coroot_deploy
+  retries: 2
+  delay: 15
+  until: _r_coroot_deploy is not failed
+  when: tier in ['medium', 'production']
