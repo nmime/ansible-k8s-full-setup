@@ -354,3 +354,44 @@
         endpoints:
         - port: metrics
           interval: 30s
+
+- name: Deploy nest-react-boilerplate via ArgoCD Application
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: nest-react-boilerplate
+        namespace: '{{ argocd_namespace }}'
+        finalizers:
+          - resources-finalizer.argocd.argoproj.io
+      spec:
+        project: platform
+        source:
+          repoURL: https://github.com/nmime/nest-react-boilerplate.git
+          targetRevision: main
+          path: .helm
+          helm:
+            valueFiles:
+              - values.yaml
+              - ../deploy/k8s/values.yaml
+            parameters:
+              - name: "imagePullSecrets[0].name"
+                value: "ghcr-credentials"
+                forceString: true
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: nest-react-boilerplate
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=true
+            - PruneLast=true
+  register: _r_argocd_nest_react_boilerplate
+  retries: 3
+  delay: 10
+  until: _r_argocd_nest_react_boilerplate is not failed
+  when: deploy_nest_react_boilerplate | default(true) | bool

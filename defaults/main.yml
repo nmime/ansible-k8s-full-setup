@@ -196,6 +196,9 @@ restore_safety_gate_confirm_required: true
 
 # Daytona workspace platform (optional; disabled by default)
 deploy_daytona: false
+# Deploy nest-react-boilerplate application via ArgoCD. Disable if deploying
+# a different workload or using the platform as infrastructure-only.
+deploy_nest_react_boilerplate: true
 daytona_enabled: "{{ deploy_daytona | default(false) }}"
 daytona_namespace: daytona
 daytona_release_name: daytona
