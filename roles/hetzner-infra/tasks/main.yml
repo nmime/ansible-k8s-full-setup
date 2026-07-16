@@ -9,6 +9,11 @@
     project: "{{ project_name | default('k8s') }}"
     region: "{{ infrastructure.region | default(hetzner_region | default('hel1')) }}"
     infra_tier: "{{ tier | default('medium') }}"
+    network_cidr: "{{ network.private_network.cidr | default(private_network_cidr) }}"
+    infra_subnet_cidr: "{{ network.private_network.infrastructure | default(infrastructure_subnet) }}"
+    control_plane_subnet_cidr: "{{ network.private_network.control_plane | default(control_plane_subnet) }}"
+    worker_subnet_cidr: "{{ network.private_network.workers | default(workers_subnet) }}"
+    load_balancer_type: "{{ network.load_balancer.type | default('lb11') }}"
 
 # ============================================
 # Auto-select cheapest server types from Hetzner API
@@ -332,7 +337,7 @@
     cmd: >
       hcloud network create
       --name {{ project }}-network
-      --ip-range 10.0.0.0/16
+      --ip-range {{ network_cidr }}
       --label project={{ project }}
   when: network_check.rc != 0
 
@@ -342,7 +347,7 @@
       hcloud network add-subnet {{ project }}-network
       --type cloud
       --network-zone {{ network_zone }}
-      --ip-range 10.0.0.0/24
+      --ip-range {{ infra_subnet_cidr }}
   register: subnet_infra
   changed_when: subnet_infra.rc == 0
   failed_when: >-
@@ -359,7 +364,7 @@
       hcloud network add-subnet {{ project }}-network
       --type cloud
       --network-zone {{ network_zone }}
-      --ip-range 10.0.1.0/24
+      --ip-range {{ control_plane_subnet_cidr }}
   register: subnet_cp
   changed_when: subnet_cp.rc == 0
   failed_when: >-
@@ -376,7 +381,7 @@
       hcloud network add-subnet {{ project }}-network
       --type cloud
       --network-zone {{ network_zone }}
-      --ip-range 10.0.2.0/24
+      --ip-range {{ worker_subnet_cidr }}
   register: subnet_workers
   changed_when: subnet_workers.rc == 0
   failed_when: >-
@@ -512,37 +517,37 @@
       - direction: in
         protocol: tcp
         port: '22'
-        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        source_ips: ['{{ network_cidr }}', 100.64.0.0/10]
         description: SSH from private network and VPN
       - direction: in
         protocol: tcp
         port: '6443'
-        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        source_ips: ['{{ network_cidr }}', 100.64.0.0/10]
         description: Kubernetes API
       - direction: in
         protocol: tcp
         port: '10250'
-        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        source_ips: ['{{ network_cidr }}', 100.64.0.0/10]
         description: Kubelet API
       - direction: in
         protocol: tcp
         port: 30000-32767
-        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        source_ips: ['{{ network_cidr }}', 100.64.0.0/10]
         description: NodePort range
       - direction: in
         protocol: tcp
         port: 2379-2380
-        source_ips: [10.0.0.0/16]
+        source_ips: ['{{ network_cidr }}']
         description: etcd cluster
       - direction: in
         protocol: tcp
         port: '4240'
-        source_ips: [10.0.0.0/16]
+        source_ips: ['{{ network_cidr }}']
         description: Cilium health checks
       - direction: in
         protocol: udp
         port: '8472'
-        source_ips: [10.0.0.0/16]
+        source_ips: ['{{ network_cidr }}']
         description: Cilium VXLAN overlay
 
 - name: Read current node firewall after creation
@@ -837,7 +842,7 @@
     cmd: >
       hcloud load-balancer create
       --name {{ project }}-lb
-      --type lb11
+      --type {{ load_balancer_type }}
       --location {{ region }}
       --label project={{ project }}
   when: lb_enabled | bool and lb_check.rc != 0

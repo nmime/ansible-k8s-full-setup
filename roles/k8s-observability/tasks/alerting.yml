@@ -2,6 +2,16 @@
 # Alerting tasks - included from k8s-observability/tasks/main.yml at the end
 # Provides: VMAlertmanager + VMAlert + default VMRules + Postal SMTP + Telegram webhook
 
+- name: Resolve configured alert delivery channels
+  ansible.builtin.set_fact:
+    alert_telegram_configured: >-
+      {{
+        alert_telegram_enabled | default(false) | bool
+        and alert_telegram_bot_token | default('') | length > 0
+        and alert_telegram_chat_id | default(0) | int != 0
+      }}
+    alert_email_configured: '{{ alert_email_enabled | default(false) | bool }}'
+
 - name: Create alert secrets (Telegram + SMTP)
   kubernetes.core.k8s:
     state: present
@@ -35,10 +45,12 @@
         alertmanager.yaml: |
           global:
             resolve_timeout: 5m
+          {% if alert_email_configured | bool %}
             smtp_from: 'alerts@{{ domain }}'
             smtp_smarthost: 'postal-smtp.postal.svc.cluster.local:25'
             smtp_require_tls: false
             smtp_hello: '{{ domain }}'
+          {% endif %}
 
           route:
             receiver: default
@@ -47,17 +59,25 @@
             group_interval: 5m
             repeat_interval: 4h
             routes:
+          {% if not alert_telegram_configured | bool and not alert_email_configured | bool %}
+              []
+          {% endif %}
+          {% if alert_telegram_configured | bool %}
               - receiver: telegram-critical
                 matchers:
                   - severity="critical"
                 continue: true
+          {% endif %}
+          {% if alert_email_configured | bool %}
               - receiver: email-warning
                 matchers:
                   - severity=~"warning|critical"
+          {% endif %}
 
           receivers:
             - name: default
               # silent – Grafana/UI only
+          {% if alert_telegram_configured | bool %}
             - name: telegram-critical
               telegram_configs:
                 - send_resolved: true
@@ -72,12 +92,16 @@
                     {{ .Annotations.description }}
                     <code>{{ .Labels.namespace }}/{{ .Labels.pod }}</code>
                     {{ end }}{% endraw %}
+
+          {% endif %}
+          {% if alert_email_configured | bool %}
             - name: email-warning
               email_configs:
                 - to: '{{ alert_email_to | default("alerts@" + domain) }}'
                   send_resolved: true
                   headers:
                     Subject: '[{{ "{{ .Status | toUpper }}" }}] {{ "{{ .GroupLabels.alertname }}" }}'
+          {% endif %}
 
           inhibit_rules:
             - source_matchers: [severity="critical"]
@@ -319,6 +343,6 @@
     msg:
       - 'VMAlertmanager ready at vmalertmanager-platform.{{ monitoring_namespace }}.svc.cluster.local:9093'
       - 'VMAlert evaluating rules every 30s'
-      - 'Telegram: {{ "enabled" if alert_telegram_bot_token | default("") | length > 0 else "DISABLED (no token in env)" }}'
-      - 'SMTP via Postal: alerts@{{ domain }} -> {{ alert_email_to | default("alerts@" + domain) }}'
+      - 'Telegram: {{ "enabled" if alert_telegram_configured | bool else "disabled or credentials missing" }}'
+      - 'SMTP via Postal: {{ "alerts@" + domain + " -> " + alert_email_to if alert_email_configured | bool else "disabled" }}'
       - 'UI (VPN-only): https://alertmanager.{{ domain }}'

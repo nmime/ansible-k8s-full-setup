@@ -45,7 +45,7 @@ Checks run:
   3. ansible-lint      — Ansible best practices & anti-patterns
   4. shellcheck        — Shell script static analysis
   5. version-matrix    — Version compatibility validation
-  6. ansible-syntax    — Parse both deployment entry-point playbooks
+  6. ansible-syntax    — Parse deployment and removal entry-point playbooks
   7. python-tests      — Unit and static component-contract tests (pytest)
 EOF
 }
@@ -180,11 +180,12 @@ else
 fi
 echo ""
 
-# ── 6. python-tests (pytest) ─────────────────────────────────────────────────
+# ── 6. ansible-syntax ────────────────────────────────────────────────────────
 
 echo -e "${BLUE}[6/7] ansible-syntax${NC} — Deployment playbook parser checks"
 if check_tool "ansible-playbook" "ansible-playbook"; then
   run_check "deploy-platform-syntax" ansible-playbook playbooks/deploy_platform.yml --syntax-check
+  run_check "remove-component-syntax" ansible-playbook playbooks/remove_component.yml --syntax-check
   run_check "continue-post-kubespray-syntax" ansible-playbook playbooks/continue_post_kubespray.yml --syntax-check
   run_check "edge-cdn-syntax" ansible-playbook playbooks/edge-cdn.yml --syntax-check
 fi

@@ -1,0 +1,247 @@
+---
+- name: Remove one explicitly disabled platform component
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
+
+  vars_files:
+    - ../defaults/main.yml
+
+  vars:
+    delete_component_data: false
+    component_catalog:
+      object-storage:
+        namespaces: [storage]
+        requires_data_confirmation: true
+      secrets:
+        namespaces: [vault, external-secrets]
+        requires_data_confirmation: true
+        resources:
+          - {api_version: external-secrets.io/v1, kind: ClusterSecretStore, name: vault-backend}
+          - {api_version: external-secrets.io/v1, kind: ExternalSecret, name: example-secret, namespace: default}
+      eso:
+        namespaces: [external-secrets]
+        requires_data_confirmation: false
+        resources:
+          - {api_version: external-secrets.io/v1, kind: ClusterSecretStore, name: vault-backend}
+          - {api_version: external-secrets.io/v1, kind: ExternalSecret, name: example-secret, namespace: default}
+      databases:
+        namespaces: [databases]
+        requires_data_confirmation: true
+      postgresql:
+        namespaces: []
+        requires_data_confirmation: true
+        resources:
+          - {api_version: pgv2.percona.com/v2, kind: PerconaPGCluster, name: "{{ project_name | default('k8s') }}-pg", namespace: databases}
+        pvc_selectors:
+          - {namespace: databases, selector: "postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg"}
+      mongodb:
+        namespaces: []
+        requires_data_confirmation: true
+        resources:
+          - {api_version: psmdb.percona.com/v1, kind: PerconaServerMongoDB, name: "{{ project_name | default('k8s') }}-mongo", namespace: databases}
+        pvc_selectors:
+          - {namespace: databases, selector: "app.kubernetes.io/instance={{ project_name | default('k8s') }}-mongo"}
+      elasticsearch:
+        namespaces: [elasticsearch]
+        requires_data_confirmation: true
+      dragonfly:
+        namespaces: [dragonfly]
+        requires_data_confirmation: true
+      gitlab:
+        namespaces: [gitlab]
+        requires_data_confirmation: true
+      gitlab-runner:
+        namespaces: []
+        requires_data_confirmation: false
+        helm_releases:
+          - {name: gitlab-runner, namespace: gitlab}
+        resources:
+          - {api_version: v1, kind: Secret, name: gitlab-runner-s3-cache, namespace: gitlab}
+      gitops:
+        namespaces: [argocd]
+        requires_data_confirmation: true
+      observability:
+        namespaces: [monitoring]
+        requires_data_confirmation: true
+      tracing:
+        namespaces: []
+        requires_data_confirmation: false
+        helm_releases:
+          - {name: tempo, namespace: monitoring}
+          - {name: otel-collector, namespace: monitoring}
+        resources:
+          - {api_version: v1, kind: Secret, name: tempo-s3-credentials, namespace: monitoring}
+          - {api_version: v1, kind: ConfigMap, name: grafana-tempo-datasource, namespace: monitoring}
+          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMServiceScrape, name: tempo, namespace: monitoring}
+          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMServiceScrape, name: otel-collector, namespace: monitoring}
+      autoscaling:
+        namespaces: [keda]
+        requires_data_confirmation: false
+      temporal:
+        namespaces: [temporal]
+        requires_data_confirmation: true
+      postal:
+        namespaces: [postal]
+        requires_data_confirmation: true
+      backup:
+        namespaces: [backups]
+        requires_data_confirmation: false
+        resources:
+          - {api_version: batch/v1, kind: CronJob, name: gitlab-rails-secrets-backup, namespace: gitlab}
+          - {api_version: v1, kind: Secret, name: gitlab-rails-backup-credentials, namespace: gitlab}
+          - {api_version: batch/v1, kind: CronJob, name: seaweedfs-backup-check, namespace: storage}
+          - {api_version: v1, kind: Secret, name: seaweedfs-backup-credentials, namespace: storage}
+          - {api_version: batch/v1, kind: CronJob, name: vault-raft-snapshot, namespace: vault}
+          - {api_version: v1, kind: Secret, name: vault-backup-credentials, namespace: vault}
+          - {api_version: v1, kind: ServiceAccount, name: vault-backup, namespace: vault}
+      glitchtip:
+        namespaces: [glitchtip]
+        requires_data_confirmation: true
+      apm:
+        namespaces: []
+        requires_data_confirmation: false
+        resources:
+          - {api_version: batch/v1, kind: Job, name: apm-ilm-setup, namespace: elasticsearch}
+          - {api_version: v1, kind: ConfigMap, name: apm-server-config, namespace: elasticsearch}
+          - {api_version: apps/v1, kind: Deployment, name: apm-server, namespace: elasticsearch}
+          - {api_version: v1, kind: Service, name: apm-server, namespace: elasticsearch}
+      blackbox:
+        namespaces: []
+        requires_data_confirmation: false
+        helm_releases:
+          - {name: blackbox-exporter, namespace: monitoring}
+        resources:
+          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMProbe, name: blackbox-public-https, namespace: monitoring}
+          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMProbe, name: blackbox-internal-tcp, namespace: monitoring}
+      daytona:
+        namespaces: ["{{ applications.daytona.namespace | default(daytona_namespace | default('daytona')) }}"]
+        requires_data_confirmation: true
+
+  pre_tasks:
+    - name: Validate the removal request
+      ansible.builtin.assert:
+        that:
+          - target_component is defined
+          - target_component in component_catalog
+          - confirm_component_removal | default('') == target_component
+        fail_msg: >-
+          Refusing component removal. Supply a supported target_component and
+          confirm_component_removal with exactly the same value.
+
+    - name: Normalize and validate the selected profile before removal
+      ansible.builtin.include_tasks: tasks/normalize_profile.yml
+
+    - name: Resolve current component selection
+      ansible.builtin.set_fact:
+        component_enabled_map:
+          object-storage: "{{ platform_object_storage_enabled }}"
+          secrets: "{{ platform_secrets_enabled }}"
+          eso: "{{ platform_eso_enabled }}"
+          databases: "{{ platform_databases_enabled }}"
+          postgresql: "{{ platform_postgresql_enabled }}"
+          mongodb: "{{ platform_mongodb_enabled }}"
+          elasticsearch: "{{ platform_elasticsearch_enabled }}"
+          dragonfly: "{{ platform_dragonfly_enabled }}"
+          gitlab: "{{ platform_gitlab_enabled }}"
+          gitlab-runner: "{{ platform_gitlab_runner_enabled }}"
+          gitops: "{{ platform_gitops_enabled }}"
+          observability: "{{ platform_observability_enabled }}"
+          tracing: "{{ platform_tracing_enabled }}"
+          autoscaling: "{{ platform_autoscaling_enabled }}"
+          temporal: "{{ platform_temporal_enabled }}"
+          postal: "{{ platform_postal_enabled }}"
+          backup: "{{ platform_backup_enabled }}"
+          glitchtip: "{{ platform_glitchtip_enabled }}"
+          apm: "{{ platform_apm_enabled }}"
+          blackbox: "{{ platform_blackbox_enabled }}"
+          daytona: "{{ platform_daytona_enabled }}"
+
+    - name: Refuse removal while the component is selected
+      ansible.builtin.assert:
+        that:
+          - not component_enabled_map[target_component] | bool
+        fail_msg: >-
+          {{ target_component }} is still enabled in the selected profile.
+          Disable it and resolve enabled dependants before removal.
+
+    - name: Resolve the component removal specification
+      ansible.builtin.set_fact:
+        component_spec: "{{ component_catalog[target_component] }}"
+
+    - name: Require explicit permission for data-bearing components
+      ansible.builtin.assert:
+        that:
+          - not component_spec.requires_data_confirmation | bool or delete_component_data | bool
+        fail_msg: >-
+          {{ target_component }} is data-bearing. Re-run with
+          delete_component_data=true only after backups have been verified.
+
+    - name: Discover PVCs in namespaces scheduled for deletion
+      ansible.builtin.command:
+        argv: [kubectl, get, pvc, --namespace, "{{ item }}", --output, name]
+      loop: "{{ component_spec.namespaces }}"
+      register: component_namespace_pvcs
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse implicit PVC deletion
+      ansible.builtin.assert:
+        that:
+          - delete_component_data | bool or (component_namespace_pvcs.results | selectattr('stdout', 'defined') | map(attribute='stdout') | reject('equalto', '') | list | length == 0)
+        fail_msg: >-
+          PVCs exist in a namespace scheduled for deletion. Verify backups and
+          explicitly pass delete_component_data=true.
+
+  tasks:
+    - name: Uninstall component Helm releases
+      kubernetes.core.helm:
+        name: "{{ item.name }}"
+        release_namespace: "{{ item.namespace }}"
+        release_state: absent
+        wait: true
+      loop: "{{ component_spec.helm_releases | default([]) }}"
+
+    - name: Remove exact component resources from shared namespaces
+      kubernetes.core.k8s:
+        state: absent
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ item.namespace | default(omit) }}"
+        wait: true
+      loop: "{{ component_spec.resources | default([]) }}"
+
+    - name: Remove component PVCs in shared namespaces
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: "{{ item.namespace }}"
+        delete_all: true
+        label_selectors:
+          - "{{ item.selector }}"
+        wait: true
+      loop: "{{ component_spec.pvc_selectors | default([]) }}"
+      when: delete_component_data | bool
+
+    - name: Delete dedicated component namespaces
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+        wait: true
+        wait_timeout: 300
+      loop: "{{ component_spec.namespaces }}"
+
+  post_tasks:
+    - name: Report component removal boundary
+      ansible.builtin.debug:
+        msg: >-
+          Removed Kubernetes resources for {{ target_component }}. Remote
+          object-storage backup and tracing buckets are intentionally retained;
+          this workflow never deletes Hetzner infrastructure or DNS.

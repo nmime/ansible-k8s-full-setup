@@ -195,3 +195,13 @@ apm:
 # ---------------------------------------------
 blackbox:
   enabled: true    # Probes all public URLs + internal TCP every 60s
+
+alerting:
+  telegram:
+    enabled: false
+  email:
+    enabled: true
+
+applications:
+  daytona:
+    enabled: false

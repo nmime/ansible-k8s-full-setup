@@ -74,6 +74,8 @@ secrets:
   vault:
     replicas: 1
     storage_size: 20Gi
+  eso:
+    enabled: false
 
 # ---------------------------------------------
 # Databases
@@ -166,3 +168,13 @@ apm:
 # ---------------------------------------------
 blackbox:
   enabled: false   # Off by default in small tiers (saves ~50MB RAM)
+
+alerting:
+  telegram:
+    enabled: false
+  email:
+    enabled: false
+
+applications:
+  daytona:
+    enabled: false

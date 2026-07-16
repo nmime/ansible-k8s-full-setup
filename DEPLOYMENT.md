@@ -56,6 +56,26 @@ GitLab chart 10 cannot be enabled without PostgreSQL, Dragonfly, and object
 storage. The normalizer rejects that invalid profile before infrastructure is
 changed.
 
+Inspect and change the selected technologies through the orchestrator:
+
+```bash
+./platform.sh components
+./platform.sh enable gitlab       # enables storage, PostgreSQL, and Dragonfly
+./platform.sh disable daytona
+./platform.sh validate
+```
+
+`enable` adds required dependencies. `disable` refuses when another enabled
+technology still depends on the target. The validated dependency graph also
+covers ESO -> secrets, database engines -> databases, Runner -> GitLab,
+GlitchTip -> PostgreSQL + Dragonfly, APM -> Elasticsearch, Temporal ->
+PostgreSQL + Elasticsearch, Postal -> Dragonfly, tracing -> observability +
+storage, Blackbox -> observability, and backup -> storage. Metrics, logging,
+Grafana, and PMM are intentionally deployed as one observability core bundle.
+Alert delivery channels remain settings under `alerting.telegram.enabled` and
+`alerting.email.enabled`; email requires Postal, while Telegram also requires
+`ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID` at deployment time.
+
 Validate the selected profile without contacting Hetzner or Kubernetes:
 
 ```bash
@@ -83,10 +103,46 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy secrets
 ./platform.sh deploy object-storage
 ./platform.sh deploy databases
+./platform.sh deploy postgresql
+./platform.sh deploy mongodb
+./platform.sh deploy elasticsearch
+./platform.sh deploy dragonfly
 ./platform.sh deploy gitlab
+./platform.sh deploy gitlab-runner
 ./platform.sh deploy gitops
 ./platform.sh deploy observability
+./platform.sh deploy tracing
+./platform.sh deploy temporal
+./platform.sh deploy postal
+./platform.sh deploy backup
+./platform.sh deploy glitchtip
+./platform.sh deploy apm
+./platform.sh deploy blackbox
+./platform.sh deploy daytona
 ```
+
+Every targeted deployment always runs profile normalization and dependency
+validation first. It fails if the component is disabled; enable it explicitly
+instead of overriding an Ansible variable on the command line.
+
+To stop selecting a component now but preserve the easiest return path, disable
+it and leave its resources in place. Re-enable and reconcile it later. To free
+cluster resources, disable it first and then use the guarded removal workflow:
+
+```bash
+./platform.sh disable blackbox
+./platform.sh remove blackbox --confirm blackbox
+
+# Stateful example: verify backups before authorizing PVC/namespace deletion.
+./platform.sh disable temporal
+./platform.sh remove temporal --confirm temporal --delete-data
+```
+
+Removal never deletes Hetzner infrastructure, DNS, remote backup objects, or
+the tracing bucket. Data-bearing components refuse removal without
+`--delete-data`. Re-enabling after a non-removal pause reconciles the retained
+installation; re-enabling after data deletion creates a fresh service unless
+you perform the documented restore procedure.
 
 Direct Ansible invocation uses the real example inventory:
 

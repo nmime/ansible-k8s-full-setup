@@ -51,6 +51,7 @@
 
     - name: Normalize the selected platform profile
       ansible.builtin.include_tasks: tasks/normalize_profile.yml
+      tags: [always]
 
     - name: Pre-flight check - hcloud CLI installed
       ansible.builtin.command: hcloud version
@@ -167,7 +168,7 @@
       when:
         - platform_databases_enabled | bool
         - platform_postgresql_enabled | bool or platform_mongodb_enabled | bool
-      tags: [databases, postgresql]
+      tags: [databases, postgresql, mongodb]
 
     - name: Deploy Dragonfly (external Redis-compatible service)
       ansible.builtin.import_role:

@@ -550,6 +550,7 @@
   retries: 3
   delay: 15
   until: _r_create_eso_namespace is not failed
+  when: eso_enabled | bool
 - name: Add External Secrets Helm repository
   kubernetes.core.helm_repository:
     name: external-secrets
@@ -558,6 +559,7 @@
   retries: 3
   delay: 15
   until: _r_add_external_secrets_helm_repository is not failed
+  when: eso_enabled | bool
 - name: Install External Secrets Operator via Helm
   kubernetes.core.helm:
     name: external-secrets
@@ -576,6 +578,7 @@
   retries: 3
   delay: 15
   until: _r_install_external_secrets_operator_via_he is not failed
+  when: eso_enabled | bool
 - name: Wait for ESO to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -588,6 +591,7 @@
   retries: 120
   failed_when: false
   delay: 15
+  when: eso_enabled | bool
 - name: Create Vault ESO service account
   kubernetes.core.k8s:
     state: present
@@ -602,13 +606,16 @@
   retries: 3
   delay: 15
   until: _r_create_vault_eso_service_account is not failed
+  when: eso_enabled | bool
 - name: Create Vault ESO auth role
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-0
     command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault write auth/kubernetes/role/external-secrets bound_service_account_names=external-secrets-vault bound_service_account_namespaces={{
       eso_ns }} policies=default,external-secrets ttl=1h"
-  when: vault_init is changed
+  when:
+    - eso_enabled | bool
+    - vault_init is changed
   failed_when: false
   no_log: true
   register: _r_create_vault_eso_auth_role
@@ -621,7 +628,9 @@
     pod: vault-0
     command: "export VAULT_TOKEN={{ vault_init_data.root_token }}\nvault policy write external-secrets - <<EOF\npath \"secret/data/*\" {\n  capabilities = [\"read\", \"list\"]\n}\npath \"secret/metadata/*\"\
       \ {\n  capabilities = [\"read\", \"list\"]\n}\nEOF\n"
-  when: vault_init is changed
+  when:
+    - eso_enabled | bool
+    - vault_init is changed
   failed_when: false
   no_log: true
   register: _r_create_vault_policy_for_eso
@@ -654,6 +663,7 @@
   retries: 3
   delay: 15
   until: _r_create_clustersecretstore_for_vault is not failed
+  when: eso_enabled | bool
 - name: Create example ExternalSecret
   kubernetes.core.k8s:
     state: present
@@ -680,6 +690,7 @@
   retries: 3
   delay: 15
   until: _r_create_example_externalsecret is not failed
+  when: eso_enabled | bool
 - name: Create PodDisruptionBudget for Vault (HA mode)
   kubernetes.core.k8s:
     state: present
@@ -714,7 +725,9 @@
         selector:
           matchLabels:
             app.kubernetes.io/name: external-secrets
-  when: (secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) | int) > 1
+  when:
+    - eso_enabled | bool
+    - (secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) | int) > 1
   register: _r_create_eso_pdb
   retries: 3
   delay: 10
@@ -726,11 +739,11 @@
     - '  Secrets Management Deployed'
     - ==========================================
     - '  Vault: v2.0.3 (chart {{ vault_chart_ver }})'
-    - '  ESO: chart {{ eso_chart_ver }}'
+    - "  ESO: {{ 'chart ' + eso_chart_ver if eso_enabled | bool else 'disabled' }}"
     - '  HA Mode: {{ vault_ha }}'
     - '  Replicas: {{ vault_replicas }}'
     - '  UI: {{ vault_domain }}'
-    - '  ClusterSecretStore: vault-backend'
+    - "  ClusterSecretStore: {{ 'vault-backend' if eso_enabled | bool else 'disabled' }}"
     - ==========================================
 - name: Create default-deny for Vault namespace
   kubernetes.core.k8s:
