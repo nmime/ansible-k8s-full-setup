@@ -2,7 +2,7 @@
   set_fact:
     project: '{{ project_name | default(''k8s'') }}'
     vpn_domain: '{{ network.vpn.domain | default("vpn." + domain, true) }}'
-    headscale_version: 0.28.0
+    headscale_version: '{{ headscale_version | default("0.28.0") }}'
     bastion_host: '{{ bastion_public_ip | default(bastion_ip | default('''')) }}'
 - name: Validate bastion IP is available
   assert:
@@ -202,7 +202,7 @@
   ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/docker-compose.yml << 'EOF'\nservices:\n  headscale:\n\
     \    container_name: headscale\n    image: headscale/headscale:{{ headscale_version }}\n    restart: always\n    command: serve\n    ports:\n      - \"9090:9090\"\n      - \"3478:3478/udp\"\n    volumes:\n\
     \      - /var/lib/headscale:/var/lib/headscale\n      - /etc/headscale:/etc/headscale:ro\n    environment:\n      - TZ=UTC\n    security_opt:\n      - no-new-privileges:true\n    read_only: true\n \
-    \   tmpfs:\n      - /tmp\n      - /run\n      - /var/run/headscale\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\n  caddy:\n    container_name: caddy\n    image: caddy:2-alpine\n\
+    \   tmpfs:\n      - /tmp\n      - /run\n      - /var/run/headscale\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\n  caddy:\n    container_name: caddy\n    image: caddy:{{ caddy_image_tag }}\n\
     \    restart: always\n    ports:\n      - \"443:443\"\n      - \"80:80\"\n    volumes:\n      - /opt/headscale/Caddyfile:/etc/caddy/Caddyfile:ro\n      - caddy_data:/data\n      - caddy_config:/config\n\
     \    depends_on:\n      - headscale\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\nvolumes:\n  caddy_data:\n  caddy_config:\n\
     EOF\nREMOTECMD\n"

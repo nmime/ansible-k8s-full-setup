@@ -88,6 +88,10 @@ node_exporter_linux_amd64_sha256: a550cd5c05f760b7934a2d0afad66d2e92e681482f5f57
 promtail_version: "3.0.0"
 promtail_linux_amd64_sha256: 3a5120422a2a8aa26659a188d63f1425707ed42a1af274acc0a7797d851acf48
 
+# Bastion service images
+headscale_version: "0.28.0"
+caddy_image_tag: "2.11.4-alpine"
+
 # Network
 private_network_cidr: 10.0.0.0/16
 infrastructure_subnet: 10.0.0.0/24
@@ -215,6 +219,46 @@ dragonfly_image_version: "v1.39.0"
 
 # VictoriaMetrics Operator
 vm_operator_version: "0.66.2"
+pmm_server_version: "3.8.1"
+
+# Coroot application observability. The operator and every image are pinned so
+# an idempotent rerun cannot silently upgrade production workloads.
+# renovate: datasource=helm depName=coroot-operator registryUrl=https://coroot.github.io/helm-charts
+coroot_operator_chart_version: "0.9.7"
+# renovate: datasource=helm depName=coroot-ce registryUrl=https://coroot.github.io/helm-charts
+coroot_chart_version: "0.3.3"
+# renovate: datasource=docker depName=ghcr.io/coroot/coroot
+coroot_image_tag: "1.23.3"
+# renovate: datasource=docker depName=ghcr.io/coroot/coroot-node-agent
+coroot_node_agent_image_tag: "1.34.2"
+# renovate: datasource=docker depName=ghcr.io/coroot/coroot-cluster-agent
+coroot_cluster_agent_image_tag: "1.7.1"
+# These dependency images are the versions embedded in coroot-operator v1.9.5.
+coroot_clickhouse_image_tag: "25.11.2-ubi9-0"
+coroot_enabled: "{{ tier in ['medium', 'production'] }}"
+coroot_storage_size: "{{ '10Gi' if resource_tier in ['minimal', 'small'] else '20Gi' if resource_tier == 'medium' else '40Gi' }}"
+coroot_clickhouse_storage_size: "{{ '20Gi' if resource_tier in ['minimal', 'small'] else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
+coroot_clickhouse_cpu_request: "{{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+coroot_clickhouse_cpu_limit: "{{ '1' if resource_tier in ['minimal', 'small'] else '2' }}"
+coroot_clickhouse_memory_request: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+coroot_clickhouse_memory_limit: "{{ '2Gi' if resource_tier in ['minimal', 'small'] else '4Gi' }}"
+coroot_metrics_refresh_interval: 15s
+coroot_cache_ttl: "{{ '14d' if resource_tier in ['minimal', 'small'] else '30d' }}"
+coroot_logs_ttl: "{{ '3d' if resource_tier == 'minimal' else '7d' if resource_tier == 'small' else '14d' }}"
+coroot_traces_ttl: "{{ '12h' if resource_tier in ['minimal', 'small'] else '24h' if resource_tier == 'medium' else '72h' }}"
+coroot_profiles_ttl: "{{ '12h' if resource_tier in ['minimal', 'small'] else '24h' if resource_tier == 'medium' else '72h' }}"
+coroot_cpu_request: "{{ '100m' if resource_tier in ['minimal', 'small'] else '250m' if resource_tier == 'medium' else '500m' }}"
+coroot_cpu_limit: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' if resource_tier == 'medium' else '2' }}"
+coroot_memory_request: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' if resource_tier == 'medium' else '2Gi' }}"
+coroot_memory_limit: "{{ '1Gi' if resource_tier in ['minimal', 'small'] else '2Gi' if resource_tier == 'medium' else '4Gi' }}"
+coroot_node_agent_cpu_request: 100m
+coroot_node_agent_cpu_limit: 500m
+coroot_node_agent_memory_request: 200Mi
+coroot_node_agent_memory_limit: 1Gi
+coroot_cluster_agent_cpu_request: 100m
+coroot_cluster_agent_cpu_limit: 500m
+coroot_cluster_agent_memory_request: 200Mi
+coroot_cluster_agent_memory_limit: 1Gi
 
 # External Secrets Operator
 eso_chart_version: "2.7.0"
@@ -274,9 +318,8 @@ tempo_retention: "{{ '12h' if resource_tier in ['minimal', 'small'] else '24h' i
 tempo_storage_size: "{{ '10Gi' if resource_tier in ['minimal', 'small'] else '20Gi' if resource_tier == 'medium' else '40Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"
 
-# Internal service TLS is enabled independently of compliance claims.
-# HIPAA mode is opt-in and still requires an organization-specific risk assessment.
-internal_tls_enabled: true
+# Legacy direct-Ansible compatibility. Profiles use compliance.hipaa.enabled;
+# the mode remains opt-in and still requires an organization-specific review.
 hipaa_compliance: false
 log_redaction_enabled: "{{ hipaa_compliance }}"
 

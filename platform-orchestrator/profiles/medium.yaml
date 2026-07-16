@@ -143,6 +143,9 @@ dragonfly:
 temporal:
   enabled: true
 
+coroot:
+  enabled: true
+
 tracing:
   enabled: true
   retention: 24h
@@ -182,6 +185,11 @@ alerting:
     enabled: false
   email:
     enabled: true
+
+compliance:
+  hipaa:
+    enabled: false
+    log_redaction_enabled: true
 
 applications:
   daytona:

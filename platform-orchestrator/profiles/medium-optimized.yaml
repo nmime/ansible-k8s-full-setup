@@ -247,6 +247,39 @@ postal:
   mariadb_storage: 20Gi
   mariadb_memory: 1Gi
 
+coroot:
+  enabled: true
+  storage_size: 10Gi
+  metrics_refresh_interval: 15s
+  cache_ttl: 14d
+  logs_ttl: 7d
+  traces_ttl: 24h
+  profiles_ttl: 24h
+  resources:
+    cpu_request: 100m
+    cpu_limit: 500m
+    memory_request: 512Mi
+    memory_limit: 1Gi
+  clickhouse:
+    storage_size: 20Gi
+    resources:
+      cpu_request: 250m
+      cpu_limit: "1"
+      memory_request: 512Mi
+      memory_limit: 2Gi
+  node_agent:
+    resources:
+      cpu_request: 100m
+      cpu_limit: 500m
+      memory_request: 200Mi
+      memory_limit: 1Gi
+  cluster_agent:
+    resources:
+      cpu_request: 100m
+      cpu_limit: 500m
+      memory_request: 200Mi
+      memory_limit: 1Gi
+
 tracing:
   enabled: true
   retention: 24h
@@ -283,6 +316,11 @@ alerting:
     enabled: false
   email:
     enabled: true
+
+compliance:
+  hipaa:
+    enabled: false
+    log_redaction_enabled: true
 
 applications:
   daytona:

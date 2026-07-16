@@ -72,6 +72,10 @@ GlitchTip -> PostgreSQL + Dragonfly, APM -> Elasticsearch, Temporal ->
 PostgreSQL + Elasticsearch, Postal -> Dragonfly, tracing -> observability +
 storage, Blackbox -> observability, and backup -> storage. Metrics, logging,
 Grafana, and PMM are intentionally deployed as one observability core bundle.
+Coroot -> observability is also enforced; HIPAA-oriented hardening requires
+secrets, observability, Cilium encryption, and active log redaction. The full
+selector, profile matrix, and removal classes are in the
+[technology catalog](docs/TECHNOLOGY_CATALOG.md).
 Alert delivery channels remain settings under `alerting.telegram.enabled` and
 `alerting.email.enabled`; email requires Postal, while Telegram also requires
 `ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID` at deployment time.
@@ -99,8 +103,12 @@ Component runs are available when recovery or maintenance requires them:
 
 ```bash
 ./platform.sh deploy infra
+./platform.sh deploy network
+./platform.sh deploy dns
 ./platform.sh deploy cluster
+./platform.sh deploy tls
 ./platform.sh deploy secrets
+./platform.sh deploy eso
 ./platform.sh deploy object-storage
 ./platform.sh deploy databases
 ./platform.sh deploy postgresql
@@ -111,7 +119,9 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy gitlab-runner
 ./platform.sh deploy gitops
 ./platform.sh deploy observability
+./platform.sh deploy coroot
 ./platform.sh deploy tracing
+./platform.sh deploy autoscaling
 ./platform.sh deploy temporal
 ./platform.sh deploy postal
 ./platform.sh deploy backup
@@ -119,11 +129,18 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy apm
 ./platform.sh deploy blackbox
 ./platform.sh deploy daytona
+./platform.sh deploy hipaa
 ```
 
 Every targeted deployment always runs profile normalization and dependency
 validation first. It fails if the component is disabled; enable it explicitly
 instead of overriding an Ansible variable on the command line.
+
+`deploy coroot` reconciles the observability bundle plus the pinned official
+Coroot operator/CE resources. Its eBPF node agent requires privileged Pod
+Security admission, scoped only to the `coroot` namespace. `deploy hipaa`
+reconciles network host controls and every selected log collector so redaction
+is active rather than an unused configuration object.
 
 To stop selecting a component now but preserve the easiest return path, disable
 it and leave its resources in place. Re-enable and reconcile it later. To free
@@ -143,6 +160,10 @@ the tracing bucket. Data-bearing components refuse removal without
 `--delete-data`. Re-enabling after a non-removal pause reconciles the retained
 installation; re-enabling after data deletion creates a fresh service unless
 you perform the documented restore procedure.
+
+HIPAA-oriented hardening can be disabled to stop future reconciliation, but
+generic removal is refused because host and cluster security controls cannot
+be safely reversed without an organization-specific, reviewed change plan.
 
 Direct Ansible invocation uses the real example inventory:
 

@@ -37,6 +37,16 @@ EXPECTED = {
     "dragonfly_operator_version": "v1.6.1",
     "dragonfly_image_version": "v1.39.0",
     "vm_operator_version": "0.66.2",
+    "pmm_server_version": "3.8.1",
+    "vault_version": "2.0.3",
+    "vault_chart_version": "0.34.0",
+    "caddy_image_tag": "2.11.4-alpine",
+    "coroot_operator_chart_version": "0.9.7",
+    "coroot_chart_version": "0.3.3",
+    "coroot_image_tag": "1.23.3",
+    "coroot_node_agent_image_tag": "1.34.2",
+    "coroot_cluster_agent_image_tag": "1.7.1",
+    "coroot_clickhouse_image_tag": "25.11.2-ubi9-0",
     "eso_chart_version": "2.7.0",
 }
 

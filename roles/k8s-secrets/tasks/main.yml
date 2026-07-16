@@ -57,6 +57,10 @@
       injector:
         enabled: false
       server:
+        image:
+          repository: hashicorp/vault
+          tag: '{{ vault_version }}'
+          pullPolicy: IfNotPresent
         securityContext:
           runAsNonRoot: true
           runAsUser: 100

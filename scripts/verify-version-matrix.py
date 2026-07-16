@@ -134,6 +134,40 @@ VERSION_REGISTRY = {
             ("defaults/main.yml", 'vm_operator_version: "0.66.2"'),
         ],
     },
+    "pmm_server_version": {
+        "value": "3.8.1",
+        "files": [
+            ("defaults/main.yml", 'pmm_server_version: "3.8.1"'),
+            ("roles/k8s-observability/tasks/main.yml", "percona/pmm-server:{{ pmm_server_version }}"),
+        ],
+    },
+    "vault_version": {
+        "value": "2.0.3",
+        "files": [
+            ("defaults/main.yml", 'vault_version: "2.0.3"'),
+            ("roles/k8s-secrets/tasks/main.yml", "tag: '{{ vault_version }}'"),
+        ],
+    },
+    "caddy_image_tag": {
+        "value": "2.11.4-alpine",
+        "files": [
+            ("defaults/main.yml", 'caddy_image_tag: "2.11.4-alpine"'),
+            ("roles/network-security/tasks/main.yml", "image: caddy:{{ caddy_image_tag }}"),
+        ],
+    },
+    "coroot_versions": {
+        "value": "pinned",
+        "files": [
+            ("defaults/main.yml", 'coroot_operator_chart_version: "0.9.7"'),
+            ("defaults/main.yml", 'coroot_chart_version: "0.3.3"'),
+            ("defaults/main.yml", 'coroot_image_tag: "1.23.3"'),
+            ("defaults/main.yml", 'coroot_node_agent_image_tag: "1.34.2"'),
+            ("defaults/main.yml", 'coroot_cluster_agent_image_tag: "1.7.1"'),
+            ("defaults/main.yml", 'coroot_clickhouse_image_tag: "25.11.2-ubi9-0"'),
+            ("roles/k8s-observability/tasks/coroot.yml", "chart_ref: coroot/coroot-operator"),
+            ("roles/k8s-observability/tasks/coroot.yml", "chart_ref: coroot/coroot-ce"),
+        ],
+    },
     "eso_chart_version": {
         "value": "2.7.0",
         "files": [

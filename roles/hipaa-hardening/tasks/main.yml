@@ -15,73 +15,23 @@
     fail_msg: HIPAA mode requires Vault TLS and certificate verification.
   when: hipaa_compliance | bool
 
-- name: Issue internal certificates for observability services
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Certificate
-      metadata:
-        name: '{{ item.name }}'
-        namespace: '{{ item.namespace }}'
-      spec:
-        secretName: '{{ item.name }}'
-        duration: 8760h
-        renewBefore: 720h
-        issuerRef:
-          name: internal-ca
-          kind: ClusterIssuer
-        dnsNames: '{{ item.dns_names }}'
-  loop:
-    - name: loki-gateway-tls
-      namespace: '{{ monitoring_namespace | default("monitoring") }}'
-      dns_names:
-        - loki-gateway
-        - 'loki-gateway.{{ monitoring_namespace | default("monitoring") }}.svc'
-        - 'loki-gateway.{{ monitoring_namespace | default("monitoring") }}.svc.cluster.local'
-    - name: tempo-tls
-      namespace: '{{ monitoring_namespace | default("monitoring") }}'
-      dns_names:
-        - tempo-distributor
-        - tempo-query-frontend
-        - 'tempo-distributor.{{ monitoring_namespace | default("monitoring") }}.svc.cluster.local'
-        - 'tempo-query-frontend.{{ monitoring_namespace | default("monitoring") }}.svc.cluster.local'
-  when:
-    - hipaa_compliance | bool
-    - internal_tls_enabled | bool
-    - deploy_observability | bool
-
-- name: Create Promtail log-redaction configuration
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: promtail-redaction
-        namespace: '{{ monitoring_namespace | default("monitoring") }}'
-      data:
-        redaction.yaml: |
-          - replace:
-              expression: '\b\d{3}-\d{2}-\d{4}\b'
-              replace: 'XXX-XX-XXXX'
-          - replace:
-              expression: '\(\d{3}\)\s*\d{3}-\d{4}'
-              replace: '(XXX) XXX-XXXX'
-          - replace:
-              expression: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
-              replace: '[REDACTED_EMAIL]'
-  when:
-    - hipaa_compliance | bool
-    - log_redaction_enabled | bool
-    - deploy_observability | bool
+- name: Verify encrypted pod networking and active log-redaction selection
+  ansible.builtin.assert:
+    that:
+      - kubernetes.features.encryption | default(true) | bool
+      - not deploy_observability | bool or log_redaction_enabled | bool
+    fail_msg: >-
+      HIPAA-oriented mode requires Cilium transparent encryption and active
+      log-collector redaction whenever observability is selected.
+  when: hipaa_compliance | bool
 
 - name: Display HIPAA-oriented control summary
   ansible.builtin.debug:
     msg:
       - 'HIPAA-oriented technical controls applied:'
-      - '  - Vault mTLS certificate verification enforced'
-      - '  - Observability service certificates requested'
-      - '  - Log-redaction configuration installed'
+      - '  - Vault TLS certificate verification enforced'
+      - '  - Cilium transparent pod-network encryption required'
+      - '  - Active Promtail/Filebeat/Fluentd redaction pipelines reconciled'
+      - '  - auditd host rules reconciled by the network-security role'
       - 'Formal compliance validation is still required before regulated use.'
   when: hipaa_compliance | bool

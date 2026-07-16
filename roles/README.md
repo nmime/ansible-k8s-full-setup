@@ -1,85 +1,75 @@
-# Roles Directory
+# Ansible Roles
 
-This directory contains Ansible roles for each platform component.
+`playbooks/deploy_platform.yml` is the canonical orchestrator. The exhaustive
+user-facing selector and version matrix is in
+[`docs/TECHNOLOGY_CATALOG.md`](../docs/TECHNOLOGY_CATALOG.md).
 
-| Role | Description | Key Technologies | Version |
-|------|-------------|------------------|---------|
-| `generate-secrets/` | Centralized credential generation and persistence | Ansible lookups | - |
-| `hetzner-infra/` | Cloud infrastructure provisioning | hcloud CLI, Ubuntu 24.04 | - |
-| `network-security/` | VPN and bastion hardening | Headscale, Tailscale, UFW, fail2ban | Headscale v0.28.0 |
-| `k8s-cluster-management/` | Kubernetes cluster installation | Kubespray, Cilium, Gateway API, cert-manager, MetalLB, Hetzner CCM/CSI | K8s v1.35.6, Kubespray 2.31, Cilium v1.19.5, cert-manager v1.21.0 |
-| `k8s-secrets/` | Secrets management | Vault (HA Raft), External Secrets Operator | Vault 2.0.3 / Chart 0.34.0, ESO Chart 2.7.0 |
-| `object-storage/` | S3-compatible object storage | SeaweedFS official Helm chart | Chart 4.25.1 |
-| `k8s-databases/` | Database deployments | Percona PG Operator, Percona MongoDB Operator | PostgreSQL 18, MongoDB 8.0 |
-| `gitlab-selfhosted/` | GitLab CE | Helm, GitLab Runner | CE v19.1.2, Chart 10.1.2 |
-| `k8s-gitops/` | GitOps continuous delivery | ArgoCD, ApplicationSets | Chart 9.5.14 |
-| `k8s-observability/` | Monitoring, logging, dashboards, alerting | VictoriaMetrics, Loki, Grafana, PMM | - |
-| `k8s-autoscaling/` | Event-driven autoscaling | KEDA | Chart 2.20.1 |
-| `temporal/` | Workflow orchestration engine | Temporal Server, Web UI | Chart 1.2.0 |
-| `dragonfly/` | Redis v6-compatible in-memory store | Dragonfly Operator, Dragonfly CRD | Operator v1.6.1, Dragonfly v1.39.0 |
-| `postal/` | Mail server | Postal, MariaDB, Dragonfly | v3.3.7 |
-| `glitchtip/` | Sentry-compatible error tracking | GlitchTip Helm chart, PostgreSQL, Dragonfly | App v6.1.4, Chart 8.2.0 |
-| `apm-server/` | Distributed tracing ingest | Elastic APM / OTLP, Elasticsearch | APM Server 9.4.3 |
-| `blackbox-exporter/` | Uptime and synthetic probes | prometheus-blackbox-exporter, VMProbe | Chart 11.15.1 |
-| `daytona-deployment/` | Optional workspace platform | Daytona Helm chart | Chart 0.0.23 |
+| Role | Managed scope |
+|---|---|
+| `generate-secrets` | strong credential generation and Ansible-Vault-encrypted persistence |
+| `hetzner-infra` | Hetzner network, subnets, firewall, servers, placement, load balancer, volumes, DNS inputs |
+| `network-security` | bastion packages/hardening, UFW, fail2ban, NAT, Headscale/Caddy VPN, node-exporter, auditd |
+| `k8s-cluster-management` | Kubespray, Kubernetes/containerd, Cilium/Hubble/encryption, Gateway API, cert-manager, Hetzner webhook/CCM/CSI, MetalLB |
+| `k8s-secrets` | pinned Vault Raft/TLS deployment and optional External Secrets Operator integration |
+| `object-storage` | active SeaweedFS S3-compatible implementation |
+| `elasticsearch` | Elasticsearch Basic and Kibana with TLS, security, and resource-tier sizing |
+| `k8s-observability` | VictoriaMetrics, Grafana, Loki/Promtail or ELK/EFK collectors, PMM, alerting, optional Tempo/OTel and Coroot |
+| `k8s-databases` | Percona PostgreSQL/PgBouncer/pgBackRest and optional Percona MongoDB/PBM |
+| `dragonfly` | Dragonfly operator and Redis-compatible cache |
+| `gitlab-selfhosted` | GitLab CE, Gitaly, Registry, KAS, Toolbox, and optional Runner |
+| `k8s-gitops` | Argo CD with constrained projects/sources/resources |
+| `k8s-autoscaling` | KEDA event-driven autoscaling |
+| `temporal` | Temporal server, UI, and admin tools |
+| `postal` | Postal plus MariaDB, using Dragonfly for queues |
+| `apm-server` | Elastic APM/OTLP ingestion into Elasticsearch |
+| `blackbox-exporter` | Prometheus Blackbox Exporter and VictoriaMetrics probes |
+| `glitchtip` | Sentry-compatible error tracking using PostgreSQL and Dragonfly |
+| `daytona-deployment` | optional Daytona workspace platform |
+| `backup-restore` | scheduled backup/verification resources and restore-drill support |
+| `hipaa-hardening` | assertions/reporting for the optional host-audit, encryption, and active redaction control set |
+| `edge-cdn` | separate explicit multi-region edge/Gcore workflow; not part of named profiles |
 
-Object storage note: RustFS was evaluated as an Apache-2.0 future/alternative backend; SeaweedFS remains the selected backend because RustFS Helm/app are beta and SeaweedFS has a mature chart plus live validation.
+`seaweedfs-storage` is not referenced by the canonical playbook and must not be
+treated as a second active object-storage implementation.
 
-## Resource and Version Notes
+Current secrets pins are Vault `2.0.3`, HashiCorp Vault chart `0.34.0`, and
+External Secrets Operator chart `2.7.0`. The complete pinned-version inventory
+is maintained in the technology catalog and enforced by the version matrix.
 
-- `medium` and `production` profiles now size both control planes and workers on
-  16Gi-class Hetzner `cx43` nodes; update cost expectations with current Hetzner
-  pricing rather than treating repository estimates as guarantees.
-- Medium profile storage is sized for 4x100Gi object storage replicas, 50Gi
-  PostgreSQL, 20Gi Vault, and 100Gi metrics retention.
-- Production profile storage is sized for 4x150Gi object storage replicas, 100Gi
-  PostgreSQL, 20Gi Vault, and 150Gi metrics retention.
-- GlitchTip and APM default to two replicas on medium/production resource tiers;
-  `medium-optimized` overrides them to one compact replica. Blackbox keeps a
-  small footprint and uses chart 11.15.1 with 60s probes.
+## Canonical order and gates
 
-## Deployment Order
+The main playbook imports roles in this order, while `when` expressions skip
+unselected services:
 
-Roles are deployed sequentially to respect dependencies:
+1. generate secrets;
+2. Hetzner infrastructure;
+3. network security;
+4. Kubernetes and cluster add-ons;
+5. secrets and object storage;
+6. Elasticsearch and the observability bundle;
+7. databases, Dragonfly, GitLab, Argo CD, and KEDA;
+8. Temporal, Postal, APM, Blackbox, GlitchTip, and Daytona;
+9. backup automation and HIPAA-oriented hardening post-tasks.
 
-```
- 1. generate-secrets        Generate all platform credentials (idempotent)
- 2. hetzner-infra           Provision VPC, subnets, firewalls, bastion, nodes, LB, DNS
- 3. network-security        Bastion hardening, NAT gateway, Headscale VPN
- 4. k8s-cluster-management  Kubespray K8s install, Cilium, Gateway API, cert-manager, CCM/CSI
- 5. k8s-secrets             Vault, auto-init/unseal, ESO + ClusterSecretStore
- 6. object-storage           SeaweedFS S3, pre-created buckets
- 7. elasticsearch           Elasticsearch + Kibana for enabled ELK profiles
- 8. k8s-observability       VictoriaMetrics, logs, Grafana, PMM, tracing, alerting
- 9. k8s-databases           PostgreSQL 18 HA + MongoDB 8.0
-10. dragonfly               Dragonfly Redis v6-compatible store
-11. gitlab-selfhosted       GitLab CE + Runner + Registry + KAS
-12. k8s-gitops              ArgoCD and ApplicationSets
-13. k8s-autoscaling         KEDA event-driven autoscaler
-14. temporal                Temporal workflow engine + Web UI
-15. postal                  Postal mail server
-16. apm-server              Elastic APM / OTLP ingest
-17. blackbox-exporter       Synthetic probes
-18. glitchtip               Sentry-compatible error tracking
-19. daytona-deployment      Daytona workspace platform (optional, deploy_daytona=true)
-```
+Profile normalization is tagged `always`, so targeted role/tag execution uses
+the same dependency contract as `deploy all`. Do not bypass a disabled flag
+with an extra variable: use `platform.sh enable COMPONENT`, validate, and then
+deploy it.
 
-## Tier and profile support
+Vault initialization material is encrypted locally. The role does not create
+a Kubernetes Secret or CronJob containing root/unseal material and does not
+claim Kubernetes-based auto-unseal.
 
-All core roles support four capability tiers: `minimal`, `small`, `medium`,
-and `production`. The `medium-optimized` profile keeps `tier: medium` while
-setting `resource_tier: small`; roles must use the capability tier for feature
-gates and the resource tier for requests, limits, retention, and default
-stateless replicas.
+## Capability versus resource tier
 
-## Usage
+All active roles distinguish:
 
-```yaml
-# Deploy full platform
-ansible-playbook playbooks/deploy_platform.yml \
-  -e tier=small -e domain=example.com -e email=admin@example.com
+- `tier`: minimal, small, medium, or production capability set;
+- `resource_tier`: requests, limits, retention, storage, and default stateless
+  replica envelope.
 
-# Deploy Daytona explicitly
-ansible-playbook playbooks/deploy_platform.yml \
-  --tags daytona -e deploy_daytona=true -e domain=example.com -e email=admin@example.com
-```
+`medium-optimized` therefore keeps `tier: medium` and
+`resource_tier: small`. Stateful quorum services retain safe topology while
+recoverable stateless workloads use compact defaults and explicit caps. Coroot
+also reuses VictoriaMetrics and uses a one-replica ClickHouse layout in this
+profile instead of adding a second Prometheus deployment.

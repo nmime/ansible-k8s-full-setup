@@ -10,9 +10,13 @@ ship or deploy an application repository by default.
   balancer, and platform DNS records.
 - Kubernetes v1.35.6 with Cilium, Gateway API, cert-manager, Hetzner CCM/CSI,
   and a private-node topology.
-- Optional profile-controlled services: Vault and External Secrets Operator,
-  SeaweedFS, PostgreSQL, MongoDB, Dragonfly, GitLab, Argo CD, observability,
-  KEDA, Temporal, Postal, GlitchTip, APM, Blackbox Exporter, and Daytona.
+- Profile-controlled services: SeaweedFS; Vault and External Secrets Operator;
+  Percona PostgreSQL and MongoDB; Elasticsearch/Kibana; Dragonfly; GitLab and
+  Runner; Argo CD; VictoriaMetrics, Grafana, Loki/ELK, PMM, Alertmanager,
+  Coroot, Tempo/OpenTelemetry, and Blackbox Exporter; KEDA; Temporal; Postal;
+  GlitchTip; Elastic APM; Daytona; backup automation; and HIPAA-oriented
+  technical hardening. See the exhaustive
+  [technology catalog](docs/TECHNOLOGY_CATALOG.md).
 - Scheduled backups, verification jobs, restore-drill scripts, staged upgrades,
   exact Helm rollback baselines, and verified teardown.
 
@@ -32,7 +36,8 @@ what lets `medium-optimized` retain the full medium toolset without silently
 allocating the normal-medium footprint. GitLab chart 10 requires PostgreSQL,
 Dragonfly, and object storage; profile validation rejects an invalid
 combination. The same fail-closed validation covers GlitchTip, APM, Temporal,
-Postal, tracing, backup, ESO, the GitLab Runner, and parent bundles.
+Postal, Coroot, tracing, backup, HIPAA-oriented hardening, ESO, the GitLab
+Runner, and parent bundles.
 
 The optimized profile keeps three-way control-plane, Vault, PostgreSQL,
 MongoDB, SeaweedFS, and Elasticsearch-master topology. Recoverable stateless
@@ -106,6 +111,8 @@ Technology selection is available without hand-editing dotted YAML paths:
 ```bash
 ./platform.sh components
 ./platform.sh enable temporal       # also enables PostgreSQL + Elasticsearch
+./platform.sh enable coroot         # also enables the observability core
+./platform.sh enable hipaa          # adds required secrets + observability
 ./platform.sh disable postal        # refuses if an enabled service depends on it
 ./platform.sh validate              # offline; no Hetzner/Kubernetes mutation
 ./platform.sh deploy temporal       # targeted, dependency-validated reconcile
@@ -135,7 +142,9 @@ ansible-playbook -i inventory.yml playbooks/deploy_platform.yml
 Component tags use the same normalized profile contract. ESO and GitLab Runner
 have real independent flags. Metrics, logging, Grafana, and PMM remain one
 production-tested observability core bundle; tracing and Blackbox are optional
-dependants of that bundle. Alertmanager creates Telegram/email routes only for
+dependants of that bundle. Coroot is another optional dependant, installed by
+the pinned official operator and sized explicitly for `medium-optimized`.
+Alertmanager creates Telegram/email routes only for
 enabled channels; its email channel requires the selected Postal service.
 
 ## Operations
@@ -180,9 +189,12 @@ against production without a recorded maintenance window and verified backup.
 ## Documentation
 
 - [Deployment guide](DEPLOYMENT.md)
+- [Technology catalog and profile matrix](docs/TECHNOLOGY_CATALOG.md)
 - [Operations runbook](RUNBOOK.md)
 - [Backup and restore](BACKUP_RESTORE.md)
 - [Security hardening](SECURITY_HARDENING.md)
+- [HIPAA-oriented hardening scope](HIPAA_COMPLIANCE.md)
+- [Observability stack](OBSERVABILITY.md)
 - [Upgrade runbook](UPGRADE_RUNBOOK.md)
 - [GitLab 18.11 to 19.1 plan](docs/GITLAB_UPGRADE_PLAN.md)
 - [Validation and CI](docs/CI_AUTOMATION.md)

@@ -11,9 +11,17 @@
 | GitLab | chart Toolbox `backup-utility` | `gitlab-toolbox-backup` | `gitlab` |
 | GitLab encryption keys | Rails `secrets.yml` copy to S3 | `gitlab-rails-secrets-backup` | `gitlab` |
 
-Only enabled platform components receive backup resources and verification
-requirements. Credentials are generated secrets; insecure static fallbacks are
-rejected.
+Only supported, enabled platform components receive backup resources and
+verification requirements. Credentials are generated secrets; insecure static
+fallbacks are rejected.
+
+Coroot application/ClickHouse PVCs, VictoriaMetrics/Loki telemetry, Argo CD
+runtime state, Temporal's external schemas, Postal, Elasticsearch, Dragonfly,
+GlitchTip, and Daytona are **not** covered by the generic backup role. Treat
+telemetry as recreatable only if that matches the organization’s requirements;
+otherwise add and live-test a component-specific export/restore procedure
+before production. A component's guarded `--delete-data` flag is not evidence
+that a backup exists.
 
 ## Quick Start
 

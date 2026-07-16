@@ -63,6 +63,12 @@ cd platform-orchestrator
 Enabling also enables required foundations and validates the resulting config.
 Targeted deploys run the same normalization contract as a full deployment.
 This is the normal way to add a technology after the initial cluster build.
+The accepted component names are `object-storage`, `secrets`, `eso`,
+`databases`, `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
+`gitlab-runner`, `gitops`, `observability`, `coroot`, `tracing`, `autoscaling`,
+`temporal`, `postal`, `backup`, `glitchtip`, `apm`, `blackbox`, `daytona`, and
+`hipaa`. See the [technology catalog](docs/TECHNOLOGY_CATALOG.md) for the exact
+dependency and profile matrix.
 
 Disabling only changes desired selection; it does not stop or delete already
 installed workloads. That boundary is deliberate, so a temporary pause remains
@@ -88,6 +94,15 @@ flag:
 Removal is scoped to Kubernetes component resources. Hetzner infrastructure,
 DNS, remote backup objects, and the tracing bucket are retained. A later enable
 after `--delete-data` is a fresh deployment until data is restored.
+
+Coroot is data-bearing because its namespace contains application and
+ClickHouse PVCs. Back up or export required history, then use `--delete-data`
+for removal. The eBPF node agent uses the privileged admission level only in
+the `coroot` namespace; investigate any privilege expansion outside it.
+
+`remove hipaa` is intentionally rejected. Disabling HIPAA-oriented hardening
+stops future reconciliation, but audit rules and other security controls must
+be reversed individually under an approved policy/change record.
 
 ## Secrets and Vault
 

@@ -1,8 +1,9 @@
 ---
-# Coroot tasks - included from k8s-observability/tasks/main.yml
-# Provides: Coroot auto-discovering application observability
+# Coroot is installed through its official operator. The operator chart,
+# Coroot CE chart, application, agents, and stateful dependency images are all
+# pinned. Coroot reuses VictoriaMetrics instead of deploying another Prometheus.
 
-- name: Create Coroot namespace
+- name: Create privileged Coroot namespace for the eBPF node agent
   kubernetes.core.k8s:
     state: present
     definition:
@@ -12,49 +13,215 @@
         name: coroot
         labels:
           app.kubernetes.io/part-of: observability
-          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: baseline
+          pod-security.kubernetes.io/warn: baseline
   register: _r_create_coroot_namespace
   retries: 3
   delay: 10
   until: _r_create_coroot_namespace is not failed
 
-- name: Deploy Coroot via helm
-  kubernetes.core.helm:
+- name: Add the official Coroot Helm repository
+  kubernetes.core.helm_repository:
     name: coroot
-    chart_ref: oci://ghcr.io/coroot/helm/coroot
+    repo_url: https://coroot.github.io/helm-charts
+  register: _r_add_coroot_helm_repository
+  retries: 3
+  delay: 10
+  until: _r_add_coroot_helm_repository is not failed
+
+- name: Install the pinned Coroot operator
+  kubernetes.core.helm:
+    name: coroot-operator
+    chart_ref: coroot/coroot-operator
+    chart_version: '{{ coroot_operator_chart_version }}'
     release_namespace: coroot
-    create_namespace: true
+    create_namespace: false
     release_state: present
     wait: true
     timeout: 5m0s
     values:
-      replicaCount: 1
+      rbac:
+        denyGlobalSecrets: true
       image:
-        repository: coroot/coroot
-        tag: "{{ coroot_image_tag | default('latest') }}"
         pullPolicy: IfNotPresent
-      service:
-        type: ClusterIP
-      coroot:
-        prometheusUrl: "http://vmcluster-vmsingle.{{ monitoring_namespace }}.svc.cluster.local:8429"
       resources:
         requests:
           cpu: 100m
-          memory: 256Mi
+          memory: 64Mi
         limits:
           cpu: 500m
-          memory: 512Mi
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
+          memory: 256Mi
       podSecurityContext:
+        runAsNonRoot: true
+      containerSecurityContext:
         allowPrivilegeEscalation: false
         capabilities:
-          drop:
-            - ALL
-  register: _r_coroot_deploy
-  retries: 2
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+  register: _r_install_coroot_operator
+  retries: 3
   delay: 15
-  until: _r_coroot_deploy is not failed
-  when: tier in ['medium', 'production']
+  until: _r_install_coroot_operator is not failed
+
+- name: Install pinned Coroot CE with external VictoriaMetrics
+  kubernetes.core.helm:
+    name: coroot
+    chart_ref: coroot/coroot-ce
+    chart_version: '{{ coroot_chart_version }}'
+    release_namespace: coroot
+    create_namespace: false
+    release_state: present
+    wait: true
+    timeout: 5m0s
+    values:
+      metricsRefreshInterval: '{{ coroot_metrics_refresh_interval }}'
+      cacheTTL: '{{ coroot_cache_ttl }}'
+      logsTTL: '{{ coroot_logs_ttl }}'
+      tracesTTL: '{{ coroot_traces_ttl }}'
+      profilesTTL: '{{ coroot_profiles_ttl }}'
+      replicas: 1
+      service:
+        type: ClusterIP
+      storage:
+        size: '{{ coroot_storage_size }}'
+        className: '{{ storage_class }}'
+      resources:
+        requests:
+          cpu: '{{ coroot_cpu_request }}'
+          memory: '{{ coroot_memory_request }}'
+        limits:
+          cpu: '{{ coroot_cpu_limit }}'
+          memory: '{{ coroot_memory_limit }}'
+      communityEdition:
+        image:
+          name: 'ghcr.io/coroot/coroot:{{ coroot_image_tag }}'
+          pullPolicy: IfNotPresent
+      externalPrometheus:
+        url: >-
+          {{ 'http://vmselect-vmcluster.' + (monitoring_namespace | default('monitoring')) + '.svc:8481/select/0/prometheus'
+             if tier in ['medium', 'production']
+             else 'http://vmsingle-vmsingle.' + (monitoring_namespace | default('monitoring')) + '.svc:8429' }}
+        remoteWriteURL: >-
+          {{ 'http://vminsert-vmcluster.' + (monitoring_namespace | default('monitoring')) + '.svc:8480/insert/0/prometheus/api/v1/write'
+             if tier in ['medium', 'production']
+             else 'http://vmsingle-vmsingle.' + (monitoring_namespace | default('monitoring')) + '.svc:8429/api/v1/write' }}
+      clickhouse:
+        image:
+          name: 'ghcr.io/coroot/clickhouse:{{ coroot_clickhouse_image_tag }}'
+          pullPolicy: IfNotPresent
+        shards: 1
+        replicas: 1
+        storage:
+          size: '{{ coroot_clickhouse_storage_size }}'
+          className: '{{ storage_class }}'
+        resources:
+          requests:
+            cpu: >-
+              {{ coroot_clickhouse_cpu_request | default('250m' if resource_tier in ['minimal', 'small'] else '500m') }}
+            memory: >-
+              {{ coroot_clickhouse_memory_request | default('512Mi' if resource_tier in ['minimal', 'small'] else '1Gi') }}
+          limits:
+            cpu: '{{ coroot_clickhouse_cpu_limit | default("1") }}'
+            memory: '{{ coroot_clickhouse_memory_limit | default("2Gi") }}'
+        keeper:
+          image:
+            name: 'ghcr.io/coroot/clickhouse:{{ coroot_clickhouse_image_tag }}'
+            pullPolicy: IfNotPresent
+      nodeAgent:
+        image:
+          name: 'ghcr.io/coroot/coroot-node-agent:{{ coroot_node_agent_image_tag }}'
+          pullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: '{{ coroot_node_agent_cpu_request }}'
+            memory: '{{ coroot_node_agent_memory_request }}'
+          limits:
+            cpu: '{{ coroot_node_agent_cpu_limit }}'
+            memory: '{{ coroot_node_agent_memory_limit }}'
+      clusterAgent:
+        image:
+          name: 'ghcr.io/coroot/coroot-cluster-agent:{{ coroot_cluster_agent_image_tag }}'
+          pullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: '{{ coroot_cluster_agent_cpu_request }}'
+            memory: '{{ coroot_cluster_agent_memory_request }}'
+          limits:
+            cpu: '{{ coroot_cluster_agent_cpu_limit }}'
+            memory: '{{ coroot_cluster_agent_memory_limit }}'
+  register: _r_install_coroot
+  retries: 3
+  delay: 15
+  until: _r_install_coroot is not failed
+
+- name: Create VPN-only Coroot HTTPRoute
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: coroot
+        namespace: coroot
+      spec:
+        parentRefs:
+          - name: admin-gateway
+            namespace: cilium-system
+            sectionName: https
+        hostnames:
+          - 'coroot.{{ domain }}'
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: coroot-coroot
+                port: 8080
+  when: k8s_create_external_tls | default(true) | bool
+  register: _r_create_coroot_httproute
+  retries: 3
+  delay: 10
+  until: _r_create_coroot_httproute is not failed
+
+- name: Wait for the Coroot application deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: coroot
+    namespace: coroot
+  register: _r_coroot_application
+  retries: 60
+  delay: 10
+  until:
+    - _r_coroot_application.resources | length == 1
+    - _r_coroot_application.resources[0].status.availableReplicas | default(0) | int >= 1
+
+- name: Wait for the Coroot cluster agent deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: coroot-cluster-agent
+    namespace: coroot
+  register: _r_coroot_cluster_agent
+  retries: 60
+  delay: 10
+  until:
+    - _r_coroot_cluster_agent.resources | length == 1
+    - _r_coroot_cluster_agent.resources[0].status.availableReplicas | default(0) | int >= 1
+
+- name: Wait for the Coroot node agent DaemonSet rollout
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: coroot-node-agent
+    namespace: coroot
+  register: _r_coroot_node_agent
+  retries: 60
+  delay: 10
+  until:
+    - _r_coroot_node_agent.resources | length == 1
+    - _r_coroot_node_agent.resources[0].status.desiredNumberScheduled | default(0) | int > 0
+    - _r_coroot_node_agent.resources[0].status.numberReady | default(0) | int == _r_coroot_node_agent.resources[0].status.desiredNumberScheduled | default(0) | int
