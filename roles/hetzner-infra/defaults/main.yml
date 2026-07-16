@@ -23,7 +23,7 @@ hetzner_tier_specs:
     cp_schedulable: true
     worker_count: 1
     worker_min_cores: 2
-    worker_min_memory: 8
+    worker_min_memory: 4
     lb_enabled: false
   small:
     cp_count: 1

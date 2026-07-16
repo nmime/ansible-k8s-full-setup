@@ -50,6 +50,52 @@
   until: _r_create_tempo_s3_credentials_secret is not failed
   when: tracing_enabled | bool
 
+- name: Ensure the Tempo object-storage bucket exists
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: create-tempo-bucket
+        namespace: storage
+      spec:
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: aws-cli
+                image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
+                command:
+                  - sh
+                  - -c
+                  - >-
+                    if ! aws --endpoint-url {{ object_storage_endpoint }}
+                    s3api head-bucket --bucket tempo-traces >/dev/null 2>&1;
+                    then aws --endpoint-url {{ object_storage_endpoint }}
+                    s3api create-bucket --bucket tempo-traces; fi
+                env:
+                  - name: AWS_ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_ACCESS_KEY_ID
+                  - name: AWS_SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_SECRET_ACCESS_KEY
+                  - name: AWS_DEFAULT_REGION
+                    value: us-east-1
+                  - name: AWS_EC2_METADATA_DISABLED
+                    value: "true"
+  register: _r_ensure_tempo_bucket
+  retries: 3
+  delay: 10
+  until: _r_ensure_tempo_bucket is not failed
+  when: tracing_enabled | bool
+
 - name: Deploy Tempo with Helm
   kubernetes.core.helm:
     name: tempo
@@ -120,13 +166,13 @@
         size: '{{ tempo_storage_size | default("20Gi") }}'
         storageClass: '{{ storage_class | default("hcloud-volumes") }}'
       ingester:
-        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
       queryFrontend:
-        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
       querier:
-        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
       distributor:
-        replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
       compactor:
         replicaCount: 1
       metricsGenerator:
@@ -227,7 +273,7 @@
         limits:
           cpu: 500m
           memory: 512Mi
-      replicaCount: '{{ (2 if tier in ["medium", "production"] else 1) | int }}'
+      replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
       podSecurityContext:
         runAsNonRoot: true
       securityContext:
@@ -239,6 +285,41 @@
   retries: 3
   delay: 10
   until: _r_install_otel_collector_with_helm is not failed
+  when: tracing_enabled | bool
+
+- name: Provision the Tempo datasource in Grafana
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-tempo-datasource
+        namespace: '{{ tempo_namespace }}'
+        labels:
+          grafana_datasource: '1'
+      data:
+        tempo-datasource.yaml: |
+          apiVersion: 1
+          datasources:
+            - name: Tempo
+              type: tempo
+              uid: tempo
+              url: http://tempo.{{ tempo_namespace }}.svc.cluster.local:3200
+              access: proxy
+              editable: false
+              jsonData:
+                httpMethod: GET
+                serviceMap:
+                  datasourceUid: prometheus
+                nodeGraph:
+                  enabled: true
+                lokiSearch:
+                  datasourceUid: {{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}
+  register: _r_provision_tempo_datasource
+  retries: 3
+  delay: 10
+  until: _r_provision_tempo_datasource is not failed
   when: tracing_enabled | bool
 
 - name: Create VMServiceScrape for Tempo

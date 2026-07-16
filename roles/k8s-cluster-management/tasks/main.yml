@@ -15,7 +15,7 @@
     hetzner_ccm_ver: "{{ hetzner_ccm_version | default('v1.33.0') }}"
     hetzner_csi_ver: "{{ hetzner_csi_version | default('v2.22.0') }}"
     cluster_tier: "{{ tier | default('medium') }}"
-    certmanager_replicas: "{{ (tier | default('medium')=='minimal')|ternary(1, (tier | default('medium')=='production')|ternary(3, 2)) }}"
+    certmanager_replicas: "{{ kubernetes.cert_manager_replicas | default(1 if resource_tier in ['minimal', 'small'] else 3) }}"
 
 # ============================================
 # Kubespray Setup

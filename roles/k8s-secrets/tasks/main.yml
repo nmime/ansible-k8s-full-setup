@@ -5,8 +5,8 @@
     vault_chart_ver: "{{ vault_chart_version | default('0.34.0') }}"
     vault_version: "{{ vault_version | default('2.0.3') }}"
     eso_chart_ver: 2.7.0
-    vault_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
-    vault_ha: '{{ true if tier in [''medium'', ''production''] else false }}'
+    vault_replicas: '{{ secrets.vault.replicas | default(3 if resource_tier in [''medium'', ''production''] else 1) }}'
+    vault_ha: '{{ (secrets.vault.replicas | default(3 if resource_tier in [''medium'', ''production''] else 1) | int) > 1 }}'
     vault_storage: '{{ vault_storage_size | default(''20Gi'') }}'
     vault_domain: vault.{{ domain }}
 - name: Create Vault namespace
@@ -568,9 +568,9 @@
     release_state: present
     wait: true
     set_values:
-    - value: replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}
-    - value: webhook.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}
-    - value: certController.replicaCount={{ 2 if tier in ['medium', 'production'] else 1 }}
+    - value: replicaCount={{ secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}
+    - value: webhook.replicaCount={{ secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}
+    - value: certController.replicaCount={{ secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}
     - value: serviceMonitor.enabled=true
   register: _r_install_external_secrets_operator_via_he
   retries: 3
@@ -714,7 +714,7 @@
         selector:
           matchLabels:
             app.kubernetes.io/name: external-secrets
-  when: tier in ['medium', 'production']
+  when: (secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) | int) > 1
   register: _r_create_eso_pdb
   retries: 3
   delay: 10

@@ -26,7 +26,7 @@ EXPECTED = {
     "hetzner_csi_version": "v2.22.0",
     "kubespray_version": "v2.31.0",
     "kubectl_version": "{{ k8s_version }}",
-    "hcloud_cli_version": "v1.42.0",
+    "hcloud_cli_version": "v1.65.0",
     "yq_version": "v4.44.6",
     "keda_chart_version": "2.20.1",
     "es_version": "9.4.3",
@@ -42,7 +42,7 @@ EXPECTED = {
 
 STALE = [
     "v1.35.4", "v1.19.4", "v1.5.1", "v1.20.2",
-    "v0.15.3", "v1.31.0", "v2.21.0",
+    "v0.15.3", "v1.31.0", "v2.21.0", "v1.42.0",
     "2.19.0", "9.4.1", "3.3.6",
     "11.10.0", "v1.5.0", "v1.38.1",
     "0.59.3", "2.5.0",

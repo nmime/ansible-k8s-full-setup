@@ -2,9 +2,9 @@
   set_fact:
     keda_namespace: keda
     keda_chart_version: "{{ keda_chart_version | default('2.20.1') }}"
-    keda_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
-    keda_min_replicas_default: '{{ 2 if tier == ''production'' else 1 }}'
-    keda_max_replicas_default: '{{ 20 if tier == ''production'' else 10 }}'
+    keda_replicas: '{{ autoscaling.replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
+    keda_min_replicas_default: '{{ autoscaling.defaults.min_replicas | default(2 if resource_tier == ''production'' else 1) }}'
+    keda_max_replicas_default: '{{ autoscaling.defaults.max_replicas | default(20 if resource_tier == ''production'' else 10) }}'
 - name: Create KEDA namespace
   kubernetes.core.k8s:
     state: present

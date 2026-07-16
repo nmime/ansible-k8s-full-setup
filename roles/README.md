@@ -11,7 +11,7 @@ This directory contains Ansible roles for each platform component.
 | `k8s-secrets/` | Secrets management | Vault (HA Raft), External Secrets Operator | Vault 2.0.3 / Chart 0.34.0, ESO Chart 2.7.0 |
 | `object-storage/` | S3-compatible object storage | SeaweedFS official Helm chart | Chart 4.25.1 |
 | `k8s-databases/` | Database deployments | Percona PG Operator, Percona MongoDB Operator | PostgreSQL 18, MongoDB 8.0 |
-| `gitlab-selfhosted/` | GitLab CE | Helm, GitLab Runner | CE v18.11.3, Chart 9.11.4 |
+| `gitlab-selfhosted/` | GitLab CE | Helm, GitLab Runner | CE v19.1.2, Chart 10.1.2 |
 | `k8s-gitops/` | GitOps continuous delivery | ArgoCD, ApplicationSets | Chart 9.5.14 |
 | `k8s-observability/` | Monitoring, logging, dashboards, alerting | VictoriaMetrics, Loki, Grafana, PMM | - |
 | `k8s-autoscaling/` | Event-driven autoscaling | KEDA | Chart 2.20.1 |
@@ -34,8 +34,9 @@ Object storage note: RustFS was evaluated as an Apache-2.0 future/alternative ba
   PostgreSQL, 20Gi Vault, and 100Gi metrics retention.
 - Production profile storage is sized for 4x150Gi object storage replicas, 100Gi
   PostgreSQL, 20Gi Vault, and 150Gi metrics retention.
-- GlitchTip and APM run two replicas on medium/production tiers with bumped CPU/RAM
-  requests; Blackbox keeps a small footprint but uses chart 11.15.1 and 60s probes.
+- GlitchTip and APM default to two replicas on medium/production resource tiers;
+  `medium-optimized` overrides them to one compact replica. Blackbox keeps a
+  small footprint and uses chart 11.15.1 with 60s probes.
 
 ## Deployment Order
 
@@ -48,21 +49,28 @@ Roles are deployed sequentially to respect dependencies:
  4. k8s-cluster-management  Kubespray K8s install, Cilium, Gateway API, cert-manager, CCM/CSI
  5. k8s-secrets             Vault, auto-init/unseal, ESO + ClusterSecretStore
  6. object-storage           SeaweedFS S3, pre-created buckets
- 7. k8s-observability       VictoriaMetrics, Loki, Grafana, PMM, alerting
- 8. k8s-databases           PostgreSQL 18 HA + MongoDB 8.0
- 9. gitlab-selfhosted       GitLab CE + Runner + Registry + KAS
-10. k8s-gitops              ArgoCD and ApplicationSets
-11. k8s-autoscaling         KEDA event-driven autoscaler
-12. dragonfly               Dragonfly Redis v6-compatible store
-13. temporal                Temporal workflow engine + Web UI
-14. postal                  Postal mail server
-15. blackbox-exporter       Synthetic probes
-16. daytona-deployment      Daytona workspace platform (optional, deploy_daytona=true)
+ 7. elasticsearch           Elasticsearch + Kibana for enabled ELK profiles
+ 8. k8s-observability       VictoriaMetrics, logs, Grafana, PMM, tracing, alerting
+ 9. k8s-databases           PostgreSQL 18 HA + MongoDB 8.0
+10. dragonfly               Dragonfly Redis v6-compatible store
+11. gitlab-selfhosted       GitLab CE + Runner + Registry + KAS
+12. k8s-gitops              ArgoCD and ApplicationSets
+13. k8s-autoscaling         KEDA event-driven autoscaler
+14. temporal                Temporal workflow engine + Web UI
+15. postal                  Postal mail server
+16. apm-server              Elastic APM / OTLP ingest
+17. blackbox-exporter       Synthetic probes
+18. glitchtip               Sentry-compatible error tracking
+19. daytona-deployment      Daytona workspace platform (optional, deploy_daytona=true)
 ```
 
-## Tier Support
+## Tier and profile support
 
-All core roles support four deployment tiers: minimal, small, medium, and production.
+All core roles support four capability tiers: `minimal`, `small`, `medium`,
+and `production`. The `medium-optimized` profile keeps `tier: medium` while
+setting `resource_tier: small`; roles must use the capability tier for feature
+gates and the resource tier for requests, limits, retention, and default
+stateless replicas.
 
 ## Usage
 

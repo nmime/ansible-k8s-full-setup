@@ -147,9 +147,9 @@ VERSION_REGISTRY = {
         ],
     },
     "hcloud_cli_version": {
-        "value": "v1.42.0",
+        "value": "v1.65.0",
         "files": [
-            ("defaults/main.yml", "hcloud_cli_version: v1.42.0"),
+            ("defaults/main.yml", "hcloud_cli_version: v1.65.0"),
         ],
     },
     "yq_version": {
@@ -162,7 +162,7 @@ VERSION_REGISTRY = {
 
 STALE_VERSIONS = [
     "v1.35.4", "v1.19.4", "v1.5.1", "v1.20.2",
-    "v0.15.3", "v1.31.0", "v2.21.0",
+    "v0.15.3", "v1.31.0", "v2.21.0", "v1.42.0",
     "2.19.0", "9.4.1", "3.3.6",
     "11.10.0", "v1.5.0", "v1.38.1",
     "0.59.3", "2.5.0",

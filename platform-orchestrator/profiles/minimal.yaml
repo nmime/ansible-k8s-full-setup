@@ -1,5 +1,5 @@
 # ============================================
-# MINIMAL TIER - ~€16.47/mo server compute
+# MINIMAL TIER - development footprint
 # ============================================
 # Best for: Development, learning, testing
 # Kubernetes nodes: 2 (1 master+worker, 1 worker)
@@ -7,8 +7,10 @@
 # HA: No
 # ============================================
 
+platform_profile: minimal
 tier: minimal
-cost_estimate: "€16.47/mo server compute"
+resource_tier: minimal
+cost_estimate: "Provider-price dependent: 1 x cx23 control plane, 1 x cx23 worker, cx23 bastion"
 
 global:
   project: k8s
@@ -77,20 +79,23 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
+  enabled: true
   postgresql:
     enabled: true
     replicas: 1
     storage_size: 20Gi
+  mongodb:
+    enabled: false
 
 # ---------------------------------------------
 # GitLab
 # ---------------------------------------------
 gitlab:
-  enabled: true
+  enabled: false
   webservice_replicas: 1
   sidekiq_replicas: 1
   runner:
-    enabled: true
+    enabled: false
     concurrent_jobs: 2
 
 # ---------------------------------------------
@@ -104,6 +109,7 @@ gitops:
 # Observability
 # ---------------------------------------------
 observability:
+  enabled: true
   metrics:
     enabled: true
     retention: 7d
@@ -111,6 +117,7 @@ observability:
 
   logging:
     enabled: true
+    stack: loki
     retention: 3d
 
   grafana:
@@ -121,6 +128,26 @@ observability:
 # ---------------------------------------------
 autoscaling:
   enabled: true
+
+# GitLab dependencies and medium-only platform services
+elasticsearch:
+  enabled: false
+
+dragonfly:
+  enabled: false
+  replicas: 1
+
+temporal:
+  enabled: false
+
+tracing:
+  enabled: false
+
+postal:
+  enabled: false
+
+backup:
+  enabled: false
 
 # ---------------------------------------------
 # GlitchTip (Sentry-compatible error tracking)

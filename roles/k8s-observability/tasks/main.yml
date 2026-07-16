@@ -8,8 +8,8 @@
     vm_retention: '{{ metrics_retention | default(''30d'') }}'
     vm_storage_size: '{{ metrics_storage | default(''100Gi'') }}'
     loki_retention: '{{ logging_retention | default(''14d'') }}'
-    vm_replicas: '{{ (2 if tier in [''medium'', ''production''] else 1) | int }}'
-    grafana_replicas: '{{ 2 if tier == ''production'' else 1 }}'
+    vm_replicas: '{{ observability.metrics.replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) | int }}'
+    grafana_replicas: '{{ observability.grafana.replicas | default(2 if resource_tier == ''production'' else 1) }}'
 - name: Create monitoring namespace
   kubernetes.core.k8s:
     state: present
@@ -91,7 +91,7 @@
         namespace: '{{ monitoring_namespace }}'
       spec:
         retentionPeriod: '{{ vm_retention }}'
-        replicationFactor: '{{ (2 if tier in [''medium'', ''production''] else 1) | int }}'
+        replicationFactor: '{{ (2 if resource_tier in [''medium'', ''production''] else 1) | int }}'
         vmstorage:
           replicaCount: '{{ vm_replicas | int }}'
           storage:
@@ -152,8 +152,8 @@
                   storage: '{{ vm_storage_size }}'
         resources:
           requests:
-            cpu: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
-            memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+            cpu: '{{ ''100m'' if resource_tier in [''minimal'', ''small''] else ''200m'' }}'
+            memory: '{{ ''256Mi'' if resource_tier in [''minimal'', ''small''] else ''512Mi'' }}'
           limits:
             cpu: 1000m
             memory: 2Gi
@@ -179,8 +179,8 @@
             + ''.svc:8429/api/v1/write'' }}'
         resources:
           requests:
-            cpu: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''100m'' }}'
-            memory: '{{ ''128Mi'' if tier in [''minimal'', ''small''] else ''256Mi'' }}'
+            cpu: '{{ ''50m'' if resource_tier in [''minimal'', ''small''] else ''100m'' }}'
+            memory: '{{ ''128Mi'' if resource_tier in [''minimal'', ''small''] else ''256Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
@@ -231,7 +231,7 @@
       loki:
         auth_enabled: false
         commonConfig:
-          replication_factor: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+          replication_factor: '{{ 2 if resource_tier in [''medium'', ''production''] else 1 }}'
         storage:
           type: s3
           s3:
@@ -262,8 +262,8 @@
         replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: '{{ ''50m'' if tier == ''minimal'' else ''100m'' }}'
-            memory: '{{ ''128Mi'' if tier == ''minimal'' else ''256Mi'' }}'
+            cpu: '{{ ''50m'' if resource_tier == ''minimal'' else ''100m'' }}'
+            memory: '{{ ''128Mi'' if resource_tier == ''minimal'' else ''256Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
@@ -271,40 +271,40 @@
         replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
-            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
+            cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if resource_tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' }}'
+          size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       backend:
         replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
         resources:
           requests:
-            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
-            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
+            cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if resource_tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' }}'
+          size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       singleBinary:
         replicas: '{{ 1 if tier in [''minimal'', ''small''] else 0 | int }}'
         resources:
           requests:
-            cpu: '{{ ''25m'' if tier == ''minimal'' else ''50m'' }}'
-            memory: '{{ ''64Mi'' if tier == ''minimal'' else ''128Mi'' }}'
+            cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
+            memory: '{{ ''64Mi'' if resource_tier == ''minimal'' else ''128Mi'' }}'
           limits:
             cpu: 500m
             memory: 512Mi
         persistence:
           enabled: true
-          size: '{{ ''10Gi'' if tier == ''minimal'' else ''20Gi'' }}'
+          size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       gateway:
         enabled: true
@@ -470,8 +470,8 @@
             datasource: VictoriaMetrics
       resources:
         requests:
-          cpu: '{{ ''25m'' if tier in [''minimal'', ''small''] else ''50m'' }}'
-          memory: '{{ ''64Mi'' if tier in [''minimal'', ''small''] else ''128Mi'' }}'
+          cpu: '{{ ''25m'' if resource_tier in [''minimal'', ''small''] else ''50m'' }}'
+          memory: '{{ ''64Mi'' if resource_tier in [''minimal'', ''small''] else ''128Mi'' }}'
         limits:
           cpu: 500m
           memory: 512Mi
@@ -580,7 +580,7 @@
         storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
         resources:
           requests:
-            storage: '{{ ''20Gi'' if tier in [''minimal'', ''small''] else ''50Gi'' }}'
+            storage: '{{ ''20Gi'' if resource_tier in [''minimal'', ''small''] else ''50Gi'' }}'
   register: _r_create_pmm_server_pvc
   retries: 3
   delay: 10
@@ -654,8 +654,8 @@
                 mountPath: /srv
               resources:
                 requests:
-                  cpu: '{{ ''50m'' if tier in [''minimal'', ''small''] else ''200m'' }}'
-                  memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+                  cpu: '{{ ''50m'' if resource_tier in [''minimal'', ''small''] else ''200m'' }}'
+                  memory: '{{ ''256Mi'' if resource_tier in [''minimal'', ''small''] else ''512Mi'' }}'
                 limits:
                   cpu: '2'
                   memory: 4Gi
@@ -1193,240 +1193,6 @@
   retries: 3
   delay: 10
   until: _r_create_hetzner_vmservicescrape is not failed
-- name: Add Tempo Helm repository
-  kubernetes.core.helm_repository:
-    name: grafana
-    repo_url: https://grafana.github.io/helm-charts
-  when: tracing_enabled | default(false) | bool
-  register: _r_add_tempo_helm_repo
-  retries: 3
-  delay: 10
-  until: _r_add_tempo_helm_repo is not failed
-- name: Create Tempo S3 credentials secret
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: tempo-s3-credentials
-        namespace: '{{ monitoring_namespace }}'
-      type: Opaque
-      stringData:
-        S3_ACCESS_KEY: '{{ object_storage_access_key }}'
-        S3_SECRET_KEY: '{{ object_storage_secret_key }}'
-  when: tracing_enabled | default(false) | bool
-  no_log: true
-  register: _r_create_tempo_s3_secret
-  retries: 3
-  delay: 10
-  until: _r_create_tempo_s3_secret is not failed
-- name: Create Tempo object storage bucket
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: Job
-      metadata:
-        name: create-tempo-bucket
-        namespace: storage
-      spec:
-        ttlSecondsAfterFinished: 300
-        template:
-          spec:
-            restartPolicy: OnFailure
-            containers:
-            - name: aws-cli
-              image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
-              command:
-              - sh
-              - -c
-              - |-
-                if ! aws --endpoint-url {{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }} s3api head-bucket --bucket tempo-traces >/dev/null 2>&1; then
-                  aws --endpoint-url {{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }} s3api create-bucket --bucket tempo-traces
-                fi
-              env:
-              - name: AWS_ACCESS_KEY_ID
-                valueFrom:
-                  secretKeyRef:
-                    name: seaweedfs-s3-config
-                    key: AWS_ACCESS_KEY_ID
-              - name: AWS_SECRET_ACCESS_KEY
-                valueFrom:
-                  secretKeyRef:
-                    name: seaweedfs-s3-config
-                    key: AWS_SECRET_ACCESS_KEY
-              - name: AWS_DEFAULT_REGION
-                value: us-east-1
-              - name: AWS_EC2_METADATA_DISABLED
-                value: "true"
-  when: tracing_enabled | default(false) | bool
-  register: _r_create_tempo_bucket
-  retries: 3
-  delay: 10
-  until: _r_create_tempo_bucket is not failed
-- name: Install Grafana Tempo with Helm
-  kubernetes.core.helm:
-    name: tempo
-    chart_ref: grafana/tempo-distributed
-    chart_version: 1.9.0
-    release_namespace: '{{ monitoring_namespace }}'
-    create_namespace: true
-    release_state: present
-    wait: false
-    values:
-      storage:
-        trace:
-          backend: s3
-          s3:
-            bucket: tempo-traces
-            endpoint: "{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
-            access_key: '{{ object_storage_access_key }}'
-            secret_key: '{{ object_storage_secret_key }}'
-            insecure: true
-      compactor:
-        config:
-          compaction:
-            block_retention: '{{ tempo_retention | default(''24h'') }}'
-      distributor:
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
-      ingester:
-        replicas: '{{ 1 if tier in [''minimal'', ''small'', ''medium''] else 2 }}'
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
-        persistence:
-          enabled: true
-          size: '{{ tempo_storage_size | default(''10Gi'') }}'
-          storageClass: '{{ storage_class }}'
-      querier:
-        resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-          limits:
-            cpu: 300m
-            memory: 512Mi
-      queryFrontend:
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 300m
-            memory: 256Mi
-      gateway:
-        enabled: true
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 300m
-            memory: 256Mi
-  when: tracing_enabled | default(false) | bool
-  register: _r_install_tempo
-  retries: 3
-  delay: 10
-  until: _r_install_tempo is not failed
-- name: Add OpenTelemetry Helm repository
-  kubernetes.core.helm_repository:
-    name: open-telemetry
-    repo_url: https://open-telemetry.github.io/opentelemetry-helm-charts
-  when: otel_collector_enabled | default(false) | bool
-  register: _r_add_otel_helm_repo
-  retries: 3
-  delay: 10
-  until: _r_add_otel_helm_repo is not failed
-- name: Install OpenTelemetry Collector
-  kubernetes.core.helm:
-    name: otel-collector
-    chart_ref: open-telemetry/opentelemetry-collector
-    chart_version: 0.83.0
-    release_namespace: '{{ monitoring_namespace }}'
-    create_namespace: true
-    release_state: present
-    wait: false
-    values:
-      mode: daemonset
-      config:
-        receivers:
-          otlp:
-            protocols:
-              grpc:
-                endpoint: 0.0.0.0:4317
-              http:
-                endpoint: 0.0.0.0:4318
-          jaeger:
-            protocols:
-              grpc:
-                endpoint: 0.0.0.0:14250
-              thrift_http:
-                endpoint: 0.0.0.0:14268
-        processors:
-          batch:
-            timeout: 5s
-          memory_limiter:
-            check_interval: 1s
-            limit_mib: 256
-        exporters:
-          otlp:
-            endpoint: tempo-distributor.{{ monitoring_namespace }}.svc.cluster.local:4317
-            tls:
-              insecure: true
-        service:
-          pipelines:
-            traces:
-              receivers:
-              - otlp
-              - jaeger
-              processors:
-              - memory_limiter
-              - batch
-              exporters:
-              - otlp
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          cpu: 500m
-          memory: 512Mi
-  when: otel_collector_enabled | default(false) | bool
-  register: _r_install_otel_collector
-  retries: 3
-  delay: 10
-  until: _r_install_otel_collector is not failed
-- name: Add Tempo datasource to Grafana
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: grafana-tempo-datasource
-        namespace: '{{ monitoring_namespace }}'
-        labels:
-          grafana_datasource: '1'
-      data:
-        tempo-datasource.yaml: "apiVersion: 1\ndatasources:\n  - name: Tempo\n    type: tempo\n    uid: tempo\n    url: http://tempo-query-frontend.{{ monitoring_namespace }}.svc.cluster.local:3100\n  \
-          \  access: proxy\n    editable: false\n    jsonData:\n      httpMethod: GET\n      serviceMap:\n        datasourceUid: prometheus\n      nodeGraph:\n        enabled: true\n      search:\n    \
-          \    hide: false\n      lokiSearch:\n        datasourceUid: \"{{ 'loki' if log_stack == 'loki' else 'elasticsearch' }}\"\n"
-  when: tracing_enabled | default(false) | bool
-  register: _r_add_tempo_grafana_datasource
-  retries: 3
-  delay: 10
-  until: _r_add_tempo_grafana_datasource is not failed
 - name: Deploy VMServiceScrapes for platform services (VictoriaMetrics)
   kubernetes.core.k8s:
     state: present

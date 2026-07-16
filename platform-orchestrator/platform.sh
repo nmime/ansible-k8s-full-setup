@@ -38,13 +38,42 @@ check_env() {
 load_config() {
   [[ ! -f "$CONFIG_FILE" ]] && { error "Run: ./platform.sh init"; exit 1; }
   PROJECT=$(yq '.global.project // "k8s"' "$CONFIG_FILE")
+  PROFILE=$(yq '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
   TIER=$(yq '.tier // "small"' "$CONFIG_FILE")
+  RESOURCE_TIER=$(yq '.resource_tier // .tier // "small"' "$CONFIG_FILE")
   DOMAIN=$(yq '.global.domain' "$CONFIG_FILE")
   EMAIL=$(yq '.global.email' "$CONFIG_FILE")
   [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "global.domain is required in $CONFIG_FILE"; exit 1; }
   [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "global.email is required in $CONFIG_FILE"; exit 1; }
+  [[ "$TIER" =~ ^(minimal|small|medium|production)$ ]] || {
+    error "Invalid capability tier: $TIER"
+    exit 1
+  }
+  [[ "$PROFILE" =~ ^(minimal|small|medium|medium-optimized|production|custom)$ ]] || {
+    error "Invalid platform profile: $PROFILE"
+    exit 1
+  }
+  [[ "$RESOURCE_TIER" =~ ^(minimal|small|medium|production)$ ]] || {
+    error "Invalid resource tier: $RESOURCE_TIER"
+    exit 1
+  }
+  case "$PROFILE" in
+    minimal|small|medium|production)
+      if [[ "$TIER" != "$PROFILE" || "$RESOURCE_TIER" != "$PROFILE" ]]; then
+        error "$PROFILE requires tier=$PROFILE and resource_tier=$PROFILE"
+        exit 1
+      fi
+      ;;
+    medium-optimized)
+      if [[ "$TIER" != "medium" || "$RESOURCE_TIER" != "small" ]]; then
+        error "medium-optimized requires tier=medium and resource_tier=small"
+        exit 1
+      fi
+      ;;
+    custom) ;;
+  esac
   REGION=$(yq ".infrastructure.region // \"${DEFAULT_REGION}\"" "$CONFIG_FILE")
-  log "Config: project=$PROJECT, tier=$TIER, domain=$DOMAIN, region=$REGION"
+  log "Config: project=$PROJECT, profile=$PROFILE, tier=$TIER, resource_tier=$RESOURCE_TIER, domain=$DOMAIN, region=$REGION"
 }
 
 is_enabled() {
@@ -65,7 +94,9 @@ run_playbook() {
   check_env
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
     -e "@${CONFIG_FILE}" \
+    -e "platform_profile=${PROFILE}" \
     -e "tier=${TIER}" \
+    -e "resource_tier=${RESOURCE_TIER}" \
     -e "project_name=${PROJECT}" \
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
@@ -213,7 +244,8 @@ destroy_all() {
 }
 
 show_status() {
-  echo "Platform: ${PROJECT:-k8s} / ${DOMAIN:-unknown} (${TIER:-unknown}) [${REGION:-unknown}]"
+  echo "Platform: ${PROJECT:-k8s} / ${DOMAIN:-unknown} [${REGION:-unknown}]"
+  echo "Profile: ${PROFILE:-unknown}; capability tier: ${TIER:-unknown}; resource tier: ${RESOURCE_TIER:-unknown}"
   echo "=========================================="
   hcloud server list 2>/dev/null | grep "${PROJECT:-k8s}" || echo "(no servers)"
   echo ""
@@ -260,6 +292,9 @@ Commands:
 
 Required:
   export HCLOUD_TOKEN="your-token"
+
+Profiles:
+  minimal | small | medium | medium-optimized | production
 EOF
 }
 

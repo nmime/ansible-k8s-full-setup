@@ -82,10 +82,10 @@
                     mountPath: /var/lib/mysql
                 resources:
                   requests:
-                    cpu: "{{ '100m' if tier in ['minimal', 'small'] else '250m' }}"
-                    memory: "{{ '256Mi' if tier in ['minimal', 'small'] else postal_mariadb_memory }}"
+                    cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '250m' }}"
+                    memory: "{{ '256Mi' if resource_tier in ['minimal', 'small'] else postal_mariadb_memory }}"
                   limits:
-                    cpu: "{{ '500m' if tier in ['minimal', 'small'] else '1' }}"
+                    cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
                     memory: "{{ postal_mariadb_memory }}"
         volumeClaimTemplates:
           - metadata:

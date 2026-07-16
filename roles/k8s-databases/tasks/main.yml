@@ -4,10 +4,10 @@
     pg_operator_ver: '{{ pg_operator_version | default("3.0.0") }}'
     psmdb_operator_ver: 1.22.0
     pg_version: '{{ postgresql_version | default(18) }}'
-    pg_replicas: '{{ postgresql_replicas | default(3 if tier in [''medium'', ''production''] else 1) }}'
+    pg_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     pg_storage: '{{ postgresql_storage | default(''20Gi'') }}'
-    pg_proxy_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
-    mongo_replicas: '{{ mongodb_replicas | default(3 if tier in [''medium'', ''production''] else 1) }}'
+    pg_proxy_replicas: '{{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1)) }}'
+    mongo_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     mongo_storage: '{{ mongodb_storage | default(''20Gi'') }}'
 - name: Create databases namespace
   kubernetes.core.k8s:
@@ -165,11 +165,11 @@
                 storage: '{{ pg_storage }}'
           resources:
             requests:
-              cpu: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''250m'' }}'
-              memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+              cpu: '{{ ''100m'' if resource_tier in [''minimal'', ''small''] else ''250m'' }}'
+              memory: '{{ ''256Mi'' if resource_tier in [''minimal'', ''small''] else ''512Mi'' }}'
             limits:
-              cpu: '{{ ''500m'' if tier in [''minimal'', ''small''] else ''1'' }}'
-              memory: '{{ ''1Gi'' if tier in [''minimal'', ''small''] else ''2Gi'' }}'
+              cpu: '{{ ''500m'' if resource_tier in [''minimal'', ''small''] else ''1'' }}'
+              memory: '{{ ''1Gi'' if resource_tier in [''minimal'', ''small''] else ''2Gi'' }}'
           affinity:
             podAntiAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -412,11 +412,11 @@
                   storage: '{{ mongo_storage }}'
           resources:
             requests:
-              cpu: '{{ ''100m'' if tier in [''minimal'', ''small''] else ''250m'' }}'
-              memory: '{{ ''256Mi'' if tier in [''minimal'', ''small''] else ''512Mi'' }}'
+              cpu: '{{ ''100m'' if resource_tier in [''minimal'', ''small''] else ''250m'' }}'
+              memory: '{{ ''256Mi'' if resource_tier in [''minimal'', ''small''] else ''512Mi'' }}'
             limits:
-              cpu: '{{ ''500m'' if tier in [''minimal'', ''small''] else ''1'' }}'
-              memory: '{{ ''1Gi'' if tier in [''minimal'', ''small''] else ''2Gi'' }}'
+              cpu: '{{ ''500m'' if resource_tier in [''minimal'', ''small''] else ''1'' }}'
+              memory: '{{ ''1Gi'' if resource_tier in [''minimal'', ''small''] else ''2Gi'' }}'
           affinity:
             antiAffinityTopologyKey: kubernetes.io/hostname
         sharding:

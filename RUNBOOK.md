@@ -34,6 +34,11 @@ $EDITOR platform.yaml
 ./platform.sh deploy all
 ```
 
+For the full medium service set on the constrained resource envelope, initialize
+`medium-optimized`. Confirm the generated config still contains
+`platform_profile: medium-optimized`, `tier: medium`, and
+`resource_tier: small` before deployment.
+
 Reruns reconcile firewall rules, load-balancer services/targets, DNS records,
 and enabled Kubernetes resources. Extra servers and server type changes fail
 closed. Drain affected nodes first, then explicitly opt into destructive
