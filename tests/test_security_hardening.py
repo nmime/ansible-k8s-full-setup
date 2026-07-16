@@ -133,9 +133,9 @@ class TestGenerateSecrets:
         assert "plaintext migration" in self.content, \
             "generate-secrets should have plaintext migration path"
 
-    def test_warns_if_vault_unavailable(self):
-        assert "Warn if Ansible Vault encryption unavailable" in self.content, \
-            "generate-secrets should warn when Vault encryption fails"
+    def test_vault_encryption_fails_closed(self):
+        assert "Plaintext fallback is intentionally disabled" in self.content
+        assert "could not encrypt" not in self.content
 
     def test_no_log_on_secrets(self):
         assert "no_log: true" in self.content, \

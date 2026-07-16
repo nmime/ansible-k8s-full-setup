@@ -79,12 +79,18 @@ def check_k8s_version(report, dry_run):
     r = run(["kubectl", "version", "--short"])
     if r.returncode != 0:
         r = run(["kubectl", "version"])
+    if r.returncode != 0:
+        report.checks.append(CheckResult("cluster:version", False, "Cannot read Kubernetes server version", "error"))
+        return
     ver = "unknown"
     for line in r.stdout.splitlines():
         if "Server Version" in line:
             ver = line.split(":")[-1].strip().lstrip("v")
             break
-    report.checks.append(CheckResult("cluster:version", True, f"OK Server version: {ver}"))
+    if ver == "unknown":
+        report.checks.append(CheckResult("cluster:version", False, "Server version missing from kubectl output", "error"))
+    else:
+        report.checks.append(CheckResult("cluster:version", True, f"OK Server version: {ver}"))
 
 
 def check_helm_releases(report, dry_run):
@@ -114,7 +120,7 @@ def check_nodes(report, dry_run):
     elif total > 0 and ready == 0:
         report.checks.append(CheckResult("nodes:ready", False, "No nodes Ready", "error"))
     else:
-        report.checks.append(CheckResult("nodes:ready", True, f"Only {ready}/{total} nodes Ready", "warn"))
+        report.checks.append(CheckResult("nodes:ready", False, f"Only {ready}/{total} nodes Ready", "error"))
 
 
 def check_disk_space(report, dry_run, project_root):
@@ -197,7 +203,11 @@ def run_all(project_root, dry_run):
 def main():
     parser = argparse.ArgumentParser(description="Preflight compatibility checks")
     parser.add_argument("--dry-run", default="false", help="Simulate checks")
-    parser.add_argument("--project-root", default="/tmp/ansible-k8s-full-setup")
+    parser.add_argument(
+        "--project-root",
+        default=str(Path(__file__).resolve().parent.parent),
+        help="Repository root (defaults to the parent of scripts/)",
+    )
     args = parser.parse_args()
     dry = args.dry_run.lower() in ("true", "1", "yes")
     report = run_all(args.project_root, dry)

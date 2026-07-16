@@ -817,7 +817,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_postgresql_ex is not failed
-  ignore_errors: true
 - name: Create VMServiceScrape for MongoDB exporter
   kubernetes.core.k8s:
     state: present
@@ -842,7 +841,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_mongodb_expor is not failed
-  ignore_errors: true
 - name: Create VMServiceScrape for PMM Server
   kubernetes.core.k8s:
     state: present
@@ -864,7 +862,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_pmm_server is not failed
-  ignore_errors: true
 - name: Deploy VMRule for alerting
   kubernetes.core.k8s:
     state: present
@@ -997,11 +994,12 @@
     name: filebeat
     chart_ref: elastic/filebeat
     chart_version: 8.5.1
-    release_namespace: '{{ monitoring_namespace }}'
-    create_namespace: true
+    release_namespace: elasticsearch
+    create_namespace: false
     release_state: present
     wait: false
     values:
+      imageTag: 9.4.3
       daemonset:
         enabled: true
         filebeatConfig:
@@ -1195,7 +1193,6 @@
   retries: 3
   delay: 10
   until: _r_create_hetzner_vmservicescrape is not failed
-  ignore_errors: true
 - name: Add Tempo Helm repository
   kubernetes.core.helm_repository:
     name: grafana
@@ -1268,7 +1265,6 @@
   retries: 3
   delay: 10
   until: _r_create_tempo_bucket is not failed
-  ignore_errors: true
 - name: Install Grafana Tempo with Helm
   kubernetes.core.helm:
     name: tempo
@@ -1435,7 +1431,6 @@
   kubernetes.core.k8s:
     state: present
     src: '{{ playbook_dir }}/../roles/k8s-observability/templates/vmservicescrapes.yml'
-  ignore_errors: true
   vars:
     prometheus_enabled: '{{ prometheus_enabled | default(false) }}'
 - name: Deploy cert-manager alert (cert expiry warning)

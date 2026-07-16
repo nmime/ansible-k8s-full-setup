@@ -21,9 +21,6 @@
 #   2 — Script error (bad arguments, etc.)
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
-
 # ── Color helpers ──────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 BOLD='\033[1m'
@@ -40,7 +37,7 @@ BACKUP_TIMESTAMP=""
 RESTORE_NS="gitlab-restore-drill"
 TTL_HOURS=24
 S3_ENDPOINT="${OBJECT_STORAGE_ENDPOINT:-}"
-S3_BUCKET="${BACKUP_BUCKET:-backups}"
+S3_BUCKET="${BACKUP_BUCKET:-gitlab-backups}"
 SOURCE_NS="gitlab"
 DRY_RUN=false
 CLEANUP_ONLY=false
@@ -79,14 +76,21 @@ done
 cleanup_namespace() {
   section "Cleaning up restore namespace"
   if kubectl get namespace "$RESTORE_NS" &>/dev/null; then
-    kubectl delete namespace "$RESTORE_NS" --wait --timeout=300s 2>/dev/null || true
+    kubectl delete namespace "$RESTORE_NS" --wait --timeout=300s
     pass "Namespace $RESTORE_NS deleted"
   else
     info "Namespace $RESTORE_NS already gone"
   fi
 }
 
-trap cleanup_namespace EXIT if [ "$DRY_RUN" = "false" ] && [ "$RESTORE" = "true" ]
+# Invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2317
+cleanup_on_exit() {
+  if [ "$DRY_RUN" = "false" ] && [ "$RESTORE" = "true" ]; then
+    cleanup_namespace
+  fi
+}
+trap cleanup_on_exit EXIT
 
 # ── List backups ──────────────────────────────────────────────
 list_backups() {
@@ -96,8 +100,8 @@ list_backups() {
     exit 2
   fi
 
-  info "Listing s3://${S3_BUCKET}/gitlab/"
-  aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${S3_BUCKET}/gitlab/" 2>/dev/null || {
+  info "Listing s3://${S3_BUCKET}/"
+  aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${S3_BUCKET}/" || {
     fail "Cannot list backups — check S3 endpoint and bucket"
     exit 1
   }
@@ -173,7 +177,7 @@ section "1. Create Isolated Namespace"
 
 if kubectl get namespace "$RESTORE_NS" &>/dev/null; then
   info "Namespace $RESTORE_NS already exists — cleaning first"
-  kubectl delete namespace "$RESTORE_NS" --wait --timeout=120s 2>/dev/null || true
+  kubectl delete namespace "$RESTORE_NS" --wait --timeout=120s
   sleep 5
 fi
 
@@ -181,13 +185,13 @@ kubectl create namespace "$RESTORE_NS"
 pass "Namespace $RESTORE_NS created"
 
 # Add TTL label for auto-cleanup tracking
-kubectl label namespace "$RESTORE_NS" restore-drill/ttl-hours="$TTL_HOURS" --overwrite 2>/dev/null || true
-kubectl label namespace "$RESTORE_NS" restore-drill/created="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite 2>/dev/null || true
+kubectl label namespace "$RESTORE_NS" restore-drill/ttl-hours="$TTL_HOURS" --overwrite
+kubectl label namespace "$RESTORE_NS" restore-drill/created="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
 
 # ── Step 2: Download Backup ──────────────────────────────────
 section "2. Download Backup from S3"
 
-BACKUP_FILE="gitlab-${BACKUP_TIMESTAMP}.tar"
+BACKUP_FILE="${BACKUP_TIMESTAMP}_gitlab_backup.tar"
 if [ -z "$S3_ENDPOINT" ]; then
   fail "S3_ENDPOINT not set; cannot download backup"
   exit 1
@@ -196,8 +200,8 @@ fi
 DOWNLOAD_DIR="/tmp/gitlab-restore-$(date +%s)"
 mkdir -p "$DOWNLOAD_DIR"
 
-info "Downloading s3://${S3_BUCKET}/gitlab/${BACKUP_FILE} ..."
-aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${S3_BUCKET}/gitlab/${BACKUP_FILE}" "${DOWNLOAD_DIR}/${BACKUP_FILE}" 2>/dev/null || {
+info "Downloading s3://${S3_BUCKET}/${BACKUP_FILE} ..."
+aws --endpoint-url "$S3_ENDPOINT" s3 cp "s3://${S3_BUCKET}/${BACKUP_FILE}" "${DOWNLOAD_DIR}/${BACKUP_FILE}" || {
   fail "Failed to download backup: ${BACKUP_FILE}"
   fail "Check backup timestamp. Use --list-backups to see available backups"
   cleanup_namespace
@@ -211,18 +215,20 @@ pass "Backup file downloaded successfully"
 # ── Step 3: Deploy GitLab Restore Job ─────────────────────────
 section "3. Deploy GitLab Restore Job"
 
-# Read current GitLab chart version from defaults
-GITLAB_CHART_VER=$(grep -m1 'gitlab_chart_version' "$PROJECT_ROOT/defaults/main.yml" 2>/dev/null | awk '{print $2}' | tr -d '"' || echo "9.11.4")
-info "Using GitLab chart version: $GITLAB_CHART_VER"
-
-# Get the GitLab rails image version from the deployed release
-RAILS_IMAGE=$(kubectl get deployment gitlab-gitlab-rails -n "$SOURCE_NS" -o json 2>/dev/null | jq -r '.spec.template.spec.containers[0].image // "gitlab/gitlab-rails:latest-ce.0"' 2>/dev/null || echo "gitlab/gitlab-rails:latest-ce.0")
-info "Using Rails image: $RAILS_IMAGE"
+# Use the exact Toolbox image from the source release so the restore utilities
+# match the GitLab version that created the backup.
+TOOLBOX_IMAGE=$(kubectl get pods -n "$SOURCE_NS" -l release=gitlab,app=toolbox \
+  -o jsonpath='{.items[0].spec.containers[0].image}')
+if [ -z "$TOOLBOX_IMAGE" ]; then
+  fail "No GitLab Toolbox pod found in namespace $SOURCE_NS"
+  exit 1
+fi
+info "Using source Toolbox image: $TOOLBOX_IMAGE"
 
 # Upload backup to a temporary PVC in the restore namespace
 info "Creating PVC and uploading backup to restore namespace"
 
-cat > "${DOWNLOAD_DIR}/restore-manifest.yaml" << MANIFEST
+cat > "${DOWNLOAD_DIR}/restore-foundation.yaml" << MANIFEST
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -239,6 +245,75 @@ spec:
     requests:
       storage: 10Gi
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restore-postgresql
+  namespace: ${RESTORE_NS}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restore-postgresql
+  template:
+    metadata:
+      labels:
+        app: restore-postgresql
+    spec:
+      containers:
+      - name: postgresql
+        image: postgres:17.6-alpine3.21
+        env:
+        - name: POSTGRES_PASSWORD
+          value: restore-only-password
+        - name: POSTGRES_DB
+          value: gitlab_restore
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "postgres"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: restore-postgresql
+  namespace: ${RESTORE_NS}
+spec:
+  selector:
+    app: restore-postgresql
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backup-uploader
+  namespace: ${RESTORE_NS}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: uploader
+    image: alpine:3.22
+    command: ["sh", "-c", "sleep 3600"]
+    volumeMounts:
+    - name: backup-volume
+      mountPath: /backup
+  volumes:
+  - name: backup-volume
+    persistentVolumeClaim:
+      claimName: gitlab-backup-data
+MANIFEST
+
+kubectl apply -f "${DOWNLOAD_DIR}/restore-foundation.yaml"
+kubectl wait --for=condition=Ready pod/backup-uploader -n "$RESTORE_NS" --timeout=180s
+kubectl cp "${DOWNLOAD_DIR}/${BACKUP_FILE}" "$RESTORE_NS/backup-uploader:/backup/gitlab-backup.tar"
+kubectl delete pod backup-uploader -n "$RESTORE_NS" --wait
+kubectl rollout status deployment/restore-postgresql -n "$RESTORE_NS" --timeout=180s
+pass "Backup uploaded to the isolated restore volume"
+
+cat > "${DOWNLOAD_DIR}/restore-job.yaml" << MANIFEST
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -255,36 +330,42 @@ spec:
     spec:
       restartPolicy: Never
       containers:
-        - name: gitlab-restore
-          image: ${RAILS_IMAGE}
-          command:
-            - /bin/bash
-            - -c
-            - |
-              set -euo pipefail
-              echo "=== Starting GitLab restore test ==="
-              BD="/tmp/backups"
-              mkdir -p "$BD"
-              cp /backup/gitlab-backup.tar "$BD/"
-              cd "$BD"
-              tar xf gitlab-backup.tar --strip-components=1
-              echo "=== Backup extracted, starting database restore ==="
-              # Note: In a real restore drill, this would connect to the test database
-              # For isolation, we only verify the backup is intact
-              ls -la "$BD"
-              echo "=== Backup contents verified ==="
-              echo "=== Restore drill completed successfully ==="
-          volumeMounts:
-            - name: backup-volume
-              mountPath: /backup
-              readOnly: true
-      volumes:
+      - name: gitlab-restore
+        image: ${TOOLBOX_IMAGE}
+        env:
+        - name: PGPASSWORD
+          value: restore-only-password
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -euo pipefail
+          BD=/tmp/backups
+          mkdir -p "$BD"
+          tar xf /backup/gitlab-backup.tar -C "$BD"
+          DB_DUMP=$(find "$BD" -path '*/db/database.sql.gz' -o -path '*/db/database.sql' | head -1)
+          test -n "$DB_DUMP"
+          if [[ "$DB_DUMP" == *.gz ]]; then
+            gzip -dc "$DB_DUMP" | psql -h restore-postgresql -U postgres -d gitlab_restore -v ON_ERROR_STOP=1
+          else
+            psql -h restore-postgresql -U postgres -d gitlab_restore -v ON_ERROR_STOP=1 -f "$DB_DUMP"
+          fi
+          psql -h restore-postgresql -U postgres -d gitlab_restore -Atc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" | grep -Eq '^[1-9][0-9]*$'
+          REPO_COUNT=$(find "$BD" -path '*/repositories/*' -type f | wc -l | tr -d ' ')
+          test "$REPO_COUNT" -gt 0
+          echo "Database restored and repository payload verified"
+          echo "Restore drill completed successfully"
+        volumeMounts:
         - name: backup-volume
-          persistentVolumeClaim:
-            claimName: gitlab-backup-data
+          mountPath: /backup
+          readOnly: true
+      volumes:
+      - name: backup-volume
+        persistentVolumeClaim:
+          claimName: gitlab-backup-data
 MANIFEST
 
-kubectl apply -f "${DOWNLOAD_DIR}/restore-manifest.yaml"
+kubectl apply -f "${DOWNLOAD_DIR}/restore-job.yaml"
 pass "Restore Job manifest applied"
 
 # ── Step 4: Wait for Restore Job ──────────────────────────────
@@ -310,8 +391,8 @@ else
   check_fail "Backup drill did not report success"
 fi
 
-if echo "$BACKUP_LOG" | grep -q "Backup contents verified"; then
-  check_pass "Backup contents were extractable"
+if echo "$BACKUP_LOG" | grep -q "Database restored and repository payload verified"; then
+  check_pass "Database restored and repository payload verified"
 else
   check_fail "Backup contents could not be verified"
 fi
@@ -344,7 +425,7 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
   echo "The restore namespace $RESTORE_NS has been cleaned up."
   exit 1
 else
-  echo -e "\n${GREEN}${BOLD}✅ RESTORE DRILL PASSED — backup is restorable${NC}"
+  echo -e "\n${GREEN}${BOLD}✅ RESTORE DRILL PASSED — database and repository payload restored in isolation${NC}"
   echo "The restore namespace $RESTORE_NS has been cleaned up."
   exit 0
 fi

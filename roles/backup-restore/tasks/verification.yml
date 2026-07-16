@@ -15,7 +15,7 @@
           app.kubernetes.io/component: verification
       spec:
         schedule: "0 6 * * *"
-        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        timeZone: "{{ backup_cron_timezone | default('UTC') }}"
         concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
         successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
         failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
@@ -38,8 +38,15 @@
                         TS=$(date -u +%Y%m%dT%H%M%SZ); FAIL=0
                         B="${_BACKUP_BUCKET:-backups-local}"; P="{{ _backup_project:-k8s }}"; E="${AWS_ENDPOINT_URL}"
                         echo "=== Backup Verification ${TS} ==="
-                        for comp in mongodb vault seaweedfs gitlab; do
-                          N=$(aws --endpoint-url="$E" s3 ls "s3://${B}/${P}/${comp}/" 2>/dev/null | wc -l || echo 0)
+                        for comp in {{ _backup_components | join(' ') }}; do
+                          if [ "$comp" = gitlab ]; then
+                            path="s3://gitlab-backups/"
+                          elif [ "$comp" = mongodb ]; then
+                            path="s3://${B}/mongodb/${P}-mongo/"
+                          else
+                            path="s3://${B}/${P}/${comp}/"
+                          fi
+                          N=$(aws --endpoint-url="$E" s3 ls "$path" 2>/dev/null | wc -l || echo 0)
                           if [ "$N" -gt 0 ]; then echo "OK: ${N} ${comp} artifacts"; else echo "FAIL: no ${comp} artifacts"; FAIL=$((FAIL+1)); fi
                         done
                         echo "Failures: ${FAIL}"

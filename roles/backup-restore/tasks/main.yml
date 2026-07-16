@@ -8,6 +8,26 @@
     _backup_schedule: "{{ backup_schedule | default('0 2 * * *') }}"
   tags: [backup, backup-setup]
 
+- name: "Backup | Resolve enabled backup component set"
+  ansible.builtin.set_fact:
+    _backup_components: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- if backup_mongodb_enabled | bool and platform_mongodb_enabled | default(true) | bool -%}
+      {%- set _ = ns.items.append('mongodb') -%}
+      {%- endif -%}
+      {%- if backup_vault_enabled | bool and platform_secrets_enabled | default(true) | bool -%}
+      {%- set _ = ns.items.append('vault') -%}
+      {%- endif -%}
+      {%- if backup_seaweedfs_enabled | bool and platform_object_storage_enabled | default(true) | bool -%}
+      {%- set _ = ns.items.append('seaweedfs') -%}
+      {%- endif -%}
+      {%- if backup_gitlab_enabled | bool and platform_gitlab_enabled | default(true) | bool -%}
+      {%- set _ = ns.items.append('gitlab') -%}
+      {%- set _ = ns.items.append('gitlab-secrets') -%}
+      {%- endif -%}
+      {{ ns.items }}
+  tags: [backup, backup-setup]
+
 - name: "Backup | Create backup metadata namespace"
   kubernetes.core.k8s:
     state: present
@@ -20,6 +40,17 @@
           app.kubernetes.io/part-of: backup-restore
           app.kubernetes.io/managed-by: ansible
           pod-security.kubernetes.io/enforce: baseline
+  tags: [backup, backup-setup]
+
+- name: "Backup | Require generated object-storage credentials"
+  ansible.builtin.assert:
+    that:
+      - backup_storage_access_key | length >= 12
+      - backup_storage_secret_key | length >= 24
+    fail_msg: >-
+      Backup storage credentials are missing or insecure. Run the
+      generate-secrets role and do not use static fallback credentials.
+  no_log: true
   tags: [backup, backup-setup]
 
 - name: "Backup | Create backup storage credentials secret"
@@ -39,26 +70,27 @@
         AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
         AWS_ENDPOINT_URL: "{{ backup_storage_endpoint }}"
         AWS_DEFAULT_REGION: "{{ backup_storage_region }}"
+  no_log: true
   tags: [backup, backup-setup]
 
 - name: "Backup | Include MongoDB backup tasks"
   ansible.builtin.include_tasks: mongodb_pbm.yml
-  when: backup_mongodb_enabled | bool
+  when: "'mongodb' in _backup_components"
   tags: [backup, backup-mongodb]
 
 - name: "Backup | Include Vault Raft snapshot tasks"
   ansible.builtin.include_tasks: vault_raft.yml
-  when: backup_vault_enabled | bool
+  when: "'vault' in _backup_components"
   tags: [backup, backup-vault]
 
 - name: "Backup | Include SeaweedFS backup tasks"
   ansible.builtin.include_tasks: seaweedfs.yml
-  when: backup_seaweedfs_enabled | bool
+  when: "'seaweedfs' in _backup_components"
   tags: [backup, backup-seaweedfs]
 
 - name: "Backup | Include GitLab backup tasks"
   ansible.builtin.include_tasks: gitlab.yml
-  when: backup_gitlab_enabled | bool
+  when: "'gitlab' in _backup_components"
   tags: [backup, backup-gitlab]
 
 - name: "Backup | Include verification jobs"

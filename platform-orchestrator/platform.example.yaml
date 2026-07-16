@@ -171,12 +171,6 @@ backup:
   retention_days: 30
 
 applications:
-  boilerplate:
-    enabled: false
-    name: myapp
-    namespace: production
-    git_provider: gitlab-selfhosted
-
   daytona:
     enabled: false
     namespace: daytona

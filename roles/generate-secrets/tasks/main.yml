@@ -8,6 +8,28 @@
 - name: Set secrets file path
   set_fact:
     secrets_file: "{{ playbook_dir }}/.platform-secrets.yml"
+    resolved_vault_password_file: >-
+      {{ (lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE')
+          | default(vault_password_file | default('~/.vault_pass'), true)) | expanduser }}
+
+- name: Check Ansible Vault password file
+  ansible.builtin.stat:
+    path: "{{ resolved_vault_password_file }}"
+  register: vault_password_file_stat
+  delegate_to: localhost
+  become: false
+  when: vault_encrypt_secrets | default(true) | bool
+
+- name: Require Ansible Vault password file when encryption is enabled
+  ansible.builtin.assert:
+    that:
+      - vault_password_file_stat.stat.exists
+      - vault_password_file_stat.stat.isreg
+    fail_msg: >-
+      Secret encryption is enabled but {{ resolved_vault_password_file }} does not exist.
+      Create it with mode 0600 or set ANSIBLE_VAULT_PASSWORD_FILE.
+      Plaintext fallback is intentionally disabled.
+  when: vault_encrypt_secrets | default(true) | bool
 
 - name: Check for existing secrets file
   stat:
@@ -153,42 +175,43 @@
       become: false
       no_log: true
 
-    - name: Encrypt secrets file with Ansible Vault
-      ansible.builtin.command: >-
-        ansible-vault encrypt {{ secrets_file }}.tmp
-        {{ '--vault-password-file ' + (vault_password_file | default('~/.vault_pass') | expanduser) if (vault_password_file | default('', true) | length > 0 and lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE') | length == 0) else '' }}
+    - name: Encrypt secrets file with Ansible Vault into a staged output
+      ansible.builtin.command:
+        argv:
+          - ansible-vault
+          - encrypt
+          - --vault-password-file
+          - "{{ resolved_vault_password_file }}"
+          - --output
+          - "{{ secrets_file }}.encrypted"
+          - "{{ secrets_file }}.tmp"
       delegate_to: localhost
       become: false
       no_log: true
       register: vault_encrypt_result
-      changed_when: vault_encrypt_result.rc == 0
-      failed_when: false
+      changed_when: true
 
-    - name: Fallback: copy unencrypted secrets if vault encryption unavailable
-      ansible.builtin.command: mv {{ secrets_file }}.tmp {{ secrets_file }}
+    - name: Atomically replace secrets file with encrypted output
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ secrets_file }}.encrypted"
+          - "{{ secrets_file }}"
       delegate_to: localhost
       become: false
-      changed_when: false
-      when: vault_encrypt_result.failed | default(false) or vault_encrypt_result.rc != 0
-
-    - name: Move encrypted secrets to final location
-      ansible.builtin.command: mv {{ secrets_file }}.tmp.enc {{ secrets_file }}
+      changed_when: true
+  always:
+    - name: Remove temporary secret files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ secrets_file }}.tmp"
+        - "{{ secrets_file }}.encrypted"
       delegate_to: localhost
       become: false
-      changed_when: false
-      when: vault_encrypt_result.rc == 0
+      no_log: true
   when: vault_encrypt_secrets | default(true) | bool
-
-- name: Warn if Ansible Vault encryption unavailable
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: Ansible Vault encryption was requested but could not encrypt {{ secrets_file }}.
-      Secrets were saved unencrypted. To fix: create a vault password file
-      and set ANSIBLE_VAULT_PASSWORD_FILE, or use --ask-vault-pass.
-      See SECURITY_HARDENING.md section 2 for migration steps.
-  when:
-    - vault_encrypt_secrets | default(true) | bool
-    - vault_encrypt_result.failed | default(false) or vault_encrypt_result.rc != 0
 
 - name: Ensure secrets file is in .gitignore
   ansible.builtin.lineinfile:

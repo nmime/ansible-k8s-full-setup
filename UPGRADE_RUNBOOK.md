@@ -208,12 +208,15 @@ The `.upgrade-state/` directory tracks:
 ## Troubleshooting
 
 ### Preflight fails on tool checks
-Ensure binaries are installed:
+Verify the required binaries and use their official, checksummed release or
+package-manager instructions for anything missing. Do not pipe a remote
+installer directly into a shell.
+
 ```bash
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-pip install yq ansible
+kubectl version --client
+helm version
+yq --version
+ansible --version
 ```
 
 ### Health gate fails for non-deployed component

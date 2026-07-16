@@ -19,10 +19,17 @@ CYAN='\033[0;36m'; NC='\033[0m'
 
 DRY_RUN=false; COMPONENTS=""; FORCE=false
 SKIP_PREFLIGHT=false; TARGET_TIER=""; COMMAND=""
+LOGGING_ACTIVE=false
 
 log()    { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "${LOG_FILE}"; }
 warn()   { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "${LOG_FILE}"; }
-error()  { echo -e "${RED}[ERROR]${NC} $1" | tee -a "${LOG_FILE}"; }
+error()  {
+  if "$LOGGING_ACTIVE"; then
+    echo -e "${RED}[ERROR]${NC} $1" | tee -a "${LOG_FILE}" >&2
+  else
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+  fi
+}
 info()   { echo -e "${CYAN}[INFO]${NC} $1" | tee -a "${LOG_FILE}"; }
 dry()    { echo -e "${YELLOW}[DRY-RUN]${NC} $1" | tee -a "${LOG_FILE}"; }
 
@@ -86,12 +93,20 @@ load_config() {
 }
 
 get_canary_sequence() {
-  local target="$1" idx=0
+  local target="$1" current_idx=-1 target_idx=-1
   for i in "${!TIER_ORDER[@]}"; do
-    [[ "${TIER_ORDER[$i]}" == "$target" ]] && idx=$i && break
+    [[ "${TIER_ORDER[$i]}" == "$CURRENT_TIER" ]] && current_idx=$i
+    [[ "${TIER_ORDER[$i]}" == "$target" ]] && target_idx=$i
   done
+  [[ "$current_idx" -ge 0 ]] || { error "Unknown current tier: $CURRENT_TIER"; return 1; }
+  [[ "$target_idx" -ge 0 ]] || { error "Unknown target tier: $target"; return 1; }
+  [[ "$target_idx" -ge "$current_idx" ]] || { error "Tier downgrade requires rollback.sh"; return 1; }
   local seq=()
-  for i in $(seq 0 "$idx"); do seq+=("${TIER_ORDER[$i]}"); done
+  if [[ "$target_idx" -eq "$current_idx" ]]; then
+    seq+=("$target")
+  else
+    for i in $(seq $((current_idx + 1)) "$target_idx"); do seq+=("${TIER_ORDER[$i]}"); done
+  fi
   echo "${seq[@]}"
 }
 
@@ -101,24 +116,46 @@ upgrade_component() {
   case "$component" in
     argocd)
       $DRY_RUN && { dry "helm upgrade argocd argo/argo-cd -n argocd"; return 0; }
-      helm upgrade argocd argo/argo-cd -n argocd --version 9.5.14 --wait --timeout 10m0s || true ;;
+      helm upgrade argocd argo/argo-cd -n argocd --version 9.5.14 --reuse-values --atomic --wait --timeout 10m0s ;;
     cilium)
       $DRY_RUN && { dry "helm upgrade cilium -n kube-system"; return 0; }
-      helm upgrade cilium cilium/cilium -n kube-system --wait --timeout 10m0s || true ;;
+      helm upgrade cilium cilium/cilium -n kube-system --reuse-values --atomic --wait --timeout 10m0s ;;
     cert-manager)
       $DRY_RUN && { dry "helm upgrade cert-manager -n cert-manager"; return 0; }
-      helm upgrade cert-manager jetstack/cert-manager -n cert-manager --set installCRDs=true --wait --timeout 5m0s || true ;;
+      helm upgrade cert-manager jetstack/cert-manager -n cert-manager --reuse-values --atomic --wait --timeout 5m0s ;;
     postgresql|database|databases)
       $DRY_RUN && { dry "ansible-playbook deploy_platform.yml --tags databases"; return 0; }
-      ansible-playbook "${PROJECT_ROOT}/playbooks/deploy_platform.yml" -e "tier=${tier}" --tags databases || true ;;
+      ansible-playbook "${PROJECT_ROOT}/playbooks/deploy_platform.yml" -e "@${CONFIG_FILE}" -e "tier=${tier}" --tags databases ;;
     observability)
       $DRY_RUN && { dry "ansible-playbook deploy_platform.yml --tags observability"; return 0; }
-      ansible-playbook "${PROJECT_ROOT}/playbooks/deploy_platform.yml" -e "tier=${tier}" --tags observability || true ;;
+      ansible-playbook "${PROJECT_ROOT}/playbooks/deploy_platform.yml" -e "@${CONFIG_FILE}" -e "tier=${tier}" --tags observability ;;
     gitlab)
-      $DRY_RUN && { dry "helm upgrade gitlab -n gitlab"; return 0; }
-      helm upgrade gitlab gitlab/gitlab -n gitlab --wait --timeout 30m0s || true ;;
-    *) warn "  Unknown component: $component" ;;
+      upgrade_gitlab ;;
+    *) error "Unknown component: $component"; return 1 ;;
   esac
+}
+
+upgrade_gitlab() {
+  local current_chart targets=() target
+  if $DRY_RUN; then
+    dry "Would inspect the current GitLab chart and upgrade one GitLab minor at a time: 9.11.x -> 10.0.4 -> 10.1.2"
+    return 0
+  fi
+  current_chart=$(helm list -n gitlab --output json | jq -r '.[0].chart // empty')
+  case "$current_chart" in
+    gitlab-9.11.*) targets=(10.0.4 10.1.2) ;;
+    gitlab-10.0.*) targets=(10.1.2) ;;
+    gitlab-10.1.2) log "GitLab is already at chart 10.1.2"; return 0 ;;
+    *) error "Unsupported GitLab upgrade source chart: ${current_chart:-missing}"; return 1 ;;
+  esac
+  for target in "${targets[@]}"; do
+    log "  GitLab chart upgrade to $target"
+    helm upgrade gitlab gitlab/gitlab -n gitlab --version "$target" \
+      --reuse-values --atomic --wait --timeout 30m0s
+    kubectl wait --for=condition=complete -n gitlab \
+      'job' --selector=release=gitlab --timeout=1800s
+    bash "${SCRIPT_DIR}/gitlab-upgrade-check.sh" --gitlab-namespace gitlab
+  done
 }
 
 run_canary_phase() {
@@ -134,12 +171,14 @@ run_canary_phase() {
   else
     log "  Full platform deployment for tier=$tier"
     ansible-playbook "${PROJECT_ROOT}/playbooks/deploy_platform.yml" \
+      -e "@${CONFIG_FILE}" \
       -e "tier=${tier}" -e "project_name=${PROJECT}" \
       -e "domain=${DOMAIN}" -e "email=${EMAIL}"
   fi
   local rc=$?
   [[ $rc -ne 0 ]] && { error "Canary phase $tier failed (rc=$rc)"; return 1; }
   log "  Post-canary health gates..."
+  # shellcheck source=./scripts/health-gates.sh
   source "${SCRIPT_DIR}/health-gates.sh"
   if check_health_gates; then
     log "Canary phase $tier PASSED"
@@ -165,9 +204,14 @@ generate_plan() {
     log "--- Current Helm releases ---"
     helm list --all-namespaces 2>/dev/null || warn "Could not list Helm releases"
   }
-  [[ -d "$SNAPSHOT_DIR" && -n "$(ls -A "$SNAPSHOT_DIR" 2>/dev/null)" ]] && \
-    info "Latest snapshot: $(ls -t "${SNAPSHOT_DIR}"/upgrade-* 2>/dev/null | head -1)" || \
+  local latest_snapshot
+  latest_snapshot=$(find "$SNAPSHOT_DIR" -mindepth 1 -maxdepth 1 -type d \
+    -name 'upgrade-*' -print 2>/dev/null | sort -r | head -1)
+  if [[ -n "$latest_snapshot" ]]; then
+    info "Latest snapshot: $latest_snapshot"
+  else
     warn "No snapshots - consider running '$(basename "$0") snapshot'"
+  fi
   log "=== END PLAN ==="
 }
 
@@ -182,7 +226,7 @@ execute_upgrade() {
 
   if [[ "$SKIP_PREFLIGHT" != "true" ]]; then
     log "--- Step 1: Preflight ---"
-    python3 "${SCRIPT_DIR}/preflight_check.py" --dry-run="$DRY_RUN" || {
+    python3 "${SCRIPT_DIR}/preflight_check.py" --project-root "$PROJECT_ROOT" --dry-run="$DRY_RUN" || {
       error "Preflight failed. Use --skip-preflight to override."; exit 1
     }
   else
@@ -190,8 +234,15 @@ execute_upgrade() {
   fi
 
   log "--- Step 2: Snapshot ---"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    bash "${SCRIPT_DIR}/backup-all.sh" --dry-run --force
+  else
+    bash "${SCRIPT_DIR}/backup-all.sh" --force
+  fi
+  # shellcheck source=./scripts/snapshot-helm-baseline.sh
   source "${SCRIPT_DIR}/snapshot-helm-baseline.sh"
-  local snap; snap=$(capture_snapshot) || true
+  export SNAPSHOT_DRY_RUN="$DRY_RUN"
+  local snap; snap=$(capture_snapshot)
 
   log "--- Step 3: Canary phases ---"
   local seq; seq=$(get_canary_sequence "$TARGET_TIER")
@@ -207,8 +258,11 @@ execute_upgrade() {
   done
 
   log "--- Step 4: Final health gate ---"
+  # shellcheck source=./scripts/health-gates.sh
   source "${SCRIPT_DIR}/health-gates.sh"
-  if ! check_health_gates; then
+  local health_args=()
+  [[ "$DRY_RUN" == "true" ]] && health_args+=(--dry-run)
+  if ! check_health_gates "${health_args[@]}"; then
     error "Final health gates failed - rollback"
     $DRY_RUN || bash "${SCRIPT_DIR}/rollback.sh" || warn "Rollback issues"
     exit 1
@@ -232,35 +286,35 @@ EOF2
 validate_health() {
   log "=== VALIDATE CLUSTER HEALTH ==="
   local rc=0
-  python3 "${SCRIPT_DIR}/preflight_check.py" --dry-run="$DRY_RUN" || rc=1
+  python3 "${SCRIPT_DIR}/preflight_check.py" --project-root "$PROJECT_ROOT" --dry-run="$DRY_RUN" || rc=1
+  # shellcheck source=./scripts/health-gates.sh
   source "${SCRIPT_DIR}/health-gates.sh"
-  check_health_gates || rc=1
-  [[ $rc -eq 0 ]] && log "Validation PASSED" || error "Validation FAILED"
+  local health_args=()
+  [[ "$DRY_RUN" == "true" ]] && health_args+=(--dry-run)
+  check_health_gates "${health_args[@]}" || rc=1
+  if [[ $rc -eq 0 ]]; then
+    log "Validation PASSED"
+  else
+    error "Validation FAILED"
+  fi
   return $rc
 }
 
 main() {
   parse_args "$@"
   mkdir -p "$STATE_DIR" "$SNAPSHOT_DIR" "$LOG_DIR"
+  LOGGING_ACTIVE=true
   load_config
   case "$COMMAND" in
     plan)      generate_plan ;;
     execute)   execute_upgrade ;;
-    preflight) python3 "${SCRIPT_DIR}/preflight_check.py" --dry-run="$DRY_RUN" ;;
-    snapshot)  source "${SCRIPT_DIR}/snapshot-helm-baseline.sh" && capture_snapshot ;;
-    validate)  validate_health ;;
-  esac
-}
-
-main() {
-  parse_args "$@"
-  mkdir -p "$STATE_DIR" "$SNAPSHOT_DIR" "$LOG_DIR"
-  load_config
-  case "$COMMAND" in
-    plan)      generate_plan ;;
-    execute)   execute_upgrade ;;
-    preflight) python3 "${SCRIPT_DIR}/preflight_check.py" --dry-run="$DRY_RUN" ;;
-    snapshot)  source "${SCRIPT_DIR}/snapshot-helm-baseline.sh" && capture_snapshot ;;
+    preflight) python3 "${SCRIPT_DIR}/preflight_check.py" --project-root "$PROJECT_ROOT" --dry-run="$DRY_RUN" ;;
+    snapshot)
+      export SNAPSHOT_DRY_RUN="$DRY_RUN"
+      # shellcheck source=./scripts/snapshot-helm-baseline.sh
+      source "${SCRIPT_DIR}/snapshot-helm-baseline.sh"
+      capture_snapshot
+      ;;
     validate)  validate_health ;;
   esac
 }

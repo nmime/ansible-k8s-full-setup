@@ -1,0 +1,24 @@
+---
+- name: Deploy optional global edge CDN
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  any_errors_fatal: true
+  vars_files:
+    - ../defaults/main.yml
+  pre_tasks:
+    - name: Require explicit edge infrastructure confirmation
+      ansible.builtin.assert:
+        that:
+          - edge_cdn_confirm | bool
+          - domain is defined
+          - domain | length > 0
+          - origin_server_ip is defined
+          - origin_server_ip | length > 0
+          - lookup('env', 'HCLOUD_TOKEN') | length > 0
+          - edge_dns_provider != 'gcore' or lookup('env', 'GCORE_API_KEY') | length > 0
+        fail_msg: >-
+          Edge CDN creates additional Hetzner servers and Gcore DNS records.
+          Set domain and rerun with -e edge_cdn_confirm=true only after review.
+  roles:
+    - role: edge-cdn

@@ -1,0 +1,58 @@
+---
+- name: Normalize component enablement from the platform profile
+  ansible.builtin.set_fact:
+    platform_object_storage_enabled: '{{ (storage.enabled | default(object_storage_enabled)) | bool }}'
+    platform_secrets_enabled: '{{ (secrets.enabled | default(true)) | bool }}'
+    platform_observability_enabled: '{{ (observability.enabled | default(deploy_observability)) | bool }}'
+    platform_elasticsearch_enabled: '{{ (elasticsearch.enabled | default(deploy_elasticsearch)) | bool }}'
+    platform_databases_enabled: '{{ (databases.enabled | default(deploy_databases)) | bool }}'
+    platform_postgresql_enabled: '{{ (databases.postgresql.enabled | default(deploy_postgresql)) | bool }}'
+    platform_mongodb_enabled: '{{ (databases.mongodb.enabled | default(deploy_mongodb)) | bool }}'
+    platform_gitlab_enabled: '{{ (gitlab.enabled | default(deploy_gitlab)) | bool }}'
+    platform_gitops_enabled: '{{ (gitops.enabled | default(deploy_gitops)) | bool }}'
+    platform_autoscaling_enabled: '{{ (autoscaling.enabled | default(deploy_autoscaling)) | bool }}'
+    platform_dragonfly_enabled: '{{ (dragonfly.enabled | default(deploy_dragonfly)) | bool }}'
+    platform_temporal_enabled: '{{ (temporal.enabled | default(deploy_temporal)) | bool }}'
+    platform_postal_enabled: '{{ (postal.enabled | default(deploy_postal)) | bool }}'
+    platform_backup_enabled: '{{ (backup.enabled | default(backup_enabled)) | bool }}'
+    platform_hipaa_enabled: '{{ hipaa_compliance | bool }}'
+
+- name: Normalize component sizing from the platform profile
+  ansible.builtin.set_fact:
+    object_storage_enabled: '{{ platform_object_storage_enabled }}'
+    object_storage_replicas: '{{ storage.replicas | default(object_storage_replicas | default(1)) }}'
+    object_storage_volume_size: >-
+      {{ storage.size_per_replica | default(storage.size | default(object_storage_volume_size)) }}
+    vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
+    vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
+    eso_enabled: '{{ secrets.eso.enabled | default(eso_enabled) }}'
+    postgresql_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas) }}'
+    postgresql_storage: '{{ databases.postgresql.storage_size | default(postgresql_storage) }}'
+    mongodb_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(1)) }}'
+    mongodb_storage: '{{ databases.mongodb.storage_size | default(mongodb_storage) }}'
+    gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1) }}'
+    gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1) }}'
+    gitlab_runner_concurrent_jobs: >-
+      {{ gitlab.runner.concurrent_jobs | default(gitlab_runner_concurrent_jobs) }}
+    argocd_ha_enabled: '{{ gitops.ha_enabled | default(tier in ["medium", "production"]) }}'
+    metrics_retention: '{{ observability.metrics.retention | default(metrics_retention) }}'
+    metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
+    logging_retention: '{{ observability.logging.retention | default(logging_retention) }}'
+    backup_schedule: '{{ backup.schedule | default(backup_schedule) }}'
+    backup_retention_days: '{{ backup.retention_days | default(backup_retention_days) }}'
+    deploy_apm: '{{ apm.enabled | default(deploy_apm) }}'
+    deploy_blackbox: '{{ blackbox.enabled | default(deploy_blackbox | default(false)) }}'
+    deploy_glitchtip: '{{ glitchtip.enabled | default(deploy_glitchtip | default(false)) }}'
+    deploy_daytona: '{{ applications.daytona.enabled | default(deploy_daytona) }}'
+
+- name: Validate required GitLab external service dependencies
+  ansible.builtin.assert:
+    that:
+      - platform_postgresql_enabled | bool
+      - platform_dragonfly_enabled | bool
+      - platform_object_storage_enabled | bool
+    fail_msg: >-
+      GitLab chart 10 requires external PostgreSQL, Redis-compatible storage,
+      and object storage. Enable databases.postgresql, dragonfly, and storage
+      in the selected platform profile.
+  when: platform_gitlab_enabled | bool

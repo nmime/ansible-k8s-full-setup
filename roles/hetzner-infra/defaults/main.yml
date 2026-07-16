@@ -5,9 +5,13 @@
 # Server type overrides — set these to pick exact Hetzner server types.
 # Leave empty to auto-select the cheapest available type per tier.
 # Examples: cx22, cx32, cx42, cpx21, cpx31, cax11 (ARM), cax21, etc.
-hetzner_bastion_type: ""
-hetzner_cp_type: ""
-hetzner_worker_type: ""
+hetzner_bastion_type: '{{ network.bastion.server_type | default("") }}'
+hetzner_cp_type: '{{ infrastructure.control_plane.type | default("") }}'
+hetzner_worker_type: '{{ infrastructure.workers.type | default("") }}'
+
+# Scaling down or changing a server type is disruptive. Drift is always
+# detected; set this explicitly for a controlled maintenance operation.
+hetzner_allow_destructive_reconcile: false
 
 # Minimum resource requirements per tier (used for auto-selection).
 # Auto-select picks the cheapest x86 server type meeting these minimums.

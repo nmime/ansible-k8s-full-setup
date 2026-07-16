@@ -1,88 +1,109 @@
 ---
-# GitLab Toolbox Backup - idempotent
+# GitLab backups are created by the chart's Toolbox backup-utility CronJob.
+# A separate job protects the Rails encryption secret, which GitLab explicitly
+# excludes from the application backup archive.
 
-- name: "Backup-GitLab | Create GitLab backup credentials"
+- name: "Backup-GitLab | Remove obsolete standalone backup CronJob"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: CronJob
+    name: gitlab-backup
+    namespace: "{{ backup_gitlab_namespace }}"
+
+- name: "Backup-GitLab | Wait for official Toolbox backup CronJob"
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: CronJob
+    name: gitlab-toolbox-backup
+    namespace: "{{ backup_gitlab_namespace }}"
+  register: _gitlab_toolbox_backup_cron
+  retries: 12
+  delay: 10
+  until: _gitlab_toolbox_backup_cron.resources | length == 1
+
+- name: "Backup-GitLab | Create Rails secret backup credentials"
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
-        name: gitlab-backup-credentials
-        namespace: "{{ backup_gitlab_namespace | default('gitlab') }}"
+        name: gitlab-rails-backup-credentials
+        namespace: "{{ backup_gitlab_namespace }}"
         labels:
           app.kubernetes.io/part-of: backup-restore
-          app.kubernetes.io/component: gitlab
+          app.kubernetes.io/component: gitlab-rails-secrets
       type: Opaque
       stringData:
         AWS_ACCESS_KEY_ID: "{{ backup_storage_access_key }}"
         AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
-        OBJECT_STORE_ENDPOINT: "{{ backup_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
-  tags: [backup, backup-gitlab]
+        AWS_ENDPOINT_URL: "{{ backup_storage_endpoint }}"
+        AWS_DEFAULT_REGION: "{{ backup_storage_region }}"
 
-- name: "Backup-GitLab | Deploy GitLab toolbox backup CronJob"
+- name: "Backup-GitLab | Deploy Rails encryption secret backup CronJob"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: batch/v1
       kind: CronJob
       metadata:
-        name: gitlab-backup
-        namespace: "{{ backup_gitlab_namespace | default('gitlab') }}"
+        name: gitlab-rails-secrets-backup
+        namespace: "{{ backup_gitlab_namespace }}"
         labels:
           app.kubernetes.io/part-of: backup-restore
-          app.kubernetes.io/component: gitlab
+          app.kubernetes.io/component: gitlab-rails-secrets
       spec:
         schedule: "{{ _backup_schedule }}"
-        timezone: "{{ backup_cron_timezone | default('UTC') }}"
-        concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
-        successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
-        failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
+        timeZone: "{{ backup_cron_timezone }}"
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history }}"
+        failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history }}"
         jobTemplate:
           spec:
             ttlSecondsAfterFinished: 600
             backoffLimit: 1
-            activeDeadlineSeconds: 7200
+            activeDeadlineSeconds: 900
             template:
               spec:
-                restartPolicy: OnFailure
+                restartPolicy: Never
                 containers:
-                  - name: gitlab-backup
-                    image: gitlab/gitlab-rails:latest-ce.0
-                    command:
-                      - /bin/bash
-                      - -c
+                  - name: backup-rails-secrets
+                    image: "{{ backup_s3cli_image }}"
+                    command: [/bin/sh, -c]
+                    args:
                       - |
-                        set -euo pipefail
-                        TS=$(date -u +%Y%m%d_%H%M%S)
-                        BD="/tmp/backups"; mkdir -p "$BD"
-                        [ "$(pgrep -cf gitlab-backup 2>/dev/null || echo 0)" -gt 1 ] && echo "Already running" && exit 0
-                        export BACKUP_DIR="$BD"
-                        bundle exec rake gitlab:backup:create RAILS_ENV=production 2>&1 | tail -20
-                        BF=$(ls -t "$BD"/*.tar 2>/dev/null | head -1)
-                        [ -z "$BF" ] && echo "ERROR: no backup" && exit 1
-                        aws --endpoint-url="${OBJECT_STORE_ENDPOINT}" s3 cp "$BF" "s3://{{ _backup_bucket }}/{{ _backup_project }}/gitlab/gitlab-${TS}.tar"
-                        RETENTION=${_BACKUP_RETENTION:-30}
-                        aws --endpoint-url="${OBJECT_STORE_ENDPOINT}" s3 ls "s3://{{ _backup_bucket }}/{{ _backup_project }}/gitlab/" 2>/dev/null | awk '{print $4}' | while read -r F; do
-                          D=$(echo "$F" | grep -oP '\d{8}_\d{6}' || echo "")
-                          [ -z "$D" ] && continue
-                          E=$(date -d "${D//_/T}" +%s 2>/dev/null || echo 0)
-                          C=$(( $(date +%s) - (RETENTION * 86400) ))
-                          [ "$E" -gt 0 ] && [ "$E" -lt "$C" ] && aws --endpoint-url="${OBJECT_STORE_ENDPOINT}" s3 rm "s3://{{ _backup_bucket }}/{{ _backup_project }}/gitlab/${F}"
-                        done
-                        rm -f "$BF"
-                        echo "=== GitLab backup completed ==="
+                        set -eu
+                        test -s /rails/secrets.yml
+                        ts=$(date -u +%Y%m%dT%H%M%SZ)
+                        destination="s3://${BACKUP_BUCKET}/${BACKUP_PROJECT}/gitlab-secrets/${ts}-secrets.yml"
+                        aws --endpoint-url="$AWS_ENDPOINT_URL" s3 cp /rails/secrets.yml "$destination"
+                        aws --endpoint-url="$AWS_ENDPOINT_URL" s3 ls "$destination" >/dev/null
                     env:
-                      - name: _BACKUP_RETENTION
-                        value: "{{ _backup_retention | string }}"
+                      - name: BACKUP_BUCKET
+                        value: "{{ _backup_bucket }}"
+                      - name: BACKUP_PROJECT
+                        value: "{{ _backup_project }}"
                     envFrom:
                       - secretRef:
-                          name: gitlab-backup-credentials
+                          name: gitlab-rails-backup-credentials
+                    volumeMounts:
+                      - name: rails-secrets
+                        mountPath: /rails
+                        readOnly: true
                     resources:
                       requests:
-                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
-                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                        cpu: "{{ backup_job_cpu_request }}"
+                        memory: "{{ backup_job_memory_request }}"
                       limits:
-                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
-                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+                        cpu: "{{ backup_job_cpu_limit }}"
+                        memory: "{{ backup_job_memory_limit }}"
+                volumes:
+                  - name: rails-secrets
+                    secret:
+                      secretName: gitlab-rails-secret
+                      items:
+                        - key: secrets.yml
+                          path: secrets.yml
   tags: [backup, backup-gitlab]

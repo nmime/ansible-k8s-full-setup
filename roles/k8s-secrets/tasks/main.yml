@@ -25,6 +25,9 @@
   retries: 3
   delay: 15
   until: _r_create_vault_namespace is not failed
+- name: Prepare Vault internal TLS certificates
+  ansible.builtin.include_tasks: vault_tls.yml
+  when: not (vault_tls_disabled | bool)
 - name: Add HashiCorp Helm repository
   kubernetes.core.helm_repository:
     name: hashicorp
@@ -50,7 +53,7 @@
     - value: server.standalone.enabled={{ (not (vault_ha | bool)) | lower }}
     values:
       global:
-        tlsDisable: true
+        tlsDisable: '{{ vault_tls_disabled | bool }}'
       injector:
         enabled: false
       server:
@@ -87,16 +90,65 @@
           size: 20Gi
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         extraEnvironmentVars:
-          VAULT_API_ADDR: http://$(HOSTNAME).vault-internal:8200
-          VAULT_CLUSTER_ADDR: http://$(HOSTNAME).vault-internal:8201
+          VAULT_API_ADDR: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://$(HOSTNAME).vault-internal:8200"
+          VAULT_CLUSTER_ADDR: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://$(HOSTNAME).vault-internal:8201"
+          VAULT_CACERT: "{{ '' if vault_tls_disabled | bool else '/vault/tls/ca.crt' }}"
+        volumes: >-
+          {{ [] if vault_tls_disabled | bool else
+             [{'name': 'vault-tls', 'secret': {'secretName': 'vault-internal-tls'}}] }}
+        volumeMounts: >-
+          {{ [] if vault_tls_disabled | bool else
+             [{'name': 'vault-tls', 'mountPath': '/vault/tls', 'readOnly': true}] }}
         ha:
           raft:
             setNodeId: true
-            config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n  unauthenticated_metrics_access = true\n}\nstorage \"raft\" {\n  path = \"/vault/data\"\n  retry_join {\n   \
-              \ leader_api_addr = \"http://vault-0.vault-internal:8200\"\n  }\n  retry_join {\n    leader_api_addr = \"http://vault-1.vault-internal:8200\"\n  }\n  retry_join {\n    leader_api_addr = \"\
-              http://vault-2.vault-internal:8200\"\n  }\n}\n"
+            config: |
+              ui = true
+              listener "tcp" {
+                tls_disable = {{ 1 if vault_tls_disabled | bool else 0 }}
+                address = "[::]:8200"
+                cluster_address = "[::]:8201"
+              {% if not (vault_tls_disabled | bool) %}
+                tls_cert_file = "/vault/tls/tls.crt"
+                tls_key_file = "/vault/tls/tls.key"
+              {% endif %}
+              }
+              telemetry {
+                prometheus_retention_time = "30s"
+                disable_hostname = true
+                unauthenticated_metrics_access = true
+              }
+              storage "raft" {
+                path = "/vault/data"
+              {% for peer in range(0, vault_replicas | int) %}
+                retry_join {
+                  leader_api_addr = "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault-{{ peer }}.vault-internal:8200"
+              {% if not (vault_tls_disabled | bool) %}
+                  leader_ca_cert_file = "/vault/tls/ca.crt"
+              {% endif %}
+                }
+              {% endfor %}
+              }
         standalone:
-          config: "ui = true\nlistener \"tcp\" {\n  tls_disable = 1\n  address = \"[::]:8200\"\n  cluster_address = \"[::]:8201\"\n}\ntelemetry {\n  prometheus_retention_time = \"30s\"\n  disable_hostname = true\n  unauthenticated_metrics_access = true\n}\nstorage \"file\" {\n  path = \"/vault/data\"\n}\n"
+          config: |
+            ui = true
+            listener "tcp" {
+              tls_disable = {{ 1 if vault_tls_disabled | bool else 0 }}
+              address = "[::]:8200"
+              cluster_address = "[::]:8201"
+            {% if not (vault_tls_disabled | bool) %}
+              tls_cert_file = "/vault/tls/tls.crt"
+              tls_key_file = "/vault/tls/tls.key"
+            {% endif %}
+            }
+            telemetry {
+              prometheus_retention_time = "30s"
+              disable_hostname = true
+              unauthenticated_metrics_access = true
+            }
+            storage "file" {
+              path = "/vault/data"
+            }
         ingress:
           enabled: false
         ui:
@@ -180,44 +232,20 @@
   until: vault_status_raw is not failed
   failed_when: false
   changed_when: false
+- name: Refuse to continue when Vault initialization state is unknown
+  ansible.builtin.assert:
+    that:
+      - vault_status_raw.rc is defined
+      - vault_status_raw.rc in [0, 2]
+      - vault_status_raw.stdout | default('') | length > 0
+    fail_msg: >-
+      Vault status could not be determined safely. No initialization or data
+      cleanup was attempted. Restore connectivity and rerun the playbook.
 - name: Parse Vault status
   set_fact:
     vault_initialized: '{{ (vault_status_raw.stdout | from_json).initialized | default(false) }}'
   when: vault_status_raw.rc is defined and (vault_status_raw.rc == 0 or vault_status_raw.rc == 2)
   failed_when: false
-- name: Clear stale Raft data on all vault pods
-  kubernetes.core.k8s_exec:
-    namespace: '{{ vault_ns }}'
-    pod: vault-{{ item }}
-    command: sh -c "rm -rf /vault/data/*"
-  loop: '{{ range(0, vault_replicas | int) | list }}'
-  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
-  failed_when: false
-- name: Restart vault pods after clearing Raft data
-  kubernetes.core.k8s:
-    state: absent
-    kind: Pod
-    namespace: '{{ vault_ns }}'
-    label_selectors:
-    - app.kubernetes.io/name=vault
-    - component=server
-  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
-- name: Wait for Vault pods to be running after Raft cleanup
-  kubernetes.core.k8s_info:
-    kind: Pod
-    namespace: '{{ vault_ns }}'
-    label_selectors:
-    - app.kubernetes.io/name=vault
-    - component=server
-  register: vault_pods_raft
-  until: 'vault_pods_raft.resources | length >= (vault_replicas | int) and vault_pods_raft.resources | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas
-    | int)
-
-    '
-  retries: 120
-  delay: 15
-  failed_when: false
-  when: not (vault_initialized | default(false) | bool) and vault_ha | bool
 - name: Initialize Vault (if not initialized)
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
@@ -235,25 +263,76 @@
     vault_init_data: '{{ vault_init.stdout if vault_init.stdout is mapping else vault_init.stdout | from_json }}'
   when: vault_init is changed
   no_log: true
-- name: Store Vault init keys as K8s secret
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: vault-init-keys
-        namespace: '{{ vault_ns }}'
-        labels:
-          app: vault
-      stringData:
-        init-output: '{{ vault_init_data | to_json }}'
+- name: Save Vault initialization material outside the cluster
+  block:
+  - name: Write Vault initialization material to a temporary local file
+    ansible.builtin.copy:
+      content: '{{ vault_init_data | to_nice_json }}'
+      dest: '{{ vault_init_output_file }}.tmp'
+      mode: '0600'
+    delegate_to: localhost
+    become: false
+    no_log: true
+
+  - name: Encrypt Vault initialization material with Ansible Vault
+    ansible.builtin.command:
+      argv:
+      - ansible-vault
+      - encrypt
+      - --vault-password-file
+      - '{{ resolved_vault_password_file | default(vault_password_file | expanduser) }}'
+      - --output
+      - '{{ vault_init_output_file }}'
+      - '{{ vault_init_output_file }}.tmp'
+    delegate_to: localhost
+    become: false
+    changed_when: true
+    no_log: true
+  always:
+  - name: Remove temporary Vault initialization material
+    ansible.builtin.file:
+      path: '{{ vault_init_output_file }}.tmp'
+      state: absent
+    delegate_to: localhost
+    become: false
+    no_log: true
   when: vault_init is changed
-  register: _r_store_vault_init_keys_as_k8s_secret
-  retries: 3
-  delay: 15
-  until: _r_store_vault_init_keys_as_k8s_secret is not failed
+- name: Check encrypted Vault initialization material for an existing cluster
+  ansible.builtin.stat:
+    path: '{{ vault_init_output_file }}'
+  register: vault_init_output_stat
+  delegate_to: localhost
+  become: false
+  when: vault_initialized | default(false) | bool
+- name: Require encrypted Vault initialization material for reconciliation
+  ansible.builtin.assert:
+    that:
+    - vault_init_output_stat.stat.exists
+    - vault_init_output_stat.stat.isreg
+    fail_msg: >-
+      Vault is already initialized, but {{ vault_init_output_file }} is not an
+      encrypted regular file. Restore that file from the protected operator
+      backup before reconciling Vault authentication or backup policy.
+  when: vault_initialized | default(false) | bool
+- name: Load encrypted Vault initialization material for reconciliation
+  ansible.builtin.command:
+    argv:
+    - ansible-vault
+    - view
+    - --vault-password-file
+    - '{{ resolved_vault_password_file | default(vault_password_file | expanduser) }}'
+    - '{{ vault_init_output_file }}'
+  register: vault_init_view
+  delegate_to: localhost
+  become: false
+  changed_when: false
   no_log: true
+  when: vault_initialized | default(false) | bool
+- name: Parse existing Vault initialization material
+  ansible.builtin.set_fact:
+    vault_init_data: '{{ vault_init_view.stdout | from_json }}'
+  no_log: true
+  when: vault_initialized | default(false) | bool
 - name: Unseal Vault (primary)
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
@@ -315,73 +394,21 @@
   retries: 5
   delay: 15
   until: _r_unseal_raft_peers__ha_mode_ is not failed
-- name: Deploy Vault auto-unseal CronJob
+- name: Remove legacy in-cluster Vault auto-unseal job
   kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: batch/v1
-      kind: CronJob
-      metadata:
-        name: vault-auto-unseal
-        namespace: '{{ vault_ns }}'
-        labels:
-          app: vault
-          component: auto-unseal
-      spec:
-        schedule: '*/2 * * * *'
-        successfulJobsHistoryLimit: 1
-        failedJobsHistoryLimit: 3
-        concurrencyPolicy: Forbid
-        jobTemplate:
-          spec:
-            backoffLimit: 1
-            activeDeadlineSeconds: 120
-            template:
-              metadata:
-                labels:
-                  app: vault
-                  component: auto-unseal
-              spec:
-                serviceAccountName: vault
-                restartPolicy: Never
-                containers:
-                - name: unseal
-                  image: hashicorp/vault:{{ vault_version }}
-                  command:
-                  - /bin/sh
-                  - -c
-                  - "for i in $(seq 0 {{ (vault_replicas | int) - 1 }}); do\n  VAULT_ADDR=\"http://vault-${i}.vault-internal.{{ vault_ns }}.svc.cluster.local:8200\"\n  export VAULT_ADDR\n  STATUS=$(vault\
-                    \ status -format=json 2>/dev/null) || continue\n  SEALED=$(echo \"$STATUS\" | grep -o '\"sealed\":[a-z]*' | cut -d: -f2)\n  if [ \"$SEALED\" = \"true\" ]; then\n    echo \"vault-${i}\
-                    \ is sealed, unsealing...\"\n    INIT_JSON=$(cat /vault-keys/init-output)\n    for k in 0 1 2; do\n      KEY=$(echo \"$INIT_JSON\" | grep -o '\"unseal_keys_b64\":\\[[^]]*\\]' | sed 's/.*\\\
-                    [//;s/\\]//;s/\"//g' | cut -d, -f$((k+1)))\n      vault operator unseal \"$KEY\" 2>/dev/null || true\n    done\n  fi\ndone\n"
-                  volumeMounts:
-                  - name: vault-keys
-                    mountPath: /vault-keys
-                    readOnly: true
-                  resources:
-                    requests:
-                      cpu: 50m
-                      memory: 64Mi
-                    limits:
-                      cpu: 100m
-                      memory: 128Mi
-                  securityContext:
-                    allowPrivilegeEscalation: false
-                    capabilities:
-                      drop:
-                      - ALL
-                    readOnlyRootFilesystem: true
-                    runAsNonRoot: true
-                    runAsUser: 100
-                volumes:
-                - name: vault-keys
-                  secret:
-                    secretName: vault-init-keys
+    state: absent
+    api_version: batch/v1
+    kind: CronJob
+    name: vault-auto-unseal
+    namespace: '{{ vault_ns }}'
   when: vault_init is changed
-  register: _r_deploy_vault_auto_unseal_cronjob
-  retries: 3
-  delay: 10
-  until: _r_deploy_vault_auto_unseal_cronjob is not failed
+- name: Remove legacy in-cluster Vault initialization keys
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    name: vault-init-keys
+    namespace: '{{ vault_ns }}'
 - name: Enable KV v2 secrets engine
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
@@ -411,7 +438,7 @@
     namespace: '{{ vault_ns }}'
     pod: vault-0
     command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault auth enable kubernetes"
-  when: vault_init is changed
+  when: vault_init_data is defined
   failed_when: false
   no_log: true
   register: _r_enable_kubernetes_auth_method
@@ -423,13 +450,42 @@
     namespace: '{{ vault_ns }}'
     pod: vault-0
     command: sh -c "VAULT_TOKEN={{ vault_init_data.root_token }} vault write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc:443"
-  when: vault_init is changed
-  failed_when: false
+  when: vault_init_data is defined
   no_log: true
   register: _r_configure_kubernetes_auth_method
   retries: 3
   delay: 15
   until: _r_configure_kubernetes_auth_method is not failed
+- name: Create Vault snapshot backup policy
+  kubernetes.core.k8s_exec:
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: >-
+      sh -c 'printf %s "path \"sys/storage/raft/snapshot\" {
+      capabilities = [\"read\"]
+      }" | VAULT_TOKEN="$1" vault policy write snapshot-backup -' --
+      {{ vault_init_data.root_token }}
+  when: vault_init_data is defined
+  no_log: true
+  register: _vault_snapshot_policy
+  retries: 3
+  delay: 10
+  until: _vault_snapshot_policy is not failed
+- name: Create Vault Kubernetes auth role for snapshot backups
+  kubernetes.core.k8s_exec:
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: >-
+      sh -c 'VAULT_TOKEN="$1" vault write auth/kubernetes/role/vault-backup
+      bound_service_account_names=vault-backup
+      bound_service_account_namespaces={{ vault_ns }}
+      policies=snapshot-backup ttl=15m' -- {{ vault_init_data.root_token }}
+  when: vault_init_data is defined
+  no_log: true
+  register: _vault_snapshot_auth_role
+  retries: 3
+  delay: 10
+  until: _vault_snapshot_auth_role is not failed
 - name: Create Vault TLS certificate
   kubernetes.core.k8s:
     state: present
@@ -583,9 +639,10 @@
       spec:
         provider:
           vault:
-            server: http://vault.{{ vault_ns }}.svc.cluster.local:8200
+            server: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault.{{ vault_ns }}.svc.cluster.local:8200"
             path: secret
             version: v2
+            caProvider: '{{ omit if vault_tls_disabled | bool else {"type": "Secret", "name": "vault-internal-tls", "key": "ca.crt", "namespace": vault_ns} }}'
             auth:
               kubernetes:
                 mountPath: kubernetes

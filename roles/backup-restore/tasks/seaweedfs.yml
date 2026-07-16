@@ -17,6 +17,8 @@
       stringData:
         AWS_ACCESS_KEY_ID: "{{ backup_storage_access_key }}"
         AWS_SECRET_ACCESS_KEY: "{{ backup_storage_secret_key }}"
+        AWS_ENDPOINT_URL: "{{ backup_storage_endpoint }}"
+        AWS_DEFAULT_REGION: "{{ backup_storage_region }}"
         SEAWEEDFS_ENDPOINT: "{{ backup_seaweedfs_filer_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
   tags: [backup, backup-seaweedfs]
 
@@ -34,7 +36,7 @@
           app.kubernetes.io/component: seaweedfs
       spec:
         schedule: "{{ _backup_schedule }}"
-        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        timeZone: "{{ backup_cron_timezone | default('UTC') }}"
         concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
         successfulJobsHistoryLimit: "{{ backup_cron_successful_jobs_history | default(3) }}"
         failedJobsHistoryLimit: "{{ backup_cron_failed_jobs_history | default(1) }}"
@@ -45,23 +47,50 @@
             template:
               spec:
                 restartPolicy: OnFailure
+                securityContext:
+                  fsGroup: 1000
                 containers:
-                  - name: seaweedfs-backup
-                    image: "{{ backup_s3cli_image | default('amazon/aws-cli:2.34.48') }}"
+                  - name: topology-collector
+                    image: curlimages/curl:8.12.1
                     command:
                       - /bin/sh
                       - -c
                       - |
                         set -euo pipefail
                         TS=$(date -u +%Y%m%dT%H%M%SZ)
+                        curl -fsS "http://seaweedfs-master.${backup_seaweedfs_namespace}.svc.cluster.local:9333/volume/topology" \
+                          -o "/backup/topology-${TS}.json"
+                        test -s "/backup/topology-${TS}.json"
+                        printf '%s' "$TS" > /backup/ready
+                    volumeMounts:
+                      - name: backup-work
+                        mountPath: /backup
+                    resources:
+                      requests:
+                        cpu: "{{ backup_job_cpu_request | default('100m') }}"
+                        memory: "{{ backup_job_memory_request | default('128Mi') }}"
+                      limits:
+                        cpu: "{{ backup_job_cpu_limit | default('500m') }}"
+                        memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+                  - name: topology-uploader
+                    image: "{{ backup_s3cli_image | default('amazon/aws-cli:2.34.48') }}"
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+                        attempts=0
+                        while [ ! -s /backup/ready ]; do
+                          attempts=$((attempts + 1))
+                          [ "$attempts" -le 150 ] || { echo "topology was not produced" >&2; exit 1; }
+                          sleep 2
+                        done
+                        TS=$(cat /backup/ready)
                         BUCKET="${_BACKUP_BUCKET:-backups-local}"
                         BP="{{ _backup_project }}/seaweedfs"
-                        MASTER="seaweedfs-master.${backup_seaweedfs_namespace}.svc.cluster.local:9333"
-                        TOP=$(curl -s "http://${MASTER}/volume/topology" 2>/dev/null || echo "{}")
-                        echo "$TOP" > /tmp/sw-topology-${TS}.json
-                        aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 cp /tmp/sw-topology-${TS}.json "s3://${BUCKET}/${BP}/topology-${TS}.json" 2>/dev/null || true
-                        VC=$(echo "$TOP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('Volumes',[])))" 2>/dev/null || echo 0)
-                        echo "SeaweedFS volume count: ${VC}"
+                        FILE="topology-${TS}.json"
+                        aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 cp "/backup/${FILE}" "s3://${BUCKET}/${BP}/${FILE}"
+                        aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${BUCKET}/${BP}/${FILE}" >/dev/null
                         RETENTION=${_BACKUP_RETENTION:-30}
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${BUCKET}/${BP}/" 2>/dev/null | awk '{print $4}' | while read -r F; do
                           D=$(echo "$F" | grep -oP '\d{8}T\d{6}Z' || echo "")
@@ -70,8 +99,7 @@
                           C=$(( $(date +%s) - (RETENTION * 86400) ))
                           [ "$E" -gt 0 ] && [ "$E" -lt "$C" ] && aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 rm "s3://${BUCKET}/${BP}/${F}"
                         done
-                        rm -f /tmp/sw-*.json
-                        echo "=== SeaweedFS backup completed ==="
+                        echo "=== SeaweedFS topology artifact completed ==="
                     env:
                       - name: _BACKUP_BUCKET
                         value: "{{ _backup_bucket }}"
@@ -80,6 +108,9 @@
                     envFrom:
                       - secretRef:
                           name: seaweedfs-backup-credentials
+                    volumeMounts:
+                      - name: backup-work
+                        mountPath: /backup
                     resources:
                       requests:
                         cpu: "{{ backup_job_cpu_request | default('100m') }}"
@@ -87,4 +118,7 @@
                       limits:
                         cpu: "{{ backup_job_cpu_limit | default('500m') }}"
                         memory: "{{ backup_job_memory_limit | default('512Mi') }}"
+                volumes:
+                  - name: backup-work
+                    emptyDir: {}
   tags: [backup, backup-seaweedfs]

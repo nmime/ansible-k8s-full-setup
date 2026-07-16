@@ -27,33 +27,113 @@ if [ "${FORCE}" != "true" ]; then
   [ "${CONFIRM}" != "yes" ] && info "Aborted." && exit 0
 fi
 # Safety Gate 2: kubectl connectivity
-if ! kubectl cluster-info &>/dev/null; then error "Cannot connect to cluster."; exit 1; fi
-info "Cluster: OK"
+if [ "$DRY_RUN" != "true" ]; then
+  if ! kubectl cluster-info &>/dev/null; then error "Cannot connect to cluster."; exit 1; fi
+  info "Cluster: OK"
+else
+  info "[DRY RUN] Would verify cluster connectivity"
+fi
 # Safety Gate 3: Object storage
 OBJ="${OBJECT_STORAGE_ENDPOINT:-}"
-[ -z "$OBJ" ] && OBJ=$(kubectl get secret -n storage seaweedfs-s3-config -o jsonpath='{.data.endpoint}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-[ -n "$OBJ" ] && curl -sf --max-time 5 "$OBJ" &>/dev/null && info "Storage reachable" || warn "Storage check skipped"
+if [ "$DRY_RUN" = "true" ]; then
+  info "[DRY RUN] Would verify object storage reachability"
+else
+  [ -z "$OBJ" ] && OBJ=$(kubectl get secret -n storage seaweedfs-s3-config -o jsonpath='{.data.endpoint}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+  [ -n "$OBJ" ] || { error "Object storage endpoint is unavailable"; exit 1; }
+  curl -sS --max-time 5 -o /dev/null "$OBJ" || { error "Object storage is unreachable: $OBJ"; exit 1; }
+  info "Storage reachable"
+fi
 TS=$(date -u +%Y%m%dT%H%M%SZ); RF="${PROJECT_ROOT}/.backup-results-${TS}.log"
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-check_comp() { kubectl get pods -n "$1" -l "$2" &>/dev/null 2>&1; }
+check_comp() { kubectl get pods -n "$1" -l "$2" -o name 2>/dev/null | grep -q .; }
 run_backup() {
-  local comp="$1" tag="$2" ns="$3" lbl="$4"; TOTAL=$((TOTAL+1))
-  if ! check_comp "$ns" "$lbl"; then warn "'${comp}' not deployed"; SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"; return 0; fi
-  if [ "$DRY_RUN" = "true" ]; then info "[DRY RUN] ${tag}"; PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0; fi
-  if ansible-playbook -i "${PROJECT_ROOT}/inventory" -t "$tag" "${PROJECT_ROOT}/playbooks/deploy_platform.yml" 2>&1 | tee -a "$RF"; then
+  local comp="$1" cronjob="$2" ns="$3" lbl="$4"; TOTAL=$((TOTAL+1))
+  if [ "$DRY_RUN" = "true" ]; then info "[DRY RUN] Would trigger ${ns}/${cronjob}"; PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0; fi
+  if ! check_comp "$ns" "$lbl"; then
+    if [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; then
+      error "Requested component '${comp}' is not deployed"
+      FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+    else
+      warn "'${comp}' not deployed"
+      SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"
+    fi
+    return 0
+  fi
+  if ! kubectl get cronjob "$cronjob" -n "$ns" &>/dev/null; then
+    error "Backup CronJob ${ns}/${cronjob} is missing; deploy the backup-restore role first"
+    FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"; return 0
+  fi
+  local job_suffix job
+  job_suffix=$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')
+  job="${cronjob}-manual-${job_suffix}"
+  job="${job//:/-}"
+  if kubectl create job "$job" --from="cronjob/${cronjob}" -n "$ns" 2>&1 | tee -a "$RF" &&
+     kubectl wait --for=condition=complete "job/${job}" -n "$ns" --timeout=3600s 2>&1 | tee -a "$RF"; then
     PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"
-  else FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"; fi
+  else
+    kubectl logs "job/${job}" -n "$ns" --all-containers --tail=200 2>&1 | tee -a "$RF" || true
+    FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+  fi
 }
 echo "Timestamp: ${TS}" > "$RF"
-declare -A M
-M[mongodb]="backup-mongodb|databases|app.kubernetes.io/name=percona-server-mongodb"
-M[vault]="backup-vault|vault|app.kubernetes.io/name=vault"
-M[seaweedfs]="backup-seaweedfs|storage|app.kubernetes.io/name=seaweedfs"
-M[gitlab]="backup-gitlab|gitlab|app.kubernetes.io/name=gitlab"
+run_mongodb_backup() {
+  local comp=mongodb ns=databases cluster="${PROJECT_NAME:-k8s}-mongo"
+  local backup
+  backup="${cluster}-manual-$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')"
+  TOTAL=$((TOTAL+1))
+  if [ "$DRY_RUN" = true ]; then
+    info "[DRY RUN] Would create PerconaServerMongoDBBackup ${ns}/${backup}"
+    PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0
+  fi
+  if ! kubectl get perconaservermongodb "$cluster" -n "$ns" >/dev/null 2>&1; then
+    if [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; then
+      error "Requested MongoDB cluster ${ns}/${cluster} is not deployed"
+      FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+    else
+      warn "MongoDB is not deployed"
+      SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"
+    fi
+    return 0
+  fi
+  kubectl apply -f - <<EOF | tee -a "$RF"
+apiVersion: psmdb.percona.com/v1
+kind: PerconaServerMongoDBBackup
+metadata:
+  name: ${backup}
+  namespace: ${ns}
+spec:
+  clusterName: ${cluster}
+  storageName: s3-object-storage
+EOF
+  local state attempts=0
+  while [ "$attempts" -lt 360 ]; do
+    state=$(kubectl get perconaservermongodbbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
+    case "${state,,}" in
+      ready|successful) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; return 0 ;;
+      error|failed) break ;;
+    esac
+    attempts=$((attempts+1)); sleep 10
+  done
+  kubectl describe perconaservermongodbbackup "$backup" -n "$ns" | tee -a "$RF"
+  error "MongoDB backup ${ns}/${backup} failed or timed out"
+  FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+}
+run_named_backup() {
+  case "$1" in
+    mongodb)   run_mongodb_backup ;;
+    vault)     run_backup vault vault-raft-snapshot vault app.kubernetes.io/name=vault ;;
+    seaweedfs) run_backup seaweedfs seaweedfs-backup-check storage app.kubernetes.io/name=seaweedfs ;;
+    gitlab)
+      run_backup gitlab gitlab-toolbox-backup gitlab 'release=gitlab,app=toolbox'
+      run_backup gitlab-secrets gitlab-rails-secrets-backup gitlab 'release=gitlab,app=toolbox'
+      ;;
+    *) error "Unknown component: $1"; return 1 ;;
+  esac
+}
 if [ "$COMPONENT" = "all" ] || [ -z "$COMPONENT" ]; then
-  for c in mongodb vault seaweedfs gitlab; do IFS='|' read -r t n l <<< "${M[$c]}"; run_backup "$c" "$t" "$n" "$l"; done
+  for c in mongodb vault seaweedfs gitlab; do run_named_backup "$c"; done
 else
-  IFS='|' read -r t n l <<< "${M[$COMPONENT]}"; run_backup "$COMPONENT" "$t" "$n" "$l"
+  run_named_backup "$COMPONENT"
 fi
 echo "============================================"; echo "  BACKUP SUMMARY"; echo "============================================"
 echo "  Total: ${TOTAL}  Passed: ${PASSED}  Failed: ${FAILED}  Skipped: ${SKIPPED}"

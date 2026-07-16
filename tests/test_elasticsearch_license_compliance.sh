@@ -55,7 +55,7 @@ else
 fi
 
 # ── Test 7: License type must be 'basic' in defaults ──────────────────────────
-LICENSE_TYPE=$(grep -oP 'es_license_type:\s*"?\K[^"]+' "$ROLE_DIR/defaults/main.yml" | head -1 | tr -d ' ')
+LICENSE_TYPE=$(awk -F: '/^es_license_type:/ {gsub(/[ "\047]/, "", $2); print $2; exit}' "$ROLE_DIR/defaults/main.yml")
 if [ "$LICENSE_TYPE" != "basic" ]; then
   fail "es_license_type is '$LICENSE_TYPE', expected 'basic'"
 else

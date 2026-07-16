@@ -103,7 +103,12 @@ class TestBackupCompatibility:
     @pytest.mark.component
     def test_backup_credentials_secret(self):
         if self.content:
-            assert "gitlab-backup-credentials" in self.content
+            assert "gitlab-rails-backup-credentials" in self.content
+
+    @pytest.mark.component
+    def test_official_toolbox_backup_is_required(self):
+        if self.content:
+            assert "gitlab-toolbox-backup" in self.content
 
 class TestNoDeprecatedKeys:
     @pytest.fixture(autouse=True)
@@ -111,12 +116,13 @@ class TestNoDeprecatedKeys:
         self.content = read(GITLAB_TASKS_PATH)
 
     @pytest.mark.component
-    def test_no_global_psql_key(self):
-        for line in self.content.splitlines():
-            s = line.strip()
-            if s.startswith("#"): continue
-            if s == "psql:" or s.startswith("psql:"):
-                pytest.fail(f"Deprecated 'psql:' found: {s}")
+    def test_external_postgresql_uses_global_psql(self):
+        assert re.search(r'^\s+psql:\s*$', self.content, re.MULTILINE)
+        assert "-pg-pgbouncer.databases.svc.cluster.local" in self.content
+
+    @pytest.mark.component
+    def test_no_obsolete_database_external_key(self):
+        assert not re.search(r'^\s+database:\s*\n\s+external:', self.content, re.MULTILINE)
 
     @pytest.mark.component
     def test_no_postgresql_install(self):

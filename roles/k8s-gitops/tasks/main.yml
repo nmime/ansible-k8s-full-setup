@@ -4,7 +4,7 @@
     argocd_chart_version: 9.5.14
     argocd_version: v3.4.2
     argocd_domain: argocd.{{ domain }}
-    argocd_ha: '{{ true if tier in [''medium'', ''production''] else false }}'
+    argocd_ha: '{{ argocd_ha_enabled | default(true if tier in [''medium'', ''production''] else false) }}'
     argocd_server_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
     argocd_repo_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
     argocd_controller_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
@@ -53,8 +53,7 @@
         replicas: '{{ argocd_server_replicas | int }}'
         ingress:
           enabled: false
-        extraArgs: {% if argocd_insecure_mode | default(false) | bool %}
-        - --insecure{% endif %}
+        extraArgs: '{{ ["--insecure"] if argocd_insecure_mode | default(false) | bool else [] }}'
         resources:
           requests:
             cpu: 100m
@@ -184,11 +183,15 @@
         name: platform
         namespace: '{{ argocd_namespace }}'
       spec:
-        description: Platform applications (security-hardened: explicit source/destination/resource allowlists)
-        sourceRepos: '{{ argocd_allowed_source_repos | default(["*"]) }}'
-        destinations: '{{ argocd_allowed_namespaces | default(["*"]) | map("regex_replace", "^(.*)$", "{ namespace: \\1, server: https://kubernetes.default.svc }") | list }}'
-        clusterResourceWhitelist: '{{ argocd_allowed_cluster_resources | default([{"group": "*", "kind": "*"}]) }}'
-        namespaceResourceWhitelist: '{{ argocd_allowed_namespace_resources | default([{"group": "*", "kind": "*"}]) }}'
+        description: 'Platform applications (security-hardened: explicit source, destination, and resource allowlists)'
+        sourceRepos: '{{ argocd_allowed_source_repos }}'
+        destinations: >-
+          {{ argocd_allowed_namespaces
+             | map('community.general.dict_kv', 'namespace')
+             | map('combine', {'server': 'https://kubernetes.default.svc'})
+             | list }}
+        clusterResourceWhitelist: '{{ argocd_allowed_cluster_resources }}'
+        namespaceResourceWhitelist: '{{ argocd_allowed_namespace_resources }}'
   register: _r_create_default_argocd_appproject
   retries: 3
   delay: 10

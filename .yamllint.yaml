@@ -4,6 +4,7 @@ rules:
   truthy: disable
   comments:
     min-spaces-from-content: 1
+  comments-indentation: false
   document-start: disable
   brackets:
     min-spaces-inside: 0
@@ -19,6 +20,9 @@ rules:
     max-end: 0
   indentation:
     indent-sequences: whatever
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
 ignore: |
   .git/
   node_modules/

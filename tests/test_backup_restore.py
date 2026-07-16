@@ -86,9 +86,14 @@ class TestMainInclusion:
         assert "kind: Namespace" in c and "state: present" in c
     def test_secret(self): assert "backup-storage-credentials" in self._c()
 
-CJ = [("mongodb_pbm.yml","mongodb-backup"),("vault_raft.yml","vault-raft-snapshot"),
-      ("seaweedfs.yml","seaweedfs-backup-check"),("gitlab.yml","gitlab-backup"),
+CJ = [("vault_raft.yml","vault-raft-snapshot"),
+      ("seaweedfs.yml","seaweedfs-backup-check"),("gitlab.yml","gitlab-rails-secrets-backup"),
       ("verification.yml","backup-verification")]
+
+def test_mongodb_uses_operator_backup_contract():
+    content = (TASKS_DIR / "mongodb_pbm.yml").read_text()
+    assert "PerconaServerMongoDB" in content
+    assert "mongodb-backup" in content and "state: absent" in content
 
 class TestCronJob:
     @pytest.mark.parametrize("f,n", CJ)
@@ -112,7 +117,8 @@ class TestSecrets:
         assert "AWS_ACCESS_KEY_ID" in c and "AWS_SECRET_ACCESS_KEY" in c
     def test_vault(self): assert "vault-backup-credentials" in (TASKS_DIR / "vault_raft.yml").read_text()
     def test_sw(self): assert "seaweedfs-backup-credentials" in (TASKS_DIR / "seaweedfs.yml").read_text()
-    def test_gl(self): assert "gitlab-backup-credentials" in (TASKS_DIR / "gitlab.yml").read_text()
+    def test_gl(self): assert "gitlab-rails-backup-credentials" in (TASKS_DIR / "gitlab.yml").read_text()
+    def test_gl_toolbox(self): assert "gitlab-toolbox-backup" in (TASKS_DIR / "gitlab.yml").read_text()
     def test_alert(self):
         c = (TASKS_DIR / "alerts.yml").read_text()
         assert "backup-alert-config" in c and "WEBHOOK_URL" in c
@@ -149,7 +155,9 @@ class TestRestoreScript:
         c = RESTORE_SCRIPT.read_text()
         assert "FORCE" in c and "DRY_RUN" in c
     def test_namespace(self): assert "restore-drill" in RESTORE_SCRIPT.read_text()
-    def test_quota(self): assert "ResourceQuota" in RESTORE_SCRIPT.read_text()
+    def test_quota(self):
+        assert "ResourceQuota" in (REPO_ROOT / "scripts" / "vault-restore-drill.sh").read_text()
+        assert "ResourceQuota" in (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text()
     def test_cleanup(self): assert "cleanup" in RESTORE_SCRIPT.read_text().lower()
     def test_components(self):
         c = RESTORE_SCRIPT.read_text()
@@ -171,19 +179,20 @@ class TestIntegration:
         assert "roles_path" in (REPO_ROOT / "ansible.cfg").read_text()
         assert ROLE_DIR.is_dir()
     def test_defaults_valid(self): assert isinstance(load_yaml(DEFAULTS_FILE), dict)
-    def test_no_version_changes(self):
+    def test_current_version_matrix_is_preserved(self):
         d = load_yaml(PROJECT_DEFAULTS)
-        assert d.get("k8s_version") == "v1.35.4"
-        assert d.get("cilium_version") == "v1.19.4"
-        assert d.get("es_version") == "9.4.1"
+        assert d.get("k8s_version") == "v1.35.6"
+        assert d.get("cilium_version") == "v1.19.5"
+        assert d.get("es_version") == "9.4.3"
         assert d.get("gitlab_chart_version") == "10.1.2"
         assert d.get("argocd_chart_version") == "9.5.14"
         assert d.get("object_storage_chart_version") == "4.25.1"
-        assert d.get("keda_chart_version") == "2.19.0"
+        assert d.get("keda_chart_version") == "2.20.1"
     def test_idempotent(self):
         for f in TASKS_DIR.glob("*.yml"):
             c = f.read_text()
-            if "kubernetes.core.k8s:" in c: assert "state: present" in c
+            if "kubernetes.core.k8s:" in c:
+                assert "state: present" in c or "state: absent" in c
     def test_existing_roles_valid(self):
         for f in ("roles/k8s-databases/tasks/main.yml","roles/k8s-secrets/tasks/main.yml",
                    "roles/object-storage/tasks/main.yml","roles/gitlab-selfhosted/tasks/main.yml"):

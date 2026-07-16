@@ -177,7 +177,7 @@
   retries: 3
   delay: 10
   until: vmscrape_crd is not failed
-  ignore_errors: true
+  failed_when: false
 - name: Create VMServiceScrape for KEDA metrics
   kubernetes.core.k8s:
     state: present
@@ -199,7 +199,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_keda_metrics is not failed
-  ignore_errors: true
 - name: Display KEDA deployment info
   debug:
     msg:
@@ -264,7 +263,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_keda is not failed
-  ignore_errors: true
 
 - name: Create optional Prometheus ServiceMonitor for KEDA (when prometheus_enabled=true)
   kubernetes.core.k8s:
@@ -286,5 +284,3 @@
             interval: 30s
             path: /metrics
   when: prometheus_enabled | default(false) | bool
-  ignore_errors: true
-

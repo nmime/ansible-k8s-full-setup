@@ -34,7 +34,7 @@
           app.kubernetes.io/component: alerts
       spec:
         schedule: "0 7 * * *"
-        timezone: "{{ backup_cron_timezone | default('UTC') }}"
+        timeZone: "{{ backup_cron_timezone | default('UTC') }}"
         concurrencyPolicy: "{{ backup_cron_concurrency_policy | default('Forbid') }}"
         successfulJobsHistoryLimit: 1
         failedJobsHistoryLimit: 1

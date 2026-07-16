@@ -148,18 +148,21 @@ edge_direct_domains:
 ```bash
 # Option 1: Gcore
 ansible-playbook playbooks/edge-cdn.yml \
+  -e "edge_cdn_confirm=true" \
   -e "edge_dns_provider=gcore" \
   -e "domain=example.com" \
   -e "origin_server_ip=116.203.x.x"
 
 # Option 2: Hetzner + NS delegation
 ansible-playbook playbooks/edge-cdn.yml \
+  -e "edge_cdn_confirm=true" \
   -e "edge_dns_provider=hetzner" \
   -e "domain=example.com" \
   -e "origin_server_ip=116.203.x.x"
 
 # Option 3: Hetzner CNAME
 ansible-playbook playbooks/edge-cdn.yml \
+  -e "edge_cdn_confirm=true" \
   -e "edge_dns_provider=hetzner_cname" \
   -e "domain=example.com" \
   -e "origin_server_ip=116.203.x.x"

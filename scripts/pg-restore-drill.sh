@@ -5,7 +5,7 @@
 #
 # Options:
 #   --pg-namespace       Source namespace (default: databases)
-#   --pg-cluster         Source PostgresCluster name (default: postgres-operator)
+#   --pg-cluster         Source PerconaPGCluster name (default: k8s-pg)
 #   --s3-endpoint        S3 / object storage endpoint
 #   --s3-bucket          S3 bucket with pgBackRest backups
 #   --backup-set         pgBackRest backup set label (default: latest)
@@ -19,9 +19,6 @@
 # Exit codes: 0 = success, 1 = verification failure, 2 = script error
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
-
 # ── Colour helpers ──────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 BOLD='\033[1m'
@@ -34,7 +31,7 @@ section() { echo -e "\n${BOLD}── $* ──${NC}"; }
 
 # ── Defaults ────────────────────────────────────────────────────
 PG_NS="databases"
-PG_CLUSTER="postgres-operator"
+PG_CLUSTER="k8s-pg"
 S3_ENDPOINT="${OBJECT_STORAGE_ENDPOINT:-}"
 S3_BUCKET="${PGBACKREST_BUCKET:-pgbackrest-backups}"
 BACKUP_SET="latest"
@@ -81,15 +78,15 @@ if [ "$DRY_RUN" = "true" ]; then
   echo "  1. Create namespace $DRILL_NS + ResourceQuota + auto-cleanup CronJob"
   echo "  2. Deploy PG Operator $OPERATOR_VERSION via Helm"
   echo "  3. Copy / create pgBackRest S3 credentials Secret"
-  echo "  4. Deploy v2 PostgresCluster with pgBackRest restore source"
+  echo "  4. Deploy a pgv2.percona.com/v2 PerconaPGCluster clone from repo2"
   echo "  5. Wait for restore (timeout 60m)"
   echo "  6. Verify data integrity (databases, tables, extensions, pg version)"
   echo "  7. Verify replication and connectivity"
   echo "  8. ${SKIP_CLEANUP:+Skip}{Cleanup namespace $DRILL_NS}"
   echo ""
   echo "  Restore cluster spec (v2):"
-  echo "  apiVersion: postgresql.percona.com/v2"
-  echo "  kind: PostgresCluster"
+  echo "  apiVersion: pgv2.percona.com/v2"
+  echo "  kind: PerconaPGCluster"
   echo "  metadata:"
   echo "    name: pg-drill-cluster"
   echo "    namespace: $DRILL_NS"
@@ -98,16 +95,12 @@ if [ "$DRY_RUN" = "true" ]; then
   echo "    instances:"
   echo "      - name: postgres"
   echo "        replicas: 2"
-  echo "    backup:"
+  echo "    dataSource:"
   echo "      pgbackrest:"
+  echo "        stanza: db"
   echo "        repo:"
-  echo "          - name: repo1"
-  echo "            s3:"
-  echo "              bucket: $S3_BUCKET"
-  echo "              endpoint: $S3_ENDPOINT"
-  echo "        restore:"
-  echo "          enabled: true"
-  echo "          repoName: repo1"
+  echo "          name: repo2"
+  echo "          s3: {bucket: $S3_BUCKET, endpoint: $S3_ENDPOINT}"
   echo ""
   section "DRY-RUN SUMMARY"
   pass "Plan looks correct — rerun without --dry-run to execute"
@@ -131,13 +124,13 @@ section "Step 1: Isolated Namespace"
 # Clean up if namespace exists
 if kubectl get ns "$DRILL_NS" &>/dev/null; then
   warn "Namespace '$DRILL_NS' exists — cleaning up"
-  kubectl delete ns "$DRILL_NS" --wait --timeout=5m 2>/dev/null || true
+  kubectl delete ns "$DRILL_NS" --wait --timeout=5m
   sleep 5
 fi
 
-kubectl create ns "$DRILL_NS" 2>/dev/null || true
+kubectl create ns "$DRILL_NS"
 kubectl label ns "$DRILL_NS" app.kubernetes.io/part-of=pg-restore-drill \
-  backup-restore.io/drill=true --overwrite 2>/dev/null || true
+  backup-restore.io/drill=true --overwrite
 
 # ResourceQuota
 kubectl apply -n "$DRILL_NS" -f - <<'EOF'
@@ -176,7 +169,7 @@ spec:
           serviceAccountName: default
           containers:
             - name: cleanup
-              image: bitnami/kubectl:latest
+              image: registry.k8s.io/kubectl:v1.35.6
               command: ["/bin/sh","-c","kubectl delete ns ${DRILL_NS} --ignore-not-found"]
 EOF
   info "Auto-cleanup CronJob installed (TTL ${TTL_HOURS}h)"
@@ -187,100 +180,130 @@ drill_pass "Namespace $DRILL_NS ready"
 # ── Step 2: Deploy PG Operator 3.x ────────────────────────────
 section "Step 2: Deploy PG Operator $OPERATOR_VERSION"
 
-helm repo add percona https://percona.github.io/percona-helm-charts 2>/dev/null || true
-helm repo update 2>/dev/null || true
+helm repo add percona https://percona.github.io/percona-helm-charts --force-update
+helm repo update percona
 
 if helm install percona-pg-operator percona/pg-operator \
   --version "$OPERATOR_VERSION" --namespace "$DRILL_NS" \
   --wait --timeout 10m 2>&1; then
   drill_pass "PG Operator $OPERATOR_VERSION deployed"
 else
-  drill_fail "Helm install failed — trying without --wait"
-  helm install percona-pg-operator percona/pg-operator \
-    --version "$OPERATOR_VERSION" --namespace "$DRILL_NS" 2>&1 || true
-  kubectl wait --for=condition=Available deployment/percona-pg-operator \
-    -n "$DRILL_NS" --timeout=10m 2>/dev/null || {
-    drill_fail "Operator not ready — aborting drill"
-    [ "$SKIP_CLEANUP" = "false" ] && kubectl delete ns "$DRILL_NS" --wait=false 2>/dev/null || true
-    exit 1
-  }
-  drill_pass "Operator deployed (non-blocking)"
+  drill_fail "Helm install failed"
+  if [ "$SKIP_CLEANUP" = "false" ]; then
+    kubectl delete ns "$DRILL_NS" --wait=false
+  fi
+  exit 1
 fi
 
 # ── Step 3: pgBackRest S3 credentials ──────────────────────────
 section "Step 3: pgBackRest Credentials"
 
-S3_SECRET="pgbackrest-s3-credentials"
-CRED_EXISTS=$(kubectl get secret -n "$PG_NS" pgbackrest-repo-credentials -o name 2>/dev/null || echo "")
+S3_SECRET="pgbackrest-s3-creds"
+CRED_EXISTS=$(kubectl get secret -n "$PG_NS" "$S3_SECRET" -o name 2>/dev/null || echo "")
 
 if [ -n "$CRED_EXISTS" ]; then
   info "Copying pgBackRest credentials from $PG_NS"
-  kubectl get secret -n "$PG_NS" pgbackrest-repo-credentials -o json 2>/dev/null |
+  kubectl get secret -n "$PG_NS" "$S3_SECRET" -o json 2>/dev/null |
     jq 'del(.metadata.namespace,.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.ownerReferences)' |
-    kubectl apply -n "$DRILL_NS" -f - 2>/dev/null || true
+    kubectl apply -n "$DRILL_NS" -f -
   drill_pass "Credentials copied"
 elif [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
   kubectl create secret generic "$S3_SECRET" -n "$DRILL_NS" \
-    --from-literal=AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-    --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" 2>/dev/null
+    --from-literal=s3.conf="[global]
+repo2-s3-key=${AWS_ACCESS_KEY_ID}
+repo2-s3-key-secret=${AWS_SECRET_ACCESS_KEY}"
   drill_pass "Credentials from environment"
 else
-  warn "No credentials found — creating placeholder (restore may fail)"
-  kubectl create secret generic "$S3_SECRET" -n "$DRILL_NS" \
-    --from-literal=AWS_ACCESS_KEY_ID="DRILL_PLACEHOLDER" \
-    --from-literal=AWS_SECRET_ACCESS_KEY="DRILL_PLACEHOLDER" 2>/dev/null
+  drill_fail "No pgBackRest credentials found in $PG_NS and AWS credentials are unset"
+  if [ "$SKIP_CLEANUP" = "false" ]; then
+    kubectl delete ns "$DRILL_NS" --wait=false
+  fi
+  exit 1
 fi
 
-# ── Step 4: v2 PostgresCluster with restore ───────────────────
-section "Step 4: Deploy v2 PostgresCluster with pgBackRest Restore"
+# ── Step 4: PerconaPGCluster clone with restore ───────────────
+section "Step 4: Deploy PerconaPGCluster with pgBackRest Data Source"
 
-RESTORE_EXTRA=""
-[ "$BACKUP_SET" != "latest" ] && RESTORE_EXTRA="        backup: ${BACKUP_SET}"
+if [ "$BACKUP_SET" != "latest" ]; then
+  drill_fail "A specific --backup-set is not supported by the isolated S3 clone path"
+  drill_fail "Use latest or perform an operator PerconaPGRestore drill against a disposable cluster"
+  if [ "$SKIP_CLEANUP" = "false" ]; then kubectl delete ns "$DRILL_NS" --wait=false; fi
+  exit 2
+fi
 
 cat > /tmp/pg-drill-spec.yaml <<EOF
-apiVersion: postgresql.percona.com/v2
-kind: PostgresCluster
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
 metadata:
   name: pg-drill-cluster
   namespace: ${DRILL_NS}
   labels:
     app.kubernetes.io/part-of: pg-restore-drill
 spec:
+  crVersion: ${OPERATOR_VERSION}
+  image: percona/percona-distribution-postgresql:18.3-1
   postgresVersion: 18
-  instances:
-    - name: postgres
-      replicas: 2
-      storage:
-        size: 20Gi
-  backup:
+  dataSource:
     pgbackrest:
+      stanza: db
+      configuration:
+        - secret:
+            name: ${S3_SECRET}
+      global:
+        repo2-path: /pgbackrest/${PG_CLUSTER}/repo2
+        repo2-s3-uri-style: path
       repo:
+        name: repo2
+        s3:
+          bucket: ${S3_BUCKET}
+          endpoint: ${S3_ENDPOINT}
+          region: ${AWS_REGION:-us-east-1}
+  instances:
+    - name: instance1
+      replicas: 2
+      dataVolumeClaimSpec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+  backups:
+    pgbackrest:
+      image: percona/pgbackrest:2.58.0-2
+      configuration:
+        - secret:
+            name: ${S3_SECRET}
+      global:
+        repo2-path: /pgbackrest/pg-drill-cluster/repo2
+        repo2-s3-uri-style: path
+      repos:
         - name: repo1
+          volume:
+            volumeClaimSpec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                requests:
+                  storage: 20Gi
+        - name: repo2
           s3:
             bucket: ${S3_BUCKET}
             endpoint: ${S3_ENDPOINT}
             region: ${AWS_REGION:-us-east-1}
-            storageType: s3
-            s3Credentials:
-              name: ${S3_SECRET}
-              accessKeyId: AWS_ACCESS_KEY_ID
-              secretAccessKey: AWS_SECRET_ACCESS_KEY
-      restore:
-        enabled: true
-        repoName: repo1
-        type: full
-${RESTORE_EXTRA}
 EOF
 
 kubectl apply -f /tmp/pg-drill-spec.yaml
 
 info "Waiting for restore (up to 60m)..."
-if kubectl wait --for=condition=Ready postgrescluster/pg-drill-cluster \
-  -n "$DRILL_NS" --timeout=60m 2>/dev/null; then
-  drill_pass "PostgresCluster Ready — restore complete"
+for _ in $(seq 1 360); do
+  PG_STATE=$(kubectl get perconapgcluster pg-drill-cluster -n "$DRILL_NS" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
+  PG_STATE_LC=$(printf '%s' "$PG_STATE" | tr '[:upper:]' '[:lower:]')
+  [ "$PG_STATE_LC" = ready ] && break
+  sleep 10
+done
+if [ "$PG_STATE_LC" = ready ]; then
+  drill_pass "PerconaPGCluster Ready — restore complete"
 else
-  drill_fail "PostgresCluster not Ready within 60m"
-  info "Check: kubectl describe postgrescluster/pg-drill-cluster -n $DRILL_NS"
+  drill_fail "PerconaPGCluster not Ready within 60m"
+  info "Check: kubectl describe perconapgcluster/pg-drill-cluster -n $DRILL_NS"
   kubectl logs -n "$DRILL_NS" -l percona.com/cluster=pg-drill-cluster --tail=100 2>/dev/null || true
 fi
 
@@ -288,8 +311,11 @@ fi
 section "Step 5: Data Integrity"
 
 DRILL_PRIMARY=$(kubectl get pod -n "$DRILL_NS" \
-  -l "percona.com/cluster=pg-drill-cluster,role=primary" \
-  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "pg-drill-cluster-0")
+  -l "postgres-operator.crunchydata.com/cluster=pg-drill-cluster,postgres-operator.crunchydata.com/role=master" \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -z "$DRILL_PRIMARY" ]; then
+  drill_fail "Restored primary pod was not found"
+fi
 info "Primary pod: $DRILL_PRIMARY"
 
 # 5a. Databases
@@ -325,7 +351,11 @@ fi
 # 5d. Version
 PG_VER=$(kubectl exec -n "$DRILL_NS" "$DRILL_PRIMARY" -- psql -U postgres -t -A \
   -c "SHOW server_version;" 2>/dev/null || echo "")
-drill_pass "PostgreSQL version: $PG_VER"
+if [ -n "$PG_VER" ]; then
+  drill_pass "PostgreSQL version: $PG_VER"
+else
+  drill_fail "Could not read PostgreSQL version"
+fi
 
 # ── Step 6: Replication ───────────────────────────────────────
 section "Step 6: Replication"
@@ -341,11 +371,18 @@ fi
 # ── Step 7: Connectivity ──────────────────────────────────────
 section "Step 7: Connectivity"
 
+PG_PASSWORD=$(kubectl get secret pg-drill-cluster-pguser-postgres -n "$DRILL_NS" \
+  -o jsonpath='{.data.password}' | base64 -d)
 CONN=$(kubectl run -n "$DRILL_NS" pg-drill-test --rm -i --restart=Never \
-  --image=postgres:18 --command -- psql \
-  "host=pg-drill-cluster port=5432 dbname=postgres user=postgres" \
+  --env="PGPASSWORD=$PG_PASSWORD" \
+  --image=postgres:18.2-alpine3.23 --command -- psql \
+  "host=pg-drill-cluster-primary port=5432 dbname=postgres user=postgres" \
   -t -A -c "SELECT 'ok' AS conn;" 2>/dev/null || echo "")
-echo "$CONN" | grep -q "ok" && drill_pass "Connectivity OK" || drill_fail "Connectivity failed"
+if grep -q "ok" <<<"$CONN"; then
+  drill_pass "Connectivity OK"
+else
+  drill_fail "Connectivity failed"
+fi
 
 # ── Step 8: Summary ──────────────────────────────────────────
 section "DRILL SUMMARY"
@@ -362,7 +399,7 @@ fi
 if [ "$SKIP_CLEANUP" = "false" ]; then
   section "Step 8: Cleanup"
   info "Deleting namespace $DRILL_NS..."
-  kubectl delete ns "$DRILL_NS" --wait=false 2>/dev/null || true
+  kubectl delete ns "$DRILL_NS" --wait=false
   drill_pass "Cleanup initiated"
 fi
 

@@ -49,7 +49,7 @@ class TestUpgradePlanDocument:
 
     def test_has_incremental_upgrade_path(self):
         assert "18.11" in self.content
-        assert "18.17" in self.content
+        assert "10.0.4" in self.content
         assert "19.0" in self.content
         assert "19.1" in self.content
 
@@ -58,9 +58,9 @@ class TestUpgradePlanDocument:
         assert "global.psql" in self.content
 
     def test_has_psql_migration(self):
-        assert "applicationSettings" in self.content
         assert "global.psql.host" in self.content
-        assert "global.applicationSettings.database" in self.content
+        assert "global.applicationSettings.database" not in self.content
+        assert "external PostgreSQL" in self.content
 
     def test_has_redis_migration(self):
         assert "redis" in self.content.lower()
@@ -370,9 +370,10 @@ class TestUpgradePathValidity:
         """Verify versions appear in ascending order in the upgrade path section."""
         # Extract version numbers from the path diagram
         versions = re.findall(r'(18\.\d+|19\.\d+)', self.content)
-        # Should have at least 4 versions: 18.11, 18.17, 19.0, 19.1
+        # The valid path from the final GitLab 18 stop is 18.11 -> 19.0 -> 19.1.
         unique_versions = sorted(set(versions))
-        assert len(unique_versions) >= 4
+        assert {"18.11", "19.0", "19.1"}.issubset(unique_versions)
+        assert "18.17" not in unique_versions
 
     def test_chart_versions_are_compatible(self):
         """Chart 9.x for 18.x, chart 10.x for 19.x."""
@@ -384,9 +385,9 @@ class TestUpgradePathValidity:
         assert "10.0" in self.content or "10.x" in self.content
 
     def test_psql_migration_is_documented(self):
-        """global.psql must be documented as removed in chart 10.x."""
+        """The supported external PostgreSQL contract must be documented."""
         psql_section = self.content[self.content.find("global.psql"):]
-        assert "applicationSettings" in psql_section
+        assert "global.applicationSettings.database" not in psql_section
         assert "database" in psql_section
 
     def test_redis_migration_is_documented(self):

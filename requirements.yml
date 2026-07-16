@@ -3,6 +3,8 @@
 # Install: ansible-galaxy collection install -r requirements.yml
 collections:
   - name: community.general
-    version: ">=9.0.0"
+    version: "13.2.0"
   - name: kubernetes.core
-    version: ">=4.0.0"
+    version: "6.5.0"
+  - name: hetzner.hcloud
+    version: "6.10.0"
