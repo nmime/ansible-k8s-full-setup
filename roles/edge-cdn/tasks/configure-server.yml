@@ -1,0 +1,198 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install edge packages
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+      - ufw
+      - fail2ban
+      - unattended-upgrades
+      - prometheus-node-exporter
+    state: present
+
+- name: Configure UFW defaults
+  community.general.ufw:
+    direction: incoming
+    default: deny
+
+- name: Allow edge ports through UFW
+  community.general.ufw:
+    rule: allow
+    port: "{{ edge_ufw_rule.port }}"
+    proto: tcp
+    src: "{{ edge_ufw_rule.src | default(omit) }}"
+  loop:
+    - { port: "22" }
+    - { port: "80" }
+    - { port: "443" }
+    - { port: "9100", src: "{{ origin_server_ip }}" }
+  loop_control:
+    loop_var: edge_ufw_rule
+    label: "{{ edge_ufw_rule.port }}"
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+- name: Create edge directories
+  ansible.builtin.file:
+    path: "{{ edge_directory.path }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+  loop:
+    - { path: "{{ edge_cache_path }}" }
+    - { path: /var/www/certbot }
+  loop_control:
+    loop_var: edge_directory
+
+- name: Deploy temporary HTTP-only Nginx config
+  ansible.builtin.copy:
+    dest: /etc/nginx/sites-available/edge-temp
+    mode: "0644"
+    content: |
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name {{ edge_domain }} *.{{ edge_domain }};
+          location /.well-known/acme-challenge/ { root /var/www/certbot; }
+          location / { return 200 "ok"; }
+      }
+
+- name: Enable temporary Nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/edge-temp
+    dest: /etc/nginx/sites-enabled/edge-temp
+    state: link
+
+- name: Remove default Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
+- name: Start Nginx for ACME challenge
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Obtain Let's Encrypt certificates
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot --webroot-path /var/www/certbot
+      -d "{{ edge_domain }}"
+      {% for edge_cert_domain in (edge_cdn_domains + edge_direct_domains) | unique %}
+      -d "{{ edge_cert_domain }}"
+      {% endfor %}
+      --email "{{ edge_tls_cert_email }}"
+      --agree-tos --non-interactive --expand
+  args:
+    creates: "/etc/letsencrypt/live/{{ edge_domain }}/fullchain.pem"
+  when: edge_tls_enabled | bool
+
+- name: Remove temporary Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/edge-temp
+    state: absent
+
+- name: Deploy production Nginx edge proxy config
+  ansible.builtin.template:
+    src: edge-nginx.conf.j2
+    dest: /etc/nginx/sites-available/edge-proxy
+    mode: "0644"
+  vars:
+    edge_region_name: "{{ edge_server_item.key }}"
+  notify: reload nginx
+
+- name: Enable edge proxy site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/edge-proxy
+    dest: /etc/nginx/sites-enabled/edge-proxy
+    state: link
+
+- name: Validate Nginx config
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Reload and enable Nginx
+  ansible.builtin.systemd_service:
+    name: nginx
+    enabled: true
+    state: reloaded
+
+- name: Configure certbot renewal
+  ansible.builtin.cron:
+    name: certbot-renew
+    minute: "0"
+    hour: "3"
+    day: "*/7"
+    job: "certbot renew --quiet --deploy-hook 'systemctl reload nginx'"
+
+- name: Enable node exporter
+  ansible.builtin.systemd_service:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+
+- name: Configure fail2ban for Nginx
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.local
+    mode: "0644"
+    content: |
+      [DEFAULT]
+      bantime = 86400
+      findtime = 600
+      maxretry = 5
+      banaction = ufw
+      banaction_allports = ufw
+
+      [sshd]
+      enabled = true
+      maxretry = 3
+      bantime = 604800
+
+      [nginx-http-auth]
+      enabled = true
+
+      [nginx-botsearch]
+      enabled = true
+      maxretry = 2
+
+      [nginx-limit-req]
+      enabled = true
+      filter = nginx-limit-req
+      logpath = /var/log/nginx/error.log
+      maxretry = 10
+
+      [nginx-req-limit]
+      enabled = true
+      filter = nginx-req-limit
+      logpath = /var/log/nginx/error.log
+      maxretry = 10
+  notify: restart fail2ban
+
+- name: Configure fail2ban Nginx rate-limit filter
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/filter.d/nginx-req-limit.conf
+    mode: "0644"
+    content: |
+      [Definition]
+      failregex = limiting requests, excess:.* by zone.*client: <HOST>
+      ignoreregex =
+  notify: restart fail2ban
+
+- name: Enable unattended upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";

@@ -760,7 +760,6 @@
   retries: 3
   delay: 10
   until: _r_create_filebeat_cnp is not failed
-  ignore_errors: true
 - name: Create Elasticsearch ServiceMonitor
   kubernetes.core.k8s:
     state: present

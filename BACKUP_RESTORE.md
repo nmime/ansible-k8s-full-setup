@@ -1,84 +1,94 @@
-# BACKUP_RESTORE.md - Backup & Restore Automation
+# Backup and Restore
 
-## Overview
+## Components covered
 
-Idempotent backup and restore automation for all critical platform components via
-Ansible role (`roles/backup-restore/`) and orchestration scripts.
+| Component | Backup mechanism | CronJob | Namespace |
+|---|---|---|---|
+| MongoDB | Percona/PBM backup | `mongodb-backup` | `databases` |
+| PostgreSQL | Percona Operator pgBackRest | operator-managed | `databases` |
+| Vault | Raft snapshot to S3 | `vault-raft-snapshot` | `vault` |
+| SeaweedFS | topology and metadata artifact | `seaweedfs-backup-check` | `storage` |
+| GitLab | chart Toolbox `backup-utility` | `gitlab-toolbox-backup` | `gitlab` |
+| GitLab encryption keys | Rails `secrets.yml` copy to S3 | `gitlab-rails-secrets-backup` | `gitlab` |
 
-## Components Covered
-
-| Component   | Backup Method                     | CronJob Name              | Namespace   |
-|-------------|-----------------------------------|---------------------------|-------------|
-| MongoDB     | Percona Backup for MongoDB (PBM)  | `mongodb-backup`          | `databases` |
-| Vault       | Raft snapshot to S3               | `vault-raft-snapshot`     | `vault`     |
-| SeaweedFS   | Topology + cluster metadata       | `seaweedfs-backup-check`  | `storage`   |
-| GitLab      | Toolbox backup rake task          | `gitlab-backup`           | `gitlab`    |
+Only enabled platform components receive backup resources and verification
+requirements. Credentials are generated secrets; insecure static fallbacks are
+rejected.
 
 ## Quick Start
 
+Install/update the backup resources through the main playbook, then trigger
+the configured CronJobs:
+
 ```bash
-ansible-playbook -i inventory -t backup playbooks/deploy_platform.yml
+ansible-playbook -i inventory.yml playbooks/deploy_platform.yml --tags backup
+./scripts/backup-all.sh --dry-run
 ./scripts/backup-all.sh --force
-./scripts/restore-drill.sh --component mongodb --backup daily-20250601-02 --force
-kubectl create job --from=cronjob/backup-verification backup-verify-manual-$(date +%Y%m%d) -n backups
 ```
+
+`backup-all.sh` fails when the cluster, object storage, required CronJob, or
+triggered Job fails. It targets each CronJob in its actual component namespace.
 
 ## Configuration
 
-Variables in `roles/backup-restore/defaults/main.yml` with project overrides in `defaults/main.yml`.
+```yaml
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  retention_days: 30
+```
 
-| Variable                    | Default               | Description                        |
-|-----------------------------|-----------------------|------------------------------------|
-| `backup_schedule`           | `0 2 * * *`           | Cron schedule                      |
-| `backup_retention_days`     | `30`                  | Retention period                   |
-| `backup_storage_bucket`     | `backups.<domain>`    | S3 bucket                          |
-| `backup_alert_enabled`      | `false`               | Enable webhook alerts              |
-| `backup_verify_all`         | `true`                | Deploy verification CronJob        |
-| `restore_drill_namespace`   | `restore-drill`       | Isolated restore namespace         |
+Resolved defaults are in `roles/backup-restore/defaults/main.yml`. The S3
+bucket is `backups`; GitLab Toolbox archives use the chart's
+`gitlab-backups` bucket. The verification job checks only enabled components.
+
+## Restore drills
+
+Always start in dry-run mode and use an isolated test cluster/namespace:
+
+```bash
+./scripts/pg-restore-drill.sh --dry-run
+./scripts/vault-restore-drill.sh --dry-run
+./scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
+```
+
+The generic `restore-drill.sh` dispatcher supports only Vault and GitLab. It
+fails closed for MongoDB and SeaweedFS because verified isolated restore
+implementations do not exist for those components yet. SeaweedFS topology
+metadata is not a data backup; protect volume data separately before treating
+the object-storage layer as recoverable.
+
+An actual Vault drill also requires the original snapshot unseal material and
+a known path whose restored value must be readable:
+
+```bash
+export OBJECT_STORAGE_ENDPOINT=https://s3.example.internal
+export VAULT_RESTORE_UNSEAL_KEY='...'
+export VAULT_RESTORE_TOKEN='...'
+export VAULT_RESTORE_VERIFY_PATH='secret/known-recovery-sentinel'
+./scripts/vault-restore-drill.sh --snapshot-name vault-20260716T020000Z.snap
+```
+
+The GitLab artifact drill downloads and extracts the selected archive, restores
+its database dump into isolated PostgreSQL, and verifies repository payload.
+For a disaster recovery cutover, restore a same-version GitLab chart with the
+official Toolbox `backup-utility --restore`, restore the saved Rails secret,
+and follow the GitLab restore runbook. A Helm rollback is not a data restore.
 
 ## Safety Gates
 
-### backup-all.sh
-1. User confirmation (bypass with `--force`)
-2. kubectl connectivity check
-3. Object storage reachability
-4. Component deployment check (skip if not deployed)
-5. Idempotent (skip same-hour backup)
+1. The selected artifact must exist and be non-empty.
+2. Restore namespaces must be isolated from production and carry resource
+   limits. Successful scripts delete the namespace unless preservation is
+   explicitly requested.
+3. Production database clients must never point at the drill namespace.
+4. The drill exits nonzero on failed import or payload checks.
+5. Rails secrets, object storage, databases, and repository data are all
+   separate recovery dependencies.
+6. Record artifact ID, source version, size, checks, and cleanup outcome.
 
-### restore-drill.sh
-1. Required `--component` and `--backup` flags
-2. Force or dry-run required
-3. Backup artifact validation in S3
-4. Isolated restore namespace with resource quotas
-5. Auto-cleanup after configurable hours
-6. No production impact
+## Ongoing verification
 
-## Verification
-
-Daily verification CronJob at 06:00 UTC checks MongoDB, Vault, SeaweedFS, and GitLab backup artifacts.
-
-## Alerting
-
-```yaml
-backup_alert_enabled: true
-backup_alert_webhook_url: "https://hooks.slack.com/services/XXX"
-```
-Alerts fire at 07:00 UTC after verification.
-
-## Retention
-
-- Artifacts older than `backup_retention_days` (30) are auto-cleaned from S3
-- CronJob history: 3 successful, 1 failed retained
-- Restore drill namespaces auto-cleaned after 24 hours
-
-## File Structure
-
-```
-roles/backup-restore/
-├── defaults/main.yml
-├── tasks/{main,mongodb_pbm,vault_raft,seaweedfs,gitlab,verification,alerts}.yml
-└── README.md
-scripts/backup-all.sh, scripts/restore-drill.sh
-BACKUP_RESTORE.md
-tests/test_backup_restore.py
-```
+The `backup-verification` CronJob checks S3 artifacts daily. Treat this as an
+existence/freshness gate, not proof of restorability. Schedule recurring full
+restore drills and keep the output with the recovery runbook.

@@ -55,7 +55,8 @@ class TestCentralDefaults:
     """Unit: defaults/main.yml has correct version values."""
 
     @pytest.fixture(scope="class")
-    def data(self):
+    @classmethod
+    def data(cls):
         return yaml.safe_load(DEFAULTS.read_text())
 
     @pytest.mark.parametrize("var,expected", EXPECTED.items())
@@ -158,7 +159,8 @@ class TestRoleVersionsMatchCentral:
     """Component: role defaults match central defaults/main.yml."""
 
     @pytest.fixture(scope="class")
-    def central(self):
+    @classmethod
+    def central(cls):
         return yaml.safe_load(DEFAULTS.read_text())
 
     def test_blackbox(self, central):

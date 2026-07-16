@@ -271,7 +271,7 @@ class TestRestoreDrillScriptUnit:
         assert "delete namespace" in self.content or "cleanup" in self.content.lower()
 
     def test_has_auto_cleanup_cronjob(self):
-        assert "CronJob" in self.content
+        assert "trap cleanup EXIT" in self.content
 
     def test_has_pass_fail_counters(self):
         assert "PASS_COUNT" in self.content
@@ -672,11 +672,14 @@ class TestVaultUpgradeImplemented:
         assert "setNodeId: true" in content
         assert "storage " in content and "raft" in content
 
-    def test_auto_unseal_cronjob_uses_new_image(self):
-        """The auto-unseal CronJob image ref should use vault_version variable."""
+    def test_init_material_is_not_stored_for_in_cluster_auto_unseal(self):
+        """Shamir keys must not be kept beside the encrypted Vault data."""
         tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
         content = tasks.read_text()
-        assert "hashicorp/vault:{{ vault_version }}" in content
+        assert "state: absent" in content
+        assert "name: vault-init-keys" in content
+        assert "Save Vault initialization material outside the cluster" in content
+        assert "kind: CronJob\n        name: vault-auto-unseal" not in content
 
     def test_eso_integration_unchanged(self):
         """ESO ClusterSecretStore should still reference Vault correctly."""

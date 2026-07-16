@@ -47,12 +47,14 @@
           - tier in ['minimal', 'small', 'medium', 'production']
         fail_msg: "Invalid tier '{{ tier }}'. Must be: minimal, small, medium, production"
 
+    - name: Normalize the selected platform profile
+      ansible.builtin.include_tasks: tasks/normalize_profile.yml
+
     - name: Pre-flight check - hcloud CLI installed
       ansible.builtin.command: hcloud version
       register: hcloud_check
       changed_when: false
-      failed_when: hcloud_check.rc != 0
-      ignore_errors: true
+      failed_when: false
 
     - name: Fail if hcloud CLI not found
       fail:
@@ -110,57 +112,78 @@
     - name: Deploy Secrets Management (Vault + ESO)
       ansible.builtin.import_role:
         name: k8s-secrets
+      when: platform_secrets_enabled | bool
       tags: [secrets, vault]
 
     - name: Deploy SeaweedFS Object Storage
       ansible.builtin.import_role:
         name: object-storage
-      when: object_storage_enabled | default(true) | bool
+      when: platform_object_storage_enabled | bool
       tags: [storage, object-storage, seaweedfs]
+
+    - name: Deploy Elasticsearch with Basic license features
+      ansible.builtin.import_role:
+        name: elasticsearch
+      when: platform_elasticsearch_enabled | bool
+      tags: [elasticsearch, search]
 
     - name: Deploy Observability Stack (VictoriaMetrics + Loki + Grafana)
       ansible.builtin.import_role:
         name: k8s-observability
+      when: platform_observability_enabled | bool
       tags: [observability, monitoring]
 
-    - name: Deploy Elasticsearch with X-Pack Platinum
-      ansible.builtin.import_role:
-        name: elasticsearch
-      tags: [elasticsearch, search]
+    - name: Configure bastion log shipping with Elasticsearch CA verification
+      ansible.builtin.include_role:
+        name: network-security
+        tasks_from: filebeat
+      when:
+        - platform_elasticsearch_enabled | bool
+        - bastion_log_shipping | bool
+      tags: [elasticsearch, observability, filebeat]
 
     - name: Deploy Databases (PostgreSQL + MongoDB)
       ansible.builtin.import_role:
         name: k8s-databases
+      when:
+        - platform_databases_enabled | bool
+        - platform_postgresql_enabled | bool or platform_mongodb_enabled | bool
       tags: [databases, postgresql]
+
+    - name: Deploy Dragonfly (external Redis-compatible service)
+      ansible.builtin.import_role:
+        name: dragonfly
+      when: platform_dragonfly_enabled | bool
+      tags: [dragonfly, cache]
 
     - name: Deploy GitLab CE Self-Hosted
       ansible.builtin.import_role:
         name: gitlab-selfhosted
+      when: platform_gitlab_enabled | bool
       tags: [gitlab, cicd]
 
     - name: Deploy ArgoCD GitOps
       ansible.builtin.import_role:
         name: k8s-gitops
+      when: platform_gitops_enabled | bool
       tags: [gitops, argocd]
 
     - name: Deploy KEDA Event-Driven Autoscaling
       ansible.builtin.import_role:
         name: k8s-autoscaling
+      when: platform_autoscaling_enabled | bool
       tags: [autoscaling, keda]
-
-    - name: Deploy Dragonfly (Redis-compatible in-memory store)
-      ansible.builtin.import_role:
-        name: dragonfly
-      tags: [dragonfly, cache]
 
     - name: Deploy Temporal Workflow Engine
       ansible.builtin.import_role:
         name: temporal
+      when: platform_temporal_enabled | bool
       tags: [temporal, workflows]
 
     - name: Deploy Postal Mail Server
       ansible.builtin.import_role:
         name: postal
+      when: platform_postal_enabled | bool
       tags: [postal, mail]
 
     - name: Deploy APM Server (Elastic APM / OTLP tracing backend)
@@ -188,9 +211,16 @@
       tags: [daytona, workspaces, application]
 
   post_tasks:
+    - name: Deploy backup and restore automation
+      ansible.builtin.import_role:
+        name: backup-restore
+      when: platform_backup_enabled | bool
+      tags: [backup, backup-setup]
+
     - name: Apply HIPAA hardening (internal TLS + log redaction)
       ansible.builtin.import_role:
         name: hipaa-hardening
+      when: platform_hipaa_enabled | bool
       tags: [hipaa, security, compliance]
 
     - name: Display deployment completion summary
@@ -204,17 +234,18 @@
           - "=========================================="
           - "Services deployed:"
           - "  - Kubernetes Cluster with Cilium CNI"
-          - "  - GitLab CE: https://gitlab.{{ domain }}"
-          - "  - ArgoCD: https://argocd.{{ domain }}"
-          - "  - Grafana: https://grafana.{{ domain }}"
-          - "  - VictoriaMetrics + Loki (Observability)"
-          - "  - SeaweedFS S3: https://s3.{{ domain }}"
-          - "  - Vault: https://vault.{{ domain }}"
-          - "  - PostgreSQL HA Cluster"
-          - "  - KEDA (Event Autoscaling)"
-          - "  - Temporal: https://temporal.{{ domain }}"
-          - "  - Elasticsearch: https://kibana.{{ domain }}"
-          - "  - Postal: https://mail.{{ domain }}"
+          - "{{ '  - GitLab CE: https://gitlab.' + domain if platform_gitlab_enabled | bool else '' }}"
+          - "{{ '  - ArgoCD: https://argocd.' + domain if platform_gitops_enabled | bool else '' }}"
+          - "{{ '  - Grafana/VictoriaMetrics/Loki' if platform_observability_enabled | bool else '' }}"
+          - "{{ '  - SeaweedFS S3: https://s3.' + domain if platform_object_storage_enabled | bool else '' }}"
+          - "{{ '  - Vault: https://vault.' + domain if platform_secrets_enabled | bool else '' }}"
+          - "{{ '  - PostgreSQL' if platform_postgresql_enabled | bool else '' }}"
+          - "{{ '  - MongoDB' if platform_mongodb_enabled | bool else '' }}"
+          - "{{ '  - KEDA (Event Autoscaling)' if platform_autoscaling_enabled | bool else '' }}"
+          - "{{ '  - Dragonfly (external Redis-compatible service)' if platform_dragonfly_enabled | bool else '' }}"
+          - "{{ '  - Temporal: https://temporal.' + domain if platform_temporal_enabled | bool else '' }}"
+          - "{{ '  - Elasticsearch: https://kibana.' + domain if platform_elasticsearch_enabled | bool else '' }}"
+          - "{{ '  - Postal: https://mail.' + domain if platform_postal_enabled | bool else '' }}"
           - "{{ '  - Daytona: https://' + daytona_base_domain if deploy_daytona | default(false) | bool else '' }}"
           - "{{ '  - APM Server (tracing): http://apm-server.elasticsearch.svc.cluster.local:8200' if deploy_apm | default(false) | bool else '' }}"
           - "{{ '  - Blackbox Probes: active on public URLs' if deploy_blackbox | default(true) | bool else '' }}"

@@ -1,13 +1,13 @@
 ---
 # Hetzner Infrastructure Role
 # Provisions Hetzner Cloud: servers, networks, load balancers, firewalls, DNS
-# Fully idempotent — safely re-runnable when resources already exist.
+# Drift-detecting and convergent — destructive server changes require approval.
 # Uses hcloud CLI. Naming: {project}-{resource}
 
 - name: Set infrastructure tier-specific variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
-    region: "{{ hetzner_region | default('hel1') }}"
+    region: "{{ infrastructure.region | default(hetzner_region | default('hel1')) }}"
     infra_tier: "{{ tier | default('medium') }}"
 
 # ============================================
@@ -50,7 +50,13 @@
 
 - name: Set tier spec reference
   set_fact:
-    current_tier_spec: "{{ hetzner_tier_specs[infra_tier] }}"
+    current_tier_spec: >-
+      {{ hetzner_tier_specs[infra_tier] | combine({
+        'cp_count': infrastructure.control_plane.count | default(hetzner_tier_specs[infra_tier].cp_count),
+        'cp_schedulable': infrastructure.control_plane.schedulable | default(hetzner_tier_specs[infra_tier].cp_schedulable),
+        'worker_count': infrastructure.workers.count | default(hetzner_tier_specs[infra_tier].worker_count),
+        'lb_enabled': network.load_balancer.enabled | default(hetzner_tier_specs[infra_tier].lb_enabled)
+      }) }}
 
 # --- Try primary region first, fallback to any EU location ---
 
@@ -388,49 +394,70 @@
       --label project={{ project }}
   when: fw_bastion_check.rc != 0
 
-- name: Add SSH rule to bastion firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-bastion
-      --direction in --protocol tcp --port 22
-      --source-ips 0.0.0.0/0 --source-ips ::/0
-      --description "SSH access"
-  register: fw_rule_ssh
-  changed_when: fw_rule_ssh.rc == 0
-  failed_when: fw_rule_ssh.rc != 0 and 'duplicate' not in (fw_rule_ssh.stderr | default('')) and 'already' not in (fw_rule_ssh.stderr | default(''))
+- name: Define the complete bastion firewall policy
+  ansible.builtin.set_fact:
+    desired_bastion_firewall_rules:
+      - direction: in
+        protocol: tcp
+        port: '22'
+        source_ips: '{{ hetzner_ssh_source_ips | default(["0.0.0.0/0", "::/0"]) }}'
+        description: SSH access
+      - direction: in
+        protocol: tcp
+        port: '443'
+        source_ips: [0.0.0.0/0, '::/0']
+        description: Headscale VPN
+      - direction: in
+        protocol: udp
+        port: '3478'
+        source_ips: [0.0.0.0/0, '::/0']
+        description: STUN/DERP for VPN
+      - direction: in
+        protocol: udp
+        port: '41641'
+        source_ips: [0.0.0.0/0, '::/0']
+        description: WireGuard/Tailscale VPN
 
-- name: Add VPN rule to bastion firewall
+- name: Read current bastion firewall after creation
   ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-bastion
-      --direction in --protocol tcp --port 443
-      --source-ips 0.0.0.0/0 --source-ips ::/0
-      --description "Headscale VPN"
-  register: fw_rule_vpn
-  changed_when: fw_rule_vpn.rc == 0
-  failed_when: fw_rule_vpn.rc != 0 and 'duplicate' not in (fw_rule_vpn.stderr | default('')) and 'already' not in (fw_rule_vpn.stderr | default(''))
+    cmd: hcloud firewall describe {{ project }}-fw-bastion -o json
+  register: fw_bastion_current
+  changed_when: false
 
-- name: Add Headscale DERP rule to bastion firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-bastion
-      --direction in --protocol udp --port 3478
-      --source-ips 0.0.0.0/0 --source-ips ::/0
-      --description "STUN/DERP for VPN"
-  register: fw_rule_derp
-  changed_when: fw_rule_derp.rc == 0
-  failed_when: fw_rule_derp.rc != 0 and 'duplicate' not in (fw_rule_derp.stderr | default('')) and 'already' not in (fw_rule_derp.stderr | default(''))
+- name: Normalize current bastion firewall policy for comparison
+  ansible.builtin.set_fact:
+    current_bastion_firewall_rules: >-
+      {%- set ns = namespace(rules=[]) -%}
+      {%- for rule in (fw_bastion_current.stdout | from_json).rules | default([]) -%}
+      {%- set _ = ns.rules.append({
+        'direction': rule.direction,
+        'protocol': rule.protocol,
+        'port': rule.port,
+        'source_ips': rule.source_ips,
+        'description': rule.description
+      }) -%}
+      {%- endfor -%}
+      {{ ns.rules }}
 
-- name: Add WireGuard/Tailscale UDP rule to bastion firewall
+- name: Stage complete bastion firewall policy
+  ansible.builtin.copy:
+    dest: /tmp/{{ project }}-fw-bastion-rules.json
+    content: '{{ desired_bastion_firewall_rules | to_nice_json }}'
+    mode: '0600'
+  when: current_bastion_firewall_rules != desired_bastion_firewall_rules
+
+- name: Replace drifted bastion firewall policy atomically
   ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-bastion
-      --direction in --protocol udp --port 41641
-      --source-ips 0.0.0.0/0 --source-ips ::/0
-      --description "WireGuard/Tailscale VPN"
-  register: fw_rule_wg
-  changed_when: fw_rule_wg.rc == 0
-  failed_when: fw_rule_wg.rc != 0 and 'duplicate' not in (fw_rule_wg.stderr | default('')) and 'already' not in (fw_rule_wg.stderr | default(''))
+    cmd: >-
+      hcloud firewall replace-rules
+      --rules-file /tmp/{{ project }}-fw-bastion-rules.json
+      {{ project }}-fw-bastion
+  when: current_bastion_firewall_rules != desired_bastion_firewall_rules
+
+- name: Remove staged bastion firewall policy
+  ansible.builtin.file:
+    path: /tmp/{{ project }}-fw-bastion-rules.json
+    state: absent
 
 - name: Check if node firewall already exists
   ansible.builtin.command:
@@ -447,82 +474,85 @@
       --label project={{ project }}
   when: fw_nodes_check.rc != 0
 
-- name: Add SSH from bastion and VPN to node firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol tcp --port 22
-      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
-      --description "SSH from private network and VPN"
-  register: fw_node_ssh
-  changed_when: fw_node_ssh.rc == 0
-  failed_when: fw_node_ssh.rc != 0 and 'duplicate' not in (fw_node_ssh.stderr | default('')) and 'already' not in (fw_node_ssh.stderr | default(''))
+- name: Define the complete node firewall policy
+  ansible.builtin.set_fact:
+    desired_node_firewall_rules:
+      - direction: in
+        protocol: tcp
+        port: '22'
+        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        description: SSH from private network and VPN
+      - direction: in
+        protocol: tcp
+        port: '6443'
+        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        description: Kubernetes API
+      - direction: in
+        protocol: tcp
+        port: '10250'
+        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        description: Kubelet API
+      - direction: in
+        protocol: tcp
+        port: 30000-32767
+        source_ips: [10.0.0.0/16, 100.64.0.0/10]
+        description: NodePort range
+      - direction: in
+        protocol: tcp
+        port: 2379-2380
+        source_ips: [10.0.0.0/16]
+        description: etcd cluster
+      - direction: in
+        protocol: tcp
+        port: '4240'
+        source_ips: [10.0.0.0/16]
+        description: Cilium health checks
+      - direction: in
+        protocol: udp
+        port: '8472'
+        source_ips: [10.0.0.0/16]
+        description: Cilium VXLAN overlay
 
-- name: Add K8s API to node firewall
+- name: Read current node firewall after creation
   ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol tcp --port 6443
-      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
-      --description "Kubernetes API"
-  register: fw_node_api
-  changed_when: fw_node_api.rc == 0
-  failed_when: fw_node_api.rc != 0 and 'duplicate' not in (fw_node_api.stderr | default('')) and 'already' not in (fw_node_api.stderr | default(''))
+    cmd: hcloud firewall describe {{ project }}-fw-nodes -o json
+  register: fw_nodes_current
+  changed_when: false
 
-- name: Add kubelet to node firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol tcp --port 10250
-      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
-      --description "Kubelet API"
-  register: fw_node_kubelet
-  changed_when: fw_node_kubelet.rc == 0
-  failed_when: fw_node_kubelet.rc != 0 and 'duplicate' not in (fw_node_kubelet.stderr | default('')) and 'already' not in (fw_node_kubelet.stderr | default(''))
+- name: Normalize current node firewall policy for comparison
+  ansible.builtin.set_fact:
+    current_node_firewall_rules: >-
+      {%- set ns = namespace(rules=[]) -%}
+      {%- for rule in (fw_nodes_current.stdout | from_json).rules | default([]) -%}
+      {%- set _ = ns.rules.append({
+        'direction': rule.direction,
+        'protocol': rule.protocol,
+        'port': rule.port,
+        'source_ips': rule.source_ips,
+        'description': rule.description
+      }) -%}
+      {%- endfor -%}
+      {{ ns.rules }}
 
-- name: Add NodePort range to node firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol tcp --port 30000-32767
-      --source-ips 10.0.0.0/16 --source-ips 100.64.0.0/10
-      --description "NodePort range"
-  register: fw_node_np
-  changed_when: fw_node_np.rc == 0
-  failed_when: fw_node_np.rc != 0 and 'duplicate' not in (fw_node_np.stderr | default('')) and 'already' not in (fw_node_np.stderr | default(''))
+- name: Stage complete node firewall policy
+  ansible.builtin.copy:
+    dest: /tmp/{{ project }}-fw-nodes-rules.json
+    content: '{{ desired_node_firewall_rules | to_nice_json }}'
+    mode: '0600'
+  when: current_node_firewall_rules != desired_node_firewall_rules
 
-- name: Add etcd ports to node firewall
+- name: Replace drifted node firewall policy atomically
   ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol tcp --port 2379-2380
-      --source-ips 10.0.0.0/16
-      --description "etcd cluster"
-  register: fw_node_etcd
-  changed_when: fw_node_etcd.rc == 0
-  failed_when: fw_node_etcd.rc != 0 and 'duplicate' not in (fw_node_etcd.stderr | default('')) and 'already' not in (fw_node_etcd.stderr | default(''))
+    cmd: >-
+      hcloud firewall replace-rules
+      --rules-file /tmp/{{ project }}-fw-nodes-rules.json
+      {{ project }}-fw-nodes
+  when: current_node_firewall_rules != desired_node_firewall_rules
 
-- name: Add Cilium health check port to node firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol tcp --port 4240
-      --source-ips 10.0.0.0/16
-      --description "Cilium health checks"
-  register: fw_node_cilium_health
-  changed_when: fw_node_cilium_health.rc == 0
-  failed_when: fw_node_cilium_health.rc != 0 and 'duplicate' not in (fw_node_cilium_health.stderr | default('')) and 'already' not in (fw_node_cilium_health.stderr | default(''))
-
-- name: Add Cilium VXLAN port to node firewall
-  ansible.builtin.command:
-    cmd: >
-      hcloud firewall add-rule {{ project }}-fw-nodes
-      --direction in --protocol udp --port 8472
-      --source-ips 10.0.0.0/16
-      --description "Cilium VXLAN overlay"
-  register: fw_node_cilium_vxlan
-  changed_when: fw_node_cilium_vxlan.rc == 0
-  failed_when: fw_node_cilium_vxlan.rc != 0 and 'duplicate' not in (fw_node_cilium_vxlan.stderr | default('')) and 'already' not in (fw_node_cilium_vxlan.stderr | default(''))
+- name: Remove staged node firewall policy
+  ansible.builtin.file:
+    path: /tmp/{{ project }}-fw-nodes-rules.json
+    state: absent
 
 # ============================================
 # Bastion Server (public IP)
@@ -638,6 +668,77 @@
   loop: "{{ range(1, (worker_count | int) + 1) | list }}"
   when: worker_check.results[item - 1].rc != 0
 
+- name: List project servers for convergence verification
+  ansible.builtin.command:
+    cmd: hcloud server list --selector project={{ project }} -o json
+  register: project_servers_raw
+  changed_when: false
+
+- name: Build desired server inventory
+  ansible.builtin.set_fact:
+    desired_server_names: >-
+      {%- set ns = namespace(names=[project + '-bastion']) -%}
+      {%- for index in range(1, (cp_count | int) + 1) -%}
+      {%- set _ = ns.names.append(project + '-master-' + (index | string)) -%}
+      {%- endfor -%}
+      {%- for index in range(1, (worker_count | int) + 1) -%}
+      {%- set _ = ns.names.append(project + '-worker-' + (index | string)) -%}
+      {%- endfor -%}
+      {{ ns.names }}
+
+- name: Detect server count and type drift
+  ansible.builtin.set_fact:
+    extra_server_names: >-
+      {{ (project_servers_raw.stdout | from_json | map(attribute='name') | list)
+         | difference(desired_server_names) }}
+    mismatched_servers: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- for server in project_servers_raw.stdout | from_json -%}
+      {%- set desired_type = bastion_type if server.name == project + '-bastion'
+          else cp_type if server.name is match('^' + project + '-master-')
+          else worker_type if server.name is match('^' + project + '-worker-')
+          else '' -%}
+      {%- if desired_type and server.server_type.name != desired_type -%}
+      {%- set _ = ns.items.append({'name': server.name, 'current': server.server_type.name, 'desired': desired_type}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.items }}
+
+- name: Require explicit approval for destructive infrastructure convergence
+  ansible.builtin.assert:
+    that:
+      - extra_server_names | length == 0
+      - mismatched_servers | length == 0
+    fail_msg: >-
+      Infrastructure drift detected. Extra servers={{ extra_server_names }};
+      type changes={{ mismatched_servers }}. Drain affected Kubernetes nodes,
+      then rerun with -e hetzner_allow_destructive_reconcile=true.
+  when: not (hetzner_allow_destructive_reconcile | bool)
+
+- name: Delete explicitly approved extra servers
+  ansible.builtin.command:
+    cmd: hcloud server delete {{ item }}
+  loop: '{{ extra_server_names }}'
+  when: hetzner_allow_destructive_reconcile | bool
+
+- name: Stop servers requiring an explicitly approved type change
+  ansible.builtin.command:
+    cmd: hcloud server poweroff {{ item.name }}
+  loop: '{{ mismatched_servers }}'
+  when: hetzner_allow_destructive_reconcile | bool
+
+- name: Reconcile explicitly approved server types
+  ansible.builtin.command:
+    cmd: hcloud server change-type --keep-disk {{ item.name }} {{ item.desired }}
+  loop: '{{ mismatched_servers }}'
+  when: hetzner_allow_destructive_reconcile | bool
+
+- name: Start reconciled servers
+  ansible.builtin.command:
+    cmd: hcloud server poweron {{ item.name }}
+  loop: '{{ mismatched_servers }}'
+  when: hetzner_allow_destructive_reconcile | bool
+
 # ============================================
 # Discover actual private IPs from Hetzner API
 # ============================================
@@ -691,7 +792,13 @@
   register: lb_check
   changed_when: false
   failed_when: false
-  when: lb_enabled | bool
+
+- name: Remove load balancer when disabled by the profile
+  ansible.builtin.command:
+    cmd: hcloud load-balancer delete {{ project }}-lb
+  when:
+    - not (lb_enabled | bool)
+    - lb_check.rc == 0
 
 - name: Create load balancer
   ansible.builtin.command:
@@ -713,26 +820,85 @@
   failed_when: lb_network.rc != 0 and 'already' not in (lb_network.stderr | default('')) and 'attached' not in (lb_network.stderr | default(''))
   when: lb_enabled | bool
 
-- name: Add LB service for HTTPS (443 -> NodePort 30443)
+- name: Read load balancer configuration for convergence
   ansible.builtin.command:
-    cmd: >
+    cmd: hcloud load-balancer describe {{ project }}-lb -o json
+  register: lb_config
+  changed_when: false
+  when: lb_enabled | bool
+
+- name: Index current load balancer services
+  ansible.builtin.set_fact:
+    lb_current_services: '{{ (lb_config.stdout | from_json).services | default([]) }}'
+    lb_https_service: >-
+      {{ ((lb_config.stdout | from_json).services | default([])
+          | selectattr('listen_port', 'equalto', 443) | list | first) | default({}) }}
+    lb_http_service: >-
+      {{ ((lb_config.stdout | from_json).services | default([])
+          | selectattr('listen_port', 'equalto', 80) | list | first) | default({}) }}
+  when: lb_enabled | bool
+
+- name: Remove load balancer services outside the declared policy
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - load-balancer
+      - delete-service
+      - --listen-port
+      - '{{ item.listen_port | string }}'
+      - '{{ project }}-lb'
+  loop: '{{ lb_current_services | rejectattr("listen_port", "in", [80, 443]) | list }}'
+  when: lb_enabled | bool
+
+- name: Add missing LB service for HTTPS (443 -> NodePort 30443)
+  ansible.builtin.command:
+    cmd: >-
       hcloud load-balancer add-service {{ project }}-lb
       --protocol tcp --listen-port 443 --destination-port 30443
       --health-check-protocol tcp --health-check-port 30443
-  register: lb_svc_https
-  changed_when: lb_svc_https.rc == 0
-  failed_when: lb_svc_https.rc != 0 and 'already' not in (lb_svc_https.stderr | default('')) and 'exists' not in (lb_svc_https.stderr | default(''))
-  when: lb_enabled | bool
+  when:
+    - lb_enabled | bool
+    - lb_https_service | length == 0
 
-- name: Add LB service for HTTP (80 -> NodePort 30080)
+- name: Reconcile drifted LB service for HTTPS
   ansible.builtin.command:
-    cmd: >
+    cmd: >-
+      hcloud load-balancer update-service {{ project }}-lb
+      --listen-port 443 --protocol tcp --destination-port 30443
+      --health-check-protocol tcp --health-check-port 30443
+  when:
+    - lb_enabled | bool
+    - lb_https_service | length > 0
+    - >-
+      lb_https_service.protocol != 'tcp'
+      or lb_https_service.destination_port != 30443
+      or lb_https_service.health_check.protocol != 'tcp'
+      or lb_https_service.health_check.port != 30443
+
+- name: Add missing LB service for HTTP (80 -> NodePort 30080)
+  ansible.builtin.command:
+    cmd: >-
       hcloud load-balancer add-service {{ project }}-lb
       --protocol tcp --listen-port 80 --destination-port 30080
-  register: lb_svc_http
-  changed_when: lb_svc_http.rc == 0
-  failed_when: lb_svc_http.rc != 0 and 'already' not in (lb_svc_http.stderr | default('')) and 'exists' not in (lb_svc_http.stderr | default(''))
-  when: lb_enabled | bool
+      --health-check-protocol tcp --health-check-port 30080
+  when:
+    - lb_enabled | bool
+    - lb_http_service | length == 0
+
+- name: Reconcile drifted LB service for HTTP
+  ansible.builtin.command:
+    cmd: >-
+      hcloud load-balancer update-service {{ project }}-lb
+      --listen-port 80 --protocol tcp --destination-port 30080
+      --health-check-protocol tcp --health-check-port 30080
+  when:
+    - lb_enabled | bool
+    - lb_http_service | length > 0
+    - >-
+      lb_http_service.protocol != 'tcp'
+      or lb_http_service.destination_port != 30080
+      or lb_http_service.health_check.protocol != 'tcp'
+      or lb_http_service.health_check.port != 30080
 
 - name: Add worker servers as LB targets
   ansible.builtin.command:
@@ -752,6 +918,60 @@
       hcloud load-balancer describe {{ project }}-lb -o json
   register: lb_info
   changed_when: false
+  when: lb_enabled | bool
+
+- name: Compute desired and current load balancer targets
+  ansible.builtin.set_fact:
+    desired_lb_server_target_ids: >-
+      {%- set ns = namespace(ids=[]) -%}
+      {%- for server in project_servers_raw.stdout | from_json -%}
+      {%- if server.name in worker_ips.keys() | list -%}
+      {%- set _ = ns.ids.append(server.id) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.ids }}
+    current_lb_server_target_ids: >-
+      {%- set ns = namespace(ids=[]) -%}
+      {%- for target in (lb_info.stdout | from_json).targets | default([]) -%}
+      {%- if target.type == 'server' -%}
+      {%- set _ = ns.ids.append(target.server.id) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.ids }}
+    unmanaged_lb_ip_targets: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- for target in (lb_info.stdout | from_json).targets | default([]) -%}
+      {%- if target.type == 'ip' -%}
+      {%- set _ = ns.items.append(target.ip.ip) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.items }}
+    unmanaged_lb_label_targets: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- for target in (lb_info.stdout | from_json).targets | default([]) -%}
+      {%- if target.type == 'label_selector' -%}
+      {%- set _ = ns.items.append(target.label_selector.selector) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.items }}
+  when: lb_enabled | bool
+
+- name: Remove undeclared server targets from load balancer
+  ansible.builtin.command:
+    argv: [hcloud, load-balancer, remove-target, --server, '{{ item | string }}', '{{ project }}-lb']
+  loop: '{{ current_lb_server_target_ids | difference(desired_lb_server_target_ids) }}'
+  when: lb_enabled | bool
+
+- name: Remove undeclared IP targets from load balancer
+  ansible.builtin.command:
+    argv: [hcloud, load-balancer, remove-target, --ip, '{{ item }}', '{{ project }}-lb']
+  loop: '{{ unmanaged_lb_ip_targets }}'
+  when: lb_enabled | bool
+
+- name: Remove undeclared label-selector targets from load balancer
+  ansible.builtin.command:
+    argv: [hcloud, load-balancer, remove-target, --label-selector, '{{ item }}', '{{ project }}-lb']
+  loop: '{{ unmanaged_lb_label_targets }}'
   when: lb_enabled | bool
 
 - name: Set LB IP fact
@@ -806,13 +1026,12 @@
 - name: Create DNS wildcard A record (*.domain -> LB)
   ansible.builtin.command:
     cmd: >
-      hcloud zone rrset create {{ domain }}
-      --name '*'
-      --type A
+      hcloud zone rrset set-records
       --record {{ lb_public_ip }}
+      {{ domain }} '*' A
   register: dns_wildcard
   changed_when: dns_wildcard.rc == 0
-  failed_when: dns_wildcard.rc != 0 and 'already' not in (dns_wildcard.stderr | default('')) and 'exists' not in (dns_wildcard.stderr | default(''))
+  failed_when: dns_wildcard.rc != 0
   when:
     - hetzner_manage_dns | default(true) | bool
     - dns_zone_available | bool
@@ -820,13 +1039,12 @@
 - name: Create DNS root A record (domain -> LB)
   ansible.builtin.command:
     cmd: >
-      hcloud zone rrset create {{ domain }}
-      --name @
-      --type A
+      hcloud zone rrset set-records
       --record {{ lb_public_ip }}
+      {{ domain }} @ A
   register: dns_root
   changed_when: dns_root.rc == 0
-  failed_when: dns_root.rc != 0 and 'already' not in (dns_root.stderr | default('')) and 'exists' not in (dns_root.stderr | default(''))
+  failed_when: dns_root.rc != 0
   when:
     - hetzner_manage_dns | default(true) | bool
     - dns_zone_available | bool
@@ -834,13 +1052,12 @@
 - name: Create DNS VPN A record (vpn.domain -> bastion)
   ansible.builtin.command:
     cmd: >
-      hcloud zone rrset create {{ domain }}
-      --name vpn
-      --type A
+      hcloud zone rrset set-records
       --record {{ bastion_public_ip }}
+      {{ domain }} vpn A
   register: dns_vpn
   changed_when: dns_vpn.rc == 0
-  failed_when: dns_vpn.rc != 0 and 'already' not in (dns_vpn.stderr | default('')) and 'exists' not in (dns_vpn.stderr | default(''))
+  failed_when: dns_vpn.rc != 0
   when:
     - hetzner_manage_dns | default(true) | bool
     - dns_zone_available | bool

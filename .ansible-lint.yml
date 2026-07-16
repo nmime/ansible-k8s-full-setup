@@ -2,7 +2,7 @@
 # Minimal profile to avoid failing on Kubespray-generated roles.
 # These roles use Jinja2-heavy patterns that strict linting rejects.
 
-profile: minimal
+profile: min
 
 skip_list:
   - name[missing]

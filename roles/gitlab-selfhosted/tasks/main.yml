@@ -6,8 +6,8 @@
     registry_domain: registry.{{ domain }}
     kas_domain: kas.{{ domain }}
     gitlab_mode: '{{ ''light'' if tier in [''minimal'', ''small'', ''medium''] else ''full'' }}'
-    gitlab_webservice_replicas: '{{ 1 if tier in [''minimal'', ''small'', ''medium''] else 2 }}'
-    gitlab_sidekiq_replicas: '{{ 1 if tier in [''minimal'', ''small'', ''medium''] else 2 }}'
+    gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1 if tier in [''minimal'', ''small'', ''medium''] else 2) }}'
+    gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1 if tier in [''minimal'', ''small'', ''medium''] else 2) }}'
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
 - name: Create GitLab namespace
   kubernetes.core.k8s:
@@ -74,6 +74,23 @@
   delay: 10
   until: _r_create_registry_storage_secret is not failed
   no_log: true
+- name: Create external Redis password secret for GitLab
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-redis
+        namespace: '{{ gitlab_namespace }}'
+      type: Opaque
+      stringData:
+        redis-password: '{{ dragonfly_password }}'
+  register: _r_create_external_redis_password_secret
+  retries: 3
+  delay: 10
+  until: _r_create_external_redis_password_secret is not failed
 - name: Check GitLab Helm release status
   ansible.builtin.command: helm status gitlab -n {{ gitlab_namespace }} -o json
   register: _gitlab_helm_status
@@ -121,17 +138,24 @@
           from: gitlab@{{ domain }}
           display_name: GitLab
           reply_to: noreply@{{ domain }}
-        database:
-          managed: false
-          external:
-            host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
-            port: 5432
-            database: gitlabhq_production
-            username: gitlab
-            password:
-              secret: gitlab-postgresql-password
-              key: postgresql-password
-            preparedStatements: false
+        psql:
+          host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
+          port: 5432
+          database: gitlabhq_production
+          username: gitlab
+          password:
+            secret: gitlab-postgresql-password
+            key: postgresql-password
+          preparedStatements: false
+        redis:
+          host: dragonfly.dragonfly.svc.cluster.local
+          port: 6379
+          auth:
+            enabled: true
+            secret: gitlab-redis
+            key: redis-password
+        railsSecrets:
+          secret: gitlab-rails-secret
         registry:
           enabled: true
           bucket: gitlab-registry
@@ -168,10 +192,6 @@
           backups:
             bucket: gitlab-backups
             tmpBucket: gitlab-tmp
-      redis:
-        enabled: true
-        replication:
-          enabled: false
       gitlab:
         webservice:
           replicaCount: '{{ gitlab_webservice_replicas | int }}'
@@ -228,10 +248,24 @@
           enabled: true
           backups:
             objectStorage:
+              backend: s3
               config:
                 secret: gitlab-object-storage
                 key: connection
-            schedule: 0 2 * * *
+            cron:
+              enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
+              schedule: '{{ backup_schedule }}'
+              timeZone: '{{ backup_cron_timezone }}'
+              concurrencyPolicy: Forbid
+              successfulJobsHistoryLimit: 3
+              failedJobsHistoryLimit: 1
+              extraArgs: >-
+                --s3tool awscli
+                --aws-s3-endpoint-url {{ object_storage_endpoint }}
+              persistence:
+                enabled: true
+                storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
+                size: '{{ gitlab_backup_persistence_size | default(''50Gi'') }}'
       registry:
         enabled: true
         replicaCount: '{{ gitlab_webservice_replicas | int }}'
@@ -270,14 +304,6 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_ce_with_helm is not failed
-- name: Increase GitLab deployment progressDeadlineSeconds for slow image pulls
-  shell: "for DEPLOY in $(kubectl get deployment -n {{ gitlab_namespace }} -l release=gitlab -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do\n  kubectl patch deployment \"$DEPLOY\" -n {{ gitlab_namespace\
-    \ }} -p '{\"spec\":{\"progressDeadlineSeconds\":1800}}' --type=merge 2>/dev/null || true\ndone\necho \"patched\"\n"
-  register: _r_patch_gitlab_progress_deadline
-  retries: 10
-  delay: 15
-  until: _r_patch_gitlab_progress_deadline.rc == 0
-  changed_when: true
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -290,7 +316,6 @@
     '
   retries: 120
   delay: 15
-  failed_when: false
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -421,7 +446,7 @@
       checkInterval: 3
       rbac:
         create: true
-        clusterWideAccess: true
+        clusterWideAccess: false
       runners:
         config: "[[runners]]\n  [runners.kubernetes]\n    namespace = \"{{ gitlab_namespace }}\"\n    image = \"ubuntu:22.04\"\n    privileged = false\n    [runners.kubernetes.pod_security_context]\n  \
           \    run_as_non_root = true\n      run_as_user = 1000\n    [runners.kubernetes.build_container_resources]\n      cpu_request = \"500m\"\n      cpu_limit = \"2000m\"\n      memory_request = \"\
@@ -462,8 +487,8 @@
   register: _r_create_s3_cache_secret_for_gitlab_runner
   retries: 3
   delay: 10
-- name: Create default-deny for GitLab namespace
   until: _r_create_s3_cache_secret_for_gitlab_runner is not failed
+- name: Create default-deny for GitLab namespace
   kubernetes.core.k8s:
     state: present
     definition:
@@ -533,6 +558,11 @@
           - ports:
             - port: '5432'
               protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: dragonfly
+          toPorts:
+          - ports:
             - port: '6379'
               protocol: TCP
         - toEndpoints:

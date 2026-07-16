@@ -63,7 +63,9 @@ class TestUpgradeE2EBreakingChanges:
     @pytest.mark.e2e
     def test_database_external_migration(self):
         t = read(GITLAB_TASKS)
-        assert "database:" in t and "external:" in t and "managed: false" in t
+        assert "psql:" in t
+        assert "-pg-pgbouncer.databases.svc.cluster.local" in t
+        assert "secret: gitlab-postgresql-password" in t
 
     @pytest.mark.e2e
     def test_redis_migration(self):

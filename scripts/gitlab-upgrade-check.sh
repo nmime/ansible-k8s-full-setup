@@ -17,9 +17,6 @@
 #   2 — Script error (bad arguments, etc.)
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
-
 # ── Color helpers ──────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 BOLD='\033[1m'
@@ -150,7 +147,6 @@ else
 
   if [[ "$APP_VER" != "unknown" && -n "$APP_VER" ]]; then
     APP_MAJOR=$(echo "$APP_VER" | cut -d. -f1)
-    APP_MINOR=$(echo "$APP_VER" | cut -d. -f2)
     if [[ "$APP_MAJOR" == "18" ]]; then
       check_pass "GitLab app version $APP_VER is on upgrade path (18.x → 19.x)"
     elif [[ "$APP_MAJOR" == "19" ]]; then
@@ -261,9 +257,6 @@ section "7. Disk Space"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] Disk space check skipped"
 else
-  # Check PV/PVC usage for GitLab data volumes
-  PVC_LIST=$(kubectl get pvc -n "$GITLAB_NS" -o json 2>/dev/null || echo "[]")
-
   # Check node disk usage
   NODE_USAGE=$(kubectl top nodes 2>/dev/null | tail -n +2 | head -1 || echo "")
   if [ -n "$NODE_USAGE" ]; then
@@ -374,11 +367,11 @@ section "12. Backup CronJob"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] Backup CronJob check skipped"
 else
-  if kubectl get cronjob gitlab-backup -n "$GITLAB_NS" &>/dev/null; then
+  if kubectl get cronjob gitlab-toolbox-backup -n "$GITLAB_NS" &>/dev/null; then
     check_pass "GitLab backup CronJob exists"
 
     # Check last scheduled time
-    LAST_SCHEDULED=$(kubectl get cronjob gitlab-backup -n "$GITLAB_NS" -o json 2>/dev/null | jq -r '.status.lastScheduleTime // "never"' 2>/dev/null)
+    LAST_SCHEDULED=$(kubectl get cronjob gitlab-toolbox-backup -n "$GITLAB_NS" -o json 2>/dev/null | jq -r '.status.lastScheduleTime // "never"' 2>/dev/null)
     if [ "$LAST_SCHEDULED" != "never" ]; then
       info "Last backup scheduled: $LAST_SCHEDULED"
       check_pass "Backup CronJob has been scheduled"

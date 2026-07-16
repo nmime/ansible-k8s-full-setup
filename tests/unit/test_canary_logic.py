@@ -5,7 +5,7 @@ import os
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def _eval(script_path, tier):
+def _eval(script_path, current_tier, target_tier):
     """Extract get_canary_sequence and TIER_ORDER from script, run in isolation."""
     # Read the script and extract just the pieces we need
     with open(script_path) as f:
@@ -44,8 +44,10 @@ def _eval(script_path, tier):
     # Build and run a minimal script
     minimal_script = f"""
 {tier_order_line}
+CURRENT_TIER="{current_tier}"
+error() {{ printf '%s\n' "$*" >&2; }}
 {fn_body}
-get_canary_sequence "{tier}"
+get_canary_sequence "{target_tier}"
 """
     r = subprocess.run(
         ["bash", "-c", minimal_script],
@@ -60,20 +62,20 @@ class TestCanarySequence:
             assert 'TIER_ORDER=("minimal" "small" "medium" "production")' in f.read()
 
     def test_minimal(self):
-        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "minimal")
+        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "minimal", "minimal")
         assert seq == "minimal", f"Got: {repr(seq)}"
 
     def test_small(self):
-        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "small")
-        assert seq == "minimal small", f"Got: {repr(seq)}"
+        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "minimal", "small")
+        assert seq == "small", f"Got: {repr(seq)}"
 
     def test_medium(self):
-        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "medium")
-        assert seq == "minimal small medium", f"Got: {repr(seq)}"
+        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "small", "medium")
+        assert seq == "medium", f"Got: {repr(seq)}"
 
     def test_production(self):
-        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "production")
-        assert seq == "minimal small medium production", f"Got: {repr(seq)}"
+        seq = _eval(os.path.join(REPO, "scripts", "upgrade-platform.sh"), "small", "production")
+        assert seq == "medium production", f"Got: {repr(seq)}"
 
 
 class TestFlags:

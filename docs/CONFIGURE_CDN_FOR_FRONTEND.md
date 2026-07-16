@@ -42,7 +42,8 @@ Use names that match your chart, service, and environment.
 ```bash
 export GCORE_API_KEY="your_gcore_api_key"
 
-ansible-playbook -i inventory/hosts.yml playbooks/edge-cdn.yml \
+ansible-playbook playbooks/edge-cdn.yml \
+  -e edge_cdn_confirm=true \
   -e "domain=example.com" \
   -e "origin_server_ip=<kubernetes-load-balancer-ip>"
 ```

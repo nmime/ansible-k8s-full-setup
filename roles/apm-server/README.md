@@ -1,6 +1,6 @@
 # APM Server (Elastic APM / OTLP)
 
-Distributed tracing backend. Reuses the existing Elasticsearch X-Pack Platinum cluster as trace storage — no new component storage required.
+Distributed tracing backend. Reuses the existing Elasticsearch Basic cluster as trace storage — no new component storage required.
 
 ## What it does
 - Runs Elastic APM Server `9.4.1` (matched to the Elasticsearch 9.x stack)

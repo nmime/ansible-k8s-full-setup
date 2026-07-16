@@ -1,361 +1,160 @@
-# Percona PG Operator Major Upgrade Plan: 2.x → 3.x
+# Percona PostgreSQL Operator Upgrade and Recovery Runbook
 
-## Summary
+## Current contract
 
-| Item                | Current                     | Target                       |
-|---------------------|-----------------------------|------------------------------|
-| PG Operator         | `percona/pg-operator:2.8.2` | `percona/pg-operator:3.0.0`  |
-| Helm chart          | `percona/pg-operator 2.8.2` | `percona/pg-operator 3.0.0`  |
-| **Implementation**  | **PLANNED**                  | **✅ IMPLEMENTED**           |
-| PostgreSQL          | `18`                        | `18` (unchanged)             |
-| Cluster CRD         | `postgresql.percona.com/v1` | `postgresql.percona.com/v2`  |
-| Backup provider     | pgBackRest                  | pgBackRest (unchanged)       |
-| Proxy               | PgBouncer (integrated)      | PgBouncer (standalone CR)    |
+This repository deploys:
 
-> **STATUS: IMPLEMENTED** — `defaults/main.yml` updated with `pg_operator_version: "3.0.0"`,
-> `roles/k8s-databases/tasks/main.yml` updated with v3-compatible `PerconaPGCluster` spec.
-> Tests updated and passing.
->
-> **CRITICAL WARNING:** Percona PG Operator 3.x is a **complete rewrite** of the operator.
-> The CRD API changes from `postgresql.percona.com/v1` to `postgresql.percona.com/v2`,
-> the `PostgresCluster` spec is significantly restructured, and **in-place upgrades are
-> NOT supported**. The only supported path is to **recreate the cluster from a pgBackRest
-> backup** under the new operator.
+| Item | Value |
+|---|---|
+| Operator Helm chart | `percona/pg-operator 3.0.0` |
+| Cluster API | `pgv2.percona.com/v2` |
+| Cluster kind | `PerconaPGCluster` |
+| Default cluster | `k8s-pg` (or `<project>-pg`) |
+| PostgreSQL major | `18` |
+| Local backup repository | `repo1` on a PVC |
+| Off-cluster repository | `repo2` in the `backups` S3 bucket |
+| S3 repository path | `/pgbackrest/<project>-pg/repo2` |
 
----
+The operator 3.0 schema still uses `configuration` for pgBackRest secrets and
+`repo2-path` in the pgBackRest global settings. `repoConfiguration`,
+`s3.keyPrefix`, `postgresql.percona.com/v2`, and `PostgresCluster` are not the
+resource contract deployed by this repository.
 
-## 0. Implementation Details (v3.0.0)
+## Safety rules
 
-### Files Changed
+- Never change PostgreSQL major version and operator major version in the same
+  maintenance window.
+- Never delete the source cluster, its PVCs, or backup objects until an
+  isolated restore has succeeded.
+- A Helm rollback does not roll database data back.
+- Keep writes quiesced between the final backup and any production cutover.
+- Record the source cluster SHA, chart version, backup label, S3 path, and
+  verification output.
 
-| File | Change |
-|------|--------|
-| `defaults/main.yml` | Added `pg_operator_version: "3.0.0"` with renovate datasource |
-| `roles/k8s-databases/tasks/main.yml` | Updated `pg_operator_ver` to use `pg_operator_version` default |
-| `roles/k8s-databases/tasks/main.yml` | Updated `PerconaPGCluster` CR for v3 API |
-| `docs/PG_OPERATOR_UPGRADE_PLAN.md` | Marked implementation complete |
-| `tests/test_pg_upgrade.py` | Added v3.0.0 version assertions |
-| `scripts/pg-upgrade-check.sh` | Updated operator version check for 3.0.0 |
+## Preflight
 
-### PerconaPGCluster v3 Spec Changes
-
-| Area | v2 (2.8.2) | v3 (3.0.0) |
-|------|------------|------------|
-| pgBouncer config | `config.global.pool_mode` | `config.poolMode` (flat) |
-| pgBouncer max conn | `config.global.max_client_conn` | `config.maxClientConn` |
-| pgBouncer pool size | `config.global.default_pool_size` | `config.defaultPoolSize` |
-| Backup repo config | `configuration[]` | `repoConfiguration[]` |
-| Backup S3 prefix | `repo2-path: /pgbackrest/...` | `s3.keyPrefix: /pgbackrest/...` |
-| Custom libs | (not present) | `customLibraries: {}` |
-| Labels | (minimal) | Added `app.kubernetes.io/managed-by` |
-
-### Migration Notes
-
-- **New clusters**: Deploy directly with the updated Ansible role — no manual migration needed.
-- **Existing clusters**: Follow the upgrade procedure in §3 (backup → staging → deploy → cutover).
-- **CRD compatibility**: The CRD API remains `pgv2.percona.com/v2`; the `crVersion` field tracks operator version.
-
----
-
-## 1. Why PG Operator 2 → 3 Requires Cluster Recreation
-
-### Breaking Changes
-
-| Area                | 2.x (current)                            | 3.x (target)                            |
-|---------------------|------------------------------------------|-----------------------------------------|
-| CRD API version     | `postgresql.percona.com/v1`              | `postgresql.percona.com/v2`             |
-| CRD structure       | Flat spec with inline PgBouncer          | Modular spec; PgBouncer is separate CR  |
-| Instance naming     | `pgcluster-N`                            | `pgcluster-instance1-N`                 |
-| Pod labels          | `cluster-name=<name>`                    | `percona.com/cluster=<name>`            |
-| Backup CR           | `PerconaPGBackup` (v1)                   | `PerconaPGBackup` (v2, new spec fields) |
-| Volume layout       | `/pgdata` inside container               | `/pgdata` with subpath for replicas     |
-| Operator deployment | Single deployment                        | Multi-component (operator + webhooks)   |
-| RBAC / CRDs         | v1 CRDs only                             | v1 + v2 CRDs; v1 resources orphaned    |
-
-### Incompatibility Summary
-
-1. **CRD version bump**: `v1` → `v2` — Kubernetes does not auto-convert existing `PostgresCluster` resources.
-2. **Spec restructuring**: The `PostgresCluster` spec fields are reorganised. A 2.x spec **cannot be applied** as-is under operator 3.x.
-3. **PgBouncer decoupling**: PgBouncer is no longer configured inside the `PostgresCluster` spec. It requires a separate `PgBouncer` CR.
-4. **Label selector changes**: Pods are labelled differently, so existing Services/Endpoints will not match new pods automatically.
-5. **Backup CR spec changes**: The `PerconaPGBackup` CR has new required fields; old-style backups may not be directly usable for restore.
-
-### The Only Supported Path: Restore from pgBackRest
-
-```
-┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
-│  PHASE 1: BACKUP     │────▶│  PHASE 2: STAGING    │────▶│  PHASE 3: DEPLOY     │
-│                      │     │                      │     │                      │
-│ • Final full backup  │     │ • Deploy operator 3x │     │ • Deploy operator 3x │
-│ • Verify S3          │     │ • Restore from S3    │     │   in production NS   │
-│ • Record cluster spec│     │ • Verify data        │     │ • Create v2 cluster  │
-│                      │     │                      │     │ • Restore from S3    │
-└──────────────────────┘     └──────────────────────┘     └──────────────────────┘
-                                                                 │
-┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
-│  PHASE 5:            │◀────│  PHASE 4: CUTOVER    │◀────│  (continue)          │
-│  DECOMMISSION        │     │                      │     │ • Wait for ready     │
-│                      │     │ • DNS / svc cutover  │     │ • Validate replicas  │
-│ • Scale down old     │     │ • PgBouncer migrate  │     │                      │
-│ • Delete old PVCs    │     │ • Smoke-test apps    │     │                      │
-└──────────────────────┘     └──────────────────────┘     └──────────────────────┘
-```
-
----
-
-## 2. Prerequisites
-
-### 2.1 pgBackRest Full Backup
-
-A **full** pgBackRest backup must exist and be verified before starting the upgrade.
+Run the repository check first:
 
 ```bash
-# Trigger a full backup on the current 2.x cluster
-kubectl exec -n databases -c pgbackrest -- pgbackrest --type=full backup
-
-# Verify the backup completed
-kubectl logs -n databases -l percona.com/cluster=postgres-operator --tail=200 \
-  | grep -i "pgbackrest\|backup"
-
-# Confirm backup artefacts in S3
-aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" \
-  s3 ls "s3://pgbackrest-backups/backup/" --recursive
+OBJECT_STORAGE_ENDPOINT=https://s3.example.internal \
+PGBACKREST_BUCKET=backups \
+./scripts/pg-upgrade-check.sh --pg-cluster k8s-pg
 ```
 
-### 2.2 Replica Lag
+The check validates tooling, the Helm release, `PerconaPGCluster`, the primary
+pod, replica lag, pgBackRest metadata, S3 repository contents, PVC capacity,
+PgBouncer, and chart availability. Any failed check blocks the change.
 
-All replicas must be in sync before backup. Any lag means data loss for unreplicated transactions.
+Confirm the live resource and backup configuration directly:
 
 ```bash
-kubectl exec -n databases postgres-operator-0 -- psql -U postgres -c "
-  SELECT client_addr, state,
-    pg_wal_lsn_diff(sent_lsn, replay_lsn) AS lag_bytes
-  FROM pg_stat_replication;"
+kubectl get perconapgcluster k8s-pg -n databases -o yaml
+kubectl get pod -n databases \
+  -l postgres-operator.crunchydata.com/cluster=k8s-pg
+kubectl get perconapgbackup -n databases
 ```
 
-### 2.3 S3 / Object Storage Access
+Create an explicit on-demand full backup when required:
 
-The pgBackRest repository must be reachable from both the old cluster (for the backup) and the
-new cluster (for the restore). Verify:
+```yaml
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGBackup
+metadata:
+  generateName: k8s-pg-pre-upgrade-
+  namespace: databases
+spec:
+  pgCluster: k8s-pg
+  repoName: repo2
+  options:
+    - --type=full
+```
+
+Apply the resource, wait for its status to become successful, and record
+`status.backupName`. Verify objects exist below
+`s3://backups/pgbackrest/k8s-pg/repo2/`.
+
+## Restore drill
+
+Start with the non-mutating plan:
 
 ```bash
-# Test S3 connectivity from within the cluster
-kubectl run -n databases s3-test --rm -i --tty --restart=Never \
-  --image=amazon/aws-cli:alpine -- \
-  aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3 ls "s3://pgbackrest-backups/"
+./scripts/pg-restore-drill.sh --dry-run --pg-cluster k8s-pg
 ```
 
-### 2.4 Disk Space
-
-Ensure at least **2× current data size** is available for the restore. The pgBackRest restore process
-needs temporary space to extract WAL segments.
-
-### 2.5 pgBouncer Connection Inventory
-
-Document every service/application connecting to PostgreSQL through PgBouncer so they can be
-updated or re-targeted after cutover.
+For execution, set the S3 endpoint. The script copies the source
+`pgbackrest-s3-creds` Secret into an isolated namespace, installs the pinned
+operator, creates a new `pgv2.percona.com/v2` `PerconaPGCluster` with a
+`dataSource.pgbackrest` source, then verifies databases, tables, extensions,
+version, replication, and client connectivity.
 
 ```bash
-kubectl get svc -n databases -l percona.com/cluster=postgres-operator -o wide
-kubectl get endpoints -n databases -l percona.com/cluster=postgres-operator
+export OBJECT_STORAGE_ENDPOINT=https://s3.example.internal
+./scripts/pg-restore-drill.sh --pg-cluster k8s-pg
 ```
 
-### 2.6 Preflight Script
+The isolated S3 clone path restores the latest valid backup. A specific
+pgBackRest label must be tested with a disposable cluster and a
+`PerconaPGRestore` resource; the script deliberately rejects a non-`latest`
+`--backup-set` rather than silently restoring the wrong backup.
 
-Run the automated preflight check before starting:
+## Operator chart upgrade
 
-```bash
-./scripts/pg-upgrade-check.sh
+1. Read the release notes and supported upgrade path for every intermediate
+   chart version.
+2. Pass the preflight and restore drill above.
+3. Export the live Helm values and `PerconaPGCluster` resource.
+4. Quiesce application writes and create a final full `repo2` backup.
+5. Upgrade one chart step with `--atomic --wait` and an explicit version.
+6. Wait for the operator and cluster status to become ready.
+7. Verify the primary, replicas, PgBouncer, application reads/writes,
+   scheduled backups, and monitoring.
+8. Re-enable writes only after every gate passes.
+
+Do not use `--reuse-values` across an operator major boundary without first
+diffing the complete values schema.
+
+## In-place data restore
+
+An in-place restore is destructive. Use a `PerconaPGRestore` only after the
+isolated drill has passed and writes are stopped:
+
+```yaml
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGRestore
+metadata:
+  name: k8s-pg-restore
+  namespace: databases
+spec:
+  pgCluster: k8s-pg
+  repoName: repo2
+  options:
+    - --type=immediate
+    - --set=BACKUP_LABEL
 ```
 
-All checks must report **PASS**.
+Track the restore resource, operator logs, and cluster state until the cluster
+is ready. Validate row counts and application invariants before reopening
+traffic.
 
-### 2.7 Restore Drill
+## Rollback
 
-Validate the restore path in an isolated namespace:
+- Before data mutation, an atomic Helm failure may be rolled back to the exact
+  recorded chart revision.
+- After a data restore starts, do not treat Helm rollback as recovery. Restore
+  the selected backup into a clean cluster or follow the operator's failed
+  restore recovery procedure.
+- Preserve the old cluster and PVCs until the new cluster has passed the full
+  validation window.
 
-```bash
-./scripts/pg-restore-drill.sh --dry-run     # plan review
-./scripts/pg-restore-drill.sh               # execute drill
-```
+## Completion checklist
 
----
-
-## 3. Migration Procedure
-
-### Phase 1 — Backup
-
-1. **Quiesce writes** — put applications in maintenance mode or set `default_transaction_read_only = on`.
-2. **Take final pgBackRest full backup** (see §2.1).
-3. **Verify backup in S3** — list backup files, confirm size is non-zero.
-4. **Export current cluster spec**:
-
-   ```bash
-   kubectl get postgrescluster -n databases -o yaml \
-     > /tmp/pg-cluster-spec-v1-backup.yaml
-   kubectl get pgbouncer -n databases -o yaml \
-     > /tmp/pgbouncer-spec-backup.yaml
-   ```
-
-### Phase 2 — Staging (Parallel Validation)
-
-1. **Create isolated namespace**: `pg-operator-upgrade-staging`.
-2. **Deploy PG Operator 3.0** into the staging namespace (via Helm).
-3. **Create v2 `PostgresCluster`** with `restore` source pointing to pgBackRest S3 repository.
-4. **Wait for restore** to complete and cluster to be Ready.
-5. **Verify data integrity**: database list, table counts, extension versions, replica lag.
-6. **Verify PgBouncer** connectivity through the new cluster.
-7. **Tear down** the staging namespace.
-
-### Phase 3 — Deploy (Production)
-
-1. **Install PG Operator 3.0** into the production `databases` namespace.
-   > NOTE: Do **not** modify `roles/k8s-databases/tasks/main.yml`. Override `pg_operator_ver`
-   > via Ansible extra-vars or Helm directly for this one-time operation.
-2. **Delete v1 PostgresCluster** — cascade=orphan to preserve PVCs:
-   ```bash
-   kubectl delete postgrescluster postgres-operator -n databases --cascade=orphan
-   ```
-3. **Delete old PVCs** (the restored cluster will provision new ones):
-   ```bash
-   kubectl delete pvc -n databases -l percona.com/cluster=postgres-operator
-   ```
-4. **Create v2 PostgresCluster** with pgBackRest restore source.
-5. **Create PgBouncer CR** with updated instance references.
-6. **Wait for readiness** of all pods, replicas, and PgBouncer.
-
-### Phase 4 — Cutover
-
-1. **Verify service names** — the PgBouncer service may have a new name under operator 3.x.
-   If so, update application connection strings or create a Service alias.
-2. **Smoke-test** every application that writes to PostgreSQL.
-3. **Monitor** replica lag and PgBouncer connection counts for 30 minutes.
-
-### Phase 5 — Decommission
-
-1. Keep the **old cluster** running in read-only mode for **24 hours** as a safety net.
-2. After 24 hours with no issues:
-   - Scale down old cluster replicas to 0
-   - Delete old PVCs
-   - Delete old services and ConfigMaps
-
-### PgBouncer Migration Detail
-
-| Setting           | 2.x Location                     | 3.x Location                    |
-|-------------------|----------------------------------|---------------------------------|
-| Pool mode         | `PostgresCluster.spec.proxy`     | `PgBouncer.spec.poolMode`       |
-| Max connections   | `PostgresCluster.spec.proxy.maxConnections` | `PgBouncer.spec.maxClientConn` |
-| Auth query        | Inline in PgBouncer config       | `PgBouncer.spec.authQuery`      |
-
-**Migration steps**:
-
-```bash
-# 1. Export existing PgBouncer config
-kubectl exec -n databases $(kubectl get pod -n databases -l percona.com/component=proxy \
-  -o jsonpath='{.items[0].metadata.name}') -- cat /pgbouncer/pgbouncer.ini \
-  > /tmp/pgbouncer-config-backup.ini
-
-# 2. After new PgBouncer CR is up, verify config
-kubectl exec -n databases $(kubectl get pod -n databases -l percona.com/component=proxy \
-  -o jsonpath='{.items[0].metadata.name}') -- cat /pgbouncer/pgbouncer.ini
-
-# 3. Diff the configs
-diff /tmp/pgbouncer-config-backup.ini <(kubectl exec -n databases ... -- cat /pgbouncer/pgbouncer.ini)
-```
-
----
-
-## 4. Rollback Plan
-
-### 4.1 Rollback Before Phase 5
-
-| Phase | Rollback action |
-|-------|----------------|
-| Phase 1 (Backup) | Lift maintenance mode; cluster unchanged |
-| Phase 2 (Staging) | No action; staging is isolated |
-| Phase 3 (Deploy) | Scale down new cluster; restore v1 cluster spec from backup; old PVCs still exist |
-| Phase 4 (Cutover) | Revert PgBouncer DNS/Service to old cluster; old cluster is still running |
-
-```bash
-# Rollback: restore v1 cluster from saved spec
-kubectl apply -f /tmp/pg-cluster-spec-v1-backup.yaml
-kubectl apply -f /tmp/pgbouncer-spec-backup.yaml
-```
-
-### 4.2 Emergency Restore (After Decommission)
-
-If the old cluster was already decommissioned and a problem is discovered:
-
-1. Use the pgBackRest full backup from Phase 1.
-2. Deploy PG Operator 2.x or 3.x (whichever is needed).
-3. Create a new cluster with pgBackRest restore source.
-
-```bash
-./scripts/pg-restore-drill.sh --namespace pg-cluster-recovery
-```
-
----
-
-## 5. Risk Assessment
-
-| Risk                              | Severity | Mitigation                                    |
-|-----------------------------------|----------|-----------------------------------------------|
-| Data loss during migration        | CRITICAL | Full backup verified; staging restore validated |
-| Extended downtime (>15 min)       | HIGH     | Restore drill run in advance                  |
-| pgBackRest restore failure        | HIGH     | Staging phase catches issues                  |
-| PgBouncer endpoint mismatch       | MEDIUM   | Pre-deployment DNS audit                      |
-| Application connection failures   | MEDIUM   | Smoke tests in cutover phase                  |
-| S3 credentials misconfigured      | HIGH     | S3 connectivity test in preflight             |
-| Insufficient disk space           | MEDIUM   | Disk space check in preflight script          |
-| pgBackRest restore fails on drill | LOW      | Dry-run restore drill catches issues early    |
-
----
-
-## 6. Checklist
-
-### Pre-Migration
-
-- [ ] Run `./scripts/pg-upgrade-check.sh` — all checks PASS
-- [ ] Full pgBackRest backup exists and is verified in S3
-- [ ] Replica lag is zero across all replicas
-- [ ] S3 connectivity confirmed from cluster
-- [ ] Disk space ≥ 2× current data size
-- [ ] Restore drill succeeded (`./scripts/pg-restore-drill.sh`)
-- [ ] Application connection inventory documented
-- [ ] Current cluster spec exported (`/tmp/pg-cluster-spec-v1-backup.yaml`)
-- [ ] PgBouncer config exported (`/tmp/pgbouncer-config-backup.ini`)
-- [ ] Maintenance window communicated
-
-### During Migration
-
-- [ ] Applications in maintenance mode
-- [ ] Final pgBackRest backup taken
-- [ ] PG Operator 3.0 installed in production namespace
-- [ ] v1 PostgresCluster deleted (cascade=orphan)
-- [ ] v2 PostgresCluster created with restore source
-- [ ] Restore verified: databases, tables, extensions match
-- [ ] PgBouncer CR created and pods healthy
-- [ ] Application connectivity verified
-- [ ] Replication healthy on all replicas
-
-### Post-Migration
-
-- [ ] Old cluster running read-only for 24h safety window
-- [ ] No application errors observed
-- [ ] Old cluster decommissioned after 24h
-- [ ] pgBackRest backup schedule re-verified
-- [ ] Monitoring/alerting confirmed for new cluster
-- [ ] Stakeholders notified of successful migration
-
----
-
-## 7. Communication Plan
-
-| Time                        | Audience          | Channel              | Message                        |
-|-----------------------------|-------------------|----------------------|--------------------------------|
-| 48h before window           | All stakeholders  | Email + Slack        | Maintenance date, expected downtime |
-| Start of window             | All stakeholders  | Slack + status page  | Maintenance started            |
-| Restore complete            | Engineering       | Slack                | Cluster restored, validating   |
-| Cutover complete            | All stakeholders  | Slack + status page  | Service restored               |
-| 24h post-migration          | All stakeholders  | Email                | Migration successful           |
-| On rollback                 | All stakeholders  | Slack + PagerDuty    | Rollback in progress           |
+- [ ] Preflight has no failures.
+- [ ] Full `repo2` backup label and object path are recorded.
+- [ ] Isolated restore drill passed.
+- [ ] Source manifests and Helm values were exported.
+- [ ] Applications were quiesced for the final backup/cutover.
+- [ ] Operator and `PerconaPGCluster` are ready.
+- [ ] Primary, replicas, and PgBouncer are healthy.
+- [ ] Database and application integrity checks passed.
+- [ ] Scheduled backup and monitoring checks passed after the change.
+- [ ] Old resources were preserved through the validation window.

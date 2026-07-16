@@ -261,7 +261,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_tempo is not failed
-  ignore_errors: true
   when: tracing_enabled | bool
 
 - name: Create VMServiceScrape for OTel Collector
@@ -284,7 +283,6 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_otel_collector is not failed
-  ignore_errors: true
   when: tracing_enabled | bool
 
 - name: Display Tempo + OTel deployment info

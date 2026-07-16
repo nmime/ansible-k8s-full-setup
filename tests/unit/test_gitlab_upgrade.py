@@ -56,21 +56,16 @@ class TestGitLabTasksChart10:
         assert "gitlab_chart_version: 10.1.2" in self.content
 
     @pytest.mark.unit
-    def test_no_global_psql(self):
-        for line in self.lines:
-            s = line.strip()
-            if s.startswith("#"): continue
-            if s == "psql:" or s.startswith("psql:"):
-                pytest.fail(f"Deprecated 'psql:' found: {s}")
+    def test_external_postgresql_uses_global_psql(self):
+        assert re.search(r'^\s+psql:\s*$', self.content, re.MULTILINE)
 
     @pytest.mark.unit
-    def test_global_database_external_present(self):
-        assert "database:" in self.content
-        assert "external:" in self.content
+    def test_obsolete_database_external_absent(self):
+        assert not re.search(r'^\s+database:\s*\n\s+external:', self.content, re.MULTILINE)
 
     @pytest.mark.unit
-    def test_database_managed_false(self):
-        assert "managed: false" in self.content
+    def test_external_database_secret_present(self):
+        assert "secret: gitlab-postgresql-password" in self.content
 
     @pytest.mark.unit
     def test_no_postgresql_install_key(self):

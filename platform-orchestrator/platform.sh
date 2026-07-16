@@ -15,7 +15,6 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 ANSIBLE_DIR="${SCRIPT_DIR}/.."
 
 DEFAULT_REGION="hel1"
-DEFAULT_PROJECT="k8s"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 
@@ -103,7 +102,14 @@ init_config() {
 
 heal_check() {
   log "Health check..."
-  kubectl get pods -A 2>/dev/null || { warn "cluster not accessible"; return 0; }
+  local require_argocd require_postgresql require_mongodb
+  require_argocd=$(flag_from_config '.gitops.enabled' true)
+  require_postgresql=$(flag_from_config '.databases.postgresql.enabled' true)
+  require_mongodb=$(flag_from_config '.databases.mongodb.enabled' false)
+  HEALTH_REQUIRE_ARGOCD="$require_argocd" \
+    HEALTH_REQUIRE_POSTGRESQL="$require_postgresql" \
+    HEALTH_REQUIRE_MONGODB="$require_mongodb" \
+    "${ANSIBLE_DIR}/scripts/health-gates.sh"
 }
 
 heal_auto() {
@@ -200,10 +206,10 @@ destroy_all() {
   warn "DESTROY project '$PROJECT'?"
   read -rp "Type 'DESTROY': " confirm
   [[ "$confirm" != "DESTROY" ]] && exit 0
-  run_playbook -e state=absent 2>&1 | tee -a "${LOG_DIR}/destroy.log"
-  rm -f ~/.kube/config
+  check_env
+  "${ANSIBLE_DIR}/teardown.sh" "$PROJECT" --confirm "$PROJECT" 2>&1 | tee -a "${LOG_DIR}/destroy.log"
   rm -rf "${STATE_DIR:?}"/*
-  log "Destroyed! DNS zone preserved."
+  log "Destroy verified. DNS zone/records and your global kubeconfig were preserved."
 }
 
 show_status() {
@@ -250,7 +256,7 @@ Commands:
   status            Show status
   credentials       Show passwords
   health / heal     Check/fix
-  destroy           Remove all (DNS: only platform records removed)
+  destroy           Remove project-prefixed Hetzner resources; preserve DNS and kubeconfig
 
 Required:
   export HCLOUD_TOKEN="your-token"

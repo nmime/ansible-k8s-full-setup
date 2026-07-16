@@ -47,6 +47,7 @@ hetzner_region: hel1
 hetzner_image: ubuntu-24.04
 ssh_key_path: ~/.ssh/id_ed25519
 storage_class: hcloud-volumes
+ansible_ssh_strict_host_key_checking: true
 
 # Kubernetes
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
@@ -65,11 +66,23 @@ metallb_version: v0.16.1
 hetzner_ccm_version: v1.33.0
 hetzner_csi_version: v2.22.0
 kubespray_version: v2.31.0
+hetzner_ccm_manifest_sha256: bcf91ad8e67d2f1ad5f57d5dd39ced40bebbb1946768392cf2ada5bc2f671816
+hetzner_csi_manifest_sha256: 464098a4a060d9824281e40fc99bde7998aa79e2164c870dd41161f65028b1fe
+gateway_api_standard_sha256: a557172e8348f758479e9ee4000bbbb4b4aa48302a6b73461823ea5349bad56d
+gateway_api_experimental_sha256: f0d5c2b0bef2b9d80ba6ba909e5e5dbde0800638437608353f41a6ebd3afcd9f
 
 # CLI tool versions (pinned for reproducibility)
 kubectl_version: "{{ k8s_version }}"
 hcloud_cli_version: v1.42.0
 yq_version: v4.44.6
+helm_cli_version: v3.20.1
+kubectl_linux_amd64_sha256: 5d11e2ba01ea68ffd053f56e27738e2b4330013ee67f7e46c6da6c585d3c99260
+helm_linux_amd64_sha256: 165ee4a2db012cc657381001e593e981f42aa5707acdd50658326790c9d0dc3
+hcloud_linux_amd64_sha256: 5f0ec3f08c9bd8eb0e058c8777e3eaed432df9122b336bd10b37a68a5521cb94
+yq_linux_amd64_sha256: 0c2b24e645b57d8e7c0566d18643a6d4f5580feeea3878127354a46f2a1e4598
+node_exporter_linux_amd64_sha256: a550cd5c05f760b7934a2d0afad66d2e92e681482f5f57a917465b1fba3b02a6
+promtail_version: "3.0.0"
+promtail_linux_amd64_sha256: 3a5120422a2a8aa26659a188d63f1425707ed42a1af274acc0a7797d851acf48
 
 # Network
 private_network_cidr: 10.0.0.0/16
@@ -106,6 +119,11 @@ vault_chart_version: "0.34.0"
 vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 20Gi
 eso_enabled: true
+vault_tls_disabled: false
+vault_verify_tls: true
+vault_encrypt_secrets: true
+vault_password_file: ~/.vault_pass
+vault_init_output_file: "{{ playbook_dir }}/.vault-init.json"
 
 # Databases - tier-specific
 # renovate: datasource=github-releases depName=percona/percona-postgresql-operator
@@ -125,6 +143,36 @@ gitlab_runner_concurrent_jobs: 10
 argocd_chart_version: "9.5.14"
 # renovate: datasource=github-releases depName=argoproj/argo-cd
 argocd_version: "v3.4.2"
+argocd_insecure_mode: false
+argocd_allowed_source_repos:
+  - "https://gitlab.{{ domain }}/platform/*"
+argocd_allowed_namespaces:
+  - default
+  - applications
+argocd_allowed_cluster_resources:
+  - group: ""
+    kind: Namespace
+argocd_allowed_namespace_resources:
+  - group: "apps"
+    kind: Deployment
+  - group: "apps"
+    kind: StatefulSet
+  - group: "apps"
+    kind: DaemonSet
+  - group: "batch"
+    kind: Job
+  - group: "batch"
+    kind: CronJob
+  - group: ""
+    kind: Service
+  - group: ""
+    kind: ConfigMap
+  - group: ""
+    kind: Secret
+  - group: "networking.k8s.io"
+    kind: NetworkPolicy
+  - group: "gateway.networking.k8s.io"
+    kind: HTTPRoute
 
 # Observability - tier-specific
 log_stack: "{{ 'loki' if tier in ['minimal', 'small'] else 'elk' }}"  # Options: loki, elk, efk
@@ -171,7 +219,7 @@ eso_chart_version: "2.7.0"
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30
 backup_storage_type: s3
-backup_storage_bucket: "{{ 'backups.' ~ (domain | default('local', true)) }}"
+backup_storage_bucket: backups
 backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
 backup_storage_path_style: true
 backup_verify_all: true
@@ -193,6 +241,7 @@ restore_drill_auto_cleanup: true
 restore_drill_cleanup_after_hours: 24
 restore_safety_gate_skip_verification: false
 restore_safety_gate_confirm_required: true
+backup_enabled: "{{ tier in ['medium', 'production'] }}"
 
 # Daytona workspace platform (optional; disabled by default)
 deploy_daytona: false
@@ -208,11 +257,11 @@ daytona_base_domain: "daytona.{{ domain }}"
 daytona_values_override: {}
 
 # Neutral shared Dragonfly credential; generated once by generate-secrets.
-dragonly_password: ""
-dragonfly_password: "{{ dragonfly_password | default('') }}"
+dragonfly_password: ""
 
 # Observability enhancements
-bastion_log_shipping: true
+bastion_log_shipping: false  # Requires an explicitly designed private ingestion endpoint.
+control_plane_log_shipping: false
 hetzner_metrics_enabled: true
 
 # Distributed Tracing (Tempo)
@@ -221,7 +270,23 @@ tempo_retention: "{{ '24h' if tier == 'medium' else '72h' if tier == 'production
 tempo_storage_size: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' if tier == 'medium' else '40Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"
 
-# HIPAA Compliance (enable for healthcare/regulated workloads)
-hipaa_compliance: true
-internal_tls_enabled: "{{ hipaa_compliance }}"
+# Internal service TLS is enabled independently of compliance claims.
+# HIPAA mode is opt-in and still requires an organization-specific risk assessment.
+internal_tls_enabled: true
+hipaa_compliance: false
 log_redaction_enabled: "{{ hipaa_compliance }}"
+
+# Optional component defaults. Profiles can override these through their nested
+# `<component>.enabled` setting; the playbook normalizes both forms.
+deploy_elasticsearch: "{{ tier in ['medium', 'production'] }}"
+deploy_gitlab: "{{ tier != 'minimal' }}"
+deploy_gitops: true
+deploy_observability: true
+deploy_databases: true
+deploy_postgresql: true
+deploy_mongodb: "{{ tier in ['medium', 'production'] }}"
+deploy_autoscaling: true
+deploy_dragonfly: "{{ tier in ['medium', 'production'] }}"
+deploy_temporal: "{{ tier in ['medium', 'production'] }}"
+deploy_postal: "{{ tier in ['medium', 'production'] }}"
+edge_cdn_confirm: false

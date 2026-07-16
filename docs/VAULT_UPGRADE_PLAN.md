@@ -59,7 +59,7 @@
 
 **Command:**
 ```bash
-kubectl exec -n vault vault-0 -- vault operator raft snapshot backup /tmp/pre-upgrade.snap
+kubectl exec -n vault vault-0 -- vault operator raft snapshot save /tmp/pre-upgrade.snap
 aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3 cp /tmp/pre-upgrade.snap s3://vault-snapshots/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ).snap
 ```
 
@@ -120,7 +120,7 @@ Each minor version step follows the **same 7-step procedure**. Repeat for every 
 ```bash
 # Take snapshot on the leader
 LEADER=$(kubectl exec -n vault vault-0 -- vault status -format=json | jq -r '.ha_current')
-kubectl exec -n vault vault-0 -- vault operator raft snapshot backup /tmp/pre-step-N.snap
+kubectl exec -n vault vault-0 -- vault operator raft snapshot save /tmp/pre-step-N.snap
 
 # Verify snapshot file size
 kubectl exec -n vault vault-0 -- ls -lh /tmp/pre-step-N.snap
@@ -331,10 +331,16 @@ kubectl exec -n vault vault-0 -- vault status
 Use the restore drill script to practice restoration in an isolated namespace:
 
 ```bash
-./scripts/vault-restore-drill.sh --snapshot vault-snapshots/pre-upgrade.snap
+export OBJECT_STORAGE_ENDPOINT=https://s3.example.internal
+export VAULT_RESTORE_UNSEAL_KEY='...'
+export VAULT_RESTORE_TOKEN='...'
+export VAULT_RESTORE_VERIFY_PATH='secret/known-recovery-sentinel'
+./scripts/vault-restore-drill.sh --snapshot-name pre-upgrade.snap
 ```
 
-This creates an isolated `vault-restore-drill` namespace, deploys a single Vault instance with the restored snapshot, verifies secrets, and auto-cleans.
+This creates an isolated `vault-restore-drill` namespace, restores the Raft
+snapshot, verifies a known pre-existing secret plus a read/write round trip,
+and cleans up. `--skip-cleanup` preserves the namespace for manual inspection.
 
 ---
 

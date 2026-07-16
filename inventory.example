@@ -89,14 +89,20 @@ all:
     backup_retention_days: 30
 
     # ----------------------------------------
-    # nest-react-boilerplate Application (optional)
+    # Optional platform components
     # ----------------------------------------
-    # Deployed via ArgoCD from nest-react-boilerplate/deploy/k8s/
-    # Requires Node.js 24 on the build environment
-    deploy_nest_react_boilerplate: false
-    # app_name: nest-react-boilerplate
-    # app_namespace: production
-    # git_provider: gitlab-selfhosted
+    deploy_elasticsearch: true
+    deploy_gitlab: true
+    deploy_gitops: true
+    deploy_databases: true
+    deploy_postgresql: true
+    deploy_mongodb: true
+    deploy_dragonfly: true
+    deploy_temporal: true
+    deploy_postal: true
+
+    # Application repositories are registered in Argo CD separately and must
+    # comply with the configured AppProject source/namespace allowlists.
 
     # ----------------------------------------
     # Daytona Workspaces (optional)

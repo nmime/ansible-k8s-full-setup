@@ -302,18 +302,19 @@ class TestValidateLocalE2E:
             f"--fail-fast not recognized (exit {result.returncode}): {result.stderr}"
 
 
-class TestNoGitHubActionsWorkflow:
-    """Verify the GitHub Actions workflow files have been removed."""
+class TestGitHubActionsWorkflow:
+    """Verify CI executes the same fail-closed validation as local runs."""
 
-    def test_ci_yml_removed(self):
+    def test_ci_yml_exists(self):
         ci_path = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
-        assert not os.path.exists(ci_path), ".github/workflows/ci.yml should be removed"
+        assert os.path.exists(ci_path), ".github/workflows/ci.yml is required"
 
-    def test_workflows_directory_removed_or_empty(self):
-        workflows_path = os.path.join(REPO_ROOT, ".github", "workflows")
-        if os.path.isdir(workflows_path):
-            files = os.listdir(workflows_path)
-            assert len(files) == 0, f".github/workflows/ should be empty, found: {files}"
+    def test_ci_runs_mandatory_validation(self):
+        ci_path = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+        with open(ci_path, "r") as f:
+            content = f.read()
+        assert "scripts/validate-local.sh" in content
+        assert "ansible-playbook playbooks/deploy_platform.yml --syntax-check" in content
 
     def test_ci_automation_doc_mentions_local_validation(self):
         doc_path = os.path.join(REPO_ROOT, "docs", "CI_AUTOMATION.md")
@@ -322,13 +323,9 @@ class TestNoGitHubActionsWorkflow:
         assert "local" in content.lower(), "Doc should mention local validation"
         assert "validate-local.sh" in content, "Doc should reference validate-local.sh"
 
-    def test_ci_automation_doc_no_stale_github_actions_refs(self):
-        """The doc should not reference .github/workflows/ paths as active."""
+    def test_ci_automation_doc_references_active_workflow(self):
         doc_path = os.path.join(REPO_ROOT, "docs", "CI_AUTOMATION.md")
         with open(doc_path, "r") as f:
             content = f.read()
-        # Should not reference ci.yml as an active workflow file
-        assert ".github/workflows/ci.yml" not in content, \
-            "Doc should not reference the removed ci.yml workflow"
-        assert ".github/workflows/trivy.yml" not in content, \
-            "Doc should not reference a removed trivy.yml workflow"
+        assert ".github/workflows/ci.yml" in content
+        assert "validate-local.sh" in content

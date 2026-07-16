@@ -1,0 +1,73 @@
+---
+- name: Require a private Elasticsearch ingestion endpoint
+  ansible.builtin.assert:
+    that:
+      - bastion_log_ingest_host is defined
+      - bastion_log_ingest_host | length > 0
+    fail_msg: >-
+      Set bastion_log_ingest_host to a private Elasticsearch endpoint whose
+      certificate is valid for that hostname.
+
+- name: Install the pinned Filebeat package on the bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }} 'bash -s' <<'EOF'
+    set -euo pipefail
+    install -d -m 0755 /usr/share/keyrings
+    curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch \
+      | gpg --dearmor --yes -o /usr/share/keyrings/elasticsearch-keyring.gpg
+    printf '%s\n' 'deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] https://artifacts.elastic.co/packages/9.x/apt stable main' \
+      > /etc/apt/sources.list.d/elastic-9.x.list
+    apt-get update
+    apt-get install -y filebeat={{ es_version }}
+    EOF
+
+- name: Read Elasticsearch CA for bastion log shipping
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: elasticsearch
+    name: es-tls-certs
+  register: filebeat_es_tls
+
+- name: Require Elasticsearch CA before configuring Filebeat
+  ansible.builtin.assert:
+    that:
+      - filebeat_es_tls.resources | length == 1
+      - filebeat_es_tls.resources[0].data['ca.crt'] | length > 0
+      - es_superuser_password | length >= 16
+    fail_msg: Elasticsearch CA or credentials are unavailable.
+  no_log: true
+
+- name: Install Elasticsearch CA on the bastion
+  ansible.builtin.shell: >-
+    printf '%s' '{{ filebeat_es_tls.resources[0].data['ca.crt'] }}' |
+    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }}
+    'install -d -m 0755 /etc/filebeat && base64 -d > /etc/filebeat/es-ca.crt && chmod 0644 /etc/filebeat/es-ca.crt'
+  no_log: true
+
+- name: Configure verified Filebeat output on the bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }} 'bash -s' <<'EOF'
+    set -e
+    cat > /etc/filebeat/filebeat.yml <<'CONFIG'
+    filebeat.inputs:
+      - type: filestream
+        id: bastion
+        enabled: true
+        paths: [/var/log/*.log, /var/log/syslog, /var/log/auth.log]
+        fields: {host: {{ project_name }}-bastion, job: bastion}
+        fields_under_root: true
+    output.elasticsearch:
+      hosts: ["https://{{ bastion_log_ingest_host }}:{{ bastion_log_ingest_port | default(9200) }}"]
+      username: elastic
+      password: "{{ es_superuser_password }}"
+      ssl.verification_mode: full
+      ssl.certificate_authorities: ["/etc/filebeat/es-ca.crt"]
+    setup.ilm.enabled: false
+    setup.template.name: bastion
+    setup.template.pattern: bastion-*
+    CONFIG
+    systemctl enable filebeat
+    systemctl restart filebeat
+    EOF
+  no_log: true

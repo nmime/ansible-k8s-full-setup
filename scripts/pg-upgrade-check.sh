@@ -5,7 +5,7 @@
 #
 # Options:
 #   --pg-namespace       Namespace of the PG cluster (default: databases)
-#   --pg-cluster         PostgresCluster CR name (default: postgres-operator)
+#   --pg-cluster         PerconaPGCluster CR name (default: k8s-pg)
 #   --s3-endpoint        S3 / object storage endpoint URL
 #   --s3-bucket          S3 bucket for pgBackRest backups
 #   --backup-max-age     Max acceptable backup age in hours (default: 24)
@@ -15,9 +15,6 @@
 #
 # Exit codes: 0 = pass, 1 = failure, 2 = script error
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
 
 # ── Colour helpers ──────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -31,9 +28,9 @@ section() { echo -e "\n${BOLD}── $* ──${NC}"; }
 
 # ── Defaults ────────────────────────────────────────────────────
 PG_NS="databases"
-PG_CLUSTER="postgres-operator"
+PG_CLUSTER="k8s-pg"
 S3_ENDPOINT="${OBJECT_STORAGE_ENDPOINT:-}"
-S3_BUCKET="${PGBACKREST_BUCKET:-pgbackrest-backups}"
+S3_BUCKET="${PGBACKREST_BUCKET:-backups}"
 BACKUP_MAX_AGE=24
 MIN_DISK_GB=20
 DRY_RUN=false
@@ -65,7 +62,12 @@ done
 
 # ── Helpers ─────────────────────────────────────────────────────
 exec_in_pg() {
-  kubectl exec -n "$PG_NS" "${PG_CLUSTER}-0" -- "$@" 2>/dev/null
+  local primary
+  primary=$(kubectl get pod -n "$PG_NS" \
+    -l "postgres-operator.crunchydata.com/cluster=${PG_CLUSTER},postgres-operator.crunchydata.com/role=master" \
+    -o jsonpath='{.items[0].metadata.name}')
+  [ -n "$primary" ] || return 1
+  kubectl exec -n "$PG_NS" "$primary" -c database -- "$@" 2>/dev/null
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -80,15 +82,24 @@ section "1. Tooling"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] tooling skipped"
 else
-  command -v kubectl &>/dev/null && check_pass "kubectl" \
-    || check_fail "kubectl not found"
+  if command -v kubectl &>/dev/null; then
+    check_pass "kubectl"
+  else
+    check_fail "kubectl not found"
+  fi
 
-  command -v helm &>/dev/null && check_pass "helm" \
-    || check_fail "helm not found"
+  if command -v helm &>/dev/null; then
+    check_pass "helm"
+  else
+    check_fail "helm not found"
+  fi
 
   if [ -n "$S3_ENDPOINT" ]; then
-    command -v aws &>/dev/null && check_pass "aws CLI" \
-      || check_fail "aws CLI not found"
+    if command -v aws &>/dev/null; then
+      check_pass "aws CLI"
+    else
+      check_fail "aws CLI not found"
+    fi
   else
     check_warn "S3_ENDPOINT not set — S3 checks will be skipped"
   fi
@@ -103,8 +114,11 @@ else
   STATUS=$(echo "$RELEASE" | jq -r '.info.status // "unknown"' 2>/dev/null)
   VERSION=$(echo "$RELEASE" | jq -r '.chart.metadata.version // "unknown"' 2>/dev/null)
 
-  [ "$STATUS" = "deployed" ] && check_pass "Helm release deployed" \
-    || check_warn "Helm release status: $STATUS"
+  if [ "$STATUS" = "deployed" ]; then
+    check_pass "Helm release deployed"
+  else
+    check_warn "Helm release status: $STATUS"
+  fi
   info "Chart version: $VERSION"
 
   if [ "$VERSION" = "3.0.0" ]; then
@@ -116,15 +130,15 @@ else
   fi
 fi
 
-# ── 3. PostgresCluster CR ───────────────────────────────────────
-section "3. PostgresCluster CR"
+# ── 3. PerconaPGCluster CR ─────────────────────────────────────
+section "3. PerconaPGCluster CR"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] CR check skipped"
 else
-  if kubectl get postgrescluster "$PG_CLUSTER" -n "$PG_NS" &>/dev/null; then
-    check_pass "PostgresCluster '$PG_CLUSTER' exists"
+  if kubectl get perconapgcluster "$PG_CLUSTER" -n "$PG_NS" &>/dev/null; then
+    check_pass "PerconaPGCluster '$PG_CLUSTER' exists"
   else
-    check_fail "PostgresCluster '$PG_CLUSTER' not found"
+    check_fail "PerconaPGCluster '$PG_CLUSTER' not found"
   fi
 fi
 
@@ -133,12 +147,16 @@ section "4. Primary Pod Health"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] pod health skipped"
 else
-  PRIMARY=$(kubectl get pod -n "$PG_NS" -l "percona.com/cluster=${PG_CLUSTER},role=primary" \
+  PRIMARY=$(kubectl get pod -n "$PG_NS" \
+    -l "postgres-operator.crunchydata.com/cluster=${PG_CLUSTER},postgres-operator.crunchydata.com/role=master" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
   if [ -n "$PRIMARY" ]; then
     PHASE=$(kubectl get pod "$PRIMARY" -n "$PG_NS" -o jsonpath='{.status.phase}')
-    [ "$PHASE" = "Running" ] && check_pass "Primary $PRIMARY is Running" \
-      || check_fail "Primary $PRIMARY is $PHASE"
+    if [ "$PHASE" = "Running" ]; then
+      check_pass "Primary $PRIMARY is Running"
+    else
+      check_fail "Primary $PRIMARY is $PHASE"
+    fi
   else
     check_fail "No primary pod found"
   fi
@@ -168,7 +186,7 @@ section "6. pgBackRest Backup"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] backup check skipped"
 else
-  BACKUP_INFO=$(kubectl exec -n "$PG_NS" -c pgbackrest -- pgbackrest info 2>/dev/null || echo "")
+  BACKUP_INFO=$(exec_in_pg pgbackrest info 2>/dev/null || echo "")
   if [ -n "$BACKUP_INFO" ]; then
     check_pass "pgBackRest info retrievable"
     # Try to find the latest full backup timestamp
@@ -196,12 +214,12 @@ if [ "$DRY_RUN" = "true" ]; then
 elif [ -z "$S3_ENDPOINT" ]; then
   check_warn "S3_ENDPOINT not set"
 else
-  S3_OUT=$(aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${S3_BUCKET}/backup/" 2>&1 || echo "")
+  S3_OUT=$(aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${S3_BUCKET}/pgbackrest/${PG_CLUSTER}/repo2/" 2>&1 || echo "")
   if [ -n "$S3_OUT" ]; then
     FILE_COUNT=$(echo "$S3_OUT" | wc -l)
-    check_pass "Found $FILE_COUNT files in s3://${S3_BUCKET}/backup/"
+    check_pass "Found $FILE_COUNT files in the ${PG_CLUSTER}/repo2 repository"
   else
-    check_fail "No backup files in s3://${S3_BUCKET}/backup/"
+    check_fail "No backup files in the ${PG_CLUSTER}/repo2 repository"
   fi
 fi
 
@@ -210,15 +228,18 @@ section "8. Disk Space"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] disk space skipped"
 else
-  PVC_TOTAL=$(kubectl get pvc -n "$PG_NS" -l "percona.com/cluster=${PG_CLUSTER}" \
+  PVC_TOTAL=$(kubectl get pvc -n "$PG_NS" -l "postgres-operator.crunchydata.com/cluster=${PG_CLUSTER}" \
     -o jsonpath='{range .items[*]}{.spec.resources.requests.storage}{"\n"}{end}' 2>/dev/null \
     | grep -oP '[0-9]+' | awk '{s+=$1} END {print s+0}')
   if [ "$PVC_TOTAL" -gt 0 ]; then
     GB=$((PVC_TOTAL / 1024))
     NEED=$((GB * 2))
     info "Current PVC total: ~${GB} Gi; restore needs ~${NEED} Gi"
-    [ "$NEED" -le "$MIN_DISK_GB" ] && check_pass "Within disk budget" \
-      || check_warn "Restore may need ${NEED} Gi (budget ${MIN_DISK_GB} Gi)"
+    if [ "$NEED" -le "$MIN_DISK_GB" ]; then
+      check_pass "Within disk budget"
+    else
+      check_warn "Restore may need ${NEED} Gi (budget ${MIN_DISK_GB} Gi)"
+    fi
   else
     check_warn "Could not determine PVC sizes"
   fi
@@ -229,7 +250,8 @@ section "9. PgBouncer"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] PgBouncer check skipped"
 else
-  PGB=$(kubectl get svc -n "$PG_NS" -l "percona.com/component=proxy" \
+  PGB=$(kubectl get svc -n "$PG_NS" \
+    -l "postgres-operator.crunchydata.com/cluster=${PG_CLUSTER},postgres-operator.crunchydata.com/role=pgbouncer" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
   if [ -n "$PGB" ]; then
     PORT=$(kubectl get svc "$PGB" -n "$PG_NS" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null)
@@ -244,11 +266,14 @@ section "10. PG Operator 3.0 Chart"
 if [ "$DRY_RUN" = "true" ]; then
   check_pass "[DRY-RUN] chart check skipped"
 else
-  helm repo add percona https://percona.github.io/percona-helm-charts 2>/dev/null || true
-  helm repo update 2>/dev/null || true
+  helm repo add percona https://percona.github.io/percona-helm-charts --force-update
+  helm repo update percona
   CHART=$(helm search repo percona/pg-operator --versions 2>/dev/null | grep "3.0" || echo "")
-  [ -n "$CHART" ] && check_pass "PG Operator 3.0 chart available" \
-    || check_warn "PG Operator 3.0 chart not found in repo"
+  if [ -n "$CHART" ]; then
+    check_pass "PG Operator 3.0 chart available"
+  else
+    check_warn "PG Operator 3.0 chart not found in repo"
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────

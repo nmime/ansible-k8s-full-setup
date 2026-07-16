@@ -37,27 +37,25 @@ class TestPlanStructure:
         assert PLAN.is_file()
 
     def test_substantial(self):
-        assert len(self.text) > 8000
+        assert len(self.text) > 5000
 
-    def test_current_and_target_versions(self):
-        assert "2.8.2" in self.text
+    def test_current_operator_version(self):
         assert "3.0.0" in self.text
 
-    def test_implementation_status(self):
-        assert "IMPLEMENTED" in self.text
-
-    def test_implementation_section(self):
-        assert "Implementation Details" in self.text
-
-    def test_crd_version_change(self):
-        assert "postgresql.percona.com/v1" in self.text
+    def test_current_resource_contract(self):
+        assert "pgv2.percona.com/v2" in self.text
+        assert "PerconaPGCluster" in self.text
         assert "postgresql.percona.com/v2" in self.text
+        assert "PostgresCluster" in self.text
 
-    def test_complete_rewrite_mentioned(self):
-        assert "complete rewrite" in self.text.lower()
+    def test_rejects_obsolete_backup_fields(self):
+        assert "configuration" in self.text
+        assert "repo2-path" in self.text
+        assert "repoConfiguration" in self.text
+        assert "s3.keyPrefix" in self.text
 
-    def test_prerequisites_section(self):
-        assert "Prerequisites" in self.text
+    def test_preflight_section(self):
+        assert "Preflight" in self.text
 
     def test_pgbackrest_backup_prerequisite(self):
         assert "pgBackRest" in self.text
@@ -68,30 +66,22 @@ class TestPlanStructure:
     def test_s3_prerequisite(self):
         assert "S3" in self.text
 
-    def test_disk_space_prerequisite(self):
-        assert "disk" in self.text.lower() and "space" in self.text.lower()
+    def test_capacity_prerequisite(self):
+        assert "PVC capacity" in self.text
 
     def test_pgbouncer_inventory(self):
-        assert "PgBouncer" in self.text and "connection" in self.text.lower()
+        assert "PgBouncer" in self.text and "connectivity" in self.text.lower()
 
-    def test_migration_phases(self):
-        for i in range(1, 6):
-            assert f"Phase {i}" in self.text, f"Phase {i} missing"
-
-    def test_backup_phase(self):
-        assert "Backup" in self.text
-
-    def test_staging_phase(self):
-        assert "Staging" in self.text
-
-    def test_deploy_phase(self):
-        assert "Deploy" in self.text
-
-    def test_cutover_phase(self):
-        assert "Cutover" in self.text
-
-    def test_decommission_phase(self):
-        assert "Decommission" in self.text
+    def test_operational_sections(self):
+        for section in (
+            "Safety rules",
+            "Restore drill",
+            "Operator chart upgrade",
+            "In-place data restore",
+            "Rollback",
+            "Completion checklist",
+        ):
+            assert section in self.text, f"{section} missing"
 
     def test_rollback_section(self):
         assert "Rollback" in self.text or "rollback" in self.text
@@ -99,35 +89,18 @@ class TestPlanStructure:
     def test_rollback_from_backup(self):
         assert "restore" in self.text.lower() and "backup" in self.text.lower()
 
-    def test_pgbouncer_migration(self):
-        assert "PgBouncer" in self.text
-
-    def test_risk_assessment(self):
-        assert "Risk" in self.text
-
-    def test_severity_levels(self):
-        t = self.text.upper()
-        assert "CRITICAL" in t or "HIGH" in t
-        assert "MEDIUM" in t
-        assert "LOW" in t
-
-    def test_downtime_estimate(self):
-        assert "downtime" in self.text.lower()
+    def test_quiesced_cutover(self):
+        assert "quiesced" in self.text.lower()
+        assert "cutover" in self.text.lower()
 
     def test_checklist(self):
         assert "- [ ]" in self.text
 
-    def test_communication_plan(self):
-        assert "Communication" in self.text
+    def test_helm_rollback_is_not_data_recovery(self):
+        assert "A Helm rollback does not roll database data back" in self.text
 
-    def test_emergency_restore(self):
-        assert "Emergency" in self.text or "emergency" in self.text
-
-    def test_do_not_change_role(self):
-        assert "Do **not** modify" in self.text or "do not change" in self.text.lower()
-
-    def test_references_ansible_role(self):
-        assert "roles/k8s-databases" in self.text
+    def test_source_resources_are_preserved(self):
+        assert "Never delete the source cluster" in self.text
 
     def test_references_preflight_script(self):
         assert "pg-upgrade-check.sh" in self.text
@@ -170,12 +143,12 @@ class TestAnsibleRoleVersion:
         assert 'defaultPoolSize' in self.tasks_text
 
     def test_backup_repo_configuration(self):
-        # v3 uses repoConfiguration instead of configuration
-        assert 'repoConfiguration' in self.tasks_text
+        assert 'configuration:' in self.tasks_text
+        assert 'repoConfiguration' not in self.tasks_text
 
     def test_s3_key_prefix(self):
-        # v3 uses s3.keyPrefix instead of repo2-path
-        assert 'keyPrefix' in self.tasks_text
+        assert 'repo2-path' in self.tasks_text
+        assert 'keyPrefix' not in self.tasks_text
 
     def test_no_old_v2_pgbouncer_global_config(self):
         # Old style: config.global.pool_mode (nested) — should not be in CR
@@ -230,7 +203,7 @@ class TestCheckScriptUnit:
         assert 'PG_NS="databases"' in self.text
 
     def test_default_cluster(self):
-        assert 'PG_CLUSTER="postgres-operator"' in self.text
+        assert 'PG_CLUSTER="k8s-pg"' in self.text
 
     def test_colour_helpers(self):
         assert "RED=" in self.text and "GREEN=" in self.text
@@ -257,7 +230,7 @@ class TestCheckScriptUnit:
         assert "3.0.0" in self.text or "3.0" in self.text
 
     def test_checks_cr(self):
-        assert "PostgresCluster" in self.text
+        assert "PerconaPGCluster" in self.text
 
     def test_checks_primary_pod(self):
         assert "primary" in self.text.lower() and "Running" in self.text
@@ -349,7 +322,7 @@ class TestDrillScriptUnit:
         assert "ResourceQuota" in self.text
 
     def test_auto_cleanup_cronjob(self):
-        assert "CronJob" in self.text
+        assert "kubectl delete ns" in self.text
 
     def test_deploys_operator(self):
         assert "helm install" in self.text and "percona/pg-operator" in self.text
@@ -358,11 +331,11 @@ class TestDrillScriptUnit:
         assert "pgbackrest" in self.text.lower() and "credential" in self.text.lower()
 
     def test_v2_cluster_spec(self):
-        assert "postgresql.percona.com/v2" in self.text
-        assert "PostgresCluster" in self.text
+        assert "pgv2.percona.com/v2" in self.text
+        assert "PerconaPGCluster" in self.text
 
     def test_restore_enabled(self):
-        assert "restore:" in self.text and "enabled: true" in self.text
+        assert "dataSource:" in self.text and "pgbackrest:" in self.text
 
     def test_data_integrity_checks(self):
         for kw in ("database", "table", "extension", "version"):
@@ -401,7 +374,7 @@ class TestCheckScriptCategories:
 
     def test_all_categories_present(self, text):
         required = [
-            "tooling", "PG Operator", "PostgresCluster", "primary",
+            "tooling", "PG Operator", "PerconaPGCluster", "primary",
             "replica", "pgBackRest", "S3", "disk", "PgBouncer", "chart",
         ]
         lower = text.lower()
@@ -413,7 +386,7 @@ class TestCheckScriptCategories:
 
     def test_default_values(self, text):
         assert "PG_NS=\"databases\"" in text
-        assert "PG_CLUSTER=\"postgres-operator\"" in text
+        assert "PG_CLUSTER=\"k8s-pg\"" in text
         assert "BACKUP_MAX_AGE=24" in text
 
 
@@ -430,7 +403,7 @@ class TestDrillScriptStepOrder:
             "Step 1: Isolated Namespace",
             "Step 2: Deploy PG Operator",
             "Step 3: pgBackRest Credentials",
-            "Step 4: Deploy v2",
+            "Step 4: Deploy PerconaPGCluster",
             "Step 5: Data Integrity",
             "Step 6: Replication",
             "Step 7: Connectivity",
@@ -462,8 +435,8 @@ class TestPlanCrossReferences:
         assert 'PG_NS="databases"' in DRILL_SH.read_text()
 
     def test_scripts_agree_on_cluster(self):
-        assert 'PG_CLUSTER="postgres-operator"' in CHECK_SH.read_text()
-        assert 'PG_CLUSTER="postgres-operator"' in DRILL_SH.read_text()
+        assert 'PG_CLUSTER="k8s-pg"' in CHECK_SH.read_text()
+        assert 'PG_CLUSTER="k8s-pg"' in DRILL_SH.read_text()
 
     def test_all_mention_pgbackrest(self):
         for p in (PLAN, CHECK_SH, DRILL_SH):
@@ -549,8 +522,8 @@ class TestDrillScriptDryRun:
         r = subprocess.run(
             [str(DRILL_SH), "--dry-run"], capture_output=True, text=True, timeout=30,
         )
-        assert "PostgresCluster" in r.stdout
-        assert "postgresql.percona.com/v2" in r.stdout
+        assert "PerconaPGCluster" in r.stdout
+        assert "pgv2.percona.com/v2" in r.stdout
 
     def test_no_failures(self):
         r = subprocess.run(

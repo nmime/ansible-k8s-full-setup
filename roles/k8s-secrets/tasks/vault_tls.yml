@@ -1,0 +1,92 @@
+---
+- name: Create self-signed bootstrap issuer for the internal CA
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: platform-selfsigned
+      spec:
+        selfSigned: {}
+
+- name: Create the platform internal CA certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: platform-internal-ca
+        namespace: cert-manager
+      spec:
+        isCA: true
+        commonName: platform-internal-ca
+        secretName: internal-ca-secret
+        duration: 87600h
+        renewBefore: 720h
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+        issuerRef:
+          name: platform-selfsigned
+          kind: ClusterIssuer
+
+- name: Wait for the platform internal CA secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: cert-manager
+    name: internal-ca-secret
+  register: internal_ca_secret
+  until: internal_ca_secret.resources | length == 1
+  retries: 30
+  delay: 5
+
+- name: Create the internal CA issuer
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: internal-ca
+      spec:
+        ca:
+          secretName: internal-ca-secret
+
+- name: Issue the Vault internal TLS certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: vault-internal-tls
+        namespace: "{{ vault_ns }}"
+      spec:
+        secretName: vault-internal-tls
+        duration: 8760h
+        renewBefore: 720h
+        issuerRef:
+          name: internal-ca
+          kind: ClusterIssuer
+        dnsNames:
+          - vault
+          - "vault.{{ vault_ns }}"
+          - "vault.{{ vault_ns }}.svc"
+          - "vault.{{ vault_ns }}.svc.cluster.local"
+          - vault-internal
+          - "vault-internal.{{ vault_ns }}.svc.cluster.local"
+          - "*.vault-internal.{{ vault_ns }}.svc.cluster.local"
+
+- name: Wait for the Vault TLS secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ vault_ns }}"
+    name: vault-internal-tls
+  register: vault_tls_secret
+  until: vault_tls_secret.resources | length == 1
+  retries: 30
+  delay: 5

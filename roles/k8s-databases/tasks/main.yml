@@ -4,10 +4,10 @@
     pg_operator_ver: '{{ pg_operator_version | default("3.0.0") }}'
     psmdb_operator_ver: 1.22.0
     pg_version: '{{ postgresql_version | default(18) }}'
-    pg_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
+    pg_replicas: '{{ postgresql_replicas | default(3 if tier in [''medium'', ''production''] else 1) }}'
     pg_storage: '{{ postgresql_storage | default(''20Gi'') }}'
     pg_proxy_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
-    mongo_replicas: '{{ 3 if tier in [''medium'', ''production''] else 1 }}'
+    mongo_replicas: '{{ mongodb_replicas | default(3 if tier in [''medium'', ''production''] else 1) }}'
     mongo_storage: '{{ mongodb_storage | default(''20Gi'') }}'
 - name: Create databases namespace
   kubernetes.core.k8s:
@@ -25,6 +25,9 @@
   retries: 3
   delay: 10
   until: _r_create_databases_namespace is not failed
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Add Percona Helm repository
   kubernetes.core.helm_repository:
     name: percona
@@ -33,11 +36,15 @@
   retries: 3
   delay: 10
   until: _r_add_percona_helm_repository is not failed
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Check PG Operator Helm release status
   ansible.builtin.command: helm status percona-pg-operator -n {{ db_ns }} -o json
   register: _pg_operator_helm_status
   failed_when: false
   changed_when: false
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Remove failed PG Operator Helm release before reinstall
   kubernetes.core.helm:
     name: percona-pg-operator
@@ -45,6 +52,7 @@
     release_state: absent
     wait: true
   when:
+  - platform_postgresql_enabled | default(true) | bool
   - _pg_operator_helm_status.rc == 0
   - (_pg_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
 - name: Install Percona PG Operator
@@ -61,6 +69,7 @@
   retries: 3
   delay: 30
   until: _r_install_percona_pg_operator is not failed
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Increase PG Operator progressDeadlineSeconds for slow image pulls
   shell: |
     DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
@@ -71,6 +80,7 @@
   delay: 15
   until: _r_patch_pg_operator_progress_deadline.rc == 0
   changed_when: _r_patch_pg_operator_progress_deadline.rc == 0
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Wait for PG Operator to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -82,7 +92,7 @@
     pg_operator_deploy.resources | length > 0 and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
-  failed_when: false
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Create pgbackrest S3 credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -103,6 +113,7 @@
   retries: 3
   delay: 10
   until: _r_create_pgbackrest_s3_credentials_secret is not failed
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
     state: present
@@ -122,6 +133,9 @@
   delay: 10
   until: _r_create_pmm_credentials_secret_for_databa is not failed
   no_log: true
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Create PostgreSQL cluster (PG Operator 3.x — v2 API)
   kubernetes.core.k8s:
     state: present
@@ -191,15 +205,15 @@
                     topologyKey: kubernetes.io/hostname
         backups:
           pgbackrest:
-            image: percona/percona-pgbackrest:2.58.0-1
-            repoConfiguration:
+            image: percona/pgbackrest:2.58.0-2
+            configuration:
             - secret:
                 name: pgbackrest-s3-creds
-            repoHostConfiguration: []
             global:
               repo1-retention-full: '7'
               repo1-retention-diff: '4'
               repo2-s3-uri-style: path
+              repo2-path: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
               repo2-retention-full: '4'
               repo2-retention-full-type: count
             repos:
@@ -222,7 +236,6 @@
                 bucket: backups
                 endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
                 region: us-east-1
-                keyPrefix: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
         pmm:
           enabled: true
           image: percona/pmm-client:2.44.0
@@ -285,6 +298,7 @@
   retries: 3
   delay: 10
   until: _r_create_postgresql_cluster is not failed
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
     api_version: pgv2.percona.com/v2
@@ -296,12 +310,13 @@
     pg_cluster.resources | length > 0 and (pg_cluster.resources[0].status.state | default('')) == 'ready'
   retries: 60
   delay: 15
-  failed_when: false
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Check MongoDB Operator Helm release status
   ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
   register: _mongo_operator_helm_status
   failed_when: false
   changed_when: false
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Remove failed MongoDB Operator Helm release before reinstall
   kubernetes.core.helm:
     name: percona-server-mongodb-operator
@@ -309,6 +324,7 @@
     release_state: absent
     wait: true
   when:
+  - platform_mongodb_enabled | default(true) | bool
   - _mongo_operator_helm_status.rc == 0
   - (_mongo_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
 - name: Install Percona MongoDB Operator
@@ -325,6 +341,7 @@
   retries: 3
   delay: 30
   until: _r_install_percona_mongodb_operator is not failed
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Increase MongoDB Operator progressDeadlineSeconds for slow image pulls
   shell: |
     DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=psmdb-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
@@ -335,6 +352,7 @@
   delay: 15
   until: _r_patch_mongo_operator_progress_deadline.rc == 0
   changed_when: _r_patch_mongo_operator_progress_deadline.rc == 0
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Wait for MongoDB Operator to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -346,7 +364,7 @@
     mongo_operator_deploy.resources | length > 0 and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
-  failed_when: false
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Create MongoDB backup credentials for object storage
   no_log: true
   kubernetes.core.k8s:
@@ -364,6 +382,7 @@
   retries: 3
   delay: 10
   until: _r_create_mongodb_backup_credentials_for_mi is not failed
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
     state: present
@@ -442,6 +461,7 @@
   retries: 3
   delay: 10
   until: _r_create_mongodb_cluster is not failed
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Wait for MongoDB users secret to be created by operator
   kubernetes.core.k8s_info:
     kind: Secret
@@ -451,7 +471,7 @@
   until: mongo_users_secret.resources | length > 0
   retries: 30
   delay: 10
-  failed_when: false
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Patch MongoDB users secret with PMM_SERVER_API_KEY
   no_log: true
   kubernetes.core.k8s:
@@ -466,6 +486,7 @@
   retries: 3
   delay: 10
   until: _r_patch_mongo_pmm_secret is not failed
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
     api_version: psmdb.percona.com/v1
@@ -477,7 +498,7 @@
     mongo_cluster.resources | length > 0 and (mongo_cluster.resources[0].status.state | default('')) == 'ready'
   retries: 60
   delay: 15
-  failed_when: false
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Retrieve Percona-generated GitLab PG password
   kubernetes.core.k8s_info:
     kind: Secret
@@ -487,10 +508,11 @@
   until: gitlab_pg_secret.resources | length > 0
   retries: 30
   delay: 10
-  failed_when: false
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Set GitLab PG password fact
   set_fact:
     gitlab_pg_password: '{{ (gitlab_pg_secret.resources[0].data.password | b64decode) if gitlab_pg_secret.resources | length > 0 else '''' }}'
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Ensure GitLab namespace exists for cross-namespace secret
   kubernetes.core.k8s:
     state: present
@@ -506,6 +528,9 @@
   retries: 3
   delay: 10
   until: _r_ensure_gitlab_namespace_exists_for_cross is not failed
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - platform_gitlab_enabled | default(true) | bool
 - name: Create PostgreSQL connection secret for GitLab
   no_log: true
   kubernetes.core.k8s:
@@ -527,6 +552,9 @@
   retries: 3
   delay: 10
   until: _r_create_postgresql_connection_secret_for_ is not failed
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - platform_gitlab_enabled | default(true) | bool
 - name: Retrieve Percona-generated app PG password
   kubernetes.core.k8s_info:
     kind: Secret
@@ -536,10 +564,11 @@
   until: app_pg_secret.resources | length > 0
   retries: 30
   delay: 10
-  failed_when: false
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Set app PG password fact
   set_fact:
     app_pg_password: '{{ (app_pg_secret.resources[0].data.password | b64decode) if app_pg_secret.resources | length > 0 else '''' }}'
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Create PostgreSQL connection secret for application
   no_log: true
   kubernetes.core.k8s:
@@ -557,7 +586,9 @@
         port: '5432'
         database: '{{ app_name | default(''myapp'') }}'
         username: '{{ app_name | default(''myapp'') }}'
-  when: app_pg_password | length > 0
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - app_pg_password | length > 0
   register: _r_create_postgresql_connection_secret_for_app
   retries: 3
   delay: 10
@@ -584,6 +615,9 @@
     - '    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)'
     - '    Retention: PG 7 full / 4 diff, Mongo {{ backup_retention_days | default(30) }} days'
     - ==========================================
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Create default-deny for databases namespace
   kubernetes.core.k8s:
     state: present
@@ -595,6 +629,9 @@
         namespace: databases
       spec:
         endpointSelector: {}
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Allow PostgreSQL ingress from app/system namespaces
   kubernetes.core.k8s:
     state: present
@@ -617,6 +654,9 @@
               protocol: TCP
             - port: '27017'
               protocol: TCP
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Allow database egress (replication + backups)
   kubernetes.core.k8s:
     state: present
@@ -640,6 +680,9 @@
               protocol: TCP
         - toEntities:
           - kube-apiserver
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Create PostgreSQL ServiceMonitor
   kubernetes.core.k8s:
     state: present
@@ -658,3 +701,4 @@
         endpoints:
         - port: metrics
           interval: 30s
+  when: platform_postgresql_enabled | default(true) | bool
