@@ -67,6 +67,12 @@
       observability:
         namespaces: [monitoring]
         requires_data_confirmation: true
+      coroot:
+        namespaces: [coroot]
+        requires_data_confirmation: true
+        helm_releases:
+          - {name: coroot, namespace: coroot}
+          - {name: coroot-operator, namespace: coroot}
       tracing:
         namespaces: []
         requires_data_confirmation: false
@@ -120,6 +126,10 @@
       daytona:
         namespaces: ["{{ applications.daytona.namespace | default(daytona_namespace | default('daytona')) }}"]
         requires_data_confirmation: true
+      hipaa:
+        namespaces: []
+        requires_data_confirmation: false
+        removal_supported: false
 
   pre_tasks:
     - name: Validate the removal request
@@ -150,6 +160,7 @@
           gitlab-runner: "{{ platform_gitlab_runner_enabled }}"
           gitops: "{{ platform_gitops_enabled }}"
           observability: "{{ platform_observability_enabled }}"
+          coroot: "{{ platform_coroot_enabled }}"
           tracing: "{{ platform_tracing_enabled }}"
           autoscaling: "{{ platform_autoscaling_enabled }}"
           temporal: "{{ platform_temporal_enabled }}"
@@ -159,6 +170,7 @@
           apm: "{{ platform_apm_enabled }}"
           blackbox: "{{ platform_blackbox_enabled }}"
           daytona: "{{ platform_daytona_enabled }}"
+          hipaa: "{{ platform_hipaa_enabled }}"
 
     - name: Refuse removal while the component is selected
       ansible.builtin.assert:
@@ -171,6 +183,16 @@
     - name: Resolve the component removal specification
       ansible.builtin.set_fact:
         component_spec: "{{ component_catalog[target_component] }}"
+
+    - name: Refuse unsafe automated rollback of hardening controls
+      ansible.builtin.assert:
+        that:
+          - component_spec.removal_supported | default(true) | bool
+        fail_msg: >-
+          {{ target_component }} changes host and cluster security controls and
+          cannot be safely rolled back generically. Disabling it stops future
+          reconciliation; review and reverse each control under change
+          management if policy requires rollback.
 
     - name: Require explicit permission for data-bearing components
       ansible.builtin.assert:

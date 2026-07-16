@@ -7,12 +7,13 @@
 | Vault image       | `hashicorp/vault:1.21.2` | `hashicorp/vault:2.0.3` |
 | Helm chart        | `hashicorp/vault 0.32.0` | `hashicorp/vault 0.34.0` |
 | Storage backend   | Raft (auto-storage)  | Raft (auto-storage)  |
-| Unseal method     | Auto-unseal (K8s)  | Auto-unseal (K8s)    |
+| Unseal method     | Protected manual recovery material | Protected manual recovery material; external KMS only if separately designed |
 | Replicas          | 1 or 3 (tier)      | 1 or 3 (tier)        |
-| Expected downtime | N/A (planned)      | **0 min** (rolling)  |
+| Expected downtime | N/A (planned)      | HA can remain available only when each restarted pod is promptly unsealed; standalone has restart/unseal downtime |
 
-> **STATUS: FULLY IMPLEMENTED.** Vault 1.21.2 → 2.0.3 upgrade completed.
-> Helm chart 0.32.0 → 0.34.0. Global defaults added to `defaults/main.yml`.
+> **STATUS: AUTOMATION TARGET IMPLEMENTED.** The repository pins Vault 2.0.3
+> and chart 0.34.0. This is not evidence that any live cluster upgrade or
+> restore drill completed; record that evidence per environment.
 >
 > **BREAKING CHANGES (1.x → 2.x):**
 > - Vault 2.0 introduces new API defaults and storage behaviors.
@@ -45,7 +46,9 @@
 | 1.24.x        | 0.34.0             | `hashicorp/vault:1.24.1` |
 | 2.0.x         | 0.34.0             | `hashicorp/vault:2.0.3`  | ✅ deployed |
 
-> **NOTE:** Helm chart versions are pinned per-repo in `roles/k8s-secrets/tasks/main.yml` (`vault_chart_ver`). The image version is also defined there (`vault_version`). **Do NOT change these files as part of this plan** — this document is the authoritative runbook for operators.
+> **NOTE:** `defaults/main.yml` is the version source. The secrets role passes
+> the exact `vault_version` to the Helm chart. Change the image/chart pins
+> together, update this runbook, and run the full validation suite.
 
 ---
 
@@ -65,14 +68,21 @@ aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3 cp /tmp/pre-upgrade.snap s3://v
 
 ### 2.2 Seal/Unseal Key Recovery
 
-- Confirm that the auto-unseal mechanism (Kubernetes secrets) is functional.
-- Verify unseal keys are stored in the Kubernetes secret referenced by the Vault StatefulSet.
-- Dry-run: delete all Vault pods, wait for auto-unseal, confirm `vault status` returns `sealed: false`.
+- Confirm the required recovery shares can be obtained through the approved
+  split-custody process and that the encrypted init material is recoverable.
+- Do not copy unseal keys or the root token into Kubernetes Secrets, Jobs,
+  CronJobs, command history, tickets, or logs.
+- If an external KMS/HSM seal has been separately implemented, test it against
+  an isolated environment and record the exact configuration. The repository
+  does not configure Kubernetes-Secret-based auto-unseal.
+- Rehearse a one-pod restart/unseal in an authorized non-production cluster;
+  do not delete every Vault pod as a casual dry run.
 
 **Command:**
 ```bash
 kubectl exec -n vault vault-0 -- vault status
-# Verify: "sealed: false", "ha_enabled: true/false" (per tier)
+# If sealed, run `vault operator unseal` interactively under the approved
+# split-custody procedure, then verify sealed=false and the expected HA mode.
 ```
 
 ### 2.3 Audit Log Configuration Backed Up
@@ -319,7 +329,7 @@ done
 # 4. Restart all pods
 kubectl delete pods -n vault -l app.kubernetes.io/name=vault
 
-# 5. Wait for re-election and auto-unseal
+# 5. Wait for re-election, then perform the approved manual/KMS unseal flow
 kubectl rollout status statefulset/vault -n vault --timeout=10m
 
 # 6. Verify
@@ -364,7 +374,7 @@ and cleans up. `--skip-cleanup` preserves the namespace for manual inspection.
 |--------------------------------|----------|---------------------------------------------------------------|
 | Raft leader election failure   | HIGH     | One-pod-at-a-time rolling update; snapshot before each step   |
 | Data corruption during upgrade | HIGH     | Raft snapshot before each step; restore drill available       |
-| Auto-unseal failure            | MEDIUM   | Pre-upgrade dry-run of pod deletion; verify keys in K8s secrets |
+| Unseal/recovery material unavailable | HIGH | Verify split custody and rehearse approved recovery outside production; never store keys in Kubernetes |
 | ESO sync breakage              | MEDIUM   | Test ESO after each step; revert immediately if broken        |
 | Config incompatibility (2.0)   | MEDIUM   | Incremental path through all minors; no config change needed  |
 | Helm chart API changes         | LOW      | Test chart upgrade in isolation; rollback chart to prev version |

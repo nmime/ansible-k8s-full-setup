@@ -108,6 +108,7 @@ component_path() {
     gitlab-runner) echo '.gitlab.runner.enabled' ;;
     gitops) echo '.gitops.enabled' ;;
     observability) echo '.observability.enabled' ;;
+    coroot) echo '.coroot.enabled' ;;
     tracing) echo '.tracing.enabled' ;;
     autoscaling) echo '.autoscaling.enabled' ;;
     dragonfly) echo '.dragonfly.enabled' ;;
@@ -118,6 +119,7 @@ component_path() {
     apm) echo '.apm.enabled' ;;
     blackbox) echo '.blackbox.enabled' ;;
     daytona) echo '.applications.daytona.enabled' ;;
+    hipaa) echo '.compliance.hipaa.enabled' ;;
     *) return 1 ;;
   esac
 }
@@ -135,6 +137,7 @@ enable_paths() {
     gitlab-runner) echo '.storage.enabled .databases.enabled .databases.postgresql.enabled .dragonfly.enabled .gitlab.enabled .gitlab.runner.enabled' ;;
     gitops) echo '.gitops.enabled' ;;
     observability) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled' ;;
+    coroot) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .coroot.enabled' ;;
     tracing) echo '.storage.enabled .observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .tracing.enabled' ;;
     autoscaling) echo '.autoscaling.enabled' ;;
     dragonfly) echo '.dragonfly.enabled' ;;
@@ -145,6 +148,7 @@ enable_paths() {
     apm) echo '.elasticsearch.enabled .apm.enabled' ;;
     blackbox) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .blackbox.enabled' ;;
     daytona) echo '.applications.daytona.enabled' ;;
+    hipaa) echo '.secrets.enabled .observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .compliance.hipaa.enabled' ;;
     *) return 1 ;;
   esac
 }
@@ -173,7 +177,7 @@ show_components() {
   printf '%-18s %s\n' COMPONENT ENABLED
   printf '%-18s %s\n' '------------------' '-------'
   local component path value
-  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability tracing autoscaling temporal postal backup glitchtip apm blackbox daytona; do
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability coroot tracing autoscaling temporal postal backup glitchtip apm blackbox daytona hipaa; do
     path=$(component_path "$component")
     value=$(flag_from_config "$path" false)
     printf '%-18s %s\n' "$component" "$value"
@@ -208,8 +212,9 @@ enabled_blockers() {
     elasticsearch) blockers='.temporal.enabled:temporal .apm.enabled:apm' ;;
     dragonfly) blockers='.gitlab.enabled:gitlab .postal.enabled:postal .glitchtip.enabled:glitchtip' ;;
     gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
-    observability) blockers='.tracing.enabled:tracing .blackbox.enabled:blackbox' ;;
-    secrets|eso|mongodb|gitlab-runner|gitops|tracing|autoscaling|temporal|postal|backup|glitchtip|apm|blackbox|daytona) ;;
+    observability) blockers='.coroot.enabled:coroot .tracing.enabled:tracing .blackbox.enabled:blackbox .compliance.hipaa.enabled:hipaa' ;;
+    secrets) blockers='.secrets.eso.enabled:eso .compliance.hipaa.enabled:hipaa' ;;
+    eso|mongodb|gitlab-runner|gitops|coroot|tracing|autoscaling|temporal|postal|backup|glitchtip|apm|blackbox|daytona|hipaa) ;;
     *) return 1 ;;
   esac
   for label in $blockers; do
@@ -332,6 +337,7 @@ deploy_component() {
     gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
     gitops)        require_component_enabled "$component"; run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
     observability) require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
+    coroot)        require_component_enabled "$component"; run_playbook --tags coroot 2>&1 | tee -a "${LOG_DIR}/coroot.log" ;;
     tracing)       require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/tracing.log" ;;
     autoscaling)   require_component_enabled "$component"; run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;
     temporal)      require_component_enabled "$component"; run_playbook --tags temporal 2>&1 | tee -a "${LOG_DIR}/temporal.log" ;;
@@ -341,6 +347,7 @@ deploy_component() {
     apm)           require_component_enabled "$component"; run_playbook --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
     blackbox)      require_component_enabled "$component"; run_playbook --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;
     daytona)       require_component_enabled "$component"; deploy_daytona ;;
+    hipaa)         require_component_enabled "$component"; run_playbook --tags network,monitoring,hipaa 2>&1 | tee -a "${LOG_DIR}/hipaa.log" ;;
     all)           deploy_all ;;
     *) error "Unknown component: $component"; exit 1 ;;
   esac
@@ -422,6 +429,7 @@ app IN 3600 A ${ip}"
   is_enabled '.gitlab.enabled' && records+=$'\n'"gitlab IN 3600 A ${ip}"$'\n'"registry IN 3600 A ${ip}"
   is_enabled '.gitops.enabled' && records+=$'\n'"argocd IN 3600 A ${ip}"
   is_enabled '.observability.grafana.enabled' && records+=$'\n'"grafana IN 3600 A ${ip}"
+  is_enabled '.coroot.enabled' && records+=$'\n'"coroot IN 3600 A ${ip}"
   is_enabled '.storage.enabled' && records+=$'\n'"object-storage IN 3600 A ${ip}"$'\n'"s3 IN 3600 A ${ip}"
   is_enabled '.secrets.enabled' && records+=$'\n'"vault IN 3600 A ${ip}"
   is_enabled '.applications.daytona.enabled' && records+=$'\n'"daytona IN 3600 A ${ip}"$'\n'"*.daytona IN 3600 A ${ip}"
@@ -482,6 +490,9 @@ show_credentials() {
     daytona_host=$(yq -r '.applications.daytona.base_domain // ""' "$CONFIG_FILE")
     [[ -n "$daytona_host" ]] || daytona_host="daytona.${DOMAIN}"
     echo "Daytona: https://${daytona_host}"
+  fi
+  if is_enabled '.coroot.enabled'; then
+    echo "Coroot (VPN/admin gateway): https://coroot.${DOMAIN}"
   fi
 }
 

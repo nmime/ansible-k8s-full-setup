@@ -1,297 +1,143 @@
-# HIPAA Compliance Guide
+# HIPAA-Oriented Technical Hardening
 
-**Date**: April 6, 2026
-**Status**: Optional hardening for healthcare/regulated workloads
-**Default**: ON. Disable only for dev/staging with `-e hipaa_compliance=false`
+This repository provides an optional set of technical controls that may
+support a regulated-workload security program. It does **not** certify HIPAA
+compliance. HIPAA applicability, risk analysis, policies, business associate
+agreements, workforce procedures, application controls, retention, and audit
+evidence remain the operator's responsibility. Use current official
+[HHS Security Rule guidance](https://www.hhs.gov/hipaa/for-professionals/security/index.html)
+and qualified legal/security review for the real environment.
 
----
+The option is **off in every named profile**. That is deliberate: a technical
+flag cannot determine whether an organization has met its regulatory duties.
 
-## Why Internal TLS & Log Redaction Were "By Design" HTTP
+## Select and apply it
 
-The original rationale:
-1. **Private cluster network (10.0.0.0/16)** — no external access to internal services
-2. **Performance** — TLS adds ~5-10% CPU overhead for encrypt/decrypt
-3. **Simplicity** — fewer cert renewal issues, no mTLS config complexity
-4. **Single-tenant** — no multi-tenancy isolation requirements
+The canonical selector is:
 
-**This is ACCEPTABLE for:**
-- Development/staging environments
-- Internal corporate applications (non-regulated)
-- Cost-sensitive deployments where performance > compliance
-
-**This is NOT ACCEPTABLE for:**
-- HIPAA (Protected Health Information)
-- PCI-DSS (payment card data)
-- FedRAMP (government data)
-- Any "data at rest AND in transit" compliance requirement
-
----
-
-## What's Missing for Full HIPAA Compliance
-
-### 1. Internal TLS (Encryption in Transit)
-
-**Currently HTTP (plaintext):**
-- S3-compatible object storage API: `http://seaweedfs-filer.storage.svc.cluster.local:8333`
-- Vault API: `http://vault.vault.svc.cluster.local:8200`
-- Loki Gateway: `http://loki-gateway.monitoring.svc.cluster.local`
-- Tempo: `http://tempo-distributor.monitoring.svc.cluster.local`
-- PostgreSQL: `tcp://pg.postgres.svc.cluster.local:5432` (no TLS)
-- MongoDB: `tcp://mongo.mongodb.svc.cluster.local:27017` (no TLS)
-
-**HIPAA Requirement**: 45 CFR §164.312(e)(1) — "Transmission security: technical security measures to guard against unauthorized access to ePHI transmitted over an electronic communications network."
-
-**Why it matters**: Even within a private cluster, HIPAA assumes network may be compromised. TLS protects against:
-- Malicious pods sniffing traffic
-- Kubernetes API exploit (attacker gains pod exec)
-- Memory dumps containing plaintext secrets
-
-### 2. Log Redaction (PII Protection)
-
-**Currently**: Application logs captured as-is by Filebeat/Promtail.
-
-**Problem**: If app logs contain PHI (patient names, SSNs, diagnoses), those are stored in Loki/Elasticsearch with 3-14 day retention.
-
-**HIPAA Requirement**: 45 CFR §164.514(b) — "De-identification of PHI: must remove 18 identifiers."
-
-**Why it matters**: Audit logs are required for compliance, but PHI in logs creates liability if breached.
-
----
-
-## How to Enable Full HIPAA Compliance
-
-### Option 1: One-Line Deploy Flag
-
-```bash
-ansible-playbook playbooks/deploy_platform.yml \
-  -e tier=production \
-  -e domain=hospital.example.com \
-  -e email=admin@hospital.example.com \
-  -e hipaa_compliance=true  # <-- Enables all HIPAA hardening
-```
-
-This sets:
-- `internal_tls_enabled: true` (SeaweedFS object storage, Vault, Loki, PostgreSQL, MongoDB use TLS)
-- `log_redaction_enabled: true` (Filebeat/Promtail redact SSN/phone/email patterns)
-
-### Option 2: Granular Control
-
-```bash
-ansible-playbook ... \
-  -e internal_tls_enabled=true \
-  -e log_redaction_enabled=true \
-  -e vault_audit_log_raw=false \  # Redact secrets from Vault audit logs
-  -e logging_retention=90d \       # HIPAA requires 6-year audit trail (adjust backups)
-  -e ssh_mfa_enabled=true          # Already implemented
-```
-
----
-
-## What Happens When `hipaa_compliance=true`
-
-### Internal TLS Changes
-
-#### SeaweedFS object storage
-**Before**: `http://seaweedfs-filer.storage.svc.cluster.local:8333`
-**After**: `https://seaweedfs-filer.storage.svc.cluster.local:8333`
-
-- Helm chart value: `tls.enabled: true`
-- Uses cert-manager to issue internal CA cert
-- All clients (GitLab, Loki, Vault, PostgreSQL backups) verify CA
-
-#### Vault
-**Before**: `tlsDisable: true` (HTTP on port 8200)
-**After**: `tlsDisable: false` (HTTPS on port 8200)
-
-- Uses cert-manager Certificate for `vault.vault.svc.cluster.local`
-- External Secrets Operator updated to `https://vault...`
-- Auto-unseal CronJob uses HTTPS + CA verification
-
-#### Loki
-**Before**: `http://loki-gateway...`
-**After**: `https://loki-gateway...`
-
-- Gateway pod mounts TLS cert from cert-manager
-- Promtail configured with `client.tls_config.ca_file`
-- Grafana datasource uses HTTPS endpoint
-
-#### PostgreSQL (Percona Operator)
-**Before**: `sslMode: disable`
-**After**: `sslMode: require`
-
-- Operator generates self-signed cert per cluster
-- Clients must connect with `?sslmode=require`
-- Temporal, Opwerf connection strings updated
-
-#### MongoDB
-**Before**: `net.tls.mode: disabled`
-**After**: `net.tls.mode: requireTLS`
-
-- MongoDB Operator generates certs
-- Connection strings: `mongodb://...?tls=true&tlsCAFile=/certs/ca.crt`
-
-### Log Redaction Changes
-
-#### Filebeat (ELK)
-**Added processors**:
 ```yaml
-processors:
-  - dissect:
-      tokenizer: "%{key}=%{value}"
-      field: message
-      target_prefix: ""
-  - script:
-      lang: javascript
-      source: |
-        function process(event) {
-          var msg = event.Get("message");
-          if (!msg) return;
-          // Redact SSN: XXX-XX-1234 -> XXX-XX-XXXX
-          msg = msg.replace(/\b\d{3}-\d{2}-(\d{4})\b/g, "XXX-XX-XXXX");
-          // Redact phone: (555) 123-4567 -> (XXX) XXX-XXXX
-          msg = msg.replace(/\(\d{3}\)\s*\d{3}-\d{4}/g, "(XXX) XXX-XXXX");
-          // Redact email: patient@email.com -> [REDACTED_EMAIL]
-          msg = msg.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, "[REDACTED_EMAIL]");
-          event.Put("message", msg);
-        }
+compliance:
+  hipaa:
+    enabled: true
+    log_redaction_enabled: true
 ```
 
-#### Promtail (Loki)
-**Added pipeline stages**:
-```yaml
-pipeline_stages:
-  - regex:
-      expression: '(?P<ssn>\d{3}-\d{2}-\d{4})'
-  - template:
-      source: ssn
-      template: 'XXX-XX-XXXX'
-  - regex:
-      expression: '(?P<email>[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
-  - template:
-      source: email
-      template: '[REDACTED_EMAIL]'
-```
+Use the lifecycle commands to add it during initial deployment or later:
 
----
-
-## Performance Impact
-
-| Service | HTTP Baseline | TLS Overhead | Recommendation |
-|---------|---------------|--------------|----------------|
-| **SeaweedFS object storage** | 100 MB/s | 85-90 MB/s (~10%) | Accept — PHI must be encrypted |
-| **Vault** | <1ms latency | +0.3ms (~30%) | Accept — rarely called (ExternalSecret cache) |
-| **Loki** | 50k logs/sec | 45k logs/sec (~10%) | Accept — use batch writes |
-| **PostgreSQL** | 10k TPS | 9k TPS (~10%) | Accept — connection pooling mitigates |
-| **MongoDB** | 15k ops/sec | 13.5k ops/sec (~10%) | Accept — replica set spreads load |
-
-**Total CPU increase**: ~8-12% cluster-wide (TLS encrypt/decrypt).
-**Mitigation**: For production HIPAA, use cpx41 workers (8 vCPU) instead of cpx31 (4 vCPU).
-
----
-
-## Cost Impact (Monthly)
-
-The base figures below use the current CX server prices from the deployment profiles.
-Recalculate the HIPAA total from current Hetzner `cpx41` pricing before procurement,
-because `cpx41` is outside the CX selector used for the base estimates.
-
-| Tier | Base Server Compute | HIPAA Sizing Delta |
-|------|---------------------|--------------------|
-| **Minimal** | €16.47/mo | Add/resize 1 `cpx41` worker, plus higher audit-log storage |
-| **Small** | €21.96/mo server compute; ~€27.96/mo with lb11 | Add/resize 2 `cpx41` workers, plus higher audit-log storage |
-| **Medium** | €85.44/mo server compute; ~€91.44/mo with lb11 | Add/resize 2 `cpx41` workers, plus higher audit-log storage |
-| **Production** | €101.43/mo server compute; ~€107.43/mo with lb11 | Add/resize 3 `cpx41` workers, plus higher audit-log storage |
-
-**Why the cost increase?** HIPAA's TLS overhead + higher audit log retention (90d vs 14d) require more CPU/storage.
-
----
-
-## Testing HIPAA Mode
-
-### 1. Deploy with HIPAA flag
 ```bash
-ansible-playbook playbooks/deploy_platform.yml -e tier=minimal -e domain=test.local -e email=admin@test.local -e hipaa_compliance=true
+cd platform-orchestrator
+./platform.sh enable hipaa
+./platform.sh validate
+./platform.sh deploy hipaa
 ```
 
-### 2. Verify internal TLS
+`enable hipaa` also selects Vault/secrets and the full observability core,
+because the hardening contract requires them. `deploy hipaa` reconciles the
+network-security and observability roles before the final hardening assertions.
+Direct Ansible users can still pass the backwards-compatible
+`hipaa_compliance=true` variable, but the nested selector is preferred.
+
+## What automation actually enforces
+
+| Control | Implementation |
+|---|---|
+| Host auditing | auditd rules for identity files, sudo/auth activity, command execution, and selected network activity on the bastion and Kubernetes nodes |
+| Host maintenance | auditd and unattended upgrades are installed by the network role; SSH hardening, UFW, and fail2ban are part of the base platform |
+| Vault transport | deployment fails if Vault internal TLS is disabled or certificate verification is disabled |
+| Pod-network transport | the profile contract and hardening role require Cilium transparent encryption |
+| Log redaction | active collector pipelines replace SSN, US phone, and email-shaped patterns before shipping through Promtail, Filebeat, or Fluentd |
+| Secret handling | generated credentials remain in Ansible-Vault-encrypted local state; Vault unseal keys/root token are not placed into Kubernetes auto-unseal Secrets or CronJobs |
+| Selection safety | disabling dependencies is blocked while HIPAA-oriented hardening is selected; generic automated rollback is refused |
+
+The log patterns currently replace:
+
+- `123-45-6789` with `XXX-XX-XXXX`;
+- `(555) 123-4567` with `(XXX) XXX-XXXX`;
+- email-shaped strings with `[REDACTED_EMAIL]`.
+
+These rules are intentionally visible in
+`roles/k8s-observability/tasks/main.yml` so reviewers can verify the exact
+collector configuration. They are basic defense in depth, not a general PHI
+detector. Applications must avoid logging sensitive values in the first place.
+
+## What it does not enforce
+
+The playbook does not claim or automatically provide:
+
+- a completed HIPAA risk analysis or risk-management plan;
+- a BAA with any infrastructure, SaaS, email, DNS, backup, or support provider;
+- application authorization, minimum-necessary access, field-level
+  encryption, consent, data classification, or data-loss prevention;
+- universal service-level mTLS. Vault uses TLS and Cilium provides transparent
+  pod-network encryption, but each application's transport requirements must
+  still be reviewed;
+- six-year retention or any universal retention period;
+- proof that every possible identifier is removed from logs;
+- centralized SIEM review, workforce access review, breach notification,
+  training, penetration tests, or disaster-recovery exercises;
+- HSM/KMS auto-unseal. The current Vault workflow uses protected manual
+  recovery material unless the operator designs and deploys an approved
+  external seal integration;
+- compliance for workloads deployed later by Argo CD or another application
+  delivery system.
+
+## Verification
+
+Run offline validation before mutation:
+
 ```bash
-# SeaweedFS object storage should refuse HTTP
-curl http://seaweedfs-filer.storage.svc.cluster.local:8333
-# Expected: connection refused or redirect to HTTPS
-
-# Vault should serve HTTPS
-curl https://vault.vault.svc.cluster.local:8200/v1/sys/health --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-# Expected: {"initialized":true,"sealed":false,...}
+ansible-playbook playbooks/validate_profile.yml \
+  -e @platform-orchestrator/platform.yaml
 ```
 
-### 3. Verify log redaction
+After applying the selection, record evidence from the authorized cluster:
+
 ```bash
-# Inject test PHI
-kubectl run test --image=busybox --rm -it -- sh -c "echo 'Patient SSN: 123-45-6789, Phone: (555) 123-4567'"
+# Vault TLS/status
+kubectl exec -n vault vault-0 -- vault status
 
-# Query Loki/Elasticsearch
-kubectl exec -n monitoring grafana-xxx -- curl 'http://loki-gateway/loki/api/v1/query?query={job="test"}'
-# Expected: "Patient SSN: XXX-XX-XXXX, Phone: (XXX) XXX-XXXX"
+# Cilium encryption status (command availability depends on the Cilium image)
+kubectl -n kube-system exec ds/cilium -- cilium-dbg encrypt status
+
+# Host audit rules
+ssh root@BASTION 'auditctl -l'
+
+# Collector values: inspect whichever stack the profile selected
+helm get values promtail -n monitoring -o yaml
+helm get values filebeat -n elasticsearch -o yaml
+helm get values fluentd -n monitoring -o yaml
 ```
 
----
+Use synthetic values only when testing redaction. Confirm that the stored log
+contains the replacement text, then delete the test record according to the
+environment's data-handling policy. Also test false positives: replacing every
+email-shaped string can reduce operational usefulness.
 
-## Limitations & Exclusions
+## Change and rollback boundary
 
-### What HIPAA Mode Does NOT Cover
+```bash
+./platform.sh disable hipaa
+```
 
-1. **Application-level encryption**: Your app must still encrypt PHI fields in database (use pgcrypto, MongoDB client-side encryption).
-2. **Physical security**: Hetzner datacenters are ISO 27001 certified, but YOU must sign a BAA (Business Associate Agreement) with Hetzner.
-3. **Breach notification**: 45 CFR §164.404 requires notification within 60 days. You must implement alerting (Grafana alerts → PagerDuty/Slack).
-4. **Access logging**: Already enabled (K8s API audit logs), but you must REVIEW them monthly (compliance requirement).
-5. **Employee training**: HIPAA requires annual security awareness training — not automated.
+Disabling changes desired state but does not remove existing audit rules or
+rewrite stored logs. `./platform.sh remove hipaa ...` is intentionally refused:
+security controls span hosts and the cluster and cannot be generically reversed
+without knowing the organization's policy. Review each control, preserve audit
+evidence, and perform any rollback under an approved change record.
 
-### Not Included by Default
+## Production checklist
 
-- **Log retention >90 days**: HIPAA requires 6-year audit trail. Use S3 Glacier for long-term storage.
-- **Backup encryption**: pgBackRest encrypts PostgreSQL backups, but MongoDB backups (if you add them) need manual encryption.
-- **Disaster recovery testing**: HIPAA requires annual DR drills. Document and test your restore procedures.
+- Complete and approve the environment-specific risk analysis.
+- Verify provider agreements and service eligibility for regulated data.
+- Confirm application authorization and sensitive-data logging rules.
+- Verify Vault TLS, Cilium encryption, auditd delivery, and collector redaction
+  from live evidence.
+- Export audit/backup data to an approved external retention target.
+- Test restores in isolation and record RPO/RTO evidence.
+- Review Kubernetes RBAC, cloud IAM, administrator MFA, break-glass access, and
+  periodic access recertification.
+- Establish incident response, breach assessment/notification, monitoring,
+  workforce training, and recurring control tests.
 
----
-
-## HIPAA Compliance Checklist
-
-Before going live with HIPAA workloads:
-
-- [ ] Deploy with `-e hipaa_compliance=true`
-- [ ] Verify all internal services use HTTPS (see Testing section)
-- [ ] Sign BAA with Hetzner Cloud
-- [ ] Configure Grafana alerts for security events (failed auth, pod crashes, etc.)
-- [ ] Set up log retention >90 days (offload to S3 Glacier after 14d)
-- [ ] Document encryption key management (Vault unseal keys in **hardware** HSM or split among 5 people)
-- [ ] Enable MFA for all admin accounts (`-e ssh_mfa_enabled=true`)
-- [ ] Conduct penetration test (required annually under HIPAA)
-- [ ] Create incident response plan (breach notification procedure)
-- [ ] Train all staff with database/SSH access (annual requirement)
-- [ ] Review access logs monthly (K8s audit logs in Kibana/Grafana)
-- [ ] Test disaster recovery (restore from backup, RTO <4 hours recommended)
-
----
-
-## Summary
-
-**Original "by design" HTTP rationale**: Valid for **non-regulated** workloads where performance/cost > paranoia.
-
-**HIPAA reality**: Even internal network traffic MUST be encrypted. Even if "no one can access it," compliance auditors don't care about your network design — they care about the regulation text.
-
-**Solution**: `hipaa_compliance=true` flag enables full TLS + log redaction with ~10% performance hit and ~40% cost increase (due to larger workers for TLS overhead).
-
-**When to use**:
-- Healthcare apps (patient data)
-- Financial services (PCI-DSS also requires this)
-- Government contractors (FedRAMP)
-- Any app where "encryption in transit" is a legal requirement
-
-**When NOT to use**:
-- Dev/staging (unless testing HIPAA mode specifically)
-- Internal corporate apps (non-PHI data)
-- Cost-sensitive deployments where compliance is not mandatory
-
----
-
-**Bottom line**: I was wrong to call it "by design." It's **by default** (for simplicity/performance), but HIPAA mode is **available when required** via a single flag. The platform can do both — you choose based on your compliance needs.
+Treat this playbook option as one reviewed control set inside that larger
+program, never as a compliance label.

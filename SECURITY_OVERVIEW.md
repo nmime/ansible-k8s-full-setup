@@ -7,7 +7,7 @@
                │
     ┌──────────┼──────────┐
     ▼          ▼          ▼
- Gcore GeoDNS (edge.domain.com)
+ Gcore GeoDNS (optional separate edge-cdn playbook)
     │          │          │
   EU Edge    US Edge  APAC Edge
  (Nginx CDN proxy + caching)
@@ -17,7 +17,7 @@
     ┌──────────┴──────────┐
   Gateway (Cilium)       VPN
     │
-  Apps (daytona)
+  Apps (optional Daytona or operator-managed workloads)
     │
   Platform Services
   (Vault, SeaweedFS object storage, PG, ES, Temporal...)
@@ -39,6 +39,7 @@ All application and platform namespaces are assigned Pod Security Admission labe
 | storage | baseline enforce | SeaweedFS object storage |
 | databases | baseline enforce | PostgreSQL, MongoDB |
 | monitoring | baseline enforce | VictoriaMetrics, Grafana |
+| coroot | privileged enforce | eBPF/host-inspection node agent; exception scoped to this namespace |
 | keda | baseline enforce | Autoscaling |
 | temporal | baseline enforce | Workflow engine |
 | elasticsearch | privileged enforce | ELK needs host access |
@@ -51,7 +52,12 @@ All application and platform namespaces are assigned Pod Security Admission labe
 
 ### 2. Network Policies
 
-Every namespace is protected by default-deny behavior plus explicit ingress and egress rules for required service-to-service traffic.
+Most application/platform namespaces are protected by declared Cilium or
+Kubernetes network policies plus required service-to-service allowances.
+Coroot is an explicit exception: its node agent needs host inspection and broad
+cluster visibility, so review its RBAC and privileged namespace before
+selection. Verify the rendered policies live; this document is not proof of
+effective enforcement.
 
 | Role | Policies |
 |------|----------|
@@ -71,7 +77,11 @@ Every namespace is protected by default-deny behavior plus explicit ingress and 
 
 ### 3. Service Monitoring
 
-Critical platform services expose metrics through ServiceMonitor or equivalent observability resources, including GitLab, ArgoCD, PostgreSQL, KEDA, Daytona, VictoriaMetrics, Vault, SeaweedFS object storage, Elasticsearch, Temporal, bastion node-exporter, and edge proxies.
+Critical platform services expose metrics through `VMServiceScrape`,
+`ServiceMonitor`, native endpoints, or their operators, including GitLab,
+Argo CD, PostgreSQL, KEDA, Daytona, VictoriaMetrics, Vault, SeaweedFS,
+Elasticsearch, Temporal, Coroot, bastion node-exporter, and optional edge
+proxies.
 
 ### 4. Certificate Management
 

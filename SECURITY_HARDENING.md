@@ -19,6 +19,9 @@
 - External CLI/manifests changed by this audit are version pinned and verified
   with SHA-256 before execution/application. CI setup actions are pinned to
   immutable commits.
+- Coroot uses pinned official operator/CE charts and pinned application,
+  agent, and ClickHouse images. Its eBPF privilege exception is confined to
+  the dedicated `coroot` namespace.
 - Backup, upgrade, rollback, health, and teardown paths exit nonzero when a
   required operation or verification fails.
 
@@ -58,10 +61,18 @@ When changing a pinned binary or manifest:
 
 ## HIPAA option
 
-`hipaa_compliance: true` enables additional technical controls such as internal
-TLS assertions and log-redaction configuration. It does not establish legal or
-organizational compliance, sign a BAA, define retention policy, or replace a
-risk assessment and audit program.
+Set `compliance.hipaa.enabled: true` in `platform.yaml`, or run
+`./platform.sh enable hipaa`, to select the additional technical controls. The
+deployment reconciles host audit rules, verifies Vault TLS and Cilium network
+encryption, and installs active SSN/phone/email replacement pipelines in the
+selected Promtail, Filebeat, or Fluentd collector. The legacy direct variable
+`hipaa_compliance=true` remains compatible for direct Ansible users.
+
+These pattern replacements are defense in depth, not proof that PHI cannot
+reach logs. This option does not establish legal/organizational compliance,
+sign a BAA, define retention policy, or replace application data controls,
+risk assessment, access review, incident response, and an audit program. See
+[HIPAA_COMPLIANCE.md](HIPAA_COMPLIANCE.md) for the exact automated boundary.
 
 ## Validation
 

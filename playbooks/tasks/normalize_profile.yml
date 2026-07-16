@@ -33,6 +33,7 @@
     platform_secrets_enabled: '{{ (secrets.enabled | default(true)) | bool }}'
     platform_eso_enabled: '{{ (secrets.eso.enabled | default(eso_enabled)) | bool }}'
     platform_observability_enabled: '{{ (observability.enabled | default(deploy_observability)) | bool }}'
+    platform_coroot_enabled: '{{ (coroot.enabled | default(coroot_enabled)) | bool }}'
     platform_tracing_enabled: '{{ (tracing.enabled | default(tracing_enabled)) | bool }}'
     platform_elasticsearch_enabled: '{{ (elasticsearch.enabled | default(deploy_elasticsearch)) | bool }}'
     platform_databases_enabled: '{{ (databases.enabled | default(deploy_databases)) | bool }}'
@@ -52,7 +53,7 @@
     platform_daytona_enabled: '{{ (applications.daytona.enabled | default(deploy_daytona)) | bool }}'
     platform_alerting_telegram_enabled: '{{ (alerting.telegram.enabled | default(false)) | bool }}'
     platform_alerting_email_enabled: '{{ (alerting.email.enabled | default(false)) | bool }}'
-    platform_hipaa_enabled: '{{ hipaa_compliance | bool }}'
+    platform_hipaa_enabled: '{{ (compliance.hipaa.enabled | default(hipaa_compliance)) | bool }}'
 
 - name: Normalize component sizing from the platform profile
   ansible.builtin.set_fact:
@@ -94,6 +95,44 @@
     metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
     log_stack: '{{ observability.logging.stack | default(log_stack) }}'
     logging_retention: '{{ observability.logging.retention | default(logging_retention) }}'
+    coroot_enabled: '{{ platform_coroot_enabled }}'
+    coroot_storage_size: '{{ coroot.storage_size | default(coroot_storage_size) }}'
+    coroot_clickhouse_storage_size: >-
+      {{ coroot.clickhouse.storage_size | default(coroot_clickhouse_storage_size) }}
+    coroot_clickhouse_cpu_request: >-
+      {{ coroot.clickhouse.resources.cpu_request | default(coroot_clickhouse_cpu_request) }}
+    coroot_clickhouse_cpu_limit: >-
+      {{ coroot.clickhouse.resources.cpu_limit | default(coroot_clickhouse_cpu_limit) }}
+    coroot_clickhouse_memory_request: >-
+      {{ coroot.clickhouse.resources.memory_request | default(coroot_clickhouse_memory_request) }}
+    coroot_clickhouse_memory_limit: >-
+      {{ coroot.clickhouse.resources.memory_limit | default(coroot_clickhouse_memory_limit) }}
+    coroot_metrics_refresh_interval: >-
+      {{ coroot.metrics_refresh_interval | default(coroot_metrics_refresh_interval) }}
+    coroot_cache_ttl: '{{ coroot.cache_ttl | default(coroot_cache_ttl) }}'
+    coroot_logs_ttl: '{{ coroot.logs_ttl | default(coroot_logs_ttl) }}'
+    coroot_traces_ttl: '{{ coroot.traces_ttl | default(coroot_traces_ttl) }}'
+    coroot_profiles_ttl: '{{ coroot.profiles_ttl | default(coroot_profiles_ttl) }}'
+    coroot_cpu_request: '{{ coroot.resources.cpu_request | default(coroot_cpu_request) }}'
+    coroot_cpu_limit: '{{ coroot.resources.cpu_limit | default(coroot_cpu_limit) }}'
+    coroot_memory_request: '{{ coroot.resources.memory_request | default(coroot_memory_request) }}'
+    coroot_memory_limit: '{{ coroot.resources.memory_limit | default(coroot_memory_limit) }}'
+    coroot_node_agent_cpu_request: >-
+      {{ coroot.node_agent.resources.cpu_request | default(coroot_node_agent_cpu_request) }}
+    coroot_node_agent_cpu_limit: >-
+      {{ coroot.node_agent.resources.cpu_limit | default(coroot_node_agent_cpu_limit) }}
+    coroot_node_agent_memory_request: >-
+      {{ coroot.node_agent.resources.memory_request | default(coroot_node_agent_memory_request) }}
+    coroot_node_agent_memory_limit: >-
+      {{ coroot.node_agent.resources.memory_limit | default(coroot_node_agent_memory_limit) }}
+    coroot_cluster_agent_cpu_request: >-
+      {{ coroot.cluster_agent.resources.cpu_request | default(coroot_cluster_agent_cpu_request) }}
+    coroot_cluster_agent_cpu_limit: >-
+      {{ coroot.cluster_agent.resources.cpu_limit | default(coroot_cluster_agent_cpu_limit) }}
+    coroot_cluster_agent_memory_request: >-
+      {{ coroot.cluster_agent.resources.memory_request | default(coroot_cluster_agent_memory_request) }}
+    coroot_cluster_agent_memory_limit: >-
+      {{ coroot.cluster_agent.resources.memory_limit | default(coroot_cluster_agent_memory_limit) }}
     tracing_enabled: '{{ platform_tracing_enabled }}'
     tempo_retention: '{{ tracing.retention | default(tempo_retention) }}'
     tempo_storage_size: '{{ tracing.storage_size | default(tempo_storage_size) }}'
@@ -112,10 +151,14 @@
     deploy_blackbox: '{{ platform_blackbox_enabled }}'
     deploy_glitchtip: '{{ platform_glitchtip_enabled }}'
     deploy_daytona: '{{ platform_daytona_enabled }}'
+    deploy_observability: '{{ platform_observability_enabled }}'
     daytona_namespace: '{{ applications.daytona.namespace | default(daytona_namespace) }}'
     alert_telegram_enabled: '{{ platform_alerting_telegram_enabled }}'
     alert_email_enabled: '{{ platform_alerting_email_enabled }}'
     alert_email_to: '{{ alerting.email.to | default(alert_email_to | default("alerts@" + (domain | default("example.invalid", true)))) }}'
+    hipaa_compliance: '{{ platform_hipaa_enabled }}'
+    log_redaction_enabled: >-
+      {{ compliance.hipaa.log_redaction_enabled | default(platform_hipaa_enabled) | bool }}
 
 - name: Validate required private-cluster foundation features
   ansible.builtin.assert:
@@ -141,15 +184,27 @@
       - not platform_gitlab_runner_enabled | bool or platform_gitlab_enabled | bool
       - not platform_tracing_enabled | bool or platform_observability_enabled | bool
       - not platform_blackbox_enabled | bool or platform_observability_enabled | bool
+      - not platform_coroot_enabled | bool or platform_observability_enabled | bool
       - not platform_observability_enabled | bool or observability.metrics.enabled | default(true) | bool
       - not platform_observability_enabled | bool or observability.logging.enabled | default(true) | bool
       - not platform_observability_enabled | bool or observability.grafana.enabled | default(true) | bool
     fail_msg: >-
       Invalid parent/child selection. ESO requires secrets; PostgreSQL and
-      MongoDB require databases; the GitLab Runner requires GitLab; tracing
-      and Blackbox require observability. The core observability role is one
+      MongoDB require databases; the GitLab Runner requires GitLab; tracing,
+      Blackbox, and Coroot require observability. The core observability role is one
       production bundle, so metrics, logging, and Grafana must stay enabled
       whenever observability.enabled=true.
+
+- name: Validate HIPAA-oriented control dependencies
+  ansible.builtin.assert:
+    that:
+      - platform_secrets_enabled | bool
+      - platform_observability_enabled | bool
+      - log_redaction_enabled | bool
+    fail_msg: >-
+      HIPAA-oriented controls require secrets and observability so Vault TLS,
+      Cilium encryption, host auditing, and log redaction can all be enforced.
+  when: platform_hipaa_enabled | bool
 
 - name: Validate required GitLab external service dependencies
   ansible.builtin.assert:

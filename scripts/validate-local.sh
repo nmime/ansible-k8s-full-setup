@@ -110,7 +110,7 @@ echo ""
 
 # ── 1. yamllint ───────────────────────────────────────────────────────────────
 
-echo -e "${BLUE}[1/6] yamllint${NC} — YAML syntax & style validation"
+echo -e "${BLUE}[1/7] yamllint${NC} — YAML syntax & style validation"
 if check_tool "yamllint" "yamllint"; then
   if [ -f .yamllint.yaml ]; then
     run_check "yamllint" yamllint -c .yamllint.yaml .
@@ -122,7 +122,7 @@ echo ""
 
 # ── 2. pre-commit ─────────────────────────────────────────────────────────────
 
-echo -e "${BLUE}[2/6] pre-commit${NC} — Pre-commit hooks"
+echo -e "${BLUE}[2/7] pre-commit${NC} — Pre-commit hooks"
 if check_tool "pre-commit" "pre-commit"; then
   if [ -f .pre-commit-config.yaml ]; then
     run_check "pre-commit" pre-commit run --all-files --hook-stage manual
@@ -136,7 +136,7 @@ echo ""
 
 # ── 3. ansible-lint ───────────────────────────────────────────────────────────
 
-echo -e "${BLUE}[3/6] ansible-lint${NC} — Ansible best practices"
+echo -e "${BLUE}[3/7] ansible-lint${NC} — Ansible best practices"
 if check_tool "ansible-lint" "ansible-lint"; then
   if [ -f .ansible-lint.yml ]; then
     run_check "ansible-lint" ansible-lint -c .ansible-lint.yml
@@ -148,7 +148,7 @@ echo ""
 
 # ── 4. shellcheck ─────────────────────────────────────────────────────────────
 
-echo -e "${BLUE}[4/6] shellcheck${NC} — Shell script static analysis"
+echo -e "${BLUE}[4/7] shellcheck${NC} — Shell script static analysis"
 if check_tool "shellcheck" "shellcheck"; then
   sh_files=""
   sh_files=$(find . -name '*.sh' -not -path './.git/*' -not -path './.venv/*' -not -path './node_modules/*' 2>/dev/null || true)
@@ -164,7 +164,7 @@ echo ""
 
 # ── 5. version-matrix ────────────────────────────────────────────────────────
 
-echo -e "${BLUE}[5/6] version-matrix${NC} — Version compatibility validation"
+echo -e "${BLUE}[5/7] version-matrix${NC} — Version compatibility validation"
 if [ -f scripts/verify-version-matrix.py ]; then
   if command -v python3 &>/dev/null; then
     run_check "version-matrix" python3 scripts/verify-version-matrix.py

@@ -335,6 +335,17 @@
       config:
         clients:
         - url: http://loki-gateway.{{ monitoring_namespace }}.svc.cluster.local/loki/api/v1/push
+        snippets:
+          pipelineStages: >-
+            {{
+              [
+                {'cri': {}},
+                {'replace': {'expression': '\\b\\d{3}-\\d{2}-\\d{4}\\b', 'replace': 'XXX-XX-XXXX'}},
+                {'replace': {'expression': '\\(\\d{3}\\)\\s*\\d{3}-\\d{4}', 'replace': '(XXX) XXX-XXXX'}},
+                {'replace': {'expression': '\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b', 'replace': '[REDACTED_EMAIL]'}}
+              ]
+              if log_redaction_enabled | bool else [{'cri': {}}]
+            }}
       resources:
         requests:
           cpu: 50m
@@ -614,7 +625,7 @@
             enableServiceLinks: false
             initContainers:
             - name: fix-perms
-              image: busybox:1.36
+              image: busybox:1.36.1
               command:
               - sh
               - -c
@@ -626,7 +637,7 @@
                 runAsUser: 0
             containers:
             - name: pmm-server
-              image: percona/pmm-server:3
+              image: percona/pmm-server:{{ pmm_server_version }}
               ports:
               - containerPort: 8443
                 name: https
@@ -1003,10 +1014,43 @@
       daemonset:
         enabled: true
         filebeatConfig:
-          filebeat.yml: "filebeat.inputs:\n- type: container\n  paths:\n    - /var/log/containers/*.log\n  processors:\n  - add_kubernetes_metadata:\n      host: ${NODE_NAME}\n      matchers:\n      - logs_path:\n\
-            \          logs_path: \"/var/log/containers/\"\noutput.elasticsearch:\n  hosts: [\"https://elasticsearch.elasticsearch.svc.cluster.local:9200\"]\n  username: \"elastic\"\n  password: \"${ELASTICSEARCH_PASSWORD}\"\
-            \n  ssl.certificate_authorities: [\"/usr/share/filebeat/config/certs/ca.crt\"]\n  index: \"filebeat-%{[agent.version]}-%{+yyyy.MM.dd}\"\nsetup.ilm.enabled: true\nsetup.ilm.rollover_alias: \"\
-            filebeat\"\nsetup.ilm.pattern: \"{now/d}-000001\"\nsetup.template.name: \"filebeat\"\nsetup.template.pattern: \"filebeat-*\"\nlogging.level: info\n"
+          filebeat.yml: |
+            filebeat.inputs:
+              - type: container
+                paths:
+                  - /var/log/containers/*.log
+            processors:
+              - add_kubernetes_metadata:
+                  host: ${NODE_NAME}
+                  matchers:
+                    - logs_path:
+                        logs_path: /var/log/containers/
+            {% if log_redaction_enabled | bool %}
+              - script:
+                  lang: javascript
+                  id: regulated-data-redaction
+                  source: >-
+                    function process(event) {
+                      var msg = event.Get("message");
+                      if (!msg) return;
+                      msg = msg.replace(/\b\d{3}-\d{2}-\d{4}\b/g, "XXX-XX-XXXX");
+                      msg = msg.replace(/\(\d{3}\)\s*\d{3}-\d{4}/g, "(XXX) XXX-XXXX");
+                      msg = msg.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[REDACTED_EMAIL]");
+                      event.Put("message", msg);
+                    }
+            {% endif %}
+            output.elasticsearch:
+              hosts: ["https://elasticsearch.elasticsearch.svc.cluster.local:9200"]
+              username: elastic
+              password: ${ELASTICSEARCH_PASSWORD}
+              ssl.certificate_authorities: ["/usr/share/filebeat/config/certs/ca.crt"]
+              index: "filebeat-%{[agent.version]}-%{+yyyy.MM.dd}"
+            setup.ilm.enabled: true
+            setup.ilm.rollover_alias: filebeat
+            setup.ilm.pattern: "{now/d}-000001"
+            setup.template.name: filebeat
+            setup.template.pattern: "filebeat-*"
+            logging.level: info
         secretMounts:
         - name: elasticsearch-ca
           secretName: es-tls-certs
@@ -1052,7 +1096,20 @@
       fileConfigs:
         01_sources.conf: "<source>\n  @type tail\n  @id in_tail_container_logs\n  path /var/log/containers/*.log\n  pos_file /var/log/fluentd-containers.log.pos\n  tag kubernetes.*\n  read_from_head true\n\
           \  <parse>\n    @type json\n    time_format %Y-%m-%dT%H:%M:%S.%NZ\n  </parse>\n</source>\n"
-        02_filters.conf: "<filter kubernetes.**>\n  @type kubernetes_metadata\n  @id filter_kube_metadata\n</filter>\n"
+        02_filters.conf: |
+          <filter kubernetes.**>
+            @type kubernetes_metadata
+            @id filter_kube_metadata
+          </filter>
+          {% if log_redaction_enabled | bool %}
+          <filter kubernetes.**>
+            @type record_transformer
+            enable_ruby true
+            <record>
+              log ${record["log"]&.gsub(/\b\d{3}-\d{2}-\d{4}\b/, "XXX-XX-XXXX")&.gsub(/\(\d{3}\)\s*\d{3}-\d{4}/, "(XXX) XXX-XXXX")&.gsub(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/, "[REDACTED_EMAIL]")}
+            </record>
+          </filter>
+          {% endif %}
         04_outputs.conf: "<match **>\n  @type elasticsearch\n  @id out_es\n  host elasticsearch.elasticsearch.svc.cluster.local\n  port 9200\n  scheme https\n  ssl_verify true\n  ca_file /fluentd/certs/ca.crt\n\
           \  user elastic\n  password \"#{ENV['ELASTICSEARCH_PASSWORD']}\"\n  logstash_format true\n  logstash_prefix fluentd\n  <buffer>\n    @type file\n    path /var/log/fluentd-buffers/kubernetes.system.buffer\n\
           \    flush_mode interval\n    retry_type exponential_backoff\n    flush_interval 5s\n    retry_forever false\n    retry_max_interval 30\n    chunk_limit_size 2M\n    queue_limit_length 8\n   \
@@ -1297,3 +1354,5 @@
 
 - name: Include Coroot (auto-discovering application observability)
   ansible.builtin.import_tasks: coroot.yml
+  when: coroot_enabled | bool
+  tags: [coroot]

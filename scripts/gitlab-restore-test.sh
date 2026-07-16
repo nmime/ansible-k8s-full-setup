@@ -84,7 +84,7 @@ cleanup_namespace() {
 }
 
 # Invoked indirectly by the EXIT trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup_on_exit() {
   if [ "$DRY_RUN" = "false" ] && [ "$RESTORE" = "true" ]; then
     cleanup_namespace

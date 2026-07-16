@@ -33,6 +33,7 @@ COMPONENT_PATHS = (
     "gitlab.runner.enabled",
     "gitops.enabled",
     "observability.enabled",
+    "coroot.enabled",
     "elasticsearch.enabled",
     "autoscaling.enabled",
     "dragonfly.enabled",
@@ -44,10 +45,13 @@ COMPONENT_PATHS = (
     "apm.enabled",
     "blackbox.enabled",
     "applications.daytona.enabled",
+    "compliance.hipaa.enabled",
 )
 
 MEDIUM_SERVICE_PATHS = tuple(
-    path for path in COMPONENT_PATHS if path != "applications.daytona.enabled"
+    path
+    for path in COMPONENT_PATHS
+    if path not in {"applications.daytona.enabled", "compliance.hipaa.enabled"}
 )
 ALERT_CHANNEL_PATHS = (
     "alerting.telegram.enabled",
@@ -93,6 +97,32 @@ class TestNamedProfileContract:
                 str(REPO_ROOT / "playbooks" / "validate_profile.yml"),
                 "-e",
                 f"@{example_path}",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_legacy_direct_hipaa_variable_remains_compatible(self, tmp_path):
+        example_path = (
+            REPO_ROOT / "platform-orchestrator" / "platform.example.yaml"
+        )
+        with example_path.open(encoding="utf-8") as stream:
+            legacy = yaml.safe_load(stream)
+        legacy.pop("compliance")
+        legacy.pop("coroot")
+        legacy_path = tmp_path / "legacy-direct-vars.yaml"
+        legacy_path.write_text(yaml.safe_dump(legacy), encoding="utf-8")
+        result = subprocess.run(
+            [
+                "ansible-playbook",
+                str(REPO_ROOT / "playbooks" / "validate_profile.yml"),
+                "-e",
+                f"@{legacy_path}",
+                "-e",
+                "hipaa_compliance=true",
             ],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -167,6 +197,7 @@ class TestMediumOptimizedContract:
         for path in MEDIUM_SERVICE_PATHS:
             assert get_path(self.profile, path) is True, f"{path} must remain enabled"
         assert get_path(self.profile, "applications.daytona.enabled") is False
+        assert get_path(self.profile, "compliance.hipaa.enabled") is False
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
@@ -213,6 +244,20 @@ class TestMediumOptimizedContract:
         assert self.profile["observability"]["metrics"]["retention"] == "14d"
         assert self.profile["observability"]["logging"]["retention"] == "7d"
         assert self.profile["tracing"]["retention"] == "24h"
+        assert self.profile["coroot"]["storage_size"] == "10Gi"
+        assert self.profile["coroot"]["clickhouse"]["storage_size"] == "20Gi"
+        assert self.profile["coroot"]["clickhouse"]["resources"] == {
+            "cpu_request": "250m",
+            "cpu_limit": "1",
+            "memory_request": "512Mi",
+            "memory_limit": "2Gi",
+        }
+        assert self.profile["coroot"]["resources"] == {
+            "cpu_request": "100m",
+            "cpu_limit": "500m",
+            "memory_request": "512Mi",
+            "memory_limit": "1Gi",
+        }
 
     def test_profile_init_preserves_the_contract(self, tmp_path):
         orchestrator = tmp_path / "platform-orchestrator"
@@ -247,6 +292,7 @@ class TestResourceTierConsumers:
             "roles/k8s-gitops/tasks/main.yml",
             "roles/k8s-observability/tasks/main.yml",
             "roles/k8s-observability/tasks/tracing.yml",
+            "roles/k8s-observability/tasks/coroot.yml",
             "roles/k8s-secrets/tasks/main.yml",
             "roles/object-storage/defaults/main.yml",
             "roles/postal/defaults/main.yml",
@@ -401,6 +447,8 @@ class TestComponentLifecycle:
     def test_orchestrator_exposes_every_selectable_component(self, tmp_path):
         orchestrator = tmp_path / "platform-orchestrator"
         shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        shutil.copytree(REPO_ROOT / "playbooks", tmp_path / "playbooks")
+        shutil.copytree(REPO_ROOT / "defaults", tmp_path / "defaults")
         shutil.copy(
             orchestrator / "platform.example.yaml", orchestrator / "platform.yaml"
         )
@@ -428,8 +476,68 @@ class TestComponentLifecycle:
             "apm",
             "blackbox",
             "daytona",
+            "coroot",
+            "hipaa",
         ):
             assert component in result.stdout
+
+    @pytest.mark.parametrize(
+        ("component", "enabled_paths"),
+        (
+            ("coroot", ("coroot.enabled", "observability.enabled")),
+            (
+                "hipaa",
+                (
+                    "compliance.hipaa.enabled",
+                    "secrets.enabled",
+                    "observability.enabled",
+                ),
+            ),
+        ),
+    )
+    def test_orchestrator_can_enable_late_added_components(
+        self,
+        tmp_path,
+        component,
+        enabled_paths,
+    ):
+        orchestrator = tmp_path / "platform-orchestrator"
+        shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        shutil.copytree(REPO_ROOT / "playbooks", tmp_path / "playbooks")
+        shutil.copytree(REPO_ROOT / "defaults", tmp_path / "defaults")
+        shutil.copy(
+            orchestrator / "platform.example.yaml", orchestrator / "platform.yaml"
+        )
+        result = subprocess.run(
+            ["bash", "platform.sh", "enable", component],
+            cwd=orchestrator,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        with (orchestrator / "platform.yaml").open(encoding="utf-8") as stream:
+            profile = yaml.safe_load(stream)
+        assert all(get_path(profile, path) is True for path in enabled_paths)
+
+    def test_observability_cannot_be_disabled_while_coroot_is_selected(
+        self,
+        tmp_path,
+    ):
+        orchestrator = tmp_path / "platform-orchestrator"
+        shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        profile = load_profile("medium")
+        with (orchestrator / "platform.yaml").open("w", encoding="utf-8") as stream:
+            yaml.safe_dump(profile, stream)
+        result = subprocess.run(
+            ["bash", "platform.sh", "disable", "observability"],
+            cwd=orchestrator,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode != 0
+        assert "coroot" in result.stdout + result.stderr
 
     @pytest.mark.parametrize(
         ("enabled_path", "disabled_path", "expected_message"),
@@ -442,6 +550,8 @@ class TestComponentLifecycle:
             ("tracing.enabled", "storage.enabled", "Tempo tracing requires"),
             ("backup.enabled", "storage.enabled", "Backup automation requires"),
             ("alerting.email.enabled", "postal.enabled", "Email alerting requires"),
+            ("coroot.enabled", "observability.enabled", "Coroot require observability"),
+            ("compliance.hipaa.enabled", "secrets.enabled", "HIPAA-oriented controls require"),
         ),
     )
     def test_invalid_dependency_combinations_fail_offline_validation(
@@ -462,6 +572,10 @@ class TestComponentLifecycle:
         profile["postal"]["enabled"] = False
         profile["tracing"]["enabled"] = False
         profile["backup"]["enabled"] = False
+        profile["coroot"]["enabled"] = False
+        profile["blackbox"]["enabled"] = False
+        profile["compliance"]["hipaa"]["enabled"] = False
+        profile["secrets"]["eso"]["enabled"] = False
         profile["alerting"]["email"]["enabled"] = False
         enabled_parent, enabled_key = enabled_path.rsplit(".", maxsplit=1)
         disabled_parent, disabled_key = disabled_path.rsplit(".", maxsplit=1)
@@ -500,3 +614,80 @@ class TestComponentLifecycle:
         assert "Refuse removal while the component is selected" in playbook
         assert "delete_component_data | bool" in playbook
         assert "Remote\n          object-storage backup and tracing buckets are intentionally retained" in playbook
+
+    def test_coroot_uses_pinned_official_operator_and_external_metrics(self):
+        defaults = (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
+        coroot = (
+            REPO_ROOT / "roles" / "k8s-observability" / "tasks" / "coroot.yml"
+        ).read_text(encoding="utf-8")
+        assert "coroot_operator_chart_version: \"0.9.7\"" in defaults
+        assert "coroot_chart_version: \"0.3.3\"" in defaults
+        assert "coroot_image_tag: \"1.23.3\"" in defaults
+        assert "repo_url: https://coroot.github.io/helm-charts" in coroot
+        assert "chart_ref: coroot/coroot-operator" in coroot
+        assert "chart_ref: coroot/coroot-ce" in coroot
+        assert "externalPrometheus:" in coroot
+        assert "pod-security.kubernetes.io/enforce: privileged" in coroot
+        assert "denyGlobalSecrets: true" in coroot
+        assert "Create VPN-only Coroot HTTPRoute" in coroot
+        assert "name: admin-gateway" in coroot
+        assert "latest" not in coroot
+        assert "Wait for the Coroot node agent DaemonSet rollout" in coroot
+
+    def test_hipaa_redaction_is_wired_into_every_log_collector(self):
+        observability = (
+            REPO_ROOT / "roles" / "k8s-observability" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        hipaa = (
+            REPO_ROOT / "roles" / "hipaa-hardening" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "regulated-data-redaction" in observability
+        assert "pipelineStages" in observability
+        assert "record_transformer" in observability
+        assert observability.count("[REDACTED_EMAIL]") >= 3
+        assert "promtail-redaction" not in hipaa
+        assert "Cilium transparent pod-network encryption required" in hipaa
+
+    def test_catalog_and_deployment_guide_cover_every_lifecycle_component(self):
+        catalog = (
+            REPO_ROOT / "docs" / "TECHNOLOGY_CATALOG.md"
+        ).read_text(encoding="utf-8")
+        deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        components = (
+            "object-storage",
+            "secrets",
+            "eso",
+            "databases",
+            "postgresql",
+            "mongodb",
+            "elasticsearch",
+            "dragonfly",
+            "gitlab",
+            "gitlab-runner",
+            "gitops",
+            "observability",
+            "coroot",
+            "tracing",
+            "autoscaling",
+            "temporal",
+            "postal",
+            "backup",
+            "glitchtip",
+            "apm",
+            "blackbox",
+            "daytona",
+            "hipaa",
+        )
+        for component in components:
+            assert component in catalog
+            assert f"./platform.sh deploy {component}" in deployment
+        for foundation in ("infra", "network", "dns", "cluster", "tls"):
+            assert f"./platform.sh deploy {foundation}" in deployment
+
+    def test_vault_upgrade_plan_does_not_claim_kubernetes_auto_unseal(self):
+        plan = (
+            REPO_ROOT / "docs" / "VAULT_UPGRADE_PLAN.md"
+        ).read_text(encoding="utf-8")
+        assert "auto-unseal mechanism (Kubernetes secrets)" not in plan
+        assert "verify keys in K8s secrets" not in plan
+        assert "wait for re-election and auto-unseal" not in plan.lower()
