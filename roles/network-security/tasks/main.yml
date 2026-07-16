@@ -50,7 +50,7 @@
       tar xzf /tmp/helm.tar.gz -C /tmp
       install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
     fi
-    if ! command -v hcloud >/dev/null; then
+    if ! command -v hcloud >/dev/null || [ "$(hcloud version 2>/dev/null | awk 'NR == 1 {print $2}')" != "${HCLOUD_VER}" ]; then
       curl --retry 5 --retry-all-errors -fsSL "https://github.com/hetznercloud/cli/releases/download/${HCLOUD_VER}/hcloud-linux-amd64.tar.gz" -o /tmp/hcloud.tar.gz
       echo "{{ hcloud_linux_amd64_sha256 }}  /tmp/hcloud.tar.gz" | sha256sum -c -
       tar xzf /tmp/hcloud.tar.gz -C /tmp hcloud

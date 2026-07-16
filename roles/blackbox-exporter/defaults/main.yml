@@ -2,12 +2,12 @@
 blackbox_namespace: monitoring
 blackbox_chart_version: "11.15.1"   # prometheus-community/prometheus-blackbox-exporter
 blackbox_image: "prom/blackbox-exporter"
-blackbox_replicas: 1
+blackbox_replicas: "{{ blackbox.replicas | default(1) }}"
 
-blackbox_memory_req: "64Mi"
-blackbox_memory_lim: "256Mi"
-blackbox_cpu_req: "50m"
-blackbox_cpu_lim: "300m"
+blackbox_memory_req: "{{ blackbox.memory_request | default('64Mi') }}"
+blackbox_memory_lim: "{{ blackbox.memory_limit | default('256Mi') }}"
+blackbox_cpu_req: "{{ blackbox.cpu_request | default('50m') }}"
+blackbox_cpu_lim: "{{ blackbox.cpu_limit | default('300m') }}"
 
 blackbox_probe_interval: "60s"
 blackbox_probe_timeout: "15s"

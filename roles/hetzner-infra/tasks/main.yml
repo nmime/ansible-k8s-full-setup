@@ -214,6 +214,38 @@
       Bastion={{ bastion_type }}, CP={{ cp_type }}, Worker={{ worker_type }}.
       Override manually: hetzner_bastion_type, hetzner_cp_type, hetzner_worker_type
 
+- name: Resolve selected server type capacities
+  ansible.builtin.set_fact:
+    selected_bastion_spec: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('name', 'equalto', bastion_type) | first | default({}) }}
+    selected_cp_spec: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('name', 'equalto', cp_type) | first | default({}) }}
+    selected_worker_spec: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('name', 'equalto', worker_type) | first | default({}) }}
+
+- name: Reject undersized explicit or auto-selected server types
+  ansible.builtin.assert:
+    that:
+      - selected_bastion_spec | length > 0
+      - selected_bastion_spec.cores | int >= 2
+      - selected_bastion_spec.memory | int >= 4
+      - selected_cp_spec | length > 0
+      - selected_cp_spec.cores | int >= current_tier_spec.cp_min_cores | int
+      - selected_cp_spec.memory | int >= current_tier_spec.cp_min_memory | int
+      - selected_worker_spec | length > 0
+      - selected_worker_spec.cores | int >= current_tier_spec.worker_min_cores | int
+      - selected_worker_spec.memory | int >= current_tier_spec.worker_min_memory | int
+    fail_msg: >-
+      Selected server types do not satisfy the {{ platform_profile }} profile
+      capacity floor. Bastion={{ bastion_type }} (minimum 2 cores/4 GiB),
+      control-plane={{ cp_type }} (minimum {{ current_tier_spec.cp_min_cores }}
+      cores/{{ current_tier_spec.cp_min_memory }} GiB), worker={{ worker_type }}
+      (minimum {{ current_tier_spec.worker_min_cores }} cores/
+      {{ current_tier_spec.worker_min_memory }} GiB).
+
 - name: Build price lookup from available types
   set_fact:
     type_price_map: "{{ dict(available_server_types | map(attribute='name') | zip(available_server_types | map(attribute='price'))) }}"

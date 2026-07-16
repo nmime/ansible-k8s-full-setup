@@ -1,15 +1,17 @@
 # ============================================
-# MEDIUM-OPTIMIZED TIER - €55.92/mo server compute, ~€61.92/mo with lb11
+# MEDIUM-OPTIMIZED PROFILE - full medium toolset, small resource envelope
 # ============================================
-# Best for: Full platform tool set on the current CX23/CX33 budget shape
+# Best for: Full platform toolset on a constrained CX23/CX33 budget shape
 # Nodes: 3 x cx23 control plane + 4 x cx33 workers + 1 x cx23 bastion + lb11
-# HA: Control plane HA, medium-tier platform behavior
-# Tradeoff: control planes are schedulable to reuse CPU/RAM. For stricter
-# production isolation, set cp_schedulable=false and worker_count=5 (+€8.49/mo).
+# HA: Critical quorum services remain replicated; recoverable stateless
+# services use one replica and conservative autoscaling limits. Control planes
+# are schedulable, so resource requests/limits are mandatory for every component.
 # ============================================
 
+platform_profile: medium-optimized
 tier: medium
-cost_estimate: "€55.92/mo server compute; ~€61.92/mo with lb11"
+resource_tier: small
+cost_estimate: "Provider-price dependent: 3 x cx23 control plane, 4 x cx33 worker, cx23 bastion, lb11"
 
 global:
   project: k8s
@@ -20,11 +22,6 @@ global:
 # ---------------------------------------------
 # Hetzner infrastructure overrides
 # ---------------------------------------------
-hetzner_region: hel1
-hetzner_bastion_type: cx23
-hetzner_cp_type: cx23
-hetzner_worker_type: cx33
-
 hetzner_tier_specs:
   medium:
     cp_count: 3
@@ -79,55 +76,58 @@ kubernetes:
 # ---------------------------------------------
 # Storage
 # ---------------------------------------------
-object_storage_enabled: true
-object_storage_replicas: 3
-object_storage_volume_size: 80Gi
-
 storage:
   enabled: true
   mode: distributed
-  replicas: 3
-  size_per_replica: 80Gi
+  master_replicas: 3
+  volume_replicas: 3
+  filer_replicas: 1
+  master_size: 2Gi
+  size_per_replica: 40Gi
+  index_size: 2Gi
+  filer_size: 5Gi
 
 # ---------------------------------------------
 # Secrets
 # ---------------------------------------------
-vault_storage_size: 20Gi
-eso_enabled: true
-
 secrets:
   enabled: true
   vault:
     replicas: 3
-    storage_size: 20Gi
+    storage_size: 10Gi
   eso:
     enabled: true
+    replicas: 1
 
 # ---------------------------------------------
 # Databases
 # ---------------------------------------------
-postgresql_storage: 50Gi
-mongodb_storage: 30Gi
-
 databases:
+  enabled: true
   postgresql:
     enabled: true
     replicas: 3
-    storage_size: 50Gi
+    proxy_replicas: 1
+    storage_size: 30Gi
   mongodb:
     enabled: true
     replicas: 3
-    storage_size: 30Gi
+    storage_size: 20Gi
 
 # ---------------------------------------------
 # GitLab
 # ---------------------------------------------
-gitlab_runner_concurrent_jobs: 4
-
 gitlab:
   enabled: true
+  mode: light
   webservice_replicas: 1
+  webservice_max_replicas: 2
+  worker_processes: 2
   sidekiq_replicas: 1
+  sidekiq_max_replicas: 2
+  registry_max_replicas: 2
+  gitaly_storage_size: 30Gi
+  backup_persistence_size: 20Gi
   runner:
     enabled: true
     concurrent_jobs: 4
@@ -137,34 +137,68 @@ gitlab:
 # ---------------------------------------------
 gitops:
   enabled: true
-  ha_enabled: true
+  ha_enabled: false
+  server_replicas: 1
+  repo_replicas: 1
+  controller_replicas: 1
 
 # ---------------------------------------------
 # Observability
 # ---------------------------------------------
-log_stack: elk
-metrics_retention: 14d
-metrics_storage: 60Gi
-logging_retention: 7d
-
 observability:
+  enabled: true
   metrics:
     enabled: true
     retention: 14d
-    storage_size: 60Gi
+    storage_size: 40Gi
+    replicas: 1
 
   logging:
     enabled: true
+    stack: elk
     retention: 7d
 
   grafana:
     enabled: true
+    replicas: 1
+
+# ---------------------------------------------
+# Search and analytics (three low-footprint masters retain quorum)
+# ---------------------------------------------
+elasticsearch:
+  enabled: true
+  master:
+    replicas: 3
+    cpu_request: 100m
+    cpu_limit: 500m
+    memory_request: 1Gi
+    memory_limit: 2Gi
+    heap: 512m
+    storage_size: 10Gi
+  data:
+    replicas: 1
+    cpu_request: 250m
+    cpu_limit: 1000m
+    memory_request: 1536Mi
+    memory_limit: 2Gi
+    heap: 1g
+    storage_size: 40Gi
+  kibana:
+    replicas: 1
+    cpu_request: 100m
+    cpu_limit: 250m
+    memory_request: 384Mi
+    memory_limit: 768Mi
 
 # ---------------------------------------------
 # Autoscaling
 # ---------------------------------------------
 autoscaling:
   enabled: true
+  replicas: 1
+  defaults:
+    min_replicas: 1
+    max_replicas: 4
 
 # ---------------------------------------------
 # Backup
@@ -173,35 +207,73 @@ backup:
   enabled: true
   schedule: "0 2 * * *"
   retention_days: 30
+  job_resources:
+    cpu_request: 50m
+    cpu_limit: 250m
+    memory_request: 96Mi
+    memory_limit: 256Mi
   include:
     - databases
     - gitlab
     - secrets
     - object-storage
 
-backup_schedule: "0 2 * * *"
-backup_retention_days: 30
-
 # ---------------------------------------------
 # Cache, workflows, mail, tracing, probes
 # ---------------------------------------------
-dragonfly_replicas: 1
-dragonfly_snapshot_storage: 10Gi
-postal_smtp_replicas: 1
-postal_worker_replicas: 1
-apm_replicas: 1
-glitchtip_web_replicas: 1
-glitchtip_worker_replicas: 1
+dragonfly:
+  enabled: true
+  replicas: 1
+  cpu_request: 100m
+  cpu_limit: 500m
+  memory_request: 256Mi
+  memory_limit: 512Mi
+  snapshot_storage: 10Gi
 
-deploy_glitchtip: true
-deploy_apm: true
-deploy_blackbox: true
+temporal:
+  enabled: true
+  history_shards: 128
+  frontend_replicas: 1
+  history_replicas: 1
+  matching_replicas: 1
+  worker_replicas: 1
+  web_replicas: 1
+
+postal:
+  enabled: true
+  web_replicas: 1
+  smtp_replicas: 1
+  worker_replicas: 1
+  mariadb_storage: 20Gi
+  mariadb_memory: 1Gi
+
+tracing:
+  enabled: true
+  retention: 24h
+  storage_size: 10Gi
 
 glitchtip:
   enabled: true
+  web_replicas: 1
+  worker_enabled: false
+  worker_replicas: 1
+  events_retention_days: 30
 
 apm:
   enabled: true
+  replicas: 1
+  cpu_request: 100m
+  cpu_limit: 750m
+  memory_request: 384Mi
+  memory_limit: 768Mi
+  ilm_hot_max_size: 10gb
+  ilm_hot_max_age: 3d
+  ilm_delete_after: 7d
 
 blackbox:
   enabled: true
+  replicas: 1
+  cpu_request: 25m
+  cpu_limit: 200m
+  memory_request: 48Mi
+  memory_limit: 128Mi

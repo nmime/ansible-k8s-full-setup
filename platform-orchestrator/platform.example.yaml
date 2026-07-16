@@ -11,7 +11,9 @@ global:
   environment: production
   project: k8s
 
+platform_profile: custom
 tier: small
+resource_tier: small
 
 network:
   private_network:

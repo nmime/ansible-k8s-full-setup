@@ -1,14 +1,16 @@
 # ============================================
-# SMALL TIER - ~€21.96/mo server compute, ~€27.96/mo with lb11
+# SMALL TIER - compact staging/startup footprint
 # ============================================
 # Best for: Startups, small teams, staging
-# Kubernetes nodes: 3 (1 master, 2 workers)
+# Kubernetes nodes: 3 (1 x cx23 control plane, 2 x cx33 workers)
 # Extra servers: 1 cx23 bastion, 1 lb11 load balancer
 # HA: No (single master)
 # ============================================
 
+platform_profile: small
 tier: small
-cost_estimate: "€21.96/mo server compute; ~€27.96/mo with lb11"
+resource_tier: small
+cost_estimate: "Provider-price dependent: 1 x cx23 control plane, 2 x cx33 worker, cx23 bastion, lb11"
 
 global:
   project: k8s
@@ -30,7 +32,7 @@ infrastructure:
 
   workers:
     count: 2
-    type: cx23
+    type: cx33
 
 # ---------------------------------------------
 # Network
@@ -77,10 +79,13 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
+  enabled: true
   postgresql:
     enabled: true
     replicas: 1
     storage_size: 30Gi
+  mongodb:
+    enabled: false
 
 # ---------------------------------------------
 # GitLab
@@ -104,6 +109,7 @@ gitops:
 # Observability
 # ---------------------------------------------
 observability:
+  enabled: true
   metrics:
     enabled: true
     retention: 14d
@@ -111,6 +117,7 @@ observability:
 
   logging:
     enabled: true
+    stack: loki
     retention: 7d
 
   grafana:
@@ -121,6 +128,26 @@ observability:
 # ---------------------------------------------
 autoscaling:
   enabled: true
+
+# GitLab dependencies and medium-only platform services
+elasticsearch:
+  enabled: false
+
+dragonfly:
+  enabled: true
+  replicas: 1
+
+temporal:
+  enabled: false
+
+tracing:
+  enabled: false
+
+postal:
+  enabled: false
+
+backup:
+  enabled: false
 
 # ---------------------------------------------
 # GlitchTip (Sentry-compatible error tracking)

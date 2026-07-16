@@ -1,15 +1,17 @@
 # ============================================
-# PRODUCTION TIER - ~€101.43/mo server compute, ~€107.43/mo with lb11
+# PRODUCTION TIER - higher-availability platform footprint
 # ============================================
 # Best for: Full HA, medium-high traffic
 # Nodes: 6+ x cx43 16Gi-class nodes (3 masters, 3+ workers) + cx23 bastion + lb11
-# HA: Full (control plane + workloads)
+# HA: Three-way control plane with higher stateless workload redundancy
 # Storage: 4x150Gi object storage, 100Gi PostgreSQL, 150Gi metrics
 # Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
 # ============================================
 
+platform_profile: production
 tier: production
-cost_estimate: "€101.43/mo server compute; ~€107.43/mo with lb11"
+resource_tier: production
+cost_estimate: "Provider-price dependent: 3 x cx43 control plane, 3 x cx43 worker, cx23 bastion, lb11"
 
 global:
   project: k8s
@@ -89,7 +91,12 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
+  enabled: true
   postgresql:
+    enabled: true
+    replicas: 3
+    storage_size: 100Gi
+  mongodb:
     enabled: true
     replicas: 3
     storage_size: 100Gi
@@ -117,6 +124,7 @@ gitops:
 # Observability
 # ---------------------------------------------
 observability:
+  enabled: true
   metrics:
     enabled: true
     retention: 30d
@@ -124,6 +132,7 @@ observability:
 
   logging:
     enabled: true
+    stack: elk
     retention: 14d
 
   grafana:
@@ -138,6 +147,23 @@ autoscaling:
   defaults:
     min_replicas: 2
     max_replicas: 20
+
+elasticsearch:
+  enabled: true
+
+dragonfly:
+  enabled: true
+
+temporal:
+  enabled: true
+
+tracing:
+  enabled: true
+  retention: 72h
+  storage_size: 40Gi
+
+postal:
+  enabled: true
 
 # ---------------------------------------------
 # Backup

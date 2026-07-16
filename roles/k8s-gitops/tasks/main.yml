@@ -4,10 +4,10 @@
     argocd_chart_version: 9.5.14
     argocd_version: v3.4.2
     argocd_domain: argocd.{{ domain }}
-    argocd_ha: '{{ argocd_ha_enabled | default(true if tier in [''medium'', ''production''] else false) }}'
-    argocd_server_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
-    argocd_repo_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
-    argocd_controller_replicas: '{{ 2 if tier in [''medium'', ''production''] else 1 }}'
+    argocd_ha: '{{ gitops.ha_enabled | default(argocd_ha_enabled | default(true if resource_tier in [''medium'', ''production''] else false)) }}'
+    argocd_server_replicas: '{{ gitops.server_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
+    argocd_repo_replicas: '{{ gitops.repo_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
+    argocd_controller_replicas: '{{ gitops.controller_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
 - name: Create ArgoCD namespace
   kubernetes.core.k8s:
     state: present

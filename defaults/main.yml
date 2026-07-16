@@ -3,8 +3,12 @@
 # ============================================
 # Tier-specific configuration for all roles
 
-# Tier definitions
+# Tier selects platform capabilities. `resource_tier` selects default pod
+# requests/limits and replica counts, so a profile can keep the medium toolset
+# while using the small-footprint resource envelope.
 tier: medium
+platform_profile: "{{ tier }}"
+resource_tier: "{{ tier }}"
 
 # Global settings
 project_name: k8s
@@ -73,12 +77,12 @@ gateway_api_experimental_sha256: f0d5c2b0bef2b9d80ba6ba909e5e5dbde08006384376083
 
 # CLI tool versions (pinned for reproducibility)
 kubectl_version: "{{ k8s_version }}"
-hcloud_cli_version: v1.42.0
+hcloud_cli_version: v1.65.0
 yq_version: v4.44.6
 helm_cli_version: v3.20.1
 kubectl_linux_amd64_sha256: 5d11e2ba01ea68ffd053f56e27738e2b4330013ee67f7e46c6da6c585d3c99260
 helm_linux_amd64_sha256: 165ee4a2db012cc657381001e593e981f42aa5707acdd50658326790c9d0dc3
-hcloud_linux_amd64_sha256: 5f0ec3f08c9bd8eb0e058c8777e3eaed432df9122b336bd10b37a68a5521cb94
+hcloud_linux_amd64_sha256: f78d2db65b7ab58603d343739cb4397e13acef23182e41692a06e147a8d4c011
 yq_linux_amd64_sha256: 0c2b24e645b57d8e7c0566d18643a6d4f5580feeea3878127354a46f2a1e4598
 node_exporter_linux_amd64_sha256: a550cd5c05f760b7934a2d0afad66d2e92e681482f5f57a917465b1fba3b02a6
 promtail_version: "3.0.0"
@@ -107,7 +111,7 @@ object_storage_endpoint: "http://{{ object_storage_endpoint_hostport | default('
 object_storage_console_domain: "{{ ('seaweedfs.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 'seaweedfs.local' }}"
 object_storage_api_domain: "{{ ('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local' }}"
 object_storage_master_size: 4Gi
-object_storage_volume_size: "{{ '20Gi' if tier == 'minimal' else '40Gi' if tier == 'small' else '100Gi' if tier == 'medium' else '150Gi' }}"
+object_storage_volume_size: "{{ '20Gi' if resource_tier == 'minimal' else '40Gi' if resource_tier == 'small' else '100Gi' if resource_tier == 'medium' else '150Gi' }}"
 object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
 
@@ -116,7 +120,7 @@ object_storage_filer_size: 10Gi
 vault_version: "2.0.3"
 # renovate: datasource=helm depName=vault
 vault_chart_version: "0.34.0"
-vault_replicas: "{{ 3 if tier in ['medium', 'production'] else 1 }}"
+vault_replicas: "{{ 3 if resource_tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 20Gi
 eso_enabled: true
 vault_tls_disabled: false
@@ -128,10 +132,10 @@ vault_init_output_file: "{{ playbook_dir }}/.vault-init.json"
 # Databases - tier-specific
 # renovate: datasource=github-releases depName=percona/percona-postgresql-operator
 pg_operator_version: "3.0.0"
-postgresql_replicas: "{{ 2 if tier in ['medium', 'production'] else 1 }}"
-postgresql_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' else '50Gi' if tier == 'medium' else '100Gi' }}"
+postgresql_replicas: "{{ 2 if resource_tier in ['medium', 'production'] else 1 }}"
+postgresql_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
-mongodb_storage: "{{ '20Gi' if tier == 'minimal' else '30Gi' if tier == 'small' else '50Gi' if tier == 'medium' else '100Gi' }}"
+mongodb_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 
 # GitLab
 # renovate: datasource=helm depName=gitlab
@@ -176,9 +180,9 @@ argocd_allowed_namespace_resources:
 
 # Observability - tier-specific
 log_stack: "{{ 'loki' if tier in ['minimal', 'small'] else 'elk' }}"  # Options: loki, elk, efk
-metrics_retention: "{{ '7d' if tier == 'minimal' else '14d' if tier == 'small' else '30d' }}"
-metrics_storage: "{{ '20Gi' if tier == 'minimal' else '40Gi' if tier == 'small' else '100Gi' if tier == 'medium' else '150Gi' }}"
-logging_retention: "{{ '3d' if tier == 'minimal' else '7d' if tier == 'small' else '14d' }}"
+metrics_retention: "{{ '7d' if resource_tier == 'minimal' else '14d' if resource_tier == 'small' else '30d' }}"
+metrics_storage: "{{ '20Gi' if resource_tier == 'minimal' else '40Gi' if resource_tier == 'small' else '100Gi' if resource_tier == 'medium' else '150Gi' }}"
+logging_retention: "{{ '3d' if resource_tier == 'minimal' else '7d' if resource_tier == 'small' else '14d' }}"
 
 # Autoscaling
 keda_enabled: true
@@ -266,8 +270,8 @@ hetzner_metrics_enabled: true
 
 # Distributed Tracing (Tempo)
 tracing_enabled: "{{ tier in ['medium', 'production'] }}"
-tempo_retention: "{{ '24h' if tier == 'medium' else '72h' if tier == 'production' else '12h' }}"
-tempo_storage_size: "{{ '10Gi' if tier in ['minimal', 'small'] else '20Gi' if tier == 'medium' else '40Gi' }}"
+tempo_retention: "{{ '12h' if resource_tier in ['minimal', 'small'] else '24h' if resource_tier == 'medium' else '72h' }}"
+tempo_storage_size: "{{ '10Gi' if resource_tier in ['minimal', 'small'] else '20Gi' if resource_tier == 'medium' else '40Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"
 
 # Internal service TLS is enabled independently of compliance claims.

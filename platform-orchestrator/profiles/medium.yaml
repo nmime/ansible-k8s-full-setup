@@ -1,5 +1,5 @@
 # ============================================
-# MEDIUM TIER - ~€85.44/mo server compute, ~€91.44/mo with lb11
+# MEDIUM TIER - standard full-platform footprint
 # ============================================
 # Best for: Small-medium traffic, teams
 # Nodes: 5 x cx43 16Gi-class nodes (3 masters HA, 2 workers) + cx23 bastion + lb11
@@ -8,8 +8,10 @@
 # Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
 # ============================================
 
+platform_profile: medium
 tier: medium
-cost_estimate: "€85.44/mo server compute; ~€91.44/mo with lb11"
+resource_tier: medium
+cost_estimate: "Provider-price dependent: 3 x cx43 control plane, 2 x cx43 worker, cx23 bastion, lb11"
 
 global:
   project: k8s
@@ -80,9 +82,14 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
+  enabled: true
   postgresql:
     enabled: true
     replicas: 2
+    storage_size: 50Gi
+  mongodb:
+    enabled: true
+    replicas: 3
     storage_size: 50Gi
 
 # ---------------------------------------------
@@ -107,6 +114,7 @@ gitops:
 # Observability
 # ---------------------------------------------
 observability:
+  enabled: true
   metrics:
     enabled: true
     retention: 30d
@@ -114,6 +122,7 @@ observability:
 
   logging:
     enabled: true
+    stack: elk
     retention: 14d
 
   grafana:
@@ -123,6 +132,23 @@ observability:
 # Autoscaling
 # ---------------------------------------------
 autoscaling:
+  enabled: true
+
+elasticsearch:
+  enabled: true
+
+dragonfly:
+  enabled: true
+
+temporal:
+  enabled: true
+
+tracing:
+  enabled: true
+  retention: 24h
+  storage_size: 20Gi
+
+postal:
   enabled: true
 
 # ---------------------------------------------

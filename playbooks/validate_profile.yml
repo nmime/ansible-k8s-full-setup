@@ -1,0 +1,26 @@
+---
+- name: Validate a platform profile without changing infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../defaults/main.yml
+
+  tasks:
+    - name: Normalize and validate the selected profile
+      ansible.builtin.include_tasks: tasks/normalize_profile.yml
+
+    - name: Verify normalized profile identity
+      ansible.builtin.assert:
+        that:
+          - platform_profile | length > 0
+          - tier in ['minimal', 'small', 'medium', 'production']
+          - resource_tier in ['minimal', 'small', 'medium', 'production']
+          - object_storage_replicas | int >= 1
+          - object_storage_volume_replicas | int >= 1
+          - vault_replicas | int >= 1
+          - postgresql_replicas | int >= 1
+        success_msg: >-
+          Profile {{ platform_profile }} is valid: capability tier={{ tier }},
+          resource tier={{ resource_tier }}.

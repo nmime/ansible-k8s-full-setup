@@ -33,9 +33,35 @@ Available profiles are `minimal`, `small`, `medium`, `medium-optimized`, and
 `production`. Set `global.domain` and `global.email`; review server counts,
 regions, storage, backup, and every component `enabled` flag.
 
+There are four runtime tiers. `medium-optimized` is intentionally a named
+profile rather than a fifth tier: it sets `tier: medium` to retain every medium
+service and `resource_tier: small` to select the compact resource envelope.
+Do not rename it to `medium_optimized` or change its tier to `small`; both would
+break the explicit profile contract and are rejected before provisioning.
+
+For the budget production-oriented deployment:
+
+```bash
+./platform.sh init medium-optimized
+```
+
+This profile uses three schedulable `cx23` control planes, four `cx33` workers,
+a `cx23` bastion, and `lb11`. Stateful quorum/data services remain replicated;
+stateless services default to one replica with bounded autoscaling. Choose the
+`production` profile when stateless workload continuity during node maintenance
+is required. Production backups must also be copied to storage outside this
+cluster.
+
 GitLab chart 10 cannot be enabled without PostgreSQL, Dragonfly, and object
 storage. The normalizer rejects that invalid profile before infrastructure is
 changed.
+
+Validate the selected profile without contacting Hetzner or Kubernetes:
+
+```bash
+ansible-playbook playbooks/validate_profile.yml \
+  -e @platform-orchestrator/profiles/medium-optimized.yaml
+```
 
 ## 3. Deploy
 

@@ -20,8 +20,12 @@ all:
     project_name: k8s
     environment: production
 
-    # Tier selection: minimal, small, medium, production
+    # Capability tier: minimal, small, medium, production
     tier: medium
+    # Named profile/resource envelope. medium-optimized uses medium capabilities
+    # with small-footprint pod defaults.
+    platform_profile: medium
+    resource_tier: medium
 
     # ----------------------------------------
     # Infrastructure (Hetzner)

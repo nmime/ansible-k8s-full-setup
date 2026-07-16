@@ -1,9 +1,38 @@
 ---
+- name: Validate platform profile and resource tier contract
+  ansible.builtin.assert:
+    that:
+      - platform_profile in ['minimal', 'small', 'medium', 'medium-optimized', 'production', 'custom']
+      - resource_tier in ['minimal', 'small', 'medium', 'production']
+    fail_msg: >-
+      Invalid profile contract: platform_profile={{ platform_profile }},
+      tier={{ tier }}, resource_tier={{ resource_tier }}.
+
+- name: Enforce the selected named profile mapping
+  ansible.builtin.assert:
+    that:
+      - tier == platform_profile_contracts[platform_profile].tier
+      - resource_tier == platform_profile_contracts[platform_profile].resource_tier
+    fail_msg: >-
+      Profile {{ platform_profile }} requires
+      tier={{ platform_profile_contracts[platform_profile].tier }} and
+      resource_tier={{ platform_profile_contracts[platform_profile].resource_tier }},
+      but received tier={{ tier }} and resource_tier={{ resource_tier }}.
+  vars:
+    platform_profile_contracts:
+      minimal: {tier: minimal, resource_tier: minimal}
+      small: {tier: small, resource_tier: small}
+      medium: {tier: medium, resource_tier: medium}
+      medium-optimized: {tier: medium, resource_tier: small}
+      production: {tier: production, resource_tier: production}
+  when: platform_profile != 'custom'
+
 - name: Normalize component enablement from the platform profile
   ansible.builtin.set_fact:
     platform_object_storage_enabled: '{{ (storage.enabled | default(object_storage_enabled)) | bool }}'
     platform_secrets_enabled: '{{ (secrets.enabled | default(true)) | bool }}'
     platform_observability_enabled: '{{ (observability.enabled | default(deploy_observability)) | bool }}'
+    platform_tracing_enabled: '{{ (tracing.enabled | default(tracing_enabled)) | bool }}'
     platform_elasticsearch_enabled: '{{ (elasticsearch.enabled | default(deploy_elasticsearch)) | bool }}'
     platform_databases_enabled: '{{ (databases.enabled | default(deploy_databases)) | bool }}'
     platform_postgresql_enabled: '{{ (databases.postgresql.enabled | default(deploy_postgresql)) | bool }}'
@@ -20,13 +49,23 @@
 - name: Normalize component sizing from the platform profile
   ansible.builtin.set_fact:
     object_storage_enabled: '{{ platform_object_storage_enabled }}'
-    object_storage_replicas: '{{ storage.replicas | default(object_storage_replicas | default(1)) }}'
+    object_storage_replicas: >-
+      {{ storage.master_replicas | default(storage.replicas | default(object_storage_replicas | default(1))) }}
+    object_storage_volume_replicas: >-
+      {{ storage.volume_replicas | default(object_storage_volume_replicas | default(object_storage_replicas | default(1))) }}
+    object_storage_filer_replicas: >-
+      {{ storage.filer_replicas | default(object_storage_filer_replicas | default(1)) }}
+    object_storage_master_size: '{{ storage.master_size | default(object_storage_master_size) }}'
     object_storage_volume_size: >-
       {{ storage.size_per_replica | default(storage.size | default(object_storage_volume_size)) }}
+    object_storage_idx_size: '{{ storage.index_size | default(object_storage_idx_size) }}'
+    object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
     vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
     vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
     eso_enabled: '{{ secrets.eso.enabled | default(eso_enabled) }}'
     postgresql_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas) }}'
+    postgresql_proxy_replicas: >-
+      {{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(1)) }}
     postgresql_storage: '{{ databases.postgresql.storage_size | default(postgresql_storage) }}'
     mongodb_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(1)) }}'
     mongodb_storage: '{{ databases.mongodb.storage_size | default(mongodb_storage) }}'
@@ -37,9 +76,21 @@
     argocd_ha_enabled: '{{ gitops.ha_enabled | default(tier in ["medium", "production"]) }}'
     metrics_retention: '{{ observability.metrics.retention | default(metrics_retention) }}'
     metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
+    log_stack: '{{ observability.logging.stack | default(log_stack) }}'
     logging_retention: '{{ observability.logging.retention | default(logging_retention) }}'
+    tracing_enabled: '{{ platform_tracing_enabled }}'
+    tempo_retention: '{{ tracing.retention | default(tempo_retention) }}'
+    tempo_storage_size: '{{ tracing.storage_size | default(tempo_storage_size) }}'
     backup_schedule: '{{ backup.schedule | default(backup_schedule) }}'
     backup_retention_days: '{{ backup.retention_days | default(backup_retention_days) }}'
+    backup_job_cpu_request: >-
+      {{ backup.job_resources.cpu_request | default(backup_job_cpu_request) }}
+    backup_job_cpu_limit: >-
+      {{ backup.job_resources.cpu_limit | default(backup_job_cpu_limit) }}
+    backup_job_memory_request: >-
+      {{ backup.job_resources.memory_request | default(backup_job_memory_request) }}
+    backup_job_memory_limit: >-
+      {{ backup.job_resources.memory_limit | default(backup_job_memory_limit) }}
     deploy_apm: '{{ apm.enabled | default(deploy_apm) }}'
     deploy_blackbox: '{{ blackbox.enabled | default(deploy_blackbox | default(false)) }}'
     deploy_glitchtip: '{{ glitchtip.enabled | default(deploy_glitchtip | default(false)) }}'

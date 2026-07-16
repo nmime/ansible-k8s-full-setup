@@ -16,10 +16,29 @@ ship or deploy an application repository by default.
 - Scheduled backups, verification jobs, restore-drill scripts, staged upgrades,
   exact Helm rollback baselines, and verified teardown.
 
-The `minimal`, `small`, `medium`, `medium-optimized`, and `production` profiles
-control both infrastructure sizing and component enablement. GitLab chart 10
-requires PostgreSQL, Dragonfly (external Redis-compatible service), and object
-storage; profile validation rejects an invalid combination.
+The runtime has four capability tiers and five named profiles:
+
+| Profile | Capability tier | Resource tier | Default topology | Service scope |
+|---|---|---|---|---|
+| `minimal` | minimal | minimal | 1 schedulable control plane + 1 worker | Core development platform; no GitLab or medium-only services |
+| `small` | small | small | 1 control plane + 2 workers | Compact GitLab platform with PostgreSQL, Dragonfly, storage, secrets, GitOps, and monitoring |
+| `medium` | medium | medium | 3 control planes + 2 workers | Full platform with standard medium sizing |
+| `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
+| `production` | production | production | 3 control planes + 3 workers | Higher stateless workload redundancy and the largest retention/storage defaults |
+
+`tier` controls which capabilities are installed. `resource_tier` controls
+default pod requests, limits, and stateless replica counts. This separation is
+what lets `medium-optimized` retain the full medium toolset without silently
+allocating the normal-medium footprint. GitLab chart 10 requires PostgreSQL,
+Dragonfly, and object storage; profile validation rejects an invalid
+combination.
+
+The optimized profile keeps three-way control-plane, Vault, PostgreSQL,
+MongoDB, SeaweedFS, and Elasticsearch-master topology. Recoverable stateless
+services run one replica by default and autoscaling is capped at four. It is a
+production-oriented budget profile, but it does not provide the same workload
+availability during maintenance as the `production` profile. Store production
+backups outside the cluster for disaster recovery.
 
 ## Safety model
 
@@ -81,7 +100,7 @@ $EDITOR platform.yaml
 Set at least `global.domain` and `global.email` in `platform.yaml`. Review every
 enabled component and infrastructure size before deployment.
 
-For the budget-oriented prior medium shape:
+For the full platform on the small-resource envelope:
 
 ```bash
 ./platform.sh init medium-optimized
@@ -103,6 +122,10 @@ in `platform.yaml` is respected by full and tagged runs.
 ```bash
 # Fail-closed local checks
 bash scripts/validate-local.sh
+
+# Validate one profile contract without provisioning anything
+ansible-playbook playbooks/validate_profile.yml \
+  -e @platform-orchestrator/profiles/medium-optimized.yaml
 
 # Health/status
 ./platform-orchestrator/platform.sh status
