@@ -94,8 +94,10 @@
         namespaces: [postal]
         requires_data_confirmation: true
       backup:
-        namespaces: [backups]
+        namespaces: [backups, velero]
         requires_data_confirmation: false
+        helm_releases:
+          - {name: velero, namespace: velero}
         resources:
           - {api_version: batch/v1, kind: CronJob, name: gitlab-rails-secrets-backup, namespace: gitlab}
           - {api_version: v1, kind: Secret, name: gitlab-rails-backup-credentials, namespace: gitlab}

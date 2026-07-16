@@ -31,7 +31,10 @@ _hg_check_nodes() {
     echo "  Cluster is unreachable"; ((HEALTH_GATE_FAILURES++)) || true; return
   fi
   local not_ready
-  not_ready=$(kubectl get nodes --no-headers 2>/dev/null | grep -cv 'Ready' || echo 0)
+  not_ready=$(kubectl get nodes -o json 2>/dev/null | jq '[
+    .items[]
+    | select([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 0)
+  ] | length')
   if [[ "$not_ready" -eq 0 ]]; then
     echo "  All nodes Ready"
   else
@@ -42,9 +45,12 @@ _hg_check_nodes() {
 _hg_check_cilium() {
   _hg_log "Health gate: Cilium"
   if $HEALTH_DRY_RUN; then echo "  [DRY-RUN] Would check Cilium pods"; return 0; fi
-  local total running
-  total=$(kubectl get pods -n kube-system -l k8s-app=cilium --no-headers 2>/dev/null | wc -l || echo 0)
-  running=$(kubectl get pods -n kube-system -l k8s-app=cilium --no-headers 2>/dev/null | grep -c 'Running' || echo 0)
+  local pods total running
+  pods=$(kubectl get pods -n kube-system -l k8s-app=cilium -o json 2>/dev/null || printf '{"items":[]}')
+  total=$(jq '.items | length' <<<"$pods")
+  running=$(jq '[.items[] | select(.status.phase == "Running" and
+    ((.status.containerStatuses // []) | length > 0) and
+    all(.status.containerStatuses[]; .ready == true))] | length' <<<"$pods")
   if [[ "$total" -gt 0 ]]; then
     echo "  Cilium: $running/$total Running"
     if [[ "$running" -ne "$total" ]]; then
@@ -58,9 +64,14 @@ _hg_check_cilium() {
 _hg_check_cert_manager() {
   _hg_log "Health gate: Cert-manager"
   if $HEALTH_DRY_RUN; then echo "  [DRY-RUN] Would check cert-manager pods"; return 0; fi
-  local total running
-  total=$(kubectl get pods -n cert-manager --no-headers 2>/dev/null | grep -c 'cert-manager' || echo 0)
-  running=$(kubectl get pods -n cert-manager --no-headers 2>/dev/null | grep 'cert-manager' | grep -c 'Running' || echo 0)
+  local pods total running
+  pods=$(kubectl get pods -n cert-manager -o json 2>/dev/null || printf '{"items":[]}')
+  total=$(jq '[.items[] | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)] | length' <<<"$pods")
+  running=$(jq '[.items[]
+    | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)
+    | select(.status.phase == "Running" and
+      ((.status.containerStatuses // []) | length > 0) and
+      all(.status.containerStatuses[]; .ready == true))] | length' <<<"$pods")
   if [[ "$total" -gt 0 ]]; then
     echo "  Cert-manager: $running/$total Running"
     if [[ "$running" -ne "$total" ]]; then
@@ -75,9 +86,14 @@ _hg_check_argocd() {
   _hg_log "Health gate: ArgoCD"
   if [[ "$HEALTH_REQUIRE_ARGOCD" != "true" ]]; then echo "  ArgoCD disabled by profile"; return 0; fi
   if $HEALTH_DRY_RUN; then echo "  [DRY-RUN] Would check ArgoCD pods"; return 0; fi
-  local total running
-  total=$(kubectl get pods -n argocd --no-headers 2>/dev/null | wc -l || echo 0)
-  running=$(kubectl get pods -n argocd --no-headers 2>/dev/null | grep -c 'Running' || echo 0)
+  local pods total running
+  pods=$(kubectl get pods -n argocd -o json 2>/dev/null || printf '{"items":[]}')
+  total=$(jq '[.items[] | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)] | length' <<<"$pods")
+  running=$(jq '[.items[]
+    | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)
+    | select(.status.phase == "Running" and
+      ((.status.containerStatuses // []) | length > 0) and
+      all(.status.containerStatuses[]; .ready == true))] | length' <<<"$pods")
   if [[ "$total" -gt 0 ]]; then
     echo "  ArgoCD: $running/$total Running"
     if [[ "$running" -ne "$total" ]]; then
@@ -91,10 +107,18 @@ _hg_check_argocd() {
 _hg_check_databases() {
   _hg_log "Health gate: Databases"
   if $HEALTH_DRY_RUN; then echo "  [DRY-RUN] Would check database pods"; return 0; fi
-  local pg_total pg_running mg_total mg_running
+  local pods pg_total pg_running mg_total mg_running
+  pods=$(kubectl get pods -n databases -o json 2>/dev/null || printf '{"items":[]}')
   if [[ "$HEALTH_REQUIRE_POSTGRESQL" == "true" ]]; then
-    pg_total=$(kubectl get pods -n databases --no-headers 2>/dev/null | grep -Eci 'postgres|pg-' || echo 0)
-    pg_running=$(kubectl get pods -n databases --no-headers 2>/dev/null | grep -Ei 'postgres|pg-' | grep -c 'Running' || echo 0)
+    pg_total=$(jq '[.items[]
+      | select(.metadata.name | test("postgres|pg-|pgbouncer"; "i"))
+      | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)] | length' <<<"$pods")
+    pg_running=$(jq '[.items[]
+      | select(.metadata.name | test("postgres|pg-|pgbouncer"; "i"))
+      | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)
+      | select(.status.phase == "Running" and
+        ((.status.containerStatuses // []) | length > 0) and
+        all(.status.containerStatuses[]; .ready == true))] | length' <<<"$pods")
     if [[ "$pg_total" -gt 0 && "$pg_running" -eq "$pg_total" ]]; then
       echo "  PostgreSQL: $pg_running/$pg_total Running"
     else
@@ -104,8 +128,15 @@ _hg_check_databases() {
     echo "  PostgreSQL disabled by profile"
   fi
   if [[ "$HEALTH_REQUIRE_MONGODB" == "true" ]]; then
-    mg_total=$(kubectl get pods -n databases --no-headers 2>/dev/null | grep -ci 'mongo' || echo 0)
-    mg_running=$(kubectl get pods -n databases --no-headers 2>/dev/null | grep -i 'mongo' | grep -c 'Running' || echo 0)
+    mg_total=$(jq '[.items[]
+      | select(.metadata.name | test("mongo"; "i"))
+      | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)] | length' <<<"$pods")
+    mg_running=$(jq '[.items[]
+      | select(.metadata.name | test("mongo"; "i"))
+      | select([.metadata.ownerReferences[]? | select(.kind == "Job")] | length == 0)
+      | select(.status.phase == "Running" and
+        ((.status.containerStatuses // []) | length > 0) and
+        all(.status.containerStatuses[]; .ready == true))] | length' <<<"$pods")
     if [[ "$mg_total" -gt 0 && "$mg_running" -eq "$mg_total" ]]; then
       echo "  MongoDB: $mg_running/$mg_total Running"
     else
@@ -121,6 +152,10 @@ check_health_gates() {
   HEALTH_GATE_FAILURES=0
   echo ""
   _hg_log "=== HEALTH GATE CHECKS ==="
+  if [[ "$HEALTH_DRY_RUN" != true ]] && ! command -v jq >/dev/null 2>&1; then
+    _hg_error "jq is required for exact readiness checks"
+    return 1
+  fi
   _hg_check_nodes
   _hg_check_cilium
   _hg_check_cert_manager

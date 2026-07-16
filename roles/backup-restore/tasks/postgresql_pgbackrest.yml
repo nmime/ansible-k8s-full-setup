@@ -1,0 +1,28 @@
+---
+# PostgreSQL backup schedules and repositories are owned by the Percona
+# operator. This role verifies that the transactional backup contract exists.
+
+- name: "Backup-PostgreSQL | Read operator-managed PostgreSQL cluster"
+  kubernetes.core.k8s_info:
+    api_version: pgv2.percona.com/v2
+    kind: PerconaPGCluster
+    name: "{{ backup_postgresql_cluster_name }}"
+    namespace: "{{ backup_postgresql_namespace }}"
+  register: _postgresql_backup_cluster
+  retries: 12
+  delay: 10
+  until: _postgresql_backup_cluster.resources | length == 1
+
+- name: "Backup-PostgreSQL | Verify pgBackRest backup policy"
+  ansible.builtin.assert:
+    that:
+      - _postgresql_backup_cluster.resources[0].spec.backups.pgbackrest is defined
+      - _postgresql_backup_cluster.resources[0].spec.backups.pgbackrest.repos | length >= 2
+      - _postgresql_backup_cluster.resources[0].spec.backups.pgbackrest.repos
+        | selectattr('name', 'equalto', 'repo1') | list | length == 1
+      - _postgresql_backup_cluster.resources[0].spec.backups.pgbackrest.repos
+        | selectattr('name', 'equalto', 'repo2') | list | length == 1
+    fail_msg: >-
+      The Percona PostgreSQL pgBackRest repo1/repo2 policy is missing.
+      Reconcile the k8s-databases role before enabling backup verification.
+  tags: [backup, backup-postgresql]

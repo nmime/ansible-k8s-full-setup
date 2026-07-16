@@ -130,11 +130,20 @@ kubectl get clustersecretstore
 ./scripts/backup-all.sh --dry-run
 ./scripts/backup-all.sh --force
 kubectl get jobs -A -l app.kubernetes.io/part-of=backup-restore
+kubectl get backupstoragelocation,backup -n velero
+
+export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+./platform-orchestrator/platform.sh backup-cluster \
+  --recipient "$CLUSTER_BACKUP_AGE_RECIPIENT" --force
+./platform-orchestrator/platform.sh restore-cluster \
+  --archive /secure/k8s-cluster-....tar.gz.age --mode verify
 ```
 
 GitLab recovery needs the Toolbox archive and the separately stored Rails
-encryption secret. Backup object existence is not restore proof; run isolated
-restore drills on a schedule. See [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+encryption secret. Production recovery also needs external Velero/Kopia data
+and the encrypted etcd/PKI/config bundle. Backup object existence is not restore
+proof; run isolated native and replacement-cluster drills on a schedule. See
+[BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
 ## Upgrades
 
@@ -149,6 +158,34 @@ The snapshot is a configuration baseline. It does not replace database,
 repository, Vault, or object-storage backups. GitLab upgrades follow one minor
 at a time and the required stops documented in
 [docs/GITLAB_UPGRADE_PLAN.md](docs/GITLAB_UPGRADE_PLAN.md).
+
+An upgrade reconciles software inside the current profile. It cannot change
+profile or topology. For the verified minimal-to-production transition:
+
+```bash
+export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+export BACKUP_DR_BUCKET=company-platform-dr
+export BACKUP_DR_ACCESS_KEY='...'
+export BACKUP_DR_SECRET_KEY='...'
+export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+
+./platform-orchestrator/platform.sh migrate plan
+./platform-orchestrator/platform.sh migrate execute \
+  --dr-endpoint "$BACKUP_DR_ENDPOINT" --dr-bucket "$BACKUP_DR_BUCKET" \
+  --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
+./platform-orchestrator/platform.sh migrate status
+./platform-orchestrator/platform.sh migrate finalize \
+  --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
+```
+
+The durable workflow backs up first, expands to three control planes and three
+workers, drains/resizes one node at a time, verifies etcd between control-plane
+changes, applies production services, migrates VictoriaMetrics history,
+validates, and backs up again. Resume from checkpoints with `migrate resume`.
+Rollback restores the captured application/Helm baseline while deliberately
+retaining expanded nodes. After an acceptance window, `migrate finalize`
+retires the superseded VMSingle/Loki/Promtail resources, runs health checks,
+and captures another full recovery point.
 
 After each step:
 

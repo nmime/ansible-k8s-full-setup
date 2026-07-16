@@ -13,6 +13,9 @@ backup_compression: true
 backup_namespace: backups
 backup_label: backup-restore
 backup_project_name: "{{ project_name | default('k8s') }}"
+backup_postgresql_enabled: true
+backup_postgresql_namespace: databases
+backup_postgresql_cluster_name: "{{ backup_project_name }}-pg"
 backup_mongodb_enabled: true
 backup_mongodb_namespace: databases
 backup_mongodb_cluster_name: "{{ backup_project_name }}-mongo"
@@ -55,3 +58,28 @@ backup_alpine_image: alpine:3.22
 backup_vault_image: "hashicorp/vault:2.0.3"
 backup_mongo_image: mongodb/mongodb-community-server:7.0.15
 backup_s3cli_image: amazon/aws-cli:2.34.48
+
+# Full-cluster disaster recovery. This target must be outside the Kubernetes
+# cluster and outside the SeaweedFS instance it protects. Credentials are
+# independently supplied; they are never generated from in-cluster storage.
+backup_dr_enabled: false
+backup_dr_namespace: velero
+backup_dr_storage_endpoint: ""
+backup_dr_storage_region: us-east-1
+backup_dr_storage_bucket: ""
+backup_dr_storage_prefix: "{{ backup_project_name }}/velero"
+backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}"
+backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
+backup_dr_schedule: "30 2 * * *"
+backup_dr_retention_hours: 720
+backup_dr_velero_chart_version: "12.1.0"
+backup_dr_velero_image_tag: "v1.18.1"
+backup_dr_velero_aws_plugin_tag: "v1.14.2"
+backup_dr_velero_cpu_request: 100m
+backup_dr_velero_cpu_limit: 500m
+backup_dr_velero_memory_request: 128Mi
+backup_dr_velero_memory_limit: 512Mi
+backup_dr_node_agent_cpu_request: 100m
+backup_dr_node_agent_cpu_limit: 1
+backup_dr_node_agent_memory_request: 256Mi
+backup_dr_node_agent_memory_limit: 1Gi

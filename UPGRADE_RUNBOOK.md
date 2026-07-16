@@ -1,255 +1,275 @@
-# Upgrade Runbook
+# Upgrade and Profile Migration Runbook
 
 ## Overview
 
-This runbook covers the full lifecycle of upgrading the Kubernetes platform
-managed by this Ansible setup. It uses a phased, canary approach with automated
-health gates, snapshot-based rollback, and dry-run simulation.
+There are two deliberately separate workflows:
 
-## Architecture
+1. `upgrade-platform.sh` upgrades or reconciles software inside the current
+   profile. Its `--tier` option is only a current-tier assertion; a different
+   target is rejected.
+2. `migrate-profile.sh` changes cluster topology and capability profile. The
+   verified path is currently `minimal` to `production`.
 
-```
-+--------------------------------------------------------------+
-|           upgrade-platform.sh (orchestrator)                 |
-|  +----------+  +----------+  +----------+  +-----------+    |
-|  |preflight |->|snapshot  |->|canary    |->|health     |    |
-|  |-check.py |  |-helm-    |  |phases    |  |gates      |    |
-|  |           |  |baseline  |  |          |  |           |    |
-|  +----------+  +----------+  +----------+  +-----------+    |
-|                     ^                  v                      |
-|                     |              rollback.sh                |
-|                  snapshot/                        .state/     |
-+--------------------------------------------------------------+
-```
-
-## Prerequisites
-
-- `kubectl`, `helm`, `yq`, `ansible-playbook` installed and in PATH
-- Cluster accessible (`kubectl cluster-info` works)
-- `platform.yaml` configured with valid `global.domain` and `global.email`
-- Sufficient disk space (< 80% usage recommended)
-
-## Tier Upgrade Order (Canary Phases)
-
-Upgrades always progress through the tier sequence from `minimal` to the
-target tier:
-
-| Phase | Tier       | Nodes | HA  | Purpose                       |
-|-------|------------|-------|-----|-------------------------------|
-| 1     | `minimal`  | 2     | No  | Smoke test - smallest cluster  |
-| 2     | `small`    | 3     | No  | Validate multi-worker upgrade  |
-| 3     | `medium`   | 5     | Yes | Validate HA configuration      |
-| 4     | `production`| 6    | Yes | Full production validation     |
-
-Each phase runs a full health gate check before advancing.
+This boundary prevents a Helm upgrade from silently becoming a node expansion,
+server resize, service-set change, and data migration.
 
 ## Quick Reference
 
 ```bash
-# Plan what will change (dry run)
+# Current-profile software upgrade/reconcile
 ./scripts/upgrade-platform.sh --dry-run plan
-
-# Run preflight checks
 ./scripts/upgrade-platform.sh preflight
-
-# Capture baseline snapshot
 ./scripts/upgrade-platform.sh snapshot
-
-# Dry-run full upgrade
 ./scripts/upgrade-platform.sh --dry-run execute
-
-# Execute upgrade
-./scripts/upgrade-platform.sh --tier medium execute
-
-# Upgrade specific component
-./scripts/upgrade-platform.sh --tier small --component argocd execute
-
-# Validate cluster health
+./scripts/upgrade-platform.sh execute --component argocd
 ./scripts/upgrade-platform.sh validate
 
-# Rollback all components
-./scripts/rollback.sh
+# Profile migration: no cluster mutation during plan
+./platform-orchestrator/platform.sh migrate plan
+./platform-orchestrator/platform.sh migrate status
+./platform-orchestrator/platform.sh migrate execute \
+  --dr-endpoint https://s3.example-provider.com \
+  --dr-bucket company-platform-dr \
+  --backup-recipient age1...
+./platform-orchestrator/platform.sh migrate resume
+./platform-orchestrator/platform.sh migrate rollback
+./platform-orchestrator/platform.sh migrate finalize --backup-recipient age1...
 
-# Rollback specific component
-./scripts/rollback.sh --component argocd
-
-# Dry-run rollback
-./scripts/rollback.sh --dry-run
+# Exact Helm/config rollback for an ordinary upgrade
+./scripts/rollback.sh --snapshot snapshot/upgrade-TIMESTAMP
 ```
 
-## Step-by-Step: Full Tier Upgrade
+## Prerequisites
 
-### Step 1: Pre-Upgrade Preparation
+Ordinary upgrades require `kubectl`, `helm`, `yq`, `jq`, Python, Ansible, an
+accessible cluster, and a valid `platform-orchestrator/platform.yaml`.
+
+Migration additionally requires:
+
+- `hcloud`, SSH access through the recorded bastion, and `HCLOUD_TOKEN`;
+- independent external S3-compatible DR storage;
+- `BACKUP_DR_ACCESS_KEY` and `BACKUP_DR_SECRET_KEY`;
+- either an age recipient (`--backup-recipient`) or
+  `CLUSTER_BACKUP_PASSPHRASE` for encrypted recovery bundles;
+- enough quota for three control-plane and three worker servers to coexist
+  before old nodes are resized.
+
+## Current-Profile Upgrade
+
+### Preflight
 
 ```bash
-./scripts/upgrade-platform.sh --dry-run plan
 ./scripts/upgrade-platform.sh preflight
+./scripts/upgrade-platform.sh --dry-run plan
 ```
 
-### Step 2: Capture Baseline Snapshot
+Preflight checks required tools, cluster reachability/version, Helm health,
+node readiness, local disk space, configuration identity fields, snapshot
+availability, and the Git working tree. Do not skip preflight merely to make a
+failed maintenance window continue.
+
+### Snapshot and Backup
 
 ```bash
+./scripts/backup-all.sh --force
 ./scripts/upgrade-platform.sh snapshot
-ls -la snapshot/
+readlink snapshot/latest
 cat snapshot/latest/MANIFEST.yaml
 ```
 
-### Step 3: Execute Upgrade
+The baseline contains the active platform config, exact Helm revisions, all
+Helm values/manifests, CRDs, namespaces, cluster RBAC, PV/PVC declarations,
+nodes, and Kubernetes version. It is a configuration rollback baseline—not a
+data backup. Database, Vault, GitLab, Kubernetes resource/PVC, and full-cluster
+recovery layers remain mandatory; see [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+
+### Canary/Reconcile Phase
+
+The command performs exactly one phase for the current profile. This is called
+the canary/reconcile phase in state files for compatibility, but it never walks
+through other tiers. For example, a `minimal` cluster can reconcile only
+`minimal`; `--tier production` fails and directs the operator to the migration
+workflow.
 
 ```bash
-./scripts/upgrade-platform.sh --tier medium execute
-# Or force without confirmation:
-./scripts/upgrade-platform.sh --tier medium --force execute
+./scripts/upgrade-platform.sh --tier minimal --dry-run execute
+./scripts/upgrade-platform.sh execute --component argocd
+./scripts/upgrade-platform.sh execute --component cert-manager
+./scripts/upgrade-platform.sh execute --component observability
 ```
 
-The upgrade will:
-1. Run preflight checks
-2. Capture a pre-upgrade snapshot
-3. Progress through canary phases (minimal -> small -> medium)
-4. Run health gates after each phase
-5. Run final health gates
+Supported component names are `argocd`, `cilium`, `cert-manager`,
+`postgresql`/`database`/`databases`, `observability`, and `gitlab`. A full
+execute reconciles the complete platform for the unchanged profile. GitLab is
+advanced only through the explicitly supported minor-chart stops and checked
+after each stop.
 
-If any phase fails, automatic rollback is initiated.
+### Health Gates
 
-### Step 4: Post-Upgrade Validation
+Every reconcile ends with the health gate suite:
+
+| Gate | Required result |
+|---|---|
+| Kubernetes nodes | all `Ready` |
+| Cilium | expected pods healthy in `kube-system` |
+| cert-manager | workloads healthy |
+| Argo CD | workloads healthy when selected |
+| Databases | PostgreSQL and MongoDB healthy when selected |
+
+An enabled component failure is fatal. A component not selected by the active
+profile is reported without manufacturing a failure.
+
+## Minimal to Production Migration
+
+### Plan
 
 ```bash
-./scripts/upgrade-platform.sh validate
-kubectl get pods -n argocd
-kubectl get pods -n cert-manager
-helm list --all-namespaces
+export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+export BACKUP_DR_BUCKET=company-platform-dr
+./platform-orchestrator/platform.sh migrate plan \
+  --dr-endpoint "$BACKUP_DR_ENDPOINT" --dr-bucket "$BACKUP_DR_BUCKET"
 ```
 
-## Component-Specific Upgrades
+The plan generates and validates four configs under the private migration
+state directory: external-backup bootstrap, expanded minimal capability,
+production target, and non-destructive rollback. It prints the source/target
+diff and performs no Hetzner or Kubernetes mutation.
+
+### Execute and Resume
 
 ```bash
-./scripts/upgrade-platform.sh --component argocd --tier small execute
-./scripts/upgrade-platform.sh --component cilium --tier small execute
-./scripts/upgrade-platform.sh --component argocd --component cert-manager --tier small execute
+export HCLOUD_TOKEN='...'
+export BACKUP_DR_ACCESS_KEY='...'
+export BACKUP_DR_SECRET_KEY='...'
+export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+
+./platform-orchestrator/platform.sh migrate execute \
+  --dr-endpoint "$BACKUP_DR_ENDPOINT" \
+  --dr-bucket "$BACKUP_DR_BUCKET" \
+  --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
+
+./platform-orchestrator/platform.sh migrate status
+./platform-orchestrator/platform.sh migrate resume
 ```
 
-Supported components: `argocd`, `cilium`, `cert-manager`, `database`, `observability`, `gitlab`.
+The durable stages are:
 
-## Health Gates
+1. `preflight` — validate config, credentials, external endpoint, tools,
+   cluster health, and Hetzner access.
+2. `backup` — install/validate external Velero, take native backups, create an
+   encrypted etcd/PKI/config/PVC bundle, and capture the Helm baseline.
+3. `expand` — create spread placement and add control planes/workers until the
+   production six-node topology is healthy; verify etcd.
+4. `resize` — drain, stop, place, resize, start, wait, and uncordon one node at
+   a time; verify etcd after every control-plane change.
+5. `apply-production` — activate the production config and reconcile all
+   production services.
+6. `migrate-data` — copy VictoriaMetrics history from VMSingle to VMCluster.
+   The former Loki object-store history is retained as an archive while new
+   production logs use Elasticsearch.
+7. `validate` — require Ready nodes, healthy etcd/platform, Bound PVCs, and an
+   available external Velero location. Every Deployment/StatefulSet/DaemonSet
+   must be fully rolled out, every active Helm release deployed, selected
+   PostgreSQL/MongoDB operator CRs Ready, and all cert-manager Certificates
+   Ready.
+8. `post-backup` — create a second encrypted full-cluster recovery point.
 
-| Gate          | Check                                         | Fatal? |
-|---------------|-----------------------------------------------|--------|
-| Nodes         | All nodes in `Ready` state                    | Yes    |
-| Cilium        | All Cilium pods `Running` in `kube-system`    | Yes    |
-| Cert-manager  | All cert-manager pods `Running`               | Yes    |
-| ArgoCD        | All ArgoCD pods `Running` in `argocd`         | Yes    |
-| Databases     | PostgreSQL and MongoDB pods `Running`         | Yes    |
+Completed stages have durable checkpoint files. `resume` skips only recorded
+successes. It does not infer success from partially created resources.
 
-Non-deployed components produce a warning (non-fatal).
+### Finalize and reclaim the old resource footprint
 
-## Rollback Procedures
-
-### Automatic Rollback
-
-If any canary phase or final health gate fails, `rollback.sh` is invoked automatically.
-
-### Manual Rollback
+The completed migration deliberately retains the old VMSingle and Loki
+workloads for a sign-off window. After metrics, logs, and applications are
+accepted, finalize the transition:
 
 ```bash
-./scripts/rollback.sh                    # Full rollback
-./scripts/rollback.sh --component argocd  # Component-specific
-./scripts/rollback.sh --dry-run          # Simulate
-./scripts/rollback.sh --force            # Skip confirmation
+./platform-orchestrator/platform.sh migrate finalize \
+  --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
 ```
 
-## Dry-Run Mode
+Finalization records the exact old PVCs, removes VMSingle/Loki/Promtail and
+those PVCs, keeps Loki's SeaweedFS object archive, re-runs health gates, and
+takes a final encrypted native+Velero+control-plane backup. This is the step
+that releases the superseded minimal-profile compute and block storage. After
+finalization, an application rollback requires restoring the pre-finalize
+recovery bundle; the command refuses to create an empty minimal data plane.
 
-Add `--dry-run` to any command:
+## Rollback
+
+### Ordinary Upgrade Rollback
+
 ```bash
-./scripts/upgrade-platform.sh --dry-run execute
-./scripts/rollback.sh --dry-run --component argocd
+./scripts/rollback.sh --snapshot snapshot/upgrade-TIMESTAMP
+./scripts/rollback.sh --component argocd --snapshot snapshot/upgrade-TIMESTAMP
+./scripts/rollback.sh --dry-run --snapshot snapshot/upgrade-TIMESTAMP
 ```
 
-## Preflight Checks
+Rollback uses recorded exact Helm revisions and the captured platform config.
+If new writes or schema changes crossed an incompatible boundary, stop writers
+and perform a same-version application-native data restore. Helm rollback is
+not a database restore.
 
-| Check              | Description                                |
-|--------------------|--------------------------------------------|
-| `tool:kubectl`     | kubectl binary available                   |
-| `tool:helm`        | helm binary available                      |
-| `tool:yq`          | yq binary available                        |
-| `tool:ansible`     | ansible-playbook available                 |
-| `cluster:connect`  | kubectl can reach cluster                  |
-| `cluster:version`  | Server version detectable                  |
-| `helm:health`      | No failing Helm releases                   |
-| `nodes:ready`      | All nodes Ready                            |
-| `disk:space`       | Disk usage < 80%                           |
-| `snapshot:exists`  | At least one snapshot available            |
-| `git:clean`        | Working tree clean (warning only)          |
-| `config:domain`    | global.domain set                          |
-| `config:email`     | global.email set                           |
+### Migration Rollback
 
-Skip with `--skip-preflight` (not recommended).
+```bash
+./platform-orchestrator/platform.sh migrate rollback
+```
 
-## Snapshot Contents
+Migration rollback restores the recorded Helm/config baseline and selects the
+minimal capability set on the expanded, production-sized servers. It never
+automatically deletes control planes or workers; capacity reduction is a
+separate reviewed operation after recovery and backup verification.
 
-Each snapshot captures:
-- `helm/all-releases.yaml` - all helm releases
-- `helm/<namespace>.yaml` - per-namespace details
-- `helm-values/<ns>-<release>.yaml` - stored values
-- `crds.yaml` - custom resource definitions
-- `namespaces.yaml` - all namespaces
-- `rbac/` - cluster roles and bindings
-- `pvs.yaml` / `pvcs.yaml` - persistent storage
-- `nodes.yaml` / `version.txt` - cluster info
-- `MANIFEST.yaml` - snapshot metadata
+## Dry-Run Behavior
+
+`upgrade-platform.sh --dry-run` prints upgrade, backup, snapshot, and health
+actions without mutation. `migrate-profile.sh plan` is the authoritative
+non-mutating profile diff. `migrate-profile.sh --dry-run execute` prints
+pending stages, but the `plan` command should always be reviewed first.
 
 ## State Files
 
-The `.upgrade-state/` directory tracks:
-- `canary-<tier>.json` - status of each canary phase
-- `upgrade-complete.json` - final upgrade result
-- `rollback-complete.json` - rollback result
+- `.upgrade-state/canary-<current-tier>.json` records the single reconcile
+  phase retained under the historical filename.
+- `.upgrade-state/upgrade-complete.json` records the completed upgrade and
+  rollback snapshot.
+- `.migration-state/<project>-minimal-to-production/state.json` records
+  migration status and the last completed stage.
+- `stage-<name>.done` files are the resumable migration checkpoints.
+
+State files contain operational metadata and generated configs, not backup
+decryption keys. Keep the backup identity or passphrase in a separate secret
+manager.
 
 ## Troubleshooting
 
-### Preflight fails on tool checks
-Verify the required binaries and use their official, checksummed release or
-package-manager instructions for anything missing. Do not pipe a remote
-installer directly into a shell.
+### A tier change is rejected
 
-```bash
-kubectl version --client
-helm version
-yq --version
-ansible --version
-```
+This is intentional. Run `platform.sh migrate plan`; do not edit the current
+tier and rerun the upgrade script.
 
-### Health gate fails for non-deployed component
-Non-deployed components produce warnings, not errors.
+### Migration stops after node expansion or resize
 
-### Rollback fails
-1. Verify snapshot: `ls -la snapshot/`
-2. Check content: `cat snapshot/latest/MANIFEST.yaml`
-3. Try component-specific rollback first
-4. Manually re-run ansible:
-   ```bash
-   ansible-playbook playbooks/deploy_platform.yml -e "tier=<previous>" -e "domain=<domain>" -e "email=<email>"
-   ```
+Run `platform.sh migrate status`, inspect Kubernetes node state, the Hetzner
+server type/placement, and etcd health, then use `migrate resume`. Do not mark a
+checkpoint complete manually.
 
-### Snapshot capture fails
-1. Verify connectivity: `kubectl cluster-info`
-2. Verify helm: `helm list --all-namespaces`
-3. Check permissions
-4. Run with `--verbose`
+### Backup stage fails
 
-## CI/CD Integration
+Require the external `BackupStorageLocation` to be `Available`, inspect the
+native backup CRs/jobs, and verify the independent S3 credentials and age
+recipient/passphrase. Never continue into node mutation with an incomplete
+bundle.
 
-```bash
-./scripts/upgrade-platform.sh --dry-run plan
-./scripts/upgrade-platform.sh preflight
-./scripts/upgrade-platform.sh --tier medium --force execute
-./scripts/upgrade-platform.sh validate
-```
+### Health gate fails
 
-Each command exits with appropriate codes (0 = success, 1 = failure).
+Inspect the named namespace, Helm release, operator CR status, PVC state, and
+recent events. Use the recorded exact snapshot for rollback only after
+identifying whether the failure is configuration or data related.
 
-## Maintenance
+### Rollback cannot repair data
 
-- Clean old snapshots: `find snapshot/ -name 'upgrade-*' -mtime +30 -exec rm -rf {} +`
-- Review state: `cat .upgrade-state/upgrade-complete.json`
-- Audit health: `./scripts/health-gates.sh`
+Restore the appropriate native artifact or replacement-cluster Velero copy
+from [BACKUP_RESTORE.md](BACKUP_RESTORE.md). Do not repeatedly roll Helm while
+writes continue.

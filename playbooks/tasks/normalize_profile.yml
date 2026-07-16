@@ -139,6 +139,20 @@
     backup_schedule: '{{ backup.schedule | default(backup_schedule) }}'
     backup_cron_timezone: '{{ global.timezone | default(backup_cron_timezone) }}'
     backup_retention_days: '{{ backup.retention_days | default(backup_retention_days) }}'
+    backup_dr_enabled: >-
+      {{ (backup.disaster_recovery | default({})).enabled | default(backup_dr_enabled) | bool }}
+    backup_dr_storage_endpoint: >-
+      {{ (backup.disaster_recovery | default({})).endpoint | default(backup_dr_storage_endpoint) }}
+    backup_dr_storage_region: >-
+      {{ (backup.disaster_recovery | default({})).region | default(backup_dr_storage_region) }}
+    backup_dr_storage_bucket: >-
+      {{ (backup.disaster_recovery | default({})).bucket | default(backup_dr_storage_bucket) }}
+    backup_dr_storage_prefix: >-
+      {{ (backup.disaster_recovery | default({})).prefix | default(backup_dr_storage_prefix) }}
+    backup_dr_schedule: >-
+      {{ (backup.disaster_recovery | default({})).schedule | default(backup_dr_schedule) }}
+    backup_dr_retention_hours: >-
+      {{ (backup.disaster_recovery | default({})).retention_hours | default(backup_dr_retention_hours) }}
     backup_job_cpu_request: >-
       {{ backup.job_resources.cpu_request | default(backup_job_cpu_request) }}
     backup_job_cpu_limit: >-

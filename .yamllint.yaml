@@ -25,6 +25,7 @@ rules:
     forbid-explicit-octal: true
 ignore: |
   .git/
+  .venv/
   node_modules/
   __pycache__/
   .pre-commit-config.yaml

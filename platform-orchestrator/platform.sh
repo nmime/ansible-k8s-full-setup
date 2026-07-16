@@ -517,6 +517,9 @@ Commands:
   status            Show status
   credentials       Show passwords
   health / heal     Check/fix
+  backup-cluster    Create encrypted etcd/config/PVC disaster-recovery backup
+  restore-cluster   Verify or restore an encrypted full-cluster backup
+  migrate           Plan/execute/resume/status/rollback/finalize a profile migration
   destroy           Remove project-prefixed Hetzner resources; preserve DNS and kubeconfig
 
 Required:
@@ -542,6 +545,17 @@ main() {
     credentials)  load_config; show_credentials ;;
     health)       heal_check ;;
     heal)         heal_check; heal_auto ;;
+    backup-cluster)
+      require_config
+      exec "${ANSIBLE_DIR}/scripts/cluster-backup.sh" --config "$CONFIG_FILE" "$@"
+      ;;
+    restore-cluster)
+      exec "${ANSIBLE_DIR}/scripts/cluster-restore.sh" "$@"
+      ;;
+    migrate)
+      require_config
+      exec "${ANSIBLE_DIR}/scripts/migrate-profile.sh" --config "$CONFIG_FILE" "$@"
+      ;;
     init)         init_config "${1:-example}" ;;
     *)            show_help ;;
   esac

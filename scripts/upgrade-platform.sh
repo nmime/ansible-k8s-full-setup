@@ -12,8 +12,6 @@ SNAPSHOT_DIR="${PROJECT_ROOT}/snapshot"
 LOG_DIR="${PROJECT_ROOT}/logs"
 LOG_FILE="${LOG_DIR}/upgrade.log"
 
-TIER_ORDER=("minimal" "small" "medium" "production")
-
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; NC='\033[0m'
 
@@ -46,7 +44,7 @@ Commands:
 
 Options:
   --dry-run          Simulate without changes
-  --tier TIER        Target tier (default: from platform.yaml)
+  --tier TIER        Current tier assertion; profile changes use migrate-profile.sh
   --component NAME   Upgrade specific component (repeatable)
   --force            Skip confirmations
   --skip-preflight   Skip preflight checks
@@ -93,21 +91,20 @@ load_config() {
 }
 
 get_canary_sequence() {
-  local target="$1" current_idx=-1 target_idx=-1
-  for i in "${!TIER_ORDER[@]}"; do
-    [[ "${TIER_ORDER[$i]}" == "$CURRENT_TIER" ]] && current_idx=$i
-    [[ "${TIER_ORDER[$i]}" == "$target" ]] && target_idx=$i
-  done
-  [[ "$current_idx" -ge 0 ]] || { error "Unknown current tier: $CURRENT_TIER"; return 1; }
-  [[ "$target_idx" -ge 0 ]] || { error "Unknown target tier: $target"; return 1; }
-  [[ "$target_idx" -ge "$current_idx" ]] || { error "Tier downgrade requires rollback.sh"; return 1; }
-  local seq=()
-  if [[ "$target_idx" -eq "$current_idx" ]]; then
-    seq+=("$target")
-  else
-    for i in $(seq $((current_idx + 1)) "$target_idx"); do seq+=("${TIER_ORDER[$i]}"); done
-  fi
-  echo "${seq[@]}"
+  local target="$1"
+  [[ "$CURRENT_TIER" =~ ^(minimal|small|medium|production)$ ]] || { error "Unknown current tier: $CURRENT_TIER"; return 1; }
+  [[ "$target" =~ ^(minimal|small|medium|production)$ ]] || { error "Unknown target tier: $target"; return 1; }
+  [[ "$target" == "$CURRENT_TIER" ]] || {
+    error "Profile migration is not a component upgrade. Use scripts/migrate-profile.sh plan|execute."
+    return 1
+  }
+  echo "$CURRENT_TIER"
+}
+
+configure_health_requirements() {
+  HEALTH_REQUIRE_ARGOCD=$(yq -r '.gitops.enabled // false' "$CONFIG_FILE")
+  HEALTH_REQUIRE_POSTGRESQL=$(yq -r '(.databases.enabled and .databases.postgresql.enabled) // false' "$CONFIG_FILE")
+  HEALTH_REQUIRE_MONGODB=$(yq -r '(.databases.enabled and .databases.mongodb.enabled) // false' "$CONFIG_FILE")
 }
 
 upgrade_component() {
@@ -180,6 +177,7 @@ run_canary_phase() {
   log "  Post-canary health gates..."
   # shellcheck source=./scripts/health-gates.sh
   source "${SCRIPT_DIR}/health-gates.sh"
+  configure_health_requirements
   if check_health_gates; then
     log "Canary phase $tier PASSED"
   else
@@ -260,6 +258,7 @@ execute_upgrade() {
   log "--- Step 4: Final health gate ---"
   # shellcheck source=./scripts/health-gates.sh
   source "${SCRIPT_DIR}/health-gates.sh"
+  configure_health_requirements
   local health_args=()
   [[ "$DRY_RUN" == "true" ]] && health_args+=(--dry-run)
   if ! check_health_gates "${health_args[@]}"; then
@@ -289,6 +288,7 @@ validate_health() {
   python3 "${SCRIPT_DIR}/preflight_check.py" --project-root "$PROJECT_ROOT" --dry-run="$DRY_RUN" || rc=1
   # shellcheck source=./scripts/health-gates.sh
   source "${SCRIPT_DIR}/health-gates.sh"
+  configure_health_requirements
   local health_args=()
   [[ "$DRY_RUN" == "true" ]] && health_args+=(--dry-run)
   check_health_gates "${health_args[@]}" || rc=1

@@ -270,6 +270,18 @@ backup_storage_type: s3
 backup_storage_bucket: backups
 backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
 backup_storage_path_style: true
+backup_dr_enabled: false
+backup_dr_storage_endpoint: ""
+backup_dr_storage_region: us-east-1
+backup_dr_storage_bucket: ""
+backup_dr_storage_prefix: "{{ project_name | default('k8s') }}/velero"
+backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}"
+backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
+backup_dr_schedule: "30 2 * * *"
+backup_dr_retention_hours: 720
+backup_dr_velero_chart_version: "12.1.0"
+backup_dr_velero_image_tag: "v1.18.1"
+backup_dr_velero_aws_plugin_tag: "v1.14.2"
 backup_verify_all: true
 backup_verification_timeout: 3600
 backup_alert_enabled: false

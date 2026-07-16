@@ -50,3 +50,5 @@ def test_health_gates_has_all():
     for kw in ["check_health_gates", "_hg_check_nodes", "_hg_check_cilium",
                "_hg_check_cert_manager", "_hg_check_argocd", "_hg_check_databases"]:
         assert kw in content, f"Missing: {kw}"
+    assert "containerStatuses" in content
+    assert '.type == "Ready" and .status == "True"' in content

@@ -140,6 +140,14 @@ backup:
   enabled: true
   schedule: "0 2 * * *"
   retention_days: 30
+  disaster_recovery:
+    enabled: false
+    endpoint: ""
+    region: us-east-1
+    bucket: ""
+    prefix: k8s/velero
+    schedule: "30 2 * * *"
+    retention_hours: 720
 
 compliance:
   hipaa:

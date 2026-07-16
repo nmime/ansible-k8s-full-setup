@@ -50,7 +50,28 @@
         fail_msg: "Invalid tier '{{ tier }}'. Must be: minimal, small, medium, production"
 
     - name: Normalize the selected platform profile
-      ansible.builtin.include_tasks: tasks/normalize_profile.yml
+      ansible.builtin.include_tasks:
+        file: tasks/normalize_profile.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Fail early when external disaster-recovery storage is incomplete
+      ansible.builtin.assert:
+        that:
+          - backup_dr_storage_endpoint | length > 0
+          - "'.svc' not in backup_dr_storage_endpoint"
+          - "'seaweedfs' not in backup_dr_storage_endpoint"
+          - backup_dr_storage_bucket | length > 2
+          - backup_dr_storage_access_key | length >= 8
+          - backup_dr_storage_secret_key | length >= 16
+        fail_msg: >-
+          This profile requires independent external disaster-recovery storage.
+          Set backup.disaster_recovery endpoint/bucket and export
+          BACKUP_DR_ACCESS_KEY/BACKUP_DR_SECRET_KEY before provisioning.
+      when:
+        - platform_backup_enabled | bool
+        - backup_dr_enabled | bool
       tags: [always]
 
     - name: Pre-flight check - hcloud CLI installed

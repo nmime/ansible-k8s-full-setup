@@ -10,6 +10,7 @@ DEFAULTS_FILE = ROLE_DIR / "defaults" / "main.yml"
 PROJECT_DEFAULTS = REPO_ROOT / "defaults" / "main.yml"
 BACKUP_SCRIPT = REPO_ROOT / "scripts" / "backup-all.sh"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore-drill.sh"
+MONGODB_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "mongodb-restore-drill.sh"
 BACKUP_DOC = REPO_ROOT / "BACKUP_RESTORE.md"
 
 def load_yaml(path):
@@ -21,6 +22,7 @@ class TestRoleStructure:
     def test_defaults_main_exists(self): assert DEFAULTS_FILE.is_file()
     def test_tasks_main_exists(self): assert (TASKS_DIR / "main.yml").is_file()
     def test_mongodb_task_exists(self): assert (TASKS_DIR / "mongodb_pbm.yml").is_file()
+    def test_postgresql_task_exists(self): assert (TASKS_DIR / "postgresql_pgbackrest.yml").is_file()
     def test_vault_task_exists(self): assert (TASKS_DIR / "vault_raft.yml").is_file()
     def test_seaweedfs_task_exists(self): assert (TASKS_DIR / "seaweedfs.yml").is_file()
     def test_gitlab_task_exists(self): assert (TASKS_DIR / "gitlab.yml").is_file()
@@ -35,6 +37,7 @@ class TestVariableDefaults:
     def test_schedule(self): assert "0 2 * * *" in str(self.d["backup_schedule"])
     def test_namespace(self): assert self.d["backup_namespace"] == "backups"
     def test_mongo_on(self): assert self.d["backup_mongodb_enabled"] is True
+    def test_postgresql_on(self): assert self.d["backup_postgresql_enabled"] is True
     def test_vault_on(self): assert self.d["backup_vault_enabled"] is True
     def test_sw_on(self): assert self.d["backup_seaweedfs_enabled"] is True
     def test_gl_on(self): assert self.d["backup_gitlab_enabled"] is True
@@ -64,7 +67,7 @@ class TestProjectDefaults:
         d = load_yaml(PROJECT_DEFAULTS)
         assert all(k in d for k in ("restore_drill_namespace","restore_drill_cleanup_after_hours","restore_safety_gate_confirm_required"))
 
-TASK_FILES = ["main.yml","mongodb_pbm.yml","vault_raft.yml","seaweedfs.yml","gitlab.yml","verification.yml","alerts.yml"]
+TASK_FILES = ["main.yml","postgresql_pgbackrest.yml","mongodb_pbm.yml","vault_raft.yml","seaweedfs.yml","gitlab.yml","verification.yml","alerts.yml","velero.yml"]
 
 class TestTaskYAML:
     @pytest.mark.parametrize("f", TASK_FILES)
@@ -73,6 +76,7 @@ class TestTaskYAML:
 class TestMainInclusion:
     def _c(self): return (TASKS_DIR / "main.yml").read_text()
     def test_mongodb(self): assert "mongodb_pbm" in self._c()
+    def test_postgresql(self): assert "postgresql_pgbackrest" in self._c()
     def test_vault(self): assert "vault_raft" in self._c()
     def test_seaweedfs(self): assert "seaweedfs" in self._c()
     def test_gitlab(self): assert "gitlab" in self._c()
@@ -94,6 +98,11 @@ def test_mongodb_uses_operator_backup_contract():
     content = (TASKS_DIR / "mongodb_pbm.yml").read_text()
     assert "PerconaServerMongoDB" in content
     assert "mongodb-backup" in content and "state: absent" in content
+
+def test_postgresql_uses_operator_backup_contract():
+    content = (TASKS_DIR / "postgresql_pgbackrest.yml").read_text()
+    assert "PerconaPGCluster" in content
+    assert "pgbackrest" in content and "repo1" in content and "repo2" in content
 
 class TestCronJob:
     @pytest.mark.parametrize("f,n", CJ)
@@ -158,11 +167,25 @@ class TestRestoreScript:
     def test_quota(self):
         assert "ResourceQuota" in (REPO_ROOT / "scripts" / "vault-restore-drill.sh").read_text()
         assert "ResourceQuota" in (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text()
+        assert "ResourceQuota" in MONGODB_RESTORE_SCRIPT.read_text()
     def test_cleanup(self): assert "cleanup" in RESTORE_SCRIPT.read_text().lower()
     def test_components(self):
         c = RESTORE_SCRIPT.read_text()
         for x in ("mongodb","vault","seaweedfs","gitlab"): assert x in c
     def test_summary(self): assert "SUMMARY" in RESTORE_SCRIPT.read_text()
+    def test_mongodb_dispatch(self):
+        c = RESTORE_SCRIPT.read_text()
+        assert "mongodb-restore-drill.sh" in c
+        assert MONGODB_RESTORE_SCRIPT.is_file()
+    def test_mongodb_syntax(self):
+        r = subprocess.run(["bash", "-n", str(MONGODB_RESTORE_SCRIPT)], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+    def test_mongodb_restore_contract(self):
+        c = MONGODB_RESTORE_SCRIPT.read_text()
+        assert "PerconaServerMongoDBRestore" in c
+        assert "backupSource" in c
+        assert "mongosh" in c
+        assert "ResourceQuota" in c
 
 class TestDocumentation:
     def test_exists(self): assert BACKUP_DOC.is_file()
