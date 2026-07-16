@@ -277,3 +277,13 @@ blackbox:
   cpu_limit: 200m
   memory_request: 48Mi
   memory_limit: 128Mi
+
+alerting:
+  telegram:
+    enabled: false
+  email:
+    enabled: true
+
+applications:
+  daytona:
+    enabled: false

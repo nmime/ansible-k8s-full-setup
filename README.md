@@ -31,7 +31,8 @@ default pod requests, limits, and stateless replica counts. This separation is
 what lets `medium-optimized` retain the full medium toolset without silently
 allocating the normal-medium footprint. GitLab chart 10 requires PostgreSQL,
 Dragonfly, and object storage; profile validation rejects an invalid
-combination.
+combination. The same fail-closed validation covers GlitchTip, APM, Temporal,
+Postal, tracing, backup, ESO, the GitLab Runner, and parent bundles.
 
 The optimized profile keeps three-way control-plane, Vault, PostgreSQL,
 MongoDB, SeaweedFS, and Elasticsearch-master topology. Recoverable stateless
@@ -100,6 +101,23 @@ $EDITOR platform.yaml
 Set at least `global.domain` and `global.email` in `platform.yaml`. Review every
 enabled component and infrastructure size before deployment.
 
+Technology selection is available without hand-editing dotted YAML paths:
+
+```bash
+./platform.sh components
+./platform.sh enable temporal       # also enables PostgreSQL + Elasticsearch
+./platform.sh disable postal        # refuses if an enabled service depends on it
+./platform.sh validate              # offline; no Hetzner/Kubernetes mutation
+./platform.sh deploy temporal       # targeted, dependency-validated reconcile
+```
+
+You can enable a technology later and rerun its targeted deployment or
+`deploy all`; Ansible reconciles it idempotently. Disabling changes desired
+state but intentionally leaves existing Kubernetes resources running. Explicit
+removal is a separate, confirmation-gated command, and PVC-backed components
+also require `--delete-data`. This prevents a selector edit from becoming an
+accidental data deletion.
+
 For the full platform on the small-resource envelope:
 
 ```bash
@@ -114,8 +132,11 @@ $EDITOR inventory.yml
 ansible-playbook -i inventory.yml playbooks/deploy_platform.yml
 ```
 
-Component tags use the same normalized profile contract; disabling a component
-in `platform.yaml` is respected by full and tagged runs.
+Component tags use the same normalized profile contract. ESO and GitLab Runner
+have real independent flags. Metrics, logging, Grafana, and PMM remain one
+production-tested observability core bundle; tracing and Blackbox are optional
+dependants of that bundle. Alertmanager creates Telegram/email routes only for
+enabled channels; its email channel requires the selected Postal service.
 
 ## Operations
 
@@ -130,6 +151,12 @@ ansible-playbook playbooks/validate_profile.yml \
 # Health/status
 ./platform-orchestrator/platform.sh status
 ./scripts/health-gates.sh
+
+# Explicitly remove a disabled, stateless component
+./platform-orchestrator/platform.sh remove blackbox --confirm blackbox
+
+# Data-bearing removal requires an additional destructive boundary
+./platform-orchestrator/platform.sh remove temporal --confirm temporal --delete-data
 
 # Trigger configured backup CronJobs
 ./scripts/backup-all.sh --force

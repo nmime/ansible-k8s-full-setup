@@ -32,6 +32,7 @@ jobs:
       - name: Validate Ansible playbook syntax
         run: |
           ansible-playbook playbooks/deploy_platform.yml --syntax-check
+          ansible-playbook playbooks/remove_component.yml --syntax-check
           ansible-playbook playbooks/continue_post_kubespray.yml --syntax-check
           ansible-playbook playbooks/edge-cdn.yml --syntax-check
 

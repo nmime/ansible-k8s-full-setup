@@ -60,13 +60,23 @@
     bb_public_targets: >-
       {{
         ([ 'https://grafana.' + domain ]) +
-        ([ 'https://kibana.' + domain ]) +
-        ([ 'https://gitlab.'  + domain ] if gitlab_enabled | default(true) | bool else []) +
-        ([ 'https://argocd.'  + domain ] if gitops_enabled | default(true) | bool else []) +
-        ([ 'https://mail.'    + domain ] if postal_enabled | default(true) | bool else []) +
-        ([ 'https://temporal.' + domain ] if temporal_enabled | default(true) | bool else []) +
+        ([ 'https://kibana.' + domain ] if platform_elasticsearch_enabled | default(false) | bool else []) +
+        ([ 'https://gitlab.'  + domain ] if platform_gitlab_enabled | default(false) | bool else []) +
+        ([ 'https://argocd.'  + domain ] if platform_gitops_enabled | default(false) | bool else []) +
+        ([ 'https://mail.'    + domain ] if platform_postal_enabled | default(false) | bool else []) +
+        ([ 'https://temporal.' + domain ] if platform_temporal_enabled | default(false) | bool else []) +
         ([ 'https://glitchtip.' + domain ] if deploy_glitchtip | default(false) | bool else []) +
         ([ blackbox_daytona_target ] if deploy_daytona | default(false) | bool else [])
+      }}
+
+- name: Build list of internal TCP probe targets
+  set_fact:
+    bb_internal_targets: >-
+      {{
+        ([ (project_name | default('k8s')) + '-pg-pgbouncer.databases.svc.cluster.local:5432' ] if platform_postgresql_enabled | default(false) | bool else []) +
+        ([ 'elasticsearch.elasticsearch.svc.cluster.local:9200' ] if platform_elasticsearch_enabled | default(false) | bool else []) +
+        ([ 'dragonfly.dragonfly.svc.cluster.local:6379' ] if platform_dragonfly_enabled | default(false) | bool else []) +
+        ([ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') ] if platform_object_storage_enabled | default(false) | bool else [])
       }}
 
 - name: Create VMProbe for HTTP endpoints
@@ -115,17 +125,14 @@
           path: /probe
         targets:
           staticConfig:
-            targets:
-              - "{{ project_name | default('k8s') }}-pg-pgbouncer.databases.svc.cluster.local:5432"
-              - "elasticsearch.elasticsearch.svc.cluster.local:9200"
-              - "dragonfly.dragonfly.svc.cluster.local:6379"
-              - "{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+            targets: "{{ bb_internal_targets }}"
             labels:
               probe: internal-tcp
   register: _r_bb_probe_tcp
   retries: 3
   delay: 10
   until: _r_bb_probe_tcp is not failed
+  when: bb_internal_targets | length > 0
 
 - name: Print Blackbox info
   debug:

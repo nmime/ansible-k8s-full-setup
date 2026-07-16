@@ -90,6 +90,166 @@ flag_from_config() {
   [[ "$value" == "true" ]] && echo true || echo false
 }
 
+require_config() {
+  [[ -f "$CONFIG_FILE" ]] || { error "Run: ./platform.sh init <profile>"; exit 1; }
+  command -v yq >/dev/null 2>&1 || { error "yq v4 is required"; exit 1; }
+}
+
+component_path() {
+  case "$1" in
+    object-storage) echo '.storage.enabled' ;;
+    secrets) echo '.secrets.enabled' ;;
+    eso) echo '.secrets.eso.enabled' ;;
+    databases) echo '.databases.enabled' ;;
+    postgresql) echo '.databases.postgresql.enabled' ;;
+    mongodb) echo '.databases.mongodb.enabled' ;;
+    elasticsearch) echo '.elasticsearch.enabled' ;;
+    gitlab) echo '.gitlab.enabled' ;;
+    gitlab-runner) echo '.gitlab.runner.enabled' ;;
+    gitops) echo '.gitops.enabled' ;;
+    observability) echo '.observability.enabled' ;;
+    tracing) echo '.tracing.enabled' ;;
+    autoscaling) echo '.autoscaling.enabled' ;;
+    dragonfly) echo '.dragonfly.enabled' ;;
+    temporal) echo '.temporal.enabled' ;;
+    postal) echo '.postal.enabled' ;;
+    backup) echo '.backup.enabled' ;;
+    glitchtip) echo '.glitchtip.enabled' ;;
+    apm) echo '.apm.enabled' ;;
+    blackbox) echo '.blackbox.enabled' ;;
+    daytona) echo '.applications.daytona.enabled' ;;
+    *) return 1 ;;
+  esac
+}
+
+enable_paths() {
+  case "$1" in
+    object-storage) echo '.storage.enabled' ;;
+    secrets) echo '.secrets.enabled' ;;
+    eso) echo '.secrets.enabled .secrets.eso.enabled' ;;
+    databases) echo '.databases.enabled' ;;
+    postgresql) echo '.databases.enabled .databases.postgresql.enabled' ;;
+    mongodb) echo '.databases.enabled .databases.mongodb.enabled' ;;
+    elasticsearch) echo '.elasticsearch.enabled' ;;
+    gitlab) echo '.storage.enabled .databases.enabled .databases.postgresql.enabled .dragonfly.enabled .gitlab.enabled' ;;
+    gitlab-runner) echo '.storage.enabled .databases.enabled .databases.postgresql.enabled .dragonfly.enabled .gitlab.enabled .gitlab.runner.enabled' ;;
+    gitops) echo '.gitops.enabled' ;;
+    observability) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled' ;;
+    tracing) echo '.storage.enabled .observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .tracing.enabled' ;;
+    autoscaling) echo '.autoscaling.enabled' ;;
+    dragonfly) echo '.dragonfly.enabled' ;;
+    temporal) echo '.databases.enabled .databases.postgresql.enabled .elasticsearch.enabled .temporal.enabled' ;;
+    postal) echo '.dragonfly.enabled .postal.enabled' ;;
+    backup) echo '.storage.enabled .backup.enabled' ;;
+    glitchtip) echo '.databases.enabled .databases.postgresql.enabled .dragonfly.enabled .glitchtip.enabled' ;;
+    apm) echo '.elasticsearch.enabled .apm.enabled' ;;
+    blackbox) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .blackbox.enabled' ;;
+    daytona) echo '.applications.daytona.enabled' ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_config() {
+  require_config
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/validate_profile.yml" -e "@${CONFIG_FILE}"
+}
+
+require_component_enabled() {
+  local component="$1" path
+  path=$(component_path "$component") || { error "Unknown component: $component"; exit 1; }
+  is_enabled "$path" || {
+    error "$component is disabled at $path in platform.yaml"
+    echo "Enable it and its dependencies with: ./platform.sh enable $component"
+    exit 1
+  }
+  if [[ "$component" == "databases" ]] && ! is_enabled '.databases.postgresql.enabled' && ! is_enabled '.databases.mongodb.enabled'; then
+    error "databases is enabled, but both PostgreSQL and MongoDB are disabled"
+    exit 1
+  fi
+}
+
+show_components() {
+  require_config
+  printf '%-18s %s\n' COMPONENT ENABLED
+  printf '%-18s %s\n' '------------------' '-------'
+  local component path value
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability tracing autoscaling temporal postal backup glitchtip apm blackbox daytona; do
+    path=$(component_path "$component")
+    value=$(flag_from_config "$path" false)
+    printf '%-18s %s\n' "$component" "$value"
+  done
+}
+
+enable_component() {
+  local component="$1" paths path backup_file
+  require_config
+  paths=$(enable_paths "$component") || { error "Unknown component: $component"; exit 1; }
+  backup_file=$(mktemp "${STATE_DIR}/platform-enable.XXXXXX")
+  cp "$CONFIG_FILE" "$backup_file"
+  for path in $paths; do
+    yq -i "${path} = true" "$CONFIG_FILE"
+  done
+  if ! validate_config; then
+    cp "$backup_file" "$CONFIG_FILE"
+    rm -f "$backup_file"
+    error "Selection was invalid; platform.yaml was restored"
+    exit 1
+  fi
+  rm -f "$backup_file"
+  log "Enabled $component and all required dependencies"
+  echo "Apply it with: ./platform.sh deploy $component"
+}
+
+enabled_blockers() {
+  local component="$1" blockers='' path label
+  case "$component" in
+    object-storage) blockers='.gitlab.enabled:gitlab .tracing.enabled:tracing .backup.enabled:backup' ;;
+    databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip' ;;
+    elasticsearch) blockers='.temporal.enabled:temporal .apm.enabled:apm' ;;
+    dragonfly) blockers='.gitlab.enabled:gitlab .postal.enabled:postal .glitchtip.enabled:glitchtip' ;;
+    gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
+    observability) blockers='.tracing.enabled:tracing .blackbox.enabled:blackbox' ;;
+    secrets|eso|mongodb|gitlab-runner|gitops|tracing|autoscaling|temporal|postal|backup|glitchtip|apm|blackbox|daytona) ;;
+    *) return 1 ;;
+  esac
+  for label in $blockers; do
+    path=${label%%:*}
+    if is_enabled "$path"; then
+      printf '%s ' "${label#*:}"
+    fi
+  done
+}
+
+disable_component() {
+  local component="$1" path blockers backup_file
+  require_config
+  path=$(component_path "$component") || { error "Unknown component: $component"; exit 1; }
+  blockers=$(enabled_blockers "$component") || { error "Unknown component: $component"; exit 1; }
+  if [[ -n "$blockers" ]]; then
+    error "Cannot disable $component while these dependants are enabled: $blockers"
+    echo "Disable the dependants first. No configuration was changed."
+    exit 1
+  fi
+  backup_file=$(mktemp "${STATE_DIR}/platform-disable.XXXXXX")
+  cp "$CONFIG_FILE" "$backup_file"
+  yq -i "${path} = false" "$CONFIG_FILE"
+  case "$component" in
+    secrets) yq -i '.secrets.eso.enabled = false' "$CONFIG_FILE" ;;
+    databases) yq -i '.databases.postgresql.enabled = false | .databases.mongodb.enabled = false' "$CONFIG_FILE" ;;
+    gitlab) yq -i '.gitlab.runner.enabled = false' "$CONFIG_FILE" ;;
+    observability) yq -i '.observability.metrics.enabled = false | .observability.logging.enabled = false | .observability.grafana.enabled = false' "$CONFIG_FILE" ;;
+  esac
+  if ! validate_config; then
+    cp "$backup_file" "$CONFIG_FILE"
+    rm -f "$backup_file"
+    error "Selection was invalid; platform.yaml was restored"
+    exit 1
+  fi
+  rm -f "$backup_file"
+  log "Disabled $component in platform.yaml"
+  warn "Existing Kubernetes resources are unchanged. Use './platform.sh remove $component --confirm $component' only when removal is intended."
+}
+
 run_playbook() {
   check_env
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
@@ -159,18 +319,28 @@ deploy_component() {
     network)       run_playbook --tags network 2>&1 | tee -a "${LOG_DIR}/network.log" ;;
     dns)           deploy_dns ;;
     cluster)       run_playbook --tags cluster 2>&1 | tee -a "${LOG_DIR}/cluster.log" ;;
-    tls)           run_playbook --tags tls 2>&1 | tee -a "${LOG_DIR}/tls.log" ;;
-    object-storage) run_playbook --tags storage,object-storage,seaweedfs 2>&1 | tee -a "${LOG_DIR}/object-storage.log" ;;
-    secrets)       run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/secrets.log" ;;
-    databases)     run_playbook --tags databases 2>&1 | tee -a "${LOG_DIR}/databases.log" ;;
-    gitlab)        run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab.log" ;;
-    gitops)        run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
-    observability) run_playbook --tags observability 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
-    autoscaling)   run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;
-    glitchtip)     run_playbook -e deploy_glitchtip=true --tags glitchtip 2>&1 | tee -a "${LOG_DIR}/glitchtip.log" ;;
-    apm)           run_playbook -e deploy_apm=true --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
-    blackbox)      run_playbook -e deploy_blackbox=true --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;
-    daytona)       deploy_daytona ;;
+    tls)           run_playbook --tags cluster 2>&1 | tee -a "${LOG_DIR}/tls.log" ;;
+    object-storage) require_component_enabled "$component"; run_playbook --tags storage,object-storage,seaweedfs 2>&1 | tee -a "${LOG_DIR}/object-storage.log" ;;
+    secrets)       require_component_enabled "$component"; run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/secrets.log" ;;
+    eso)           require_component_enabled "$component"; run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/eso.log" ;;
+    databases)     require_component_enabled "$component"; run_playbook --tags databases 2>&1 | tee -a "${LOG_DIR}/databases.log" ;;
+    postgresql)    require_component_enabled "$component"; run_playbook --tags postgresql 2>&1 | tee -a "${LOG_DIR}/postgresql.log" ;;
+    mongodb)       require_component_enabled "$component"; run_playbook --tags mongodb 2>&1 | tee -a "${LOG_DIR}/mongodb.log" ;;
+    elasticsearch) require_component_enabled "$component"; run_playbook --tags elasticsearch 2>&1 | tee -a "${LOG_DIR}/elasticsearch.log" ;;
+    dragonfly)     require_component_enabled "$component"; run_playbook --tags dragonfly 2>&1 | tee -a "${LOG_DIR}/dragonfly.log" ;;
+    gitlab)        require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab.log" ;;
+    gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
+    gitops)        require_component_enabled "$component"; run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
+    observability) require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
+    tracing)       require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/tracing.log" ;;
+    autoscaling)   require_component_enabled "$component"; run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;
+    temporal)      require_component_enabled "$component"; run_playbook --tags temporal 2>&1 | tee -a "${LOG_DIR}/temporal.log" ;;
+    postal)        require_component_enabled "$component"; run_playbook --tags postal 2>&1 | tee -a "${LOG_DIR}/postal.log" ;;
+    backup)        require_component_enabled "$component"; run_playbook --tags backup 2>&1 | tee -a "${LOG_DIR}/backup.log" ;;
+    glitchtip)     require_component_enabled "$component"; run_playbook --tags glitchtip 2>&1 | tee -a "${LOG_DIR}/glitchtip.log" ;;
+    apm)           require_component_enabled "$component"; run_playbook --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
+    blackbox)      require_component_enabled "$component"; run_playbook --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;
+    daytona)       require_component_enabled "$component"; deploy_daytona ;;
     all)           deploy_all ;;
     *) error "Unknown component: $component"; exit 1 ;;
   esac
@@ -194,13 +364,52 @@ deploy_all() {
 }
 
 deploy_daytona() {
-  is_enabled '.applications.daytona.enabled' || { log "Daytona: disabled"; return 0; }
   local base_domain
-  base_domain=$(yq -r ".applications.daytona.base_domain // \"daytona.${DOMAIN}\"" "$CONFIG_FILE")
+  base_domain=$(yq -r '.applications.daytona.base_domain // ""' "$CONFIG_FILE")
+  [[ -n "$base_domain" ]] || base_domain="daytona.${DOMAIN}"
   run_playbook \
     -e "deploy_daytona=true" \
     -e "daytona_base_domain=${base_domain}" \
     --tags daytona 2>&1 | tee -a "${LOG_DIR}/daytona.log"
+}
+
+remove_component() {
+  local component="${1:-}" confirmation='' delete_data=false path
+  shift || true
+  [[ -n "$component" ]] || { error "Component name is required"; exit 1; }
+  path=$(component_path "$component") || { error "Unknown component: $component"; exit 1; }
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --confirm)
+        [[ $# -ge 2 ]] || { error "--confirm requires the component name"; exit 1; }
+        confirmation="${2:-}"
+        shift 2
+        ;;
+      --delete-data)
+        delete_data=true
+        shift
+        ;;
+      *)
+        error "Unknown remove option: $1"
+        exit 1
+        ;;
+    esac
+  done
+  is_enabled "$path" && {
+    error "$component is still enabled at $path. Run './platform.sh disable $component' first."
+    exit 1
+  }
+  [[ "$confirmation" == "$component" ]] || {
+    error "Removal requires exact confirmation: --confirm $component"
+    exit 1
+  }
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/remove_component.yml" \
+    -e "@${CONFIG_FILE}" \
+    -e "project_name=${PROJECT}" \
+    -e "target_component=${component}" \
+    -e "confirm_component_removal=${confirmation}" \
+    -e "delete_component_data=${delete_data}" \
+    2>&1 | tee -a "${LOG_DIR}/remove-${component}.log"
 }
 
 generate_dns_records() {
@@ -269,7 +478,10 @@ show_credentials() {
   echo "PostgreSQL: kubectl get secret ${PROJECT:-k8s}-pg-pguser-app -n databases -o jsonpath='{.data.password}' | base64 -d"
   echo "Dragonfly: kubectl get secret dragonfly-auth -n dragonfly -o jsonpath='{.data.password}' | base64 -d"
   if is_enabled '.applications.daytona.enabled'; then
-    echo "Daytona: https://$(yq -r ".applications.daytona.base_domain // \"daytona.${DOMAIN}\"" "$CONFIG_FILE")"
+    local daytona_host
+    daytona_host=$(yq -r '.applications.daytona.base_domain // ""' "$CONFIG_FILE")
+    [[ -n "$daytona_host" ]] || daytona_host="daytona.${DOMAIN}"
+    echo "Daytona: https://${daytona_host}"
   fi
 }
 
@@ -283,8 +495,14 @@ Usage: ./platform.sh <command>
 
 Commands:
   init [profile]    Create config from platform.example.yaml or profiles/<profile>.yaml
+  components        Show every selectable technology and its current state
+  enable <comp>     Enable a technology and its required dependencies in YAML
+  disable <comp>    Disable a technology; refuses while dependants are enabled
+  validate          Validate the selection and dependency contract offline
   deploy all        Full deployment
-  deploy <comp>     infra|network|dns|cluster|tls|object-storage|secrets|databases|gitlab|gitops|observability|autoscaling|daytona|glitchtip|apm|blackbox
+  deploy <comp>     infra|network|dns|cluster|tls or any component shown above
+  remove <comp>     Remove disabled resources; exact --confirm is mandatory
+                    Add --delete-data only to permit deletion of PVC-backed data
   status            Show status
   credentials       Show passwords
   health / heal     Check/fix
@@ -303,6 +521,11 @@ main() {
   shift || true
   case "$cmd" in
     deploy)       load_config; deploy_component "${1:-all}" ;;
+    components)   show_components ;;
+    enable)       enable_component "${1:-}" ;;
+    disable)      disable_component "${1:-}" ;;
+    validate)     validate_config ;;
+    remove)       load_config; remove_component "$@" ;;
     destroy)      load_config; destroy_all ;;
     status)       load_config 2>/dev/null || true; show_status ;;
     credentials)  load_config; show_credentials ;;

@@ -50,6 +50,45 @@ ansible-playbook playbooks/deploy_platform.yml \
   -e hetzner_allow_destructive_reconcile=true
 ```
 
+## Component lifecycle
+
+```bash
+cd platform-orchestrator
+./platform.sh components
+./platform.sh enable COMPONENT
+./platform.sh validate
+./platform.sh deploy COMPONENT
+```
+
+Enabling also enables required foundations and validates the resulting config.
+Targeted deploys run the same normalization contract as a full deployment.
+This is the normal way to add a technology after the initial cluster build.
+
+Disabling only changes desired selection; it does not stop or delete already
+installed workloads. That boundary is deliberate, so a temporary pause remains
+easy to reverse:
+
+```bash
+./platform.sh disable COMPONENT
+# Later:
+./platform.sh enable COMPONENT
+./platform.sh deploy COMPONENT
+```
+
+If capacity must be reclaimed, verify backups, disable dependants first, then
+remove the disabled component. The component name must be repeated exactly.
+PVC-backed or otherwise data-bearing services require the extra destructive
+flag:
+
+```bash
+./platform.sh remove blackbox --confirm blackbox
+./platform.sh remove databases --confirm databases --delete-data
+```
+
+Removal is scoped to Kubernetes component resources. Hetzner infrastructure,
+DNS, remote backup objects, and the tracing bucket are retained. A later enable
+after `--delete-data` is a fresh deployment until data is restored.
+
 ## Secrets and Vault
 
 Secret generation requires `ANSIBLE_VAULT_PASSWORD_FILE` or

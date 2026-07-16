@@ -31,6 +31,7 @@
   ansible.builtin.set_fact:
     platform_object_storage_enabled: '{{ (storage.enabled | default(object_storage_enabled)) | bool }}'
     platform_secrets_enabled: '{{ (secrets.enabled | default(true)) | bool }}'
+    platform_eso_enabled: '{{ (secrets.eso.enabled | default(eso_enabled)) | bool }}'
     platform_observability_enabled: '{{ (observability.enabled | default(deploy_observability)) | bool }}'
     platform_tracing_enabled: '{{ (tracing.enabled | default(tracing_enabled)) | bool }}'
     platform_elasticsearch_enabled: '{{ (elasticsearch.enabled | default(deploy_elasticsearch)) | bool }}'
@@ -38,16 +39,30 @@
     platform_postgresql_enabled: '{{ (databases.postgresql.enabled | default(deploy_postgresql)) | bool }}'
     platform_mongodb_enabled: '{{ (databases.mongodb.enabled | default(deploy_mongodb)) | bool }}'
     platform_gitlab_enabled: '{{ (gitlab.enabled | default(deploy_gitlab)) | bool }}'
+    platform_gitlab_runner_enabled: '{{ (gitlab.runner.enabled | default(false)) | bool }}'
     platform_gitops_enabled: '{{ (gitops.enabled | default(deploy_gitops)) | bool }}'
     platform_autoscaling_enabled: '{{ (autoscaling.enabled | default(deploy_autoscaling)) | bool }}'
     platform_dragonfly_enabled: '{{ (dragonfly.enabled | default(deploy_dragonfly)) | bool }}'
     platform_temporal_enabled: '{{ (temporal.enabled | default(deploy_temporal)) | bool }}'
     platform_postal_enabled: '{{ (postal.enabled | default(deploy_postal)) | bool }}'
     platform_backup_enabled: '{{ (backup.enabled | default(backup_enabled)) | bool }}'
+    platform_glitchtip_enabled: '{{ (glitchtip.enabled | default(deploy_glitchtip | default(false))) | bool }}'
+    platform_apm_enabled: '{{ (apm.enabled | default(deploy_apm | default(false))) | bool }}'
+    platform_blackbox_enabled: '{{ (blackbox.enabled | default(deploy_blackbox | default(false))) | bool }}'
+    platform_daytona_enabled: '{{ (applications.daytona.enabled | default(deploy_daytona)) | bool }}'
+    platform_alerting_telegram_enabled: '{{ (alerting.telegram.enabled | default(false)) | bool }}'
+    platform_alerting_email_enabled: '{{ (alerting.email.enabled | default(false)) | bool }}'
     platform_hipaa_enabled: '{{ hipaa_compliance | bool }}'
 
 - name: Normalize component sizing from the platform profile
   ansible.builtin.set_fact:
+    k8s_version: '{{ kubernetes.version | default(k8s_version) }}'
+    k8s_cni: '{{ kubernetes.cni | default(k8s_cni) }}'
+    cilium_version: '{{ kubernetes.cilium_version | default(cilium_version) }}'
+    gateway_api_version: '{{ kubernetes.gateway_api_version | default(gateway_api_version) }}'
+    k8s_pod_cidr: '{{ kubernetes.pod_cidr | default(k8s_pod_cidr) }}'
+    k8s_service_cidr: '{{ kubernetes.service_cidr | default(k8s_service_cidr) }}'
+    storage_class: '{{ storage.storage_class | default(storage_class) }}'
     object_storage_enabled: '{{ platform_object_storage_enabled }}'
     object_storage_replicas: >-
       {{ storage.master_replicas | default(storage.replicas | default(object_storage_replicas | default(1))) }}
@@ -62,7 +77,7 @@
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
     vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
     vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
-    eso_enabled: '{{ secrets.eso.enabled | default(eso_enabled) }}'
+    eso_enabled: '{{ platform_eso_enabled }}'
     postgresql_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas) }}'
     postgresql_proxy_replicas: >-
       {{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(1)) }}
@@ -73,6 +88,7 @@
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1) }}'
     gitlab_runner_concurrent_jobs: >-
       {{ gitlab.runner.concurrent_jobs | default(gitlab_runner_concurrent_jobs) }}
+    gitlab_runner_enabled: '{{ platform_gitlab_runner_enabled }}'
     argocd_ha_enabled: '{{ gitops.ha_enabled | default(tier in ["medium", "production"]) }}'
     metrics_retention: '{{ observability.metrics.retention | default(metrics_retention) }}'
     metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
@@ -82,6 +98,7 @@
     tempo_retention: '{{ tracing.retention | default(tempo_retention) }}'
     tempo_storage_size: '{{ tracing.storage_size | default(tempo_storage_size) }}'
     backup_schedule: '{{ backup.schedule | default(backup_schedule) }}'
+    backup_cron_timezone: '{{ global.timezone | default(backup_cron_timezone) }}'
     backup_retention_days: '{{ backup.retention_days | default(backup_retention_days) }}'
     backup_job_cpu_request: >-
       {{ backup.job_resources.cpu_request | default(backup_job_cpu_request) }}
@@ -91,10 +108,48 @@
       {{ backup.job_resources.memory_request | default(backup_job_memory_request) }}
     backup_job_memory_limit: >-
       {{ backup.job_resources.memory_limit | default(backup_job_memory_limit) }}
-    deploy_apm: '{{ apm.enabled | default(deploy_apm) }}'
-    deploy_blackbox: '{{ blackbox.enabled | default(deploy_blackbox | default(false)) }}'
-    deploy_glitchtip: '{{ glitchtip.enabled | default(deploy_glitchtip | default(false)) }}'
-    deploy_daytona: '{{ applications.daytona.enabled | default(deploy_daytona) }}'
+    deploy_apm: '{{ platform_apm_enabled }}'
+    deploy_blackbox: '{{ platform_blackbox_enabled }}'
+    deploy_glitchtip: '{{ platform_glitchtip_enabled }}'
+    deploy_daytona: '{{ platform_daytona_enabled }}'
+    daytona_namespace: '{{ applications.daytona.namespace | default(daytona_namespace) }}'
+    alert_telegram_enabled: '{{ platform_alerting_telegram_enabled }}'
+    alert_email_enabled: '{{ platform_alerting_email_enabled }}'
+    alert_email_to: '{{ alerting.email.to | default(alert_email_to | default("alerts@" + (domain | default("example.invalid", true)))) }}'
+
+- name: Validate required private-cluster foundation features
+  ansible.builtin.assert:
+    that:
+      - network.bastion.enabled | default(true) | bool
+      - network.vpn.enabled | default(true) | bool
+      - (kubernetes.cni | default('cilium')) == 'cilium'
+      - kubernetes.features.gateway_api | default(true) | bool
+      - kubernetes.features.hubble | default(true) | bool
+      - kubernetes.features.encryption | default(true) | bool
+      - kubernetes.features.network_policies | default(true) | bool
+    fail_msg: >-
+      This private-cluster architecture requires the bastion, Headscale VPN,
+      Cilium, Gateway API, Hubble, Kubernetes secret encryption, and network
+      policies. These are foundations rather than optional platform services.
+
+- name: Validate parent and bundled component selections
+  ansible.builtin.assert:
+    that:
+      - not platform_eso_enabled | bool or platform_secrets_enabled | bool
+      - not platform_postgresql_enabled | bool or platform_databases_enabled | bool
+      - not platform_mongodb_enabled | bool or platform_databases_enabled | bool
+      - not platform_gitlab_runner_enabled | bool or platform_gitlab_enabled | bool
+      - not platform_tracing_enabled | bool or platform_observability_enabled | bool
+      - not platform_blackbox_enabled | bool or platform_observability_enabled | bool
+      - not platform_observability_enabled | bool or observability.metrics.enabled | default(true) | bool
+      - not platform_observability_enabled | bool or observability.logging.enabled | default(true) | bool
+      - not platform_observability_enabled | bool or observability.grafana.enabled | default(true) | bool
+    fail_msg: >-
+      Invalid parent/child selection. ESO requires secrets; PostgreSQL and
+      MongoDB require databases; the GitLab Runner requires GitLab; tracing
+      and Blackbox require observability. The core observability role is one
+      production bundle, so metrics, logging, and Grafana must stay enabled
+      whenever observability.enabled=true.
 
 - name: Validate required GitLab external service dependencies
   ansible.builtin.assert:
@@ -107,3 +162,78 @@
       and object storage. Enable databases.postgresql, dragonfly, and storage
       in the selected platform profile.
   when: platform_gitlab_enabled | bool
+
+- name: Validate GlitchTip external service dependencies
+  ansible.builtin.assert:
+    that:
+      - platform_postgresql_enabled | bool
+      - platform_dragonfly_enabled | bool
+    fail_msg: >-
+      GlitchTip requires PostgreSQL and Dragonfly. Enable
+      databases.postgresql and dragonfly in the selected platform profile.
+  when: platform_glitchtip_enabled | bool
+
+- name: Validate APM external service dependency
+  ansible.builtin.assert:
+    that:
+      - platform_elasticsearch_enabled | bool
+    fail_msg: >-
+      APM Server requires Elasticsearch. Enable elasticsearch in the selected
+      platform profile.
+  when: platform_apm_enabled | bool
+
+- name: Validate Temporal external service dependencies
+  ansible.builtin.assert:
+    that:
+      - platform_postgresql_enabled | bool
+      - platform_elasticsearch_enabled | bool
+    fail_msg: >-
+      Temporal requires PostgreSQL and Elasticsearch. Enable both in the
+      selected platform profile.
+  when: platform_temporal_enabled | bool
+
+- name: Validate Postal external service dependency
+  ansible.builtin.assert:
+    that:
+      - platform_dragonfly_enabled | bool
+    fail_msg: >-
+      Postal requires Dragonfly for its queue. Enable dragonfly in the
+      selected platform profile.
+  when: platform_postal_enabled | bool
+
+- name: Validate tracing object storage dependency
+  ansible.builtin.assert:
+    that:
+      - platform_object_storage_enabled | bool
+    fail_msg: >-
+      Tempo tracing requires object storage. Enable storage in the selected
+      platform profile.
+  when: platform_tracing_enabled | bool
+
+- name: Validate backup object storage dependency
+  ansible.builtin.assert:
+    that:
+      - platform_object_storage_enabled | bool
+    fail_msg: >-
+      Backup automation requires object storage. Enable storage in the
+      selected platform profile.
+  when: platform_backup_enabled | bool
+
+- name: Validate email alerting dependency
+  ansible.builtin.assert:
+    that:
+      - platform_observability_enabled | bool
+      - platform_postal_enabled | bool
+    fail_msg: >-
+      Email alerting requires observability and Postal because Alertmanager is
+      configured to use the in-cluster Postal SMTP service.
+  when: platform_alerting_email_enabled | bool
+
+- name: Validate Telegram alerting parent dependency
+  ansible.builtin.assert:
+    that:
+      - platform_observability_enabled | bool
+    fail_msg: >-
+      Telegram alerting requires observability. Enable observability in the
+      selected platform profile.
+  when: platform_alerting_telegram_enabled | bool

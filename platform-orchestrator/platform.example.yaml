@@ -21,67 +21,16 @@ network:
     infrastructure: 10.0.0.0/24
     control_plane: 10.0.1.0/24
     workers: 10.0.2.0/24
-    services: 10.0.10.0/24
   bastion:
     enabled: true
     server_type: cx23
-    private_ip: 10.0.0.2
   load_balancer:
     enabled: true
     type: lb11
   vpn:
     enabled: true
     provider: headscale
-    domain: vpn.example.com
-  tls:
-    enabled: true
-    issuer: letsencrypt
-    dns_provider: cloudflare
-    wildcard: true
-
-services:
-  public:
-    - domain: app.example.com
-      service: frontend
-      namespace: production
-      port: 80
-    - domain: api.example.com
-      service: backend
-      namespace: production
-      port: 8080
-    - domain: s3.example.com
-      service: seaweedfs-filer
-      namespace: storage
-      port: 8333
-    - domain: registry.example.com
-      service: gitlab-registry
-      namespace: gitlab
-      port: 5000
-    - domain: daytona.example.com
-      service: daytona
-      namespace: daytona
-      port: 80
-  private:
-    - domain: gitlab.example.com
-      service: gitlab-webservice-default
-      namespace: gitlab
-      port: 8181
-    - domain: argocd.example.com
-      service: argocd-server
-      namespace: argocd
-      port: 443
-    - domain: grafana.example.com
-      service: grafana
-      namespace: monitoring
-      port: 80
-    - domain: object-storage.example.com
-      service: seaweedfs-filer
-      namespace: storage
-      port: 8888
-    - domain: vault.example.com
-      service: vault
-      namespace: vault
-      port: 8200
+    domain: ""             # Defaults to vpn.<global.domain>
 
 infrastructure:
   provider: hetzner
@@ -94,7 +43,7 @@ infrastructure:
     public_ip: false
   workers:
     count: 2
-    type: cx23
+    type: cx33
     public_ip: false
 
 kubernetes:
@@ -125,6 +74,7 @@ secrets:
     enabled: true
 
 databases:
+  enabled: true
   postgresql:
     enabled: true
     version: 18
@@ -138,8 +88,6 @@ databases:
 
 gitlab:
   enabled: true
-  domain: gitlab.example.com
-  registry_domain: registry.example.com
   registry_public: true
   webservice_replicas: 1
   sidekiq_replicas: 1
@@ -149,10 +97,11 @@ gitlab:
 
 gitops:
   enabled: true
-  domain: argocd.example.com
   ha_enabled: false
 
 observability:
+  # Metrics, logging, and Grafana are one production-tested core bundle.
+  enabled: true
   metrics:
     enabled: true
     retention: 14d
@@ -162,10 +111,27 @@ observability:
     retention: 7d
   grafana:
     enabled: true
-    domain: grafana.example.com
 
 autoscaling:
   enabled: true
+
+elasticsearch:
+  enabled: false
+
+dragonfly:
+  enabled: true       # Required by GitLab, GlitchTip, and Postal
+  replicas: 1
+
+temporal:
+  enabled: false      # Requires PostgreSQL and Elasticsearch
+
+postal:
+  enabled: false      # Requires Dragonfly
+
+tracing:
+  enabled: false      # Tempo; requires observability and object storage
+  retention: 24h
+  storage_size: 10Gi
 
 backup:
   enabled: true
@@ -176,7 +142,7 @@ applications:
   daytona:
     enabled: false
     namespace: daytona
-    base_domain: daytona.example.com
+    base_domain: ""      # Defaults to daytona.<global.domain>
     values_override: {}
 
 glitchtip:
@@ -192,5 +158,5 @@ alerting:
   telegram:
     enabled: false
   email:
-    enabled: true
+    enabled: false      # Requires Postal because SMTP is in-cluster
     to: ""
