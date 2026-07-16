@@ -105,6 +105,10 @@ class TestNamedProfileContract:
         )
         assert result.returncode == 0, result.stdout + result.stderr
 
+    def test_targeted_deploy_applies_profile_normalization_tasks(self):
+        playbook = (REPO_ROOT / "playbooks" / "deploy_platform.yml").read_text(encoding="utf-8")
+        assert "apply:\n          tags: [always]" in playbook
+
     def test_legacy_direct_hipaa_variable_remains_compatible(self, tmp_path):
         example_path = (
             REPO_ROOT / "platform-orchestrator" / "platform.example.yaml"

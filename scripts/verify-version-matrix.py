@@ -174,6 +174,23 @@ VERSION_REGISTRY = {
             ("defaults/main.yml", 'eso_chart_version: "2.7.0"'),
         ],
     },
+    "velero_versions": {
+        "value": "chart-12.1.0-app-1.18.1-aws-1.14.2",
+        "files": [
+            ("defaults/main.yml", 'backup_dr_velero_chart_version: "12.1.0"'),
+            ("defaults/main.yml", 'backup_dr_velero_image_tag: "v1.18.1"'),
+            ("defaults/main.yml", 'backup_dr_velero_aws_plugin_tag: "v1.14.2"'),
+            ("roles/backup-restore/defaults/main.yml", 'backup_dr_velero_chart_version: "12.1.0"'),
+            ("roles/backup-restore/defaults/main.yml", 'backup_dr_velero_image_tag: "v1.18.1"'),
+            ("roles/backup-restore/defaults/main.yml", 'backup_dr_velero_aws_plugin_tag: "v1.14.2"'),
+        ],
+    },
+    "vmctl_version": {
+        "value": "v1.147.0",
+        "files": [
+            ("scripts/migrate-profile.sh", 'VMCTL_IMAGE="docker.io/victoriametrics/vmctl:v1.147.0"'),
+        ],
+    },
     "kubespray_version": {
         "value": "v2.31.0",
         "files": [

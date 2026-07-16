@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # backup-all.sh - Orchestrate full backup of all components
-# Usage: ./scripts/backup-all.sh [--dry-run] [--component <name>] [--force]
+# Usage: ./scripts/backup-all.sh [--dry-run] [--component <name>] [--config FILE] [--force]
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
@@ -8,17 +8,45 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
-DRY_RUN=false; COMPONENT=""; FORCE=false
+DRY_RUN=false; COMPONENT=""; FORCE=false; CONFIG_FILE=""
+[[ ! -f "${PROJECT_ROOT}/platform-orchestrator/platform.yaml" ]] \
+  || CONFIG_FILE="${PROJECT_ROOT}/platform-orchestrator/platform.yaml"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)   DRY_RUN=true; shift ;;
     --component) COMPONENT="$2"; shift 2 ;;
+    --config)    CONFIG_FILE="$2"; shift 2 ;;
     --force)     FORCE=true; shift ;;
-    -h|--help) echo "Usage: $0 [--dry-run] [--component <name>] [--force]";
-               echo "  --component  mongodb|vault|seaweedfs|gitlab|all"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--dry-run] [--component <name>] [--config FILE] [--force]";
+               echo "  --component  postgresql|mongodb|vault|seaweedfs|gitlab|all"; exit 0 ;;
     *) error "Unknown option: $1"; exit 1 ;;
   esac
 done
+if [ -n "$CONFIG_FILE" ]; then
+  [ -f "$CONFIG_FILE" ] || { error "Platform config not found: $CONFIG_FILE"; exit 1; }
+  command -v yq >/dev/null 2>&1 || { error "yq is required with --config"; exit 1; }
+fi
+
+component_expected() {
+  local component="$1" expression
+  [ -n "$CONFIG_FILE" ] || return 1
+  case "$component" in
+    postgresql) expression='.databases.enabled and .databases.postgresql.enabled' ;;
+    mongodb) expression='.databases.enabled and .databases.mongodb.enabled' ;;
+    vault) expression='.secrets.enabled' ;;
+    seaweedfs) expression='.storage.enabled' ;;
+    gitlab|gitlab-secrets) expression='.gitlab.enabled' ;;
+    *) return 1 ;;
+  esac
+  [ "$(yq -r "${expression} // false" "$CONFIG_FILE")" = true ]
+}
+
+dry_run_component_is_disabled() {
+  local component="$1"
+  [ "$DRY_RUN" = true ] && [ -n "$CONFIG_FILE" ] \
+    && { [ -z "$COMPONENT" ] || [ "$COMPONENT" = all ]; } \
+    && ! component_expected "$component"
+}
 # Safety Gate 1: Confirmation
 if [ "${FORCE}" != "true" ]; then
   echo "============================================"; echo "  BACKUP ALL COMPONENTS"; echo "============================================"
@@ -48,9 +76,13 @@ TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
 check_comp() { kubectl get pods -n "$1" -l "$2" -o name 2>/dev/null | grep -q .; }
 run_backup() {
   local comp="$1" cronjob="$2" ns="$3" lbl="$4"; TOTAL=$((TOTAL+1))
+  if dry_run_component_is_disabled "$comp"; then
+    info "[DRY RUN] Would skip disabled component ${comp}"
+    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"; return 0
+  fi
   if [ "$DRY_RUN" = "true" ]; then info "[DRY RUN] Would trigger ${ns}/${cronjob}"; PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0; fi
   if ! check_comp "$ns" "$lbl"; then
-    if [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; then
+    if { [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; } || component_expected "$comp"; then
       error "Requested component '${comp}' is not deployed"
       FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
     else
@@ -81,12 +113,16 @@ run_mongodb_backup() {
   local backup
   backup="${cluster}-manual-$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')"
   TOTAL=$((TOTAL+1))
+  if dry_run_component_is_disabled "$comp"; then
+    info "[DRY RUN] Would skip disabled component ${comp}"
+    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"; return 0
+  fi
   if [ "$DRY_RUN" = true ]; then
     info "[DRY RUN] Would create PerconaServerMongoDBBackup ${ns}/${backup}"
     PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0
   fi
   if ! kubectl get perconaservermongodb "$cluster" -n "$ns" >/dev/null 2>&1; then
-    if [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; then
+    if { [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; } || component_expected "$comp"; then
       error "Requested MongoDB cluster ${ns}/${cluster} is not deployed"
       FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
     else
@@ -118,8 +154,56 @@ EOF
   error "MongoDB backup ${ns}/${backup} failed or timed out"
   FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
 }
+run_postgresql_backup() {
+  local comp=postgresql ns=databases cluster="${PROJECT_NAME:-k8s}-pg"
+  local backup state attempts=0
+  backup="${cluster}-manual-$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')"
+  TOTAL=$((TOTAL+1))
+  if dry_run_component_is_disabled "$comp"; then
+    info "[DRY RUN] Would skip disabled component ${comp}"
+    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"; return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    info "[DRY RUN] Would create PerconaPGBackup ${ns}/${backup}"
+    PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0
+  fi
+  if ! kubectl get perconapgcluster "$cluster" -n "$ns" >/dev/null 2>&1; then
+    if { [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; } || component_expected "$comp"; then
+      error "Requested PostgreSQL cluster ${ns}/${cluster} is not deployed"
+      FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+    else
+      warn "PostgreSQL is not deployed"
+      SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"
+    fi
+    return 0
+  fi
+  kubectl apply -f - <<EOF | tee -a "$RF"
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGBackup
+metadata:
+  name: ${backup}
+  namespace: ${ns}
+spec:
+  pgCluster: ${cluster}
+  repoName: repo1
+  options:
+    - --type=full
+EOF
+  while [ "$attempts" -lt 360 ]; do
+    state=$(kubectl get perconapgbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
+    case "${state,,}" in
+      succeeded|successful|ready) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; return 0 ;;
+      failed|error) break ;;
+    esac
+    attempts=$((attempts+1)); sleep 10
+  done
+  kubectl describe perconapgbackup "$backup" -n "$ns" | tee -a "$RF" || true
+  error "PostgreSQL backup ${ns}/${backup} failed or timed out"
+  FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+}
 run_named_backup() {
   case "$1" in
+    postgresql) run_postgresql_backup ;;
     mongodb)   run_mongodb_backup ;;
     vault)     run_backup vault vault-raft-snapshot vault app.kubernetes.io/name=vault ;;
     seaweedfs) run_backup seaweedfs seaweedfs-backup-check storage app.kubernetes.io/name=seaweedfs ;;
@@ -131,7 +215,7 @@ run_named_backup() {
   esac
 }
 if [ "$COMPONENT" = "all" ] || [ -z "$COMPONENT" ]; then
-  for c in mongodb vault seaweedfs gitlab; do run_named_backup "$c"; done
+  for c in postgresql mongodb vault seaweedfs gitlab; do run_named_backup "$c"; done
 else
   run_named_backup "$COMPONENT"
 fi

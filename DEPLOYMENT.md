@@ -188,10 +188,21 @@ If backups are enabled, verify the jobs and immediately run a backup:
 ```bash
 kubectl get cronjob -A
 ./scripts/backup-all.sh --force
+kubectl get backupstoragelocation -n velero
 ```
 
 GitLab uses the chart-generated `gitlab-toolbox-backup` CronJob and a separate
 `gitlab-rails-secrets-backup` job. Both are required for recovery.
+`medium`, `medium-optimized`, and `production` also require an independent
+external DR endpoint and credentials before the backup role can install
+Velero/Kopia. The deployment preflight rejects missing or in-cluster values
+before provisioning Hetzner resources. After deployment, create an encrypted full-cluster bundle with
+`platform.sh backup-cluster`; see [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+
+Do not turn a minimal config directly into production and run `deploy all`.
+Use `platform.sh migrate plan|execute|resume|status|rollback`; it expands the
+topology and protects data before any one-at-a-time server resize. The verified
+path is currently minimal to production and requires external DR storage.
 
 ## 5. Application delivery
 

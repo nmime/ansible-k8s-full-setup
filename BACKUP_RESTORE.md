@@ -1,27 +1,69 @@
 # Backup and Restore
 
+The platform has three complementary recovery layers. A production recovery is
+complete only when all three succeed:
+
+1. Application-native backups for transactionally consistent databases and
+   products with their own restore contract.
+2. Velero resource and Kopia filesystem backups for Kubernetes objects and
+   every mounted PVC, written to storage outside the protected cluster.
+3. An encrypted workstation-side cluster bundle containing etcd,
+   control-plane PKI, generated secrets, desired configuration, Helm state,
+   Kubespray inventory, and Hetzner state.
+
 ## Components covered
 
-| Component | Backup mechanism | CronJob | Namespace |
+| Component | Backup mechanism | Scheduled/on-demand resource | Namespace |
 |---|---|---|---|
-| MongoDB | Percona/PBM backup | `mongodb-backup` | `databases` |
-| PostgreSQL | Percona Operator pgBackRest | operator-managed | `databases` |
+| MongoDB | Percona/PBM backup | operator task / `PerconaServerMongoDBBackup` | `databases` |
+| PostgreSQL | Percona Operator pgBackRest | operator schedule / `PerconaPGBackup` | `databases` |
 | Vault | Raft snapshot to S3 | `vault-raft-snapshot` | `vault` |
 | SeaweedFS | topology and metadata artifact | `seaweedfs-backup-check` | `storage` |
 | GitLab | chart Toolbox `backup-utility` | `gitlab-toolbox-backup` | `gitlab` |
 | GitLab encryption keys | Rails `secrets.yml` copy to S3 | `gitlab-rails-secrets-backup` | `gitlab` |
+| All Kubernetes resources | Velero backup | `full-cluster` schedule | `velero` |
+| Every mounted PVC | Velero node-agent/Kopia filesystem backup | `full-cluster` schedule | `velero` |
+| Kubernetes control plane | etcd snapshot + PKI bundle | `cluster-backup.sh` | external workstation |
 
 Only supported, enabled platform components receive backup resources and
 verification requirements. Credentials are generated secrets; insecure static
 fallbacks are rejected.
 
-Coroot application/ClickHouse PVCs, VictoriaMetrics/Loki telemetry, Argo CD
-runtime state, Temporal's external schemas, Postal, Elasticsearch, Dragonfly,
-GlitchTip, and Daytona are **not** covered by the generic backup role. Treat
-telemetry as recreatable only if that matches the organization’s requirements;
-otherwise add and live-test a component-specific export/restore procedure
-before production. A component's guarded `--delete-data` flag is not evidence
-that a backup exists.
+Coroot/ClickHouse, VictoriaMetrics/Loki, Argo CD, Temporal, Postal,
+Elasticsearch, Dragonfly, GlitchTip, Daytona, and SeaweedFS data are protected
+by Velero filesystem backup rather than an application-aware export. This is a
+recoverable filesystem copy, but it is not transactionally equivalent to the
+PostgreSQL, MongoDB, Vault, or GitLab native mechanisms. Keep the native and
+filesystem layers together. A component's guarded `--delete-data` flag is not
+evidence that a backup exists.
+
+## External disaster-recovery storage
+
+`medium`, `medium-optimized`, and `production` enable the external DR layer.
+Before deploying one of those profiles, configure:
+
+```yaml
+backup:
+  disaster_recovery:
+    enabled: true
+    endpoint: https://s3.example-provider.com
+    region: us-east-1
+    bucket: company-platform-dr
+    prefix: k8s/velero
+    schedule: "30 2 * * *"
+    retention_hours: 720
+```
+
+Supply independent credentials at deployment time:
+
+```bash
+export BACKUP_DR_ACCESS_KEY='...'
+export BACKUP_DR_SECRET_KEY='...'
+```
+
+The role rejects `.svc` and SeaweedFS endpoints. Backing up a cluster into the
+same cluster is not disaster recovery. Use object lock/versioning and a
+separate failure domain where the provider supports them.
 
 ## Quick Start
 
@@ -31,11 +73,38 @@ the configured CronJobs:
 ```bash
 ansible-playbook -i inventory.yml playbooks/deploy_platform.yml --tags backup
 ./scripts/backup-all.sh --dry-run
-./scripts/backup-all.sh --force
+./scripts/backup-all.sh --config platform-orchestrator/platform.yaml --force
+
+# Complete encrypted cluster backup. Never pass a passphrase on argv.
+export CLUSTER_BACKUP_PASSPHRASE='use-a-secret-manager-value'
+./platform-orchestrator/platform.sh backup-cluster --force
+
+# Or use an age recipient instead of a shared passphrase.
+./platform-orchestrator/platform.sh backup-cluster \
+  --recipient age1example... --output-dir /secure/offsite/path --force
 ```
 
-`backup-all.sh` fails when the cluster, object storage, required CronJob, or
-triggered Job fails. It targets each CronJob in its actual component namespace.
+`backup-all.sh` triggers an on-demand full `PerconaPGBackup`, a PBM MongoDB
+backup, Vault snapshot, SeaweedFS topology artifact, GitLab archive, and GitLab
+Rails secrets for the components enabled by the supplied platform config. An
+enabled component that is missing or unhealthy is a backup failure, while a
+disabled component is skipped. `cluster-backup.sh` then
+requires a completed Velero resource/PVC backup and captures the control-plane
+and cloud recovery bundle. Missing layers fail closed; skip options require the
+explicit `--allow-incomplete` marker, and such a bundle cannot be restored by
+`cluster-restore.sh`.
+
+Before creating the Velero object, the script records every PVC-backed volume
+mounted by every pod. It then requires a completed `PodVolumeBackup` for every
+recorded namespace/pod/volume tuple and rejects partial or missing filesystem
+copies. PVCs that are not mounted are not claimed as protected data; either
+mount and back them up through an application-aware process or remove obsolete
+claims after verifying retention requirements.
+
+The encrypted archive has an external checksum sidecar and an internal
+`SHA256SUMS` manifest. Temporary plaintext is created with mode `0700`/`0600`
+and deleted on every exit path. The bundle contains Kubernetes Secrets and PKI;
+store the decryption identity separately.
 
 ## Configuration
 
@@ -56,15 +125,36 @@ Always start in dry-run mode and use an isolated test cluster/namespace:
 
 ```bash
 ./scripts/pg-restore-drill.sh --dry-run
+./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
 ./scripts/vault-restore-drill.sh --dry-run
 ./scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
+
+# Verify encryption and both checksum layers without a cluster mutation.
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.enc --mode verify
+
+# Restore resources and PVC data into a replacement cluster context.
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.enc \
+  --mode velero --confirm RESTORE_k8s
 ```
 
-The generic `restore-drill.sh` dispatcher supports only Vault and GitLab. It
-fails closed for MongoDB and SeaweedFS because verified isolated restore
-implementations do not exist for those components yet. SeaweedFS topology
-metadata is not a data backup; protect volume data separately before treating
-the object-storage layer as recoverable.
+The generic `restore-drill.sh` dispatcher supports MongoDB, Vault, and GitLab.
+The MongoDB path deploys a namespace-scoped Percona operator and disposable
+single-member cluster, applies `PerconaServerMongoDBRestore`, then verifies
+operator state, `mongosh` connectivity, and an optional database/collection
+sentinel. PostgreSQL has its dedicated isolated pgBackRest drill. SeaweedFS
+topology metadata alone is not data backup—the replacement-cluster Velero
+node-agent restore is the data layer.
+
+For a meaningful MongoDB integrity check, identify a stable sentinel:
+
+```bash
+./scripts/restore-drill.sh --component mongodb --backup mongodb-backup-20260716 \
+  --namespace mongodb-drill-20260716 --force
+
+./scripts/mongodb-restore-drill.sh --backup mongodb-backup-20260716 \
+  --verify-database recovery_sentinels \
+  --verify-collection backup_markers --min-documents 1
+```
 
 An actual Vault drill also requires the original snapshot unseal material and
 a known path whose restored value must be readable:
@@ -83,6 +173,43 @@ For a disaster recovery cutover, restore a same-version GitLab chart with the
 official Toolbox `backup-utility --restore`, restore the saved Rails secret,
 and follow the GitLab restore runbook. A Helm rollback is not a data restore.
 
+### Replacement-cluster restore
+
+1. Provision the target Kubernetes foundation with the same pinned versions.
+2. Configure the target Velero installation read/write against the external
+   bucket and wait for the source backup to synchronize.
+3. Switch `kubectl` to the replacement cluster. The restore script refuses the
+   source context recorded in the bundle.
+4. Run `cluster-restore.sh --mode velero` with the exact confirmation.
+5. Restore/test the application-native artifacts and original Vault/GitLab key
+   material where required.
+6. Run health gates and application checks before changing DNS.
+
+### Lost-quorum etcd recovery
+
+The `etcd` mode is only for a Kubespray cluster with at least one surviving
+control-plane node and an unhealthy Kubernetes API. It refuses a healthy API
+and invokes Kubespray `v2.31.0` `recover-control-plane.yml` with the verified
+snapshot:
+
+```bash
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.enc \
+  --mode etcd \
+  --inventory /secure/updated-replacement-hosts.yml \
+  --survivor k8s-master-1 \
+  --broken-node k8s-master-2 \
+  --broken-node k8s-master-3 \
+  --confirm RESTORE_ETCD_k8s
+```
+
+Omit `--inventory` only when the surviving/replacement nodes still use the
+addresses recorded in the bundle. The recovery script validates every node as
+both an etcd and control-plane member, puts the survivor first in both groups,
+and records each broken node's original etcd member name.
+
+For total control-plane loss, build a replacement cluster and use the Velero
+path. Do not improvise a multi-member etcd restore while API servers are live.
+
 ## Safety Gates
 
 1. The selected artifact must exist and be non-empty.
@@ -93,10 +220,14 @@ and follow the GitLab restore runbook. A Helm rollback is not a data restore.
 4. The drill exits nonzero on failed import or payload checks.
 5. Rails secrets, object storage, databases, and repository data are all
    separate recovery dependencies.
-6. Record artifact ID, source version, size, checks, and cleanup outcome.
+6. The external Velero target must not be the protected SeaweedFS cluster.
+7. Record artifact ID, source version, size, checks, and cleanup outcome.
 
 ## Ongoing verification
 
-The `backup-verification` CronJob checks S3 artifacts daily. Treat this as an
-existence/freshness gate, not proof of restorability. Schedule recurring full
-restore drills and keep the output with the recovery runbook.
+The `backup-verification` CronJob checks application artifacts daily. Velero
+validates the external `BackupStorageLocation` and records each resource/PVC
+backup phase. These are freshness gates, not proof of restorability. Schedule a
+replacement-cluster restore drill and the native PostgreSQL, Vault, GitLab, and
+MongoDB drills at the required RPO/RTO cadence. A backup is not accepted as
+production-ready until its restore drill has succeeded.

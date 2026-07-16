@@ -58,7 +58,7 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Autoscaling | `autoscaling.enabled` | KEDA | none | on | on | on | on | on |
 | Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL, Elasticsearch | off | off | on | on | on |
 | Postal | `postal.enabled` | Postal mail server and MariaDB | Dragonfly | off | off | on | on | on |
-| Backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, SeaweedFS verification/snapshot jobs and restore-drill helpers | Object storage | off | off | on | on | on |
+| Backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, SeaweedFS jobs; external Velero/Kopia resource and PVC protection; encrypted etcd/PKI/config bundles; restore drills | Object storage; external DR endpoint for medium/production profiles | off | off | on | on | on |
 | GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | on | on | on |
 | APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | on | on |
 | Blackbox | `blackbox.enabled` | Prometheus Blackbox Exporter and VMProbe resources | Observability | off | off | on | on | on |
@@ -116,6 +116,7 @@ table is a review aid and must be updated with those values.
 | Vault chart / Vault / ESO chart | `0.34.0` / `2.0.3` / `2.7.0` |
 | Percona PostgreSQL operator / PostgreSQL | `3.0.0` / `18.3-1` |
 | Percona MongoDB operator / MongoDB | `1.22.0` / `8.0.8-3` |
+| Velero chart / Velero / AWS object-store plugin | `12.1.0` / `v1.18.1` / `v1.14.2` |
 | GitLab / Runner charts | `10.1.2` / `0.88.3` |
 | Argo CD chart / application | `9.5.14` / `v3.4.2` |
 | VictoriaMetrics operator / Grafana / Loki / Promtail | `0.66.2` / `10.5.15` / `6.55.0` / `6.17.1` |

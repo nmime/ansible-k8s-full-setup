@@ -17,8 +17,9 @@ ship or deploy an application repository by default.
   GlitchTip; Elastic APM; Daytona; backup automation; and HIPAA-oriented
   technical hardening. See the exhaustive
   [technology catalog](docs/TECHNOLOGY_CATALOG.md).
-- Scheduled backups, verification jobs, restore-drill scripts, staged upgrades,
-  exact Helm rollback baselines, and verified teardown.
+- Native application backups, external Velero/Kopia resource and PVC backups,
+  encrypted etcd/PKI/config bundles, restore drills, staged upgrades, exact
+  Helm rollback baselines, and verified teardown.
 
 The runtime has four capability tiers and five named profiles:
 
@@ -57,6 +58,9 @@ backups outside the cluster for disaster recovery.
   authorized. Firewall, load-balancer service/target, and DNS drift converges.
 - Upgrades stop on failed preflight, backup, Helm, migration, or health gates.
   Rollback uses captured exact revisions rather than `revision - 1` guesses.
+- Profile changes use the resumable migration workflow; the ordinary upgrade
+  command rejects cross-tier changes so topology and data transitions cannot
+  be mistaken for a Helm reconcile.
 - Teardown requires the exact project name and verifies that every managed
   Hetzner resource was removed. DNS and the global kubeconfig are preserved.
 - HIPAA-related controls are opt-in technical hardening only; enabling them is
@@ -170,6 +174,11 @@ ansible-playbook playbooks/validate_profile.yml \
 # Trigger configured backup CronJobs
 ./scripts/backup-all.sh --force
 
+# Create and verify a complete encrypted cluster recovery bundle
+./platform-orchestrator/platform.sh backup-cluster --recipient age1... --force
+./platform-orchestrator/platform.sh restore-cluster \
+  --archive /secure/k8s-cluster-....tar.gz.age --mode verify
+
 # Capture rollback baseline and inspect an upgrade
 ./scripts/upgrade-platform.sh snapshot
 ./scripts/upgrade-platform.sh plan
@@ -178,6 +187,12 @@ ansible-playbook playbooks/validate_profile.yml \
 ./scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
 ./scripts/pg-restore-drill.sh --dry-run
 ./scripts/vault-restore-drill.sh --dry-run
+./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
+
+# Plan the verified minimal -> production migration; no cluster mutation
+export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+export BACKUP_DR_BUCKET=company-platform-dr
+./platform-orchestrator/platform.sh migrate plan
 
 # Destructive: exact confirmation is required
 ./platform-orchestrator/platform.sh destroy

@@ -1,0 +1,152 @@
+---
+- name: "Backup-DR | Reject an in-cluster disaster-recovery target"
+  ansible.builtin.assert:
+    that:
+      - backup_dr_storage_endpoint | length > 0
+      - "'.svc' not in backup_dr_storage_endpoint"
+      - "'seaweedfs' not in backup_dr_storage_endpoint"
+      - backup_dr_storage_bucket | length > 2
+      - backup_dr_storage_access_key | length >= 8
+      - backup_dr_storage_secret_key | length >= 16
+    fail_msg: >-
+      Full-cluster recovery requires an external S3-compatible target and
+      independently supplied BACKUP_DR_ACCESS_KEY/BACKUP_DR_SECRET_KEY.
+      The protected cluster's SeaweedFS endpoint is not a disaster-recovery
+      destination.
+  no_log: true
+
+- name: "Backup-DR | Create privileged Velero namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ backup_dr_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: privileged
+          pod-security.kubernetes.io/warn: privileged
+
+- name: "Backup-DR | Create external object-storage credentials"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: velero-cloud-credentials
+        namespace: "{{ backup_dr_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+      type: Opaque
+      stringData:
+        cloud: |
+          [default]
+          aws_access_key_id={{ backup_dr_storage_access_key }}
+          aws_secret_access_key={{ backup_dr_storage_secret_key }}
+  no_log: true
+
+- name: "Backup-DR | Add official Velero Helm repository"
+  kubernetes.core.helm_repository:
+    name: vmware-tanzu
+    repo_url: https://vmware-tanzu.github.io/helm-charts
+
+- name: "Backup-DR | Deploy Velero with node-agent filesystem backups"
+  kubernetes.core.helm:
+    name: velero
+    chart_ref: vmware-tanzu/velero
+    chart_version: "{{ backup_dr_velero_chart_version }}"
+    release_namespace: "{{ backup_dr_namespace }}"
+    create_namespace: false
+    state: present
+    wait: true
+    timeout: 10m0s
+    atomic: true
+    values:
+      image:
+        repository: docker.io/velero/velero
+        tag: "{{ backup_dr_velero_image_tag }}"
+      initContainers:
+        - name: velero-plugin-for-aws
+          image: "docker.io/velero/velero-plugin-for-aws:{{ backup_dr_velero_aws_plugin_tag }}"
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /target
+              name: plugins
+      credentials:
+        useSecret: true
+        existingSecret: velero-cloud-credentials
+      configuration:
+        backupStorageLocation:
+          - name: default
+            provider: aws
+            bucket: "{{ backup_dr_storage_bucket }}"
+            prefix: "{{ backup_dr_storage_prefix }}"
+            default: true
+            accessMode: ReadWrite
+            credential:
+              name: velero-cloud-credentials
+              key: cloud
+            config:
+              region: "{{ backup_dr_storage_region }}"
+              s3ForcePathStyle: "true"
+              s3Url: "{{ backup_dr_storage_endpoint }}"
+        defaultVolumesToFsBackup: true
+        defaultBackupTTL: "{{ backup_dr_retention_hours }}h"
+        defaultItemOperationTimeout: 8h
+        fsBackupTimeout: 8h
+        uploaderType: kopia
+      backupsEnabled: true
+      snapshotsEnabled: false
+      deployNodeAgent: true
+      resources:
+        requests:
+          cpu: "{{ backup_dr_velero_cpu_request }}"
+          memory: "{{ backup_dr_velero_memory_request }}"
+        limits:
+          cpu: "{{ backup_dr_velero_cpu_limit }}"
+          memory: "{{ backup_dr_velero_memory_limit }}"
+      nodeAgent:
+        resources:
+          requests:
+            cpu: "{{ backup_dr_node_agent_cpu_request }}"
+            memory: "{{ backup_dr_node_agent_memory_request }}"
+          limits:
+            cpu: "{{ backup_dr_node_agent_cpu_limit }}"
+            memory: "{{ backup_dr_node_agent_memory_limit }}"
+      schedules:
+        full-cluster:
+          disabled: false
+          paused: false
+          skipImmediately: true
+          schedule: "{{ backup_dr_schedule }}"
+          useOwnerReferencesInBackup: false
+          template:
+            ttl: "{{ backup_dr_retention_hours }}h"
+            storageLocation: default
+            includeClusterResources: true
+            defaultVolumesToFsBackup: true
+
+- name: "Backup-DR | Wait for the Velero server"
+  ansible.builtin.command:
+    cmd: >-
+      kubectl rollout status deployment/velero
+      --namespace {{ backup_dr_namespace }} --timeout=600s
+  changed_when: false
+
+- name: "Backup-DR | Wait for node agents on every schedulable node"
+  ansible.builtin.command:
+    cmd: >-
+      kubectl rollout status daemonset/velero-node-agent
+      --namespace {{ backup_dr_namespace }} --timeout=600s
+  changed_when: false
+
+- name: "Backup-DR | Require an available external backup location"
+  ansible.builtin.command:
+    cmd: >-
+      kubectl wait backupstoragelocation/default
+      --namespace {{ backup_dr_namespace }}
+      --for=jsonpath='{.status.phase}'=Available --timeout=300s
+  changed_when: false

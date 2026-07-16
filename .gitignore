@@ -13,6 +13,11 @@ platform-orchestrator/.state/
 platform-orchestrator/logs/
 platform-orchestrator/platform.yaml
 
+# Encrypted local disaster-recovery bundles and resumable migration state
+cluster-backups/
+.migration-state/
+.backup-results-*.log
+
 # Ansible retry files
 *.retry
 

@@ -41,6 +41,8 @@
                         for comp in {{ _backup_components | join(' ') }}; do
                           if [ "$comp" = gitlab ]; then
                             path="s3://gitlab-backups/"
+                          elif [ "$comp" = postgresql ]; then
+                            path="s3://${B}/pgbackrest/${P}-pg/repo2/"
                           elif [ "$comp" = mongodb ]; then
                             path="s3://${B}/mongodb/${P}-mongo/"
                           else

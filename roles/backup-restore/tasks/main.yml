@@ -12,6 +12,9 @@
   ansible.builtin.set_fact:
     _backup_components: >-
       {%- set ns = namespace(items=[]) -%}
+      {%- if backup_postgresql_enabled | bool and platform_postgresql_enabled | default(true) | bool -%}
+      {%- set _ = ns.items.append('postgresql') -%}
+      {%- endif -%}
       {%- if backup_mongodb_enabled | bool and platform_mongodb_enabled | default(true) | bool -%}
       {%- set _ = ns.items.append('mongodb') -%}
       {%- endif -%}
@@ -73,6 +76,11 @@
   no_log: true
   tags: [backup, backup-setup]
 
+- name: "Backup | Include PostgreSQL backup tasks"
+  ansible.builtin.include_tasks: postgresql_pgbackrest.yml
+  when: "'postgresql' in _backup_components"
+  tags: [backup, backup-postgresql]
+
 - name: "Backup | Include MongoDB backup tasks"
   ansible.builtin.include_tasks: mongodb_pbm.yml
   when: "'mongodb' in _backup_components"
@@ -92,6 +100,11 @@
   ansible.builtin.include_tasks: gitlab.yml
   when: "'gitlab' in _backup_components"
   tags: [backup, backup-gitlab]
+
+- name: "Backup | Include full-cluster disaster-recovery tasks"
+  ansible.builtin.include_tasks: velero.yml
+  when: backup_dr_enabled | bool
+  tags: [backup, backup-dr, velero]
 
 - name: "Backup | Include verification jobs"
   ansible.builtin.include_tasks: verification.yml
