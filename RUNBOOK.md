@@ -163,13 +163,18 @@ An upgrade reconciles software inside the current profile. It cannot change
 profile or topology. Profile migration supports every distinct source/target
 pair across the five named profiles. For example, to move to production:
 
-```bash
-export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
-export BACKUP_DR_BUCKET=company-platform-dr
-export BACKUP_DR_ACCESS_KEY='...'
-export BACKUP_DR_SECRET_KEY='...'
-export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+Configure these values once in the gitignored, mode-`0600` `.env`; operational
+scripts load them automatically:
 
+```dotenv
+BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+BACKUP_DR_BUCKET=company-platform-dr
+BACKUP_DR_ACCESS_KEY=...
+BACKUP_DR_SECRET_KEY=...
+CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+```
+
+```bash
 ./platform-orchestrator/platform.sh migrate --target production plan
 ./platform-orchestrator/platform.sh migrate execute \
   --target production \

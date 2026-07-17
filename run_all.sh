@@ -1,4 +1,10 @@
 #!/bin/bash
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/scripts/load-project-env.sh"
+
 echo "=== FULL STACK 3x RUN STARTED at $(date) ==="
 RESULTS=""
 
@@ -7,7 +13,7 @@ for TIER in minimal medium production; do
   echo "============================================"
   echo "  TIER: $TIER - Starting at $(date)"
   echo "============================================"
-  if bash /root/ansible-k8s-full-setup-fix/run_tier.sh "$TIER"; then
+  if bash "${SCRIPT_DIR}/run_tier.sh" "$TIER"; then
     RESULTS="$RESULTS\n$TIER: PASS"
   else
     RESULTS="$RESULTS\n$TIER: FAIL"

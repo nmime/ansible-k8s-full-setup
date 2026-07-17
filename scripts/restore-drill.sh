@@ -3,6 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/load-project-env.sh"
 COMPONENT=""
 BACKUP_REF=""
 DRY_RUN=false

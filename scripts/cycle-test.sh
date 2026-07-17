@@ -2,6 +2,10 @@
 # Destructive Kubespray reset/redeploy cycle test for an explicitly named lab.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/load-project-env.sh"
+
 : "${KUBESPRAY_DIR:?Set KUBESPRAY_DIR to the checked-out Kubespray directory}"
 : "${BASTION_HOST:?Set BASTION_HOST for SSH verification}"
 : "${CONTROL_HOST:?Set CONTROL_HOST for SSH verification}"

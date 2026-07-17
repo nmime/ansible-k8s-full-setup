@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/load-project-env.sh
+source "${ROOT_DIR}/scripts/load-project-env.sh"
+
 PROJECT="${1:-}"
 CONFIRM=""
 [[ "${2:-}" == "--confirm" ]] && CONFIRM="${3:-}"
@@ -86,7 +90,6 @@ if [[ "$FAILURES" -ne 0 || -n "$REMAINING" ]]; then
   exit 1
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rm -f "${ROOT_DIR}/playbooks/${PROJECT}-infra-facts.yml"
 printf '=== Teardown verified complete: %s ===\n' "$PROJECT"
 printf 'DNS zone and records were intentionally preserved.\n'

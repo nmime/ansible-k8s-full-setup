@@ -54,12 +54,15 @@ backup:
     retention_hours: 720
 ```
 
-Supply independent credentials at deployment time:
+Store independent credentials in the gitignored, mode-`0600` project `.env`:
 
-```bash
-export BACKUP_DR_ACCESS_KEY='...'
-export BACKUP_DR_SECRET_KEY='...'
+```dotenv
+BACKUP_DR_ACCESS_KEY=...
+BACKUP_DR_SECRET_KEY=...
 ```
+
+Backup, restore, orchestration, and migration commands load `.env`
+automatically. Explicitly exported variables still take precedence.
 
 The role rejects `.svc` and SeaweedFS endpoints. Backing up a cluster into the
 same cluster is not disaster recovery. Use object lock/versioning and a

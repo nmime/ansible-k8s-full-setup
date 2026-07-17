@@ -82,14 +82,22 @@ python3 -m pip install -r requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
-Create the local secret-encryption password file and export required values:
+Create the local secret-encryption password file and repository-local
+environment configuration:
 
 ```bash
 umask 077
 openssl rand -base64 48 > ~/.vault_pass
-export ANSIBLE_VAULT_PASSWORD_FILE="$HOME/.vault_pass"
-export HCLOUD_TOKEN="replace-me"
+cp .env.example .env
+chmod 600 .env
+$EDITOR .env
 ```
+
+Set `ANSIBLE_VAULT_PASSWORD_FILE`, `HCLOUD_TOKEN`, and the required backup
+credentials in `.env`. The gitignored file is automatically loaded by the
+orchestrator, deployment, teardown, migration, backup, restore, upgrade, and
+restore-drill scripts. Explicit variables exported by the caller take
+precedence, which keeps CI and one-off overrides deterministic.
 
 Object-storage credentials may be supplied through
 `OBJECT_STORAGE_ACCESS_KEY` and `OBJECT_STORAGE_SECRET_KEY`; otherwise the

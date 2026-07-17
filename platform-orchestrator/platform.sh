@@ -14,6 +14,15 @@ STATE_DIR="${SCRIPT_DIR}/.state"
 LOG_DIR="${SCRIPT_DIR}/logs"
 ANSIBLE_DIR="${SCRIPT_DIR}/.."
 
+ENV_LOADER="${ANSIBLE_DIR}/scripts/load-project-env.sh"
+if [[ -f "$ENV_LOADER" ]]; then
+  # shellcheck source=scripts/load-project-env.sh
+  source "$ENV_LOADER"
+elif [[ -e "${ANSIBLE_DIR}/.env" ]]; then
+  printf 'ERROR: cannot load %s without %s\n' "${ANSIBLE_DIR}/.env" "$ENV_LOADER" >&2
+  exit 1
+fi
+
 DEFAULT_REGION="hel1"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
