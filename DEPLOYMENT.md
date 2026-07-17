@@ -14,9 +14,16 @@ key if one does not already exist.
 ```bash
 umask 077
 openssl rand -base64 48 > ~/.vault_pass
-export ANSIBLE_VAULT_PASSWORD_FILE="$HOME/.vault_pass"
-export HCLOUD_TOKEN="replace-me"
+cp .env.example .env
+chmod 600 .env
+$EDITOR .env
 ```
+
+Set `ANSIBLE_VAULT_PASSWORD_FILE`, `HCLOUD_TOKEN`, and any provider/backup
+credentials in `.env`. All supported operational scripts automatically load
+this gitignored file; an explicitly exported process variable takes precedence.
+The loader rejects symlinks, insecure permissions, malformed assignments, and
+does not evaluate shell commands from `.env`.
 
 The deployment stops if the Vault password file, SSH key, CLI, pinned Ansible
 collection, token, domain, or email is missing.

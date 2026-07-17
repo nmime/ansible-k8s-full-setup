@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/load-project-env.sh"
 ARCHIVE=""
 MODE=verify
 IDENTITY="${CLUSTER_BACKUP_AGE_IDENTITY:-}"

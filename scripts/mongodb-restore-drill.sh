@@ -2,6 +2,10 @@
 # Restore a Percona MongoDB backup into an isolated, single-member test cluster.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/load-project-env.sh"
+
 SOURCE_NAMESPACE="databases"
 SOURCE_CLUSTER="${PROJECT_NAME:-k8s}-mongo"
 BACKUP_REF=""

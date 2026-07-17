@@ -141,12 +141,16 @@ changes without contacting Hetzner or Kubernetes.
 
 ### Execute and Resume
 
-```bash
-export HCLOUD_TOKEN='...'
-export BACKUP_DR_ACCESS_KEY='...'
-export BACKUP_DR_SECRET_KEY='...'
-export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+Configure these values in the gitignored, mode-`0600` `.env`:
 
+```dotenv
+HCLOUD_TOKEN=...
+BACKUP_DR_ACCESS_KEY=...
+BACKUP_DR_SECRET_KEY=...
+CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+```
+
+```bash
 ./platform-orchestrator/platform.sh migrate execute \
   --target production \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" \

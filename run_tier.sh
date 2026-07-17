@@ -9,14 +9,11 @@ EMAIL="admin@n0xeid.xyz"
 LOGFILE="/root/run-${TIER}.log"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/scripts/load-project-env.sh"
+
 echo "=== Starting $TIER at $(date) ===" | tee "$LOGFILE"
-if [[ -f "${HOME}/.env" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  source "${HOME}/.env"
-  set +a
-fi
-: "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN directly or in ${HOME}/.env}"
+: "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN directly or in ${SCRIPT_DIR}/.env}"
 export HCLOUD_TOKEN
 
 cd "$SCRIPT_DIR"
