@@ -106,6 +106,25 @@ The encrypted archive has an external checksum sidecar and an internal
 and deleted on every exit path. The bundle contains Kubernetes Secrets and PKI;
 store the decryption identity separately.
 
+## Profile migration backup gates
+
+Every named-profile transition, including a downgrade to `minimal` or `small`,
+temporarily bootstraps the same independent Velero target and requires a
+complete encrypted cluster bundle before topology or service changes. A second
+bundle is required after target reconciliation. `migrate finalize` will not
+retire services, PVCs, or nodes without that post-migration checkpoint; it then
+takes a third recovery point after scale-in and before removing Velero when the
+target profile disables scheduled backup.
+
+The migration state stores backup identifiers and generated configs, never the
+age identity or passphrase. External backup objects and Loki archive buckets
+are not deleted by finalization. Existing retained PVCs are not shrunk in
+place; larger safe requests are recorded in `storage-retention.tsv`. SeaweedFS,
+Vault Raft, and same-topology VMCluster replica reductions are likewise retained
+in `stateful-retention.tsv` instead of risking quorum or shard loss. Obsolete
+source-topology PVCs are deleted only after backup and explicit `FINALIZE`
+confirmation.
+
 ## Configuration
 
 ```yaml

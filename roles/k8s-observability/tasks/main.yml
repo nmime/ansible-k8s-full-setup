@@ -591,7 +591,7 @@
         storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
         resources:
           requests:
-            storage: '{{ ''20Gi'' if resource_tier in [''minimal'', ''small''] else ''50Gi'' }}'
+            storage: '{{ pmm_storage_size }}'
   register: _r_create_pmm_server_pvc
   retries: 3
   delay: 10

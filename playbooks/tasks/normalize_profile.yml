@@ -93,6 +93,7 @@
     argocd_ha_enabled: '{{ gitops.ha_enabled | default(tier in ["medium", "production"]) }}'
     metrics_retention: '{{ observability.metrics.retention | default(metrics_retention) }}'
     metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
+    pmm_storage_size: '{{ observability.pmm.storage_size | default(pmm_storage_size) }}'
     log_stack: '{{ observability.logging.stack | default(log_stack) }}'
     logging_retention: '{{ observability.logging.retention | default(logging_retention) }}'
     coroot_enabled: '{{ platform_coroot_enabled }}'

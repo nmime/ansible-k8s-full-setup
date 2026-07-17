@@ -189,10 +189,10 @@ ansible-playbook playbooks/validate_profile.yml \
 ./scripts/vault-restore-drill.sh --dry-run
 ./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
 
-# Plan the verified minimal -> production migration; no cluster mutation
+# Plan any named-profile transition; no cluster mutation
 export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
 export BACKUP_DR_BUCKET=company-platform-dr
-./platform-orchestrator/platform.sh migrate plan
+./platform-orchestrator/platform.sh migrate --target production plan
 
 # Destructive: exact confirmation is required
 ./platform-orchestrator/platform.sh destroy
