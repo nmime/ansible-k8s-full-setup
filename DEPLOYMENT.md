@@ -199,10 +199,21 @@ Velero/Kopia. The deployment preflight rejects missing or in-cluster values
 before provisioning Hetzner resources. After deployment, create an encrypted full-cluster bundle with
 `platform.sh backup-cluster`; see [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
-Do not turn a minimal config directly into production and run `deploy all`.
-Use `platform.sh migrate plan|execute|resume|status|rollback`; it expands the
-topology and protects data before any one-at-a-time server resize. The verified
-path is currently minimal to production and requires external DR storage.
+Do not replace one named profile with another and run `deploy all`. Use
+`platform.sh migrate --target PROFILE plan|execute`, followed by
+`resume|status|rollback|finalize`. All 20 distinct transitions among `minimal`,
+`small`, `medium`, `medium-optimized`, and `production` use the same external
+backup gate. The workflow expands to the larger source/target topology first,
+resizes retained nodes one at a time, checks etcd around every control-plane
+change, and keeps scale-in and source-data deletion behind `finalize`.
+
+Downgrades never request an in-place PVC shrink because Kubernetes storage
+cannot safely do that. The generated named target records larger existing
+requests as explicit overrides, while finalization removes obsolete service
+PVCs, old VictoriaMetrics/Loki topology, excess nodes, a disabled load
+balancer, and an unused spread placement group. Unsafe SeaweedFS, Vault Raft,
+and same-topology VMCluster replica reductions are also retained explicitly
+until a service-specific compaction/member-removal window.
 
 ## 5. Application delivery
 

@@ -160,7 +160,8 @@ at a time and the required stops documented in
 [docs/GITLAB_UPGRADE_PLAN.md](docs/GITLAB_UPGRADE_PLAN.md).
 
 An upgrade reconciles software inside the current profile. It cannot change
-profile or topology. For the verified minimal-to-production transition:
+profile or topology. Profile migration supports every distinct source/target
+pair across the five named profiles. For example, to move to production:
 
 ```bash
 export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
@@ -169,8 +170,9 @@ export BACKUP_DR_ACCESS_KEY='...'
 export BACKUP_DR_SECRET_KEY='...'
 export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
 
-./platform-orchestrator/platform.sh migrate plan
+./platform-orchestrator/platform.sh migrate --target production plan
 ./platform-orchestrator/platform.sh migrate execute \
+  --target production \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" --dr-bucket "$BACKUP_DR_BUCKET" \
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
 ./platform-orchestrator/platform.sh migrate status
@@ -178,14 +180,17 @@ export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
 ```
 
-The durable workflow backs up first, expands to three control planes and three
-workers, drains/resizes one node at a time, verifies etcd between control-plane
-changes, applies production services, migrates VictoriaMetrics history,
-validates, and backs up again. Resume from checkpoints with `migrate resume`.
-Rollback restores the captured application/Helm baseline while deliberately
-retaining expanded nodes. After an acceptance window, `migrate finalize`
-retires the superseded VMSingle/Loki/Promtail resources, runs health checks,
-and captures another full recovery point.
+The durable workflow backs up first, expands to the maximum source/target node
+counts, drains/resizes each retained node separately, verifies etcd before and
+after control-plane changes, applies target capabilities, migrates
+VictoriaMetrics single-to-cluster or cluster-to-single, validates, and backs
+up again. Resume skips completed checkpoints. Before finalization, rollback
+copies post-switch VictoriaMetrics samples back, restores the Helm/config
+baseline, and deliberately retains expanded nodes. Finalization is itself
+checkpointed: it removes disabled dependants first, retires old metrics/logging
+PVCs, removes excess workers then control planes through Kubespray, reconciles
+the exact target, takes a final backup, removes disabled backup resources last,
+and cleans unused cloud placement resources.
 
 After each step:
 

@@ -186,6 +186,7 @@ argocd_allowed_namespace_resources:
 log_stack: "{{ 'loki' if tier in ['minimal', 'small'] else 'elk' }}"  # Options: loki, elk, efk
 metrics_retention: "{{ '7d' if resource_tier == 'minimal' else '14d' if resource_tier == 'small' else '30d' }}"
 metrics_storage: "{{ '20Gi' if resource_tier == 'minimal' else '40Gi' if resource_tier == 'small' else '100Gi' if resource_tier == 'medium' else '150Gi' }}"
+pmm_storage_size: "{{ '20Gi' if resource_tier in ['minimal', 'small'] else '50Gi' }}"
 logging_retention: "{{ '3d' if resource_tier == 'minimal' else '7d' if resource_tier == 'small' else '14d' }}"
 
 # Autoscaling

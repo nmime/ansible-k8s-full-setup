@@ -519,7 +519,7 @@ Commands:
   health / heal     Check/fix
   backup-cluster    Create encrypted etcd/config/PVC disaster-recovery backup
   restore-cluster   Verify or restore an encrypted full-cluster backup
-  migrate           Plan/execute/resume/status/rollback/finalize a profile migration
+  migrate           All-to-all named profile migration; plan/execute require --target
   destroy           Remove project-prefixed Hetzner resources; preserve DNS and kubeconfig
 
 Required:

@@ -7,8 +7,8 @@ There are two deliberately separate workflows:
 1. `upgrade-platform.sh` upgrades or reconciles software inside the current
    profile. Its `--tier` option is only a current-tier assertion; a different
    target is rejected.
-2. `migrate-profile.sh` changes cluster topology and capability profile. The
-   verified path is currently `minimal` to `production`.
+2. `migrate-profile.sh` changes cluster topology and capability profile. It
+   supports all 20 distinct ordered transitions among the five named profiles.
 
 This boundary prevents a Helm upgrade from silently becoming a node expansion,
 server resize, service-set change, and data migration.
@@ -25,9 +25,10 @@ server resize, service-set change, and data migration.
 ./scripts/upgrade-platform.sh validate
 
 # Profile migration: no cluster mutation during plan
-./platform-orchestrator/platform.sh migrate plan
+./platform-orchestrator/platform.sh migrate --target production plan
 ./platform-orchestrator/platform.sh migrate status
 ./platform-orchestrator/platform.sh migrate execute \
+  --target production \
   --dr-endpoint https://s3.example-provider.com \
   --dr-bucket company-platform-dr \
   --backup-recipient age1...
@@ -51,8 +52,8 @@ Migration additionally requires:
 - `BACKUP_DR_ACCESS_KEY` and `BACKUP_DR_SECRET_KEY`;
 - either an age recipient (`--backup-recipient`) or
   `CLUSTER_BACKUP_PASSPHRASE` for encrypted recovery bundles;
-- enough quota for three control-plane and three worker servers to coexist
-  before old nodes are resized.
+- enough quota for the maximum source/target control-plane and worker counts to
+  coexist before retained nodes are resized.
 
 ## Current-Profile Upgrade
 
@@ -119,7 +120,7 @@ Every reconcile ends with the health gate suite:
 An enabled component failure is fatal. A component not selected by the active
 profile is reported without manufacturing a failure.
 
-## Minimal to Production Migration
+## All-to-All Named Profile Migration
 
 ### Plan
 
@@ -127,13 +128,16 @@ profile is reported without manufacturing a failure.
 export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
 export BACKUP_DR_BUCKET=company-platform-dr
 ./platform-orchestrator/platform.sh migrate plan \
+  --target production \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" --dr-bucket "$BACKUP_DR_BUCKET"
 ```
 
-The plan generates and validates four configs under the private migration
-state directory: external-backup bootstrap, expanded minimal capability,
-production target, and non-destructive rollback. It prints the source/target
-diff and performs no Hetzner or Kubernetes mutation.
+The required `--target` accepts `minimal`, `small`, `medium`,
+`medium-optimized`, or `production`; it must differ from the active named
+profile. The plan generates and validates source, external-backup, expansion,
+target-transition, named-target, and rollback configs under the private state
+directory. It prints node, component, VictoriaMetrics, and non-shrinking PVC
+changes without contacting Hetzner or Kubernetes.
 
 ### Execute and Resume
 
@@ -144,6 +148,7 @@ export BACKUP_DR_SECRET_KEY='...'
 export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
 
 ./platform-orchestrator/platform.sh migrate execute \
+  --target production \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" \
   --dr-bucket "$BACKUP_DR_BUCKET" \
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
@@ -158,15 +163,16 @@ The durable stages are:
    cluster health, and Hetzner access.
 2. `backup` — install/validate external Velero, take native backups, create an
    encrypted etcd/PKI/config/PVC bundle, and capture the Helm baseline.
-3. `expand` — create spread placement and add control planes/workers until the
-   production six-node topology is healthy; verify etcd.
+3. `expand` — add control planes/workers to the maximum source/target topology;
+   create spread placement when either side requires it, then verify etcd.
 4. `resize` — drain, stop, place, resize, start, wait, and uncordon one node at
    a time; verify etcd after every control-plane change.
-5. `apply-production` — activate the production config and reconcile all
-   production services.
-6. `migrate-data` — copy VictoriaMetrics history from VMSingle to VMCluster.
-   The former Loki object-store history is retained as an archive while new
-   production logs use Elasticsearch.
+5. `apply-target` — reconcile target cluster policy and selected services while
+   retaining the expanded topology until sign-off.
+6. `migrate-data` — copy VictoriaMetrics history between VMSingle and VMCluster
+   in either direction when the topology changes. A deterministic Job is kept
+   for resume; a failed partial import is never silently rerun. Loki objects
+   remain an external archive when moving to Elasticsearch.
 7. `validate` — require Ready nodes, healthy etcd/platform, Bound PVCs, and an
    available external Velero location. Every Deployment/StatefulSet/DaemonSet
    must be fully rolled out, every active Helm release deployed, selected
@@ -176,24 +182,39 @@ The durable stages are:
 
 Completed stages have durable checkpoint files. `resume` skips only recorded
 successes. It does not infer success from partially created resources.
+The node-removal order follows the pinned
+[Kubespray v2.31 node lifecycle](https://github.com/kubernetes-sigs/kubespray/blob/v2.31.0/docs/operations/nodes.md),
+and bidirectional metrics transfer uses the documented
+[VictoriaMetrics vmctl native endpoints](https://docs.victoriametrics.com/victoriametrics/vmctl/victoriametrics/).
 
 ### Finalize and reclaim the old resource footprint
 
-The completed migration deliberately retains the old VMSingle and Loki
-workloads for a sign-off window. After metrics, logs, and applications are
-accepted, finalize the transition:
+Execution deliberately retains disabled source services, the old metrics/log
+topology, and excess nodes for a sign-off window. After metrics, logs, and
+applications are accepted, finalize the transition:
 
 ```bash
 ./platform-orchestrator/platform.sh migrate finalize \
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
 ```
 
-Finalization records the exact old PVCs, removes VMSingle/Loki/Promtail and
-those PVCs, keeps Loki's SeaweedFS object archive, re-runs health gates, and
-takes a final encrypted native+Velero+control-plane backup. This is the step
-that releases the superseded minimal-profile compute and block storage. After
-finalization, an application rollback requires restoring the pre-finalize
-recovery bundle; the command refuses to create an empty minimal data plane.
+Finalization has its own resumable checkpoints. It removes disabled dependants
+in dependency order, retires VMSingle or VMCluster plus exact obsolete PVCs,
+keeps external Loki objects, removes excess workers and then highest-index
+control planes with Kubespray `remove-node.yml`, checks etcd around each
+control-plane removal, reconciles the named target, captures a final encrypted
+native+Velero+control-plane backup, removes Velero last when the target disables
+backup, and deletes an unused spread group. After any destructive finalize
+checkpoint, rollback is refused and the pre-finalize recovery bundle is the
+recovery path.
+
+Existing PVC requests that exceed the target are preserved as explicit target
+overrides and listed in `storage-retention.tsv`; Kubernetes cannot shrink a
+PVC in place. Data-bearing SeaweedFS, Vault Raft, and an in-place VMCluster are
+also never blindly scaled down: required replica overrides are recorded in
+`stateful-retention.tsv`. This does not retain superseded component or
+metrics-topology PVCs, which are deleted only after the backup and confirmation
+gates.
 
 ## Rollback
 
@@ -216,10 +237,11 @@ not a database restore.
 ./platform-orchestrator/platform.sh migrate rollback
 ```
 
-Migration rollback restores the recorded Helm/config baseline and selects the
-minimal capability set on the expanded, production-sized servers. It never
-automatically deletes control planes or workers; capacity reduction is a
-separate reviewed operation after recovery and backup verification.
+Before destructive finalization, migration rollback copies metrics written
+after the target switch back to the source topology, restores the recorded
+Helm baseline, and selects the source profile on the expanded/resized servers.
+It never deletes nodes. Once finalization starts, use the recorded recovery
+bundle instead of an in-place rollback.
 
 ## Dry-Run Behavior
 
@@ -234,9 +256,15 @@ pending stages, but the `plan` command should always be reviewed first.
   phase retained under the historical filename.
 - `.upgrade-state/upgrade-complete.json` records the completed upgrade and
   rollback snapshot.
-- `.migration-state/<project>-minimal-to-production/state.json` records
-  migration status and the last completed stage.
-- `stage-<name>.done` files are the resumable migration checkpoints.
+- `.migration-state/<project>-<source>-to-<target>/state.json` records profile
+  identities, topology, status, and the last completed stage.
+- `<project>-active-profile-migration` lets lifecycle commands find state after
+  the active config becomes transitional.
+- `stage-<name>.done` and `finalize-<name>.done` are resumable checkpoints.
+- `storage-retention.tsv` explains every larger existing PVC request retained
+  in the named target config.
+- `stateful-retention.tsv` explains data-bearing replica counts retained until
+  a service-specific compaction or member-removal procedure is performed.
 
 State files contain operational metadata and generated configs, not backup
 decryption keys. Keep the backup identity or passphrase in a separate secret
@@ -246,8 +274,8 @@ manager.
 
 ### A tier change is rejected
 
-This is intentional. Run `platform.sh migrate plan`; do not edit the current
-tier and rerun the upgrade script.
+This is intentional. Run `platform.sh migrate --target PROFILE plan`; do not
+edit the current tier and rerun the upgrade script.
 
 ### Migration stops after node expansion or resize
 

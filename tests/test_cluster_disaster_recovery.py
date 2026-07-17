@@ -186,6 +186,8 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
             "https://s3.external.example",
             "--dr-bucket",
             "cluster-dr",
+            "--target",
+            "production",
             "plan",
         ],
         cwd=ROOT,
@@ -195,7 +197,7 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    state = tmp_path / "state" / "offline-plan-minimal-to-production"
+    state = tmp_path / "state" / "offline-plan-minimal-to-production-plan"
     target = yaml.safe_load((state / "target-platform.yaml").read_text())
     expansion = yaml.safe_load((state / "expansion-platform.yaml").read_text())
     assert target["platform_profile"] == "production"
@@ -207,14 +209,171 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     assert expansion["infrastructure"]["workers"]["count"] == 3
 
 
-def test_migration_is_checkpointed_backup_gated_and_non_destructive_on_rollback():
+PROFILES = ("minimal", "small", "medium", "medium-optimized", "production")
+
+
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [(source, target) for source in PROFILES for target in PROFILES if source != target],
+)
+def test_migration_plan_supports_every_ordered_profile_pair(tmp_path, source, target):
+    config = tmp_path / "platform.yaml"
+    profile = yaml.safe_load(
+        (ROOT / "platform-orchestrator" / "profiles" / f"{source}.yaml").read_text()
+    )
+    project = f"matrix-{source}-to-{target}"
+    profile["global"].update(
+        {"project": project, "domain": "cluster.example", "email": "ops@example.com"}
+    )
+    config.write_text(yaml.safe_dump(profile), encoding="utf-8")
+    env = os.environ.copy()
+    env["PROFILE_MIGRATION_STATE_DIR"] = str(tmp_path / "state")
+    env["PROFILE_MIGRATION_SKIP_ANSIBLE_VALIDATION"] = "true"
+    result = subprocess.run(
+        [
+            "bash",
+            str(MIGRATE),
+            "--config",
+            str(config),
+            "--target",
+            target,
+            "--dr-endpoint",
+            "https://s3.external.example",
+            "--dr-bucket",
+            "cluster-dr",
+            "plan",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    state = tmp_path / "state" / f"{project}-{source}-to-{target}-plan"
+    source_config = yaml.safe_load((state / "source-platform.yaml").read_text())
+    target_config = yaml.safe_load((state / "target-platform.yaml").read_text())
+    expansion = yaml.safe_load((state / "expansion-platform.yaml").read_text())
+    transition = yaml.safe_load((state / "target-transition-platform.yaml").read_text())
+    rollback = yaml.safe_load((state / "rollback-platform.yaml").read_text())
+    expected_cp = max(
+        source_config["infrastructure"]["control_plane"]["count"],
+        target_config["infrastructure"]["control_plane"]["count"],
+    )
+    expected_workers = max(
+        source_config["infrastructure"]["workers"]["count"],
+        target_config["infrastructure"]["workers"]["count"],
+    )
+    assert target_config["platform_profile"] == target
+    assert expansion["platform_profile"] == "custom"
+    assert transition["platform_profile"] == "custom"
+    assert rollback["platform_profile"] == source
+    for generated in (expansion, transition, rollback):
+        assert generated["infrastructure"]["control_plane"]["count"] == expected_cp
+        assert generated["infrastructure"]["workers"]["count"] == expected_workers
+
+
+def test_downgrade_plan_retains_only_non_shrinkable_pvc_requests(tmp_path):
+    config = tmp_path / "platform.yaml"
+    profile = yaml.safe_load(
+        (ROOT / "platform-orchestrator" / "profiles" / "production.yaml").read_text()
+    )
+    profile["global"].update(
+        {"project": "storage-safe", "domain": "cluster.example", "email": "ops@example.com"}
+    )
+    config.write_text(yaml.safe_dump(profile), encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "PROFILE_MIGRATION_STATE_DIR": str(tmp_path / "state"),
+            "PROFILE_MIGRATION_SKIP_ANSIBLE_VALIDATION": "true",
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            str(MIGRATE),
+            "--config",
+            str(config),
+            "--target",
+            "medium-optimized",
+            "--dr-endpoint",
+            "https://s3.external.example",
+            "--dr-bucket",
+            "cluster-dr",
+            "plan",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    state = tmp_path / "state" / "storage-safe-production-to-medium-optimized-plan"
+    target = yaml.safe_load((state / "target-platform.yaml").read_text())
+    retention = (state / "storage-retention.tsv").read_text()
+    stateful_retention = (state / "stateful-retention.tsv").read_text()
+    assert target["storage"]["size_per_replica"] == "150Gi"
+    assert target["databases"]["postgresql"]["storage_size"] == "100Gi"
+    assert target["observability"]["metrics"]["storage_size"] == "150Gi"
+    assert "seaweedfs-volume\t150Gi\t40Gi" in retention
+    assert "postgresql\t100Gi\t30Gi" in retention
+    assert target["storage"]["master_replicas"] == 4
+    assert target["storage"]["volume_replicas"] == 4
+    assert target["observability"]["metrics"]["replicas"] == 2
+    assert "seaweedfs-master\t4\t3" in stateful_retention
+    assert "victoriametrics-cluster\t2\t1" in stateful_retention
+
+
+def test_execute_dry_run_creates_no_active_migration_state(tmp_path):
+    config = tmp_path / "platform.yaml"
+    profile = yaml.safe_load(
+        (ROOT / "platform-orchestrator" / "profiles" / "minimal.yaml").read_text()
+    )
+    profile["global"].update(
+        {"project": "dry-execute", "domain": "cluster.example", "email": "ops@example.com"}
+    )
+    config.write_text(yaml.safe_dump(profile), encoding="utf-8")
+    state_base = tmp_path / "state"
+    env = os.environ.copy()
+    env["PROFILE_MIGRATION_STATE_DIR"] = str(state_base)
+    result = subprocess.run(
+        [
+            "bash",
+            str(MIGRATE),
+            "--config",
+            str(config),
+            "--target",
+            "production",
+            "--dr-endpoint",
+            "https://s3.external.example",
+            "--dr-bucket",
+            "cluster-dr",
+            "--dry-run",
+            "execute",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    dry_state = state_base / "dry-execute-minimal-to-production-dry-run"
+    assert dry_state.is_dir()
+    assert not (dry_state / "state.json").exists()
+    assert not (state_base / "dry-execute-active-profile-migration").exists()
+
+
+def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize():
     content = MIGRATE.read_text(encoding="utf-8")
     for stage in (
         "preflight",
         "backup",
         "expand",
         "resize",
-        "apply-production",
+        "apply-target",
         "migrate-data",
         "validate",
         "post-backup",
@@ -224,10 +383,22 @@ def test_migration_is_checkpointed_backup_gated_and_non_destructive_on_rollback(
     assert "kubectl drain" in content
     assert "etcdctl endpoint health --cluster" in content
     assert "Nodes were deliberately retained".lower() in content.lower()
-    assert "hcloud server delete" not in content
-    assert "finalize" in content
+    assert "FINALIZE_STAGES" in content
+    assert "remove-node.yml" in content
+    assert content.index("remove-node.yml") < content.index('hcloud server delete "$node"')
+    assert "hetzner_allow_destructive_reconcile=true" in content
     assert "kubectl delete vmsingle" in content
+    assert "kubectl delete vmcluster" in content
     assert "helm uninstall" in content
+    assert "--vm-native-src-addr=${source_addr}" in content
+    assert "--vm-native-dst-addr=${target_addr}" in content
+    assert "http://vmselect-vmcluster.monitoring.svc:8481/select/0/prometheus" in content
+    assert "http://vmsingle-vmsingle.monitoring.svc:8429" in content
+    assert "--vm-native-filter-time-start" in content
+    assert "            - -s" in content
+    assert "            - --disable-progress-bar" in content
+    assert "storage-retention.tsv" in content
+    assert "stateful-retention.tsv" in content
     assert "deployments,statefulsets,daemonsets" in content
     assert "certificates --all-namespaces" in content
     assert "PerconaPGCluster".lower() in content.lower()
@@ -242,7 +413,18 @@ def test_completed_migration_has_an_explicit_dry_run_finalization(tmp_path):
     state_base = tmp_path / "state"
     state = state_base / "offline-finalize-minimal-to-production"
     state.mkdir(parents=True)
-    (state / "state.json").write_text('{"status":"completed"}', encoding="utf-8")
+    (state / "state.json").write_text(
+        '{"status":"completed","project":"offline-finalize",'
+        '"source_profile":"minimal","target_profile":"production"}',
+        encoding="utf-8",
+    )
+    shutil.copy(ROOT / "platform-orchestrator" / "profiles" / "minimal.yaml", state / "source-platform.yaml")
+    shutil.copy(ROOT / "platform-orchestrator" / "profiles" / "production.yaml", state / "target-platform.yaml")
+    expansion = yaml.safe_load(
+        (ROOT / "platform-orchestrator" / "profiles" / "production.yaml").read_text()
+    )
+    expansion["platform_profile"] = "custom"
+    (state / "expansion-platform.yaml").write_text(yaml.safe_dump(expansion), encoding="utf-8")
     (state / "stage-post-backup.done").write_text("done\n", encoding="utf-8")
     env = os.environ.copy()
     env["PROFILE_MIGRATION_STATE_DIR"] = str(state_base)
@@ -255,8 +437,10 @@ def test_completed_migration_has_an_explicit_dry_run_finalization(tmp_path):
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "superseded VMSingle, Loki, and Promtail" in result.stdout
-    assert "another encrypted full-cluster backup" in result.stdout
+    assert "finalize stage: retire-services" in result.stdout
+    assert "finalize stage: scale-in" in result.stdout
+    assert "finalize stage: final-backup" in result.stdout
+    assert "remove excess workers 3->3 and control planes 3->3" in result.stdout
 
 
 def test_velero_role_uses_external_storage_and_filesystem_backups():

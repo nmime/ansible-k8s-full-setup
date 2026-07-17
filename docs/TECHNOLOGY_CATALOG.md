@@ -102,6 +102,27 @@ not inferred from live cluster state.
 Removal never deletes Hetzner infrastructure, platform DNS, external backup
 copies, or remote object-storage buckets outside the listed Kubernetes scope.
 
+## Move between named profiles
+
+Use `platform.sh migrate --target PROFILE plan`; never copy a different profile
+over the active config and run `deploy all`. The migration engine covers every
+distinct pair among the five named profiles, including `medium` ↔
+`medium-optimized`, upgrades, and downgrades. It enables target technologies
+during execution but defers disabled-technology deletion to the separately
+confirmed, checkpointed `finalize` phase. A removed technology can be selected
+again later and restored from its retained external backup; external backup
+and Loki archive objects are never deleted by profile finalization.
+
+The transition expands to the larger node topology, resizes retained nodes one
+at a time, migrates VictoriaMetrics between single and cluster mode when
+needed, then safely removes excess nodes through Kubespray. Larger existing PVC
+requests are retained as named-profile overrides because Kubernetes does not
+support in-place shrink; obsolete component and old metrics-topology PVCs are
+retired after the final backup gate. SeaweedFS, Vault Raft, and same-topology
+VMCluster replicas are not reduced without their service-specific data
+compaction or member-removal procedure; retained counts are explicit in the
+migration plan and state.
+
 ## Pinned platform versions
 
 The authoritative values live in `defaults/main.yml` and role defaults. This
