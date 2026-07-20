@@ -123,19 +123,21 @@
     name: vault
   register: _vault_statefulset_ownership
   when: vault_helm_major | int >= 4
-- name: Return operator-replaced Vault StatefulSet fields to Helm ownership
+- name: Clear inconsistent Vault field ownership before Helm 4 reconcile
   ansible.builtin.shell: |
     set -euo pipefail
-    kubectl get statefulset vault --namespace vault --output json \
-      | jq 'del(.metadata.creationTimestamp, .metadata.generation, .metadata.managedFields, .metadata.resourceVersion, .metadata.uid, .status)' \
-      | kubectl apply --server-side --force-conflicts --field-manager=helm --filename=-
+    # Kubernetes documents a single empty managedFields entry as the explicit
+    # reset for inconsistent ownership. Helm immediately repopulates ownership
+    # in the following task; the StatefulSet spec and pods are not modified.
+    kubectl patch statefulset vault --namespace vault --type=merge \
+      --patch '{"metadata":{"managedFields":[{}]}}'
   args:
     executable: /bin/bash
-  register: _r_return_vault_fields_to_helm
+  register: _r_clear_vault_field_ownership
   changed_when: true
   retries: 3
   delay: 10
-  until: _r_return_vault_fields_to_helm.rc == 0
+  until: _r_clear_vault_field_ownership.rc == 0
   when:
     - vault_helm_major | int >= 4
     - (_vault_statefulset_ownership.resources | default([]) | length) == 1
