@@ -175,6 +175,19 @@ class TestGenerateSecrets:
         assert "no_log: true" in self.content, \
             "generate-secrets should use no_log on secret operations"
 
+    def test_every_secret_bearing_fact_is_censored(self):
+        tasks = yaml.safe_load(self.content)
+        protected = {
+            "Ensure saved_secrets is defined for first run",
+            "Generate object storage credentials",
+            "Generate platform credentials",
+            "Resolve alert notification credentials (Telegram + email)",
+            "Set unified secret variables for all roles",
+        }
+        by_name = {task.get("name"): task for task in tasks}
+        assert protected <= by_name.keys()
+        assert all(by_name[name].get("no_log") is True for name in protected)
+
 
 # ─── 4. k8s-secrets: Vault TLS ──────────────────────────
 
