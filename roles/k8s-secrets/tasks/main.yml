@@ -115,6 +115,34 @@
   ansible.builtin.set_fact:
     vault_helm_post_renderer: >-
       {{ 'vault-dns' if vault_helm_major | int >= 4 else '/tmp/vault-post-renderer.sh' }}
+- name: Read Vault StatefulSet field ownership before Helm 4 reconcile
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: vault
+    name: vault
+  register: _vault_statefulset_ownership
+  when: vault_helm_major | int >= 4
+- name: Return operator-replaced Vault StatefulSet fields to Helm ownership
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl get statefulset vault --namespace vault --output json \
+      | jq 'del(.metadata.creationTimestamp, .metadata.generation, .metadata.managedFields, .metadata.resourceVersion, .metadata.uid, .status)' \
+      | kubectl apply --server-side --force-conflicts --field-manager=helm --filename=-
+  args:
+    executable: /bin/bash
+  register: _r_return_vault_fields_to_helm
+  changed_when: true
+  retries: 3
+  delay: 10
+  until: _r_return_vault_fields_to_helm.rc == 0
+  when:
+    - vault_helm_major | int >= 4
+    - (_vault_statefulset_ownership.resources | default([]) | length) == 1
+    - >-
+      'kubectl-replace' in
+      (_vault_statefulset_ownership.resources[0].metadata.managedFields |
+       default([]) | map(attribute='manager') | list)
 - name: Install Vault via Helm
   kubernetes.core.helm:
     name: vault
