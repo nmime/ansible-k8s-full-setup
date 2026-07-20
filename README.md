@@ -163,6 +163,12 @@ keeps every tier active concurrently while bounding controller RAM and process
 fan-out; raise it explicitly with `--controller-forks` only when the controller
 host has measured headroom.
 
+The runner stores encrypted Vault initialization material under the main
+checkout's gitignored `.campaign-state/PROJECT/` directory. Fresh isolated
+worktrees and `--skip-kubespray` resumes reuse that protected state instead of
+losing it with an old worktree. Back up this directory with the vault password;
+an initialized Vault intentionally refuses reconciliation when it is missing.
+
 ```bash
 # Plan all five controllers without Git worktrees or cloud mutations.
 ./run_all.sh --campaign-id lab01 --minimum-storage --dry-run

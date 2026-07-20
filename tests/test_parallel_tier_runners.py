@@ -168,3 +168,5 @@ def test_runner_source_declares_all_profiles_and_parallel_waits():
     assert 'export ANSIBLE_FORKS="$CONTROLLER_FORKS"' in tier_source
     assert '--controller-forks "$CONTROLLER_FORKS"' in all_source
     assert 'CONTROLLER_FORKS="${CONTROLLER_FORKS:-1}"' in all_source
+    assert '--operator-state-root "${SCRIPT_DIR}/.campaign-state/${project}"' in all_source
+    assert 'vault_init_output_file=${OPERATOR_STATE_ROOT}/.vault-init-${PROJECT}.json' in tier_source
