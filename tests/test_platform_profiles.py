@@ -513,6 +513,8 @@ class TestResourceTierConsumers:
         assert "find /root/.ssh" not in cluster
         assert "ssh-keygen" in network
         assert '"{{ controller_known_hosts_file }}"' in network
+        assert "-J root@{{ bastion_host }}" not in network
+        assert "ProxyCommand='ssh -o StrictHostKeyChecking=accept-new" in network
         runner = (REPO_ROOT / "run_tier.sh").read_text(encoding="utf-8")
         assert 'SHORT_CONTROL_PATH_DIR="/tmp/ansible-k8s-cp/' in runner
         for fixed_manifest in (

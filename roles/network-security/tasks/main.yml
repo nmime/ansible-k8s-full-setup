@@ -184,7 +184,6 @@
   register: recycled_node_host_keys
   changed_when: "'not found in' not in (recycled_node_host_keys.stdout | default(''))"
 - name: Wait for private nodes to be SSH-reachable via bastion
-   \ -W %h:%p root@{{ bastion_host }}' \\\n  root@{{ item }} 'echo ok'\n"
   ansible.builtin.shell: |
     ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
@@ -398,7 +397,7 @@
   when: bastion_log_shipping | default(false) | bool and log_stack | default('loki') in ['elk', 'efk'] and es_tls_secret_available | default(false) | bool
   no_log: true
 - name: Ship K8s audit logs to Loki (control plane nodes)
-  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${CP_IP} 'bash -s' <<'RCMD'\nset -e\n[ -f /usr/bin/promtail\
+  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' root@${CP_IP} 'bash -s' <<'RCMD'\nset -e\n[ -f /usr/bin/promtail\
     \ ] || { curl -fsSL -o /tmp/p.zip https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-linux-amd64.zip && echo '{{ promtail_linux_amd64_sha256 }}  /tmp/p.zip' | sha256sum -c - && cd /tmp && unzip -o p.zip && mv promtail-linux-amd64 /usr/bin/promtail && chmod\
     \ +x /usr/bin/promtail; }\nmkdir -p /etc/promtail /var/lib/promtail\nprintf 'server:\n  http_listen_port: 9080\npositions:\n  filename: /var/lib/promtail/positions.yaml\nclients:\n  - url: http://127.0.0.1:31000/loki/api/v1/push\n\
     \    tenant_id: k8s-audit\nscrape_configs:\n  - job_name: k8s-audit\n    static_configs:\n      - targets: [localhost]\n        labels:\n          job: k8s-audit\n          __path__: /var/log/kube-apiserver-audit.log\n\
@@ -406,7 +405,7 @@
     [Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/promtail.service\nsystemctl daemon-reload && systemctl enable promtail && systemctl restart promtail\nRCMD\ndone\n"
   when: control_plane_log_shipping | default(false) | bool and log_stack | default('loki') == 'loki'
 - name: Ship K8s audit logs to ELK (control plane nodes)
-  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${CP_IP} 'bash -s' <<'RCMD'\ncommand -v filebeat >/dev/null\
+  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' root@${CP_IP} 'bash -s' <<'RCMD'\ncommand -v filebeat >/dev/null\
     \ || { curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg 2>/dev/null; echo 'deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg]\
     \ https://artifacts.elastic.co/packages/9.x/apt stable main' > /etc/apt/sources.list.d/elastic-9.x.list; apt-get -o DPkg::Lock::Timeout=300 update && apt-get -o DPkg::Lock::Timeout=300 install -y filebeat={{ es_version }}; }\nprintf 'filebeat.inputs:\n  - type: log\n \
     \   paths: [\"/var/log/kube-apiserver-audit.log\"]\n    json.keys_under_root: true\n    fields: {log_type: k8s-audit}\noutput.elasticsearch:\n  hosts: [\"https://127.0.0.1:31443\"]\n  username: elastic\n\
@@ -495,7 +494,9 @@
   ansible.builtin.shell: |
     set -euo pipefail
     for NODE_IP in {{ network_node_ips | join(' ') }}; do
-      ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${NODE_IP} 'bash -s' <<'REMOTECMD'
+      ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} \
+        -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' \
+        root@${NODE_IP} 'bash -s' <<'REMOTECMD'
     set -euo pipefail
     systemctl stop apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
     systemctl stop unattended-upgrades.service >/dev/null 2>&1 || true
@@ -523,7 +524,7 @@
   delay: 10
   until: node_audit_packages is success
 - name: Configure auditd rules on K8s nodes (HIPAA)
-  ansible.builtin.shell: "for NODE_IP in {{ network_node_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${NODE_IP} 'bash -s' <<'ARULES'\ncat >\
+  ansible.builtin.shell: "for NODE_IP in {{ network_node_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' root@${NODE_IP} 'bash -s' <<'ARULES'\ncat >\
     \ /etc/audit/rules.d/hipaa.rules << 'EOF'\n-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity\n-w /etc/sudoers -p wa -k actions\n-w /var/log/auth.log -p wa -k logins\n-a always,exit\
     \ -F arch=b64 -S execve -k exec\nEOF\naugenrules --load\nARULES\ndone\n"
   when: hipaa_compliance | default(false) | bool

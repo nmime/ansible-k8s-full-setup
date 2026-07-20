@@ -59,11 +59,13 @@
 - name: Ensure saved_secrets is defined for first run
   set_fact:
     saved_secrets: "{{ saved_secrets | default({}) }}"
+  no_log: true
 
 - name: Generate object storage credentials
   set_fact:
     generated_object_storage_access_key: "{{ lookup('env', 'OBJECT_STORAGE_ACCESS_KEY') | default(saved_secrets.object_storage_access_key | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
     generated_object_storage_secret_key: "{{ lookup('env', 'OBJECT_STORAGE_SECRET_KEY') | default(saved_secrets.object_storage_secret_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
+  no_log: true
 
 - name: Generate platform credentials
   set_fact:
@@ -81,12 +83,14 @@
     generated_postal_db_password: "{{ saved_secrets.postal_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
     generated_postal_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
     generated_postal_admin_password: "{{ saved_secrets.postal_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=16')) }}"
+  no_log: true
 
 - name: Resolve alert notification credentials (Telegram + email)
   set_fact:
     generated_alert_telegram_bot_token: "{{ lookup('env', 'ALERT_TELEGRAM_BOT_TOKEN') | default(saved_secrets.alert_telegram_bot_token | default(''), true) }}"
     generated_alert_telegram_chat_id: "{{ lookup('env', 'ALERT_TELEGRAM_CHAT_ID') | default(saved_secrets.alert_telegram_chat_id | default(''), true) }}"
     generated_alert_email_to: "{{ lookup('env', 'ALERT_EMAIL_TO') | default(saved_secrets.alert_email_to | default('alerts@' + domain), true) }}"
+  no_log: true
 
 - name: Set unified secret variables for all roles
   set_fact:
@@ -109,6 +113,7 @@
     alert_telegram_bot_token: "{{ generated_alert_telegram_bot_token }}"
     alert_telegram_chat_id: "{{ generated_alert_telegram_chat_id }}"
     alert_email_to: "{{ generated_alert_email_to }}"
+  no_log: true
 
 - name: Save all generated secrets to file (plaintext migration only)
   copy:
