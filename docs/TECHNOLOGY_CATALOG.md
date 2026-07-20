@@ -75,8 +75,13 @@ Storage profiles with more than one SeaweedFS volume server select placement
 `001`, migrate pre-existing single-copy volumes, fail if any volume remains
 under-replicated, and restart the filer after master/Raft topology changes.
 Minimal and small use `000` because they intentionally have only one volume
-server. Loki claims are retained independently of StatefulSet scale/delete and
-are retired only by the checkpointed migration finalizer.
+server. Normal profiles persist both SeaweedFS data and indexes. Disposable
+`--minimum-storage` campaigns keep data durable but set
+`storage.index_persistent: false` because indexes are rebuilt from the data
+files. The reconcile orphans the immutable StatefulSet, rolls verified volume
+pods onto `emptyDir` indexes, and only then deletes obsolete index claims. Loki
+claims are retained independently of StatefulSet scale/delete and are retired
+only by the checkpointed migration finalizer.
 
 Alert transports are settings rather than removable workloads:
 `alerting.telegram.enabled` requires `ALERT_TELEGRAM_BOT_TOKEN` and
