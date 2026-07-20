@@ -34,7 +34,7 @@ Options:
   --cp-type TYPE         Capacity-equivalent control-plane type override
   --worker-type TYPE     Capacity-equivalent worker server type override
   --manage-dns           Permit the infrastructure role to manage DNS
-  --minimum-storage      Set every profile-controlled PVC request to 10Gi
+  --minimum-storage      Set PVC requests to 10Gi; use rebuildable SeaweedFS indexes
   --skip-kubespray       Resume after a verified successful Kubespray run
   --controller-forks N   Ansible worker forks for this controller (default: 2)
   --operator-state-root  Persistent encrypted operator state directory
@@ -216,6 +216,7 @@ if $MINIMUM_STORAGE; then
     .storage.master_size = "10Gi" |
     .storage.size_per_replica = "10Gi" |
     .storage.index_size = "10Gi" |
+    .storage.index_persistent = false |
     .storage.filer_size = "10Gi" |
     .secrets.vault.storage_size = "10Gi" |
     .databases.postgresql.storage_size = "10Gi" |

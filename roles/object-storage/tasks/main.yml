@@ -154,6 +154,33 @@
               default(false)) | bool)
           }}
 
+    - name: Read the current SeaweedFS volume StatefulSet
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        namespace: "{{ object_storage_namespace_resolved }}"
+        name: "{{ object_storage_release_name | default('seaweedfs') }}-volume"
+      register: _seaweedfs_volume_statefulset
+
+    - name: Detect persistent-to-rebuildable SeaweedFS index migration
+      ansible.builtin.set_fact:
+        _seaweedfs_migrate_index_to_emptydir: >-
+          {{
+            not (object_storage_index_persistent | default(true) | bool) and
+            (_seaweedfs_volume_statefulset.resources | default([]) | length) == 1 and
+            (_seaweedfs_volume_statefulset.resources[0].spec.volumeClaimTemplates |
+              selectattr('metadata.name', 'equalto', 'idx') | list | length) > 0
+          }}
+
+    - name: Orphan SeaweedFS volume pods before removing the immutable index claim template
+      ansible.builtin.command: >-
+        kubectl delete statefulset
+        {{ object_storage_release_name | default('seaweedfs') }}-volume
+        --namespace {{ object_storage_namespace_resolved }}
+        --cascade=orphan
+        --wait=true
+      when: _seaweedfs_migrate_index_to_emptydir | bool
+
     - name: Install SeaweedFS via official Helm chart
       kubernetes.core.helm:
         name: "{{ object_storage_release_name | default('seaweedfs') }}"
@@ -205,10 +232,17 @@
                 storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
                 size: "{{ object_storage_volume_size | default('50Gi') }}"
                 maxVolumes: 0
-            idx:
-              type: persistentVolumeClaim
-              storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
-              size: "{{ object_storage_idx_size | default('2Gi') }}"
+            idx: >-
+              {{
+                {
+                  'type': 'persistentVolumeClaim',
+                  'storageClass': object_storage_storage_class |
+                    default(storage_class | default('hcloud-volumes')),
+                  'size': object_storage_idx_size | default('2Gi')
+                }
+                if (object_storage_index_persistent | default(true) | bool)
+                else {'type': 'emptyDir'}
+              }}
           filer:
             enabled: true
             replicas: "{{ object_storage_filer_replicas | int }}"
@@ -283,6 +317,37 @@
       retries: 3
       delay: 10
       until: _r_wait_seaweedfs_core is not failed
+
+    - name: Verify rebuilt SeaweedFS volume pods no longer mount index claims
+      ansible.builtin.shell: |
+        set -euo pipefail
+        count=$(kubectl get pods --namespace "{{ object_storage_namespace_resolved }}" \
+          --selector "app.kubernetes.io/component=volume,app.kubernetes.io/instance={{ object_storage_release_name | default('seaweedfs') }}" \
+          --output json | jq '[.items[].spec.volumes[]? | select(.persistentVolumeClaim.claimName? | startswith("idx-"))] | length')
+        test "$count" -eq 0
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: _seaweedfs_migrate_index_to_emptydir | bool
+
+    - name: Delete obsolete rebuildable SeaweedFS index claims
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ns="{{ object_storage_namespace_resolved }}"
+        deleted=0
+        while IFS= read -r claim; do
+          [ -n "$claim" ] || continue
+          kubectl delete --namespace "$ns" "$claim" --wait=true
+          deleted=$((deleted+1))
+        done < <(kubectl get pvc --namespace "$ns" \
+          --selector "app.kubernetes.io/component=volume,app.kubernetes.io/instance={{ object_storage_release_name | default('seaweedfs') }}" \
+          --output name | grep '^persistentvolumeclaim/idx-' || true)
+        echo "deleted=${deleted}"
+      args:
+        executable: /bin/bash
+      register: _r_delete_obsolete_seaweedfs_index_claims
+      changed_when: "'deleted=0' not in _r_delete_obsolete_seaweedfs_index_claims.stdout"
+      when: _seaweedfs_migrate_index_to_emptydir | bool
 
     - name: Remove prior object-storage bucket bootstrap Job
       kubernetes.core.k8s:
