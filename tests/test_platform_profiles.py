@@ -412,6 +412,8 @@ class TestResourceTierConsumers:
         assert "Reject undersized explicit or auto-selected server types" in content
         assert "selected_cp_spec.cores" in content
         assert "selected_worker_spec.memory" in content
+        assert "Fetch available server types from Hetzner API" in content
+        assert "until: hcloud_server_types_raw.rc == 0" in content
 
     def test_server_create_uses_argument_safe_ssh_key_values(self):
         content = (
