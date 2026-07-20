@@ -24,6 +24,9 @@
     cmd: hcloud server-type list -o json
   register: hcloud_server_types_raw
   changed_when: false
+  retries: 5
+  delay: 5
+  until: hcloud_server_types_raw.rc == 0
 
 - name: Set EU locations list
   set_fact:
