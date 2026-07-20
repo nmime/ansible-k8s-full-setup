@@ -221,6 +221,7 @@ for profile in $PROFILES; do
     --dns-zone "$BASE_DOMAIN"
     --certificate-issuer "$CERTIFICATE_ISSUER"
     --controller-forks "$CONTROLLER_FORKS"
+    --operator-state-root "${SCRIPT_DIR}/.campaign-state/${project}"
   )
   if [[ "$CAPACITY_FAMILY" == cpx ]]; then
     args+=(--bastion-type cpx22)

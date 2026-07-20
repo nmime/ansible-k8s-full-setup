@@ -37,6 +37,7 @@ Options:
   --minimum-storage      Set every profile-controlled PVC request to 10Gi
   --skip-kubespray       Resume after a verified successful Kubespray run
   --controller-forks N   Ansible worker forks for this controller (default: 2)
+  --operator-state-root  Persistent encrypted operator state directory
   --dry-run              Generate and validate inputs; print, do not deploy
   -h, --help             Show this help
 
@@ -83,6 +84,7 @@ MANAGE_DNS=false
 MINIMUM_STORAGE=false
 SKIP_KUBESPRAY=false
 CONTROLLER_FORKS="${CONTROLLER_FORKS:-2}"
+OPERATOR_STATE_ROOT="${OPERATOR_STATE_ROOT:-}"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -109,6 +111,7 @@ while [[ $# -gt 0 ]]; do
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
     --skip-kubespray) SKIP_KUBESPRAY=true; shift ;;
     --controller-forks) require_value "$1" "${2:-}"; CONTROLLER_FORKS="$2"; shift 2 ;;
+    --operator-state-root) require_value "$1" "${2:-}"; OPERATOR_STATE_ROOT="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1'" ;;
@@ -181,6 +184,10 @@ mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME" "$CONTROLLER_T
 # shellcheck source=scripts/load-project-env.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/scripts/load-project-env.sh"
+OPERATOR_STATE_ROOT="${OPERATOR_STATE_ROOT:-${SCRIPT_DIR}/.campaign-state/${PROJECT}}"
+[[ "$OPERATOR_STATE_ROOT" == /* ]] || die "operator state root must be absolute"
+mkdir -p "$OPERATOR_STATE_ROOT"
+chmod 700 "$OPERATOR_STATE_ROOT"
 DR_ENDPOINT="${DR_ENDPOINT:-${BACKUP_DR_ENDPOINT:-}}"
 DR_BUCKET="${DR_BUCKET:-${BACKUP_DR_BUCKET:-}}"
 DR_ACCESS_KEY="${BACKUP_DR_ACCESS_KEY:-}"
@@ -278,6 +285,7 @@ DEPLOY_ARGS=(
   -e "backup_dr_storage_endpoint=${DR_ENDPOINT}"
   -e "backup_dr_storage_bucket=${DR_BUCKET}"
   -e "backup_dr_storage_prefix=${DR_PREFIX}"
+  -e "vault_init_output_file=${OPERATOR_STATE_ROOT}/.vault-init-${PROJECT}.json"
 )
 [[ -z "$BASTION_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_bastion_type=${BASTION_TYPE}")
 [[ -z "$CP_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_cp_type=${CP_TYPE}")

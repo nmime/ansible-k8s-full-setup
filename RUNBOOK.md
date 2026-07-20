@@ -40,7 +40,7 @@ phase plan but does not require a reachable cluster or mutate Kubernetes:
 ```
 
 For a disposable live cluster, set `ANSIBLE_VAULT_PASSWORD_FILE` so the Vault
-phase can read the encrypted `.vault-init-PROJECT.json`, then remove
+phase can read the encrypted `.campaign-state/PROJECT/.vault-init-PROJECT.json`, then remove
 `--dry-run`. The defaults increase concurrency and operation counts from
 `minimal` through `production`; explicit bounds are available when a smaller
 step is needed:
@@ -49,7 +49,7 @@ step is needed:
 ./scripts/tier-load-test.sh \
   --config platform-orchestrator/platform.yaml \
   --kubeconfig /absolute/path/to/tier.kubeconfig \
-  --vault-init playbooks/.vault-init-PROJECT.json \
+  --vault-init .campaign-state/PROJECT/.vault-init-PROJECT.json \
   --clients 8 \
   --http-requests 5000 \
   --s3-objects 250 \
@@ -112,6 +112,11 @@ runs after that gate.
 in parallel, but each controller advances one host operation at a time. Keep
 that bound on memory-constrained workstations and raise it only after checking
 RAM and swap headroom.
+
+Five-tier controllers keep encrypted Vault initialization material in
+`.campaign-state/PROJECT/`, outside disposable worktrees. Preserve that
+gitignored directory and the matching vault password in the operator backup;
+never initialize again merely because a resume controller cannot find it.
 
 For Postal, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:
