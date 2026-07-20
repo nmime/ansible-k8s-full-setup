@@ -734,11 +734,13 @@ def test_elasticsearch_password_rotation_precedes_secret_update():
 def test_dragonfly_auth_secret_change_rolls_statefulset():
     tasks = read("roles/dragonfly/tasks/main.yml")
     assert tasks.index("Create Dragonfly instance") < tasks.index(
-        "Reconcile Dragonfly pods with the current auth secret"
+        "Restart Dragonfly OnDelete pods one at a time after credential changes"
     )
     rollout = tasks.split(
-        "- name: Reconcile Dragonfly pods with the current auth secret", 1
+        "- name: Restart Dragonfly OnDelete pods one at a time after credential changes", 1
     )[1].split("\n- name:", 1)[0]
-    assert "platform.example.com/dragonfly-credentials-hash" in rollout
-    assert "kubectl rollout status statefulset/dragonfly" in rollout
+    assert 'pod="dragonfly-${ordinal}"' in rollout
+    assert "kubectl delete pod" in rollout
+    assert "kubectl wait --for=condition=Ready" in rollout
     assert "no_log: true" in rollout
+    assert "platform.example.com/dragonfly-applied-credentials-hash" in tasks
