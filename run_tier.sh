@@ -35,6 +35,7 @@ Options:
   --worker-type TYPE     Capacity-equivalent worker server type override
   --manage-dns           Permit the infrastructure role to manage DNS
   --minimum-storage      Set every profile-controlled PVC request to 10Gi
+  --skip-kubespray       Resume after a verified successful Kubespray run
   --dry-run              Generate and validate inputs; print, do not deploy
   -h, --help             Show this help
 
@@ -79,6 +80,7 @@ CP_TYPE=""
 WORKER_TYPE=""
 MANAGE_DNS=false
 MINIMUM_STORAGE=false
+SKIP_KUBESPRAY=false
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -103,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --worker-type) require_value "$1" "${2:-}"; WORKER_TYPE="$2"; shift 2 ;;
     --manage-dns) MANAGE_DNS=true; shift ;;
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
+    --skip-kubespray) SKIP_KUBESPRAY=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1'" ;;
@@ -271,6 +274,7 @@ DEPLOY_ARGS=(
 [[ -z "$BASTION_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_bastion_type=${BASTION_TYPE}")
 [[ -z "$CP_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_cp_type=${CP_TYPE}")
 [[ -z "$WORKER_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_worker_type=${WORKER_TYPE}")
+$SKIP_KUBESPRAY && DEPLOY_ARGS+=(-e "skip_kubespray=true")
 
 printf 'Campaign: %s\nProfile: %s\nProject: %s\nDomain: %s\nAPI port: %s\nConfig: %s\nLog: %s\n' \
   "$CAMPAIGN_ID" "$PROFILE" "$PROJECT" "$DOMAIN" "$API_PORT" "$CONFIG_FILE" "$LOG_FILE"

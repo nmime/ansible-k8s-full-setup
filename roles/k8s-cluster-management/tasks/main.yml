@@ -575,20 +575,6 @@
   become: false
   changed_when: true
 
-- name: Verify DNS resolution in cluster
-  ansible.builtin.shell: |
-    kubectl run dns-test-{{ ansible_facts.date_time.epoch }} --rm -i --restart=Never --image=busybox --wait=true -- nslookup kubernetes.default.svc.cluster.local
-  args:
-    executable: /bin/bash
-  delegate_to: localhost
-  become: false
-  changed_when: false
-  register: dns_result
-  retries: 5
-  delay: 30
-  until: dns_result.rc == 0
-
-
 # ============================================
 
 - name: Create hcloud-token secret for CCM
@@ -732,7 +718,6 @@
     and (ccm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 60
   delay: 15
-  failed_when: false
 
 - name: Verify every Kubernetes node has a Hetzner provider ID
   ansible.builtin.shell: |
@@ -747,6 +732,53 @@
   args:
     executable: /bin/bash
   changed_when: false
+  register: provider_id_result
+  retries: 60
+  delay: 5
+  until: provider_id_result.rc == 0
+
+- name: Verify CCM removed the external cloud-provider taint from every node
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl get nodes -o json | python3 -c '
+    import json, sys
+    nodes = json.load(sys.stdin)["items"]
+    key = "node.cloudprovider.kubernetes.io/uninitialized"
+    invalid = [
+        n["metadata"]["name"]
+        for n in nodes
+        if any(t.get("key") == key for t in n["spec"].get("taints", []))
+    ]
+    if invalid:
+        raise SystemExit("nodes retaining external cloud-provider taint: " + ", ".join(invalid))
+    '
+  args:
+    executable: /bin/bash
+  changed_when: false
+  register: cloud_provider_taint_result
+  retries: 60
+  delay: 5
+  until: cloud_provider_taint_result.rc == 0
+
+- name: Verify DNS resolution after CCM removes cloud-provider taints
+  ansible.builtin.shell: |
+    set -euo pipefail
+    name=dns-test-{{ ansible_facts.date_time.epoch }}
+    kubectl delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    trap 'kubectl delete pod "$name" --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT
+    kubectl run "$name" --restart=Never --image=busybox --command -- \
+      nslookup kubernetes.default.svc.cluster.local
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$name" --timeout=2m
+    kubectl logs "$name"
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: dns_result
+  retries: 5
+  delay: 30
+  until: dns_result.rc == 0
 
 
 # ============================================
