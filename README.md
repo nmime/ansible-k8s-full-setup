@@ -158,6 +158,11 @@ CCM/CSI, every selected platform component, and readiness gates; it only omits
 the already-successful Kubespray `cluster.yml` run. Never use the flag when the
 Kubespray recap is missing or failed.
 
+Five-way campaigns default to one Ansible fork per isolated controller. This
+keeps every tier active concurrently while bounding controller RAM and process
+fan-out; raise it explicitly with `--controller-forks` only when the controller
+host has measured headroom.
+
 ```bash
 # Plan all five controllers without Git worktrees or cloud mutations.
 ./run_all.sh --campaign-id lab01 --minimum-storage --dry-run

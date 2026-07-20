@@ -108,6 +108,11 @@ commit. The Hetzner CCM must become ready and remove the external-cloud-provider
 taints before the DNS smoke pod is scheduled; DNS verification intentionally
 runs after that gate.
 
+`run_all.sh` defaults to `--controller-forks 1`: all five profiles remain live
+in parallel, but each controller advances one host operation at a time. Keep
+that bound on memory-constrained workstations and raise it only after checking
+RAM and swap headroom.
+
 For Postal, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:
 
