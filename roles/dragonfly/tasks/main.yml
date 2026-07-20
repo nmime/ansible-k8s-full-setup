@@ -59,6 +59,28 @@
   retries: 30
   delay: 10
 
+- name: Read the existing Dragonfly auth secret revision
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ df_ns }}'
+    name: dragonfly-auth
+  register: _dragonfly_existing_auth
+
+- name: Resolve desired and applied Dragonfly credential revisions
+  no_log: true
+  ansible.builtin.set_fact:
+    _dragonfly_desired_credentials_hash: '{{ df_password | hash("sha256") }}'
+    _dragonfly_applied_credentials_hash: >-
+      {{
+        _dragonfly_existing_auth.resources[0].metadata.annotations['platform.example.com/dragonfly-applied-credentials-hash']
+        if _dragonfly_existing_auth.resources | length > 0 and
+           'platform.example.com/dragonfly-applied-credentials-hash' in
+             (_dragonfly_existing_auth.resources[0].metadata.annotations | default({}))
+        else (df_password | hash('sha256') if _dragonfly_existing_auth.resources | length == 0 else '')
+      }}
+
 - name: Create Dragonfly auth secret
   kubernetes.core.k8s:
     state: present
@@ -70,6 +92,9 @@
         namespace: "{{ df_ns }}"
         labels:
           app.kubernetes.io/part-of: dragonfly
+        annotations:
+          platform.example.com/dragonfly-desired-credentials-hash: '{{ _dragonfly_desired_credentials_hash }}'
+          platform.example.com/dragonfly-applied-credentials-hash: '{{ _dragonfly_applied_credentials_hash }}'
       type: Opaque
       stringData:
         password: "{{ df_password }}"
@@ -147,29 +172,37 @@
   delay: 15
   until: _r_create_dragonfly_instance is not failed
 
-- name: Reconcile Dragonfly pods with the current auth secret
+- name: Restart Dragonfly OnDelete pods one at a time after credential changes
   ansible.builtin.shell: |
     set -euo pipefail
-    desired_hash={{ df_password | hash('sha256') | quote }}
-    current_hash=$(kubectl get statefulset dragonfly -n {{ df_ns | quote }} \
-      -o jsonpath='{.spec.template.metadata.annotations.platform\.example\.com/dragonfly-credentials-hash}' 2>/dev/null || true)
-    if [ "$current_hash" = "$desired_hash" ]; then
-      echo 'changed=false'
-      exit 0
-    fi
-    patch=$(jq -cn --arg hash "$desired_hash" \
-      '{spec:{template:{metadata:{annotations:{"platform.example.com/dragonfly-credentials-hash":$hash}}}}}')
-    kubectl patch statefulset dragonfly -n {{ df_ns | quote }} --type=merge -p "$patch" >/dev/null
-    kubectl rollout status statefulset/dragonfly -n {{ df_ns | quote }} --timeout=10m
-    echo 'changed=true'
+    for ordinal in $(seq 0 $(({{ df_replicas | int }} - 1))); do
+      pod="dragonfly-${ordinal}"
+      kubectl delete pod "$pod" -n {{ df_ns | quote }} --wait=true
+      kubectl wait --for=condition=Ready "pod/$pod" -n {{ df_ns | quote }} --timeout=5m
+    done
   args:
     executable: /bin/bash
   register: _dragonfly_credentials_rollout
-  changed_when: "'changed=true' in _dragonfly_credentials_rollout.stdout"
+  changed_when: true
   retries: 3
   delay: 15
   until: _dragonfly_credentials_rollout.rc == 0
   no_log: true
+  when: _dragonfly_applied_credentials_hash != _dragonfly_desired_credentials_hash
+
+- name: Mark the Dragonfly credential revision as applied
+  no_log: true
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: dragonfly-auth
+        namespace: '{{ df_ns }}'
+        annotations:
+          platform.example.com/dragonfly-applied-credentials-hash: '{{ _dragonfly_desired_credentials_hash }}'
+  when: _dragonfly_applied_credentials_hash != _dragonfly_desired_credentials_hash
 
 - name: Recreate Dragonfly controller after its desired storage update
   ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
