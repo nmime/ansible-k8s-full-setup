@@ -11,7 +11,7 @@
   register: _postgresql_backup_cluster
   retries: 12
   delay: 10
-  until: _postgresql_backup_cluster.resources | length == 1
+  until: (_postgresql_backup_cluster.resources | default([])) | length == 1
 
 - name: "Backup-PostgreSQL | Verify pgBackRest backup policy"
   ansible.builtin.assert:

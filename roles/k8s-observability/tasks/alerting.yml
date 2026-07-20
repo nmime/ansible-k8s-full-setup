@@ -38,7 +38,7 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: vmalertmanager-platform-config
+        name: platform-alertmanager-config
         namespace: '{{ monitoring_namespace }}'
       type: Opaque
       stringData:
@@ -122,8 +122,8 @@
         name: platform
         namespace: '{{ monitoring_namespace }}'
       spec:
-        replicaCount: "{{ 2 if resource_tier in ['medium', 'production'] else 1 }}"
-        configSecret: vmalertmanager-platform-config
+        replicaCount: "{{ alerting.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"
+        configSecret: platform-alertmanager-config
         secrets:
           - alert-secrets
         resources:
@@ -153,7 +153,10 @@
       spec:
         replicaCount: 1
         datasource:
-          url: 'http://vmsingle-platform.{{ monitoring_namespace }}.svc.cluster.local:8429'
+          url: >-
+            {{ 'http://vmselect-vmcluster.' + monitoring_namespace + '.svc.cluster.local:8481/select/0/prometheus'
+               if tier in ['medium', 'production']
+               else 'http://vmsingle-vmsingle.' + monitoring_namespace + '.svc.cluster.local:8429' }}
         notifier:
           url: 'http://vmalertmanager-platform.{{ monitoring_namespace }}.svc.cluster.local:9093'
         evaluationInterval: 30s

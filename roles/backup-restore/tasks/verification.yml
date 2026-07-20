@@ -27,16 +27,27 @@
             template:
               spec:
                 restartPolicy: OnFailure
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
                 containers:
                   - name: verify
                     image: "{{ backup_s3cli_image | default('amazon/aws-cli:2.34.48') }}"
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
                     command:
                       - /bin/sh
                       - -c
                       - |
                         set -euo pipefail
                         TS=$(date -u +%Y%m%dT%H%M%SZ); FAIL=0
-                        B="${_BACKUP_BUCKET:-backups-local}"; P="{{ _backup_project:-k8s }}"; E="${AWS_ENDPOINT_URL}"
+                        B="${_BACKUP_BUCKET:-backups-local}"; P="${_BACKUP_PROJECT:-k8s}"; E="${AWS_ENDPOINT_URL}"
                         echo "=== Backup Verification ${TS} ==="
                         for comp in {{ _backup_components | join(' ') }}; do
                           if [ "$comp" = gitlab ]; then

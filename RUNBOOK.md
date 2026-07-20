@@ -25,6 +25,20 @@ kubectl get cronjob -A
 Investigate any non-Ready node, failed Helm release, missing required component,
 expired certificate, or missed backup before continuing maintenance.
 
+For Postal, verify both schema reconciliation and the unprivileged SMTP
+listener before treating the mail stack as healthy:
+
+```bash
+kubectl get job postal-schema-reconcile -n postal
+kubectl logs job/postal-schema-reconcile -n postal
+kubectl logs deployment/postal-smtp -n postal | grep 'Listening on :::2525'
+kubectl get service postal-smtp -n postal -o yaml
+```
+
+The Service exposes 25/587 and targets 2525. Gateway API traffic is admitted
+to default-deny service namespaces through the Cilium `ingress` identity; a
+plain namespace selector for the host-network Envoy DaemonSet is insufficient.
+
 ## Deployment and reconciliation
 
 ```bash
@@ -40,15 +54,32 @@ For the full medium service set on the constrained resource envelope, initialize
 `resource_tier: small` before deployment.
 
 Reruns reconcile firewall rules, load-balancer services/targets, DNS records,
-and enabled Kubernetes resources. Extra servers and server type changes fail
-closed. Drain affected nodes first, then explicitly opt into destructive
-reconciliation only during an approved window:
+and enabled Kubernetes resources. Extra servers and server type changes always
+fail closed; the infrastructure role cannot bulk-delete or bulk-resize cluster
+members. Use the migration controller, which checkpoints every operation and
+drains, validates, and restores one node at a time:
 
 ```bash
-ansible-playbook playbooks/deploy_platform.yml \
-  -e @platform-orchestrator/platform.yaml \
-  -e hetzner_allow_destructive_reconcile=true
+./scripts/migrate-profile.sh --target medium plan
+./scripts/migrate-profile.sh --target medium execute
+./scripts/migrate-profile.sh status
+./scripts/migrate-profile.sh finalize
 ```
+
+After any SeaweedFS topology change, verify both the configured placement and
+the live replica count. The role performs these checks automatically; the
+operator-level evidence commands are:
+
+```bash
+kubectl exec -n storage seaweedfs-master-0 -- sh -c \
+  "printf 'volume.list\n' | weed shell -master=127.0.0.1:9333"
+kubectl exec -n storage seaweedfs-master-0 -- sh -c \
+  "printf 'volume.fix.replication -collectionPattern=* -doDelete=false -verbose\n' | weed shell -master=127.0.0.1:9333"
+```
+
+For `medium`, `medium-optimized`, and `production`, every listed volume must
+show `ReplicaPlacement:001` and the dry-run output must contain no
+`under replicated` line.
 
 ## Component lifecycle
 
@@ -132,6 +163,13 @@ kubectl get clustersecretstore
 kubectl get jobs -A -l app.kubernetes.io/part-of=backup-restore
 kubectl get backupstoragelocation,backup -n velero
 
+# Review every isolated restore path before a recovery exercise.
+./scripts/restore-drill.sh --component postgresql --backup PGBACKREST_SET --dry-run
+./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
+./scripts/restore-drill.sh --component vault --backup VAULT_SNAPSHOT --dry-run
+./scripts/restore-drill.sh --component seaweedfs --backup VELERO_BACKUP --dry-run
+./scripts/restore-drill.sh --component gitlab --backup TOOLBOX_BACKUP_ID --dry-run
+
 export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
 ./platform-orchestrator/platform.sh backup-cluster \
   --recipient "$CLUSTER_BACKUP_AGE_RECIPIENT" --force
@@ -140,9 +178,12 @@ export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
 ```
 
 GitLab recovery needs the Toolbox archive and the separately stored Rails
-encryption secret. Production recovery also needs external Velero/Kopia data
-and the encrypted etcd/PKI/config bundle. Backup object existence is not restore
-proof; run isolated native and replacement-cluster drills on a schedule. See
+encryption secret; its external PostgreSQL data comes from the independently
+gated pgBackRest set, not the Toolbox archive. Vault recovery needs the original
+snapshot token and enough unseal shares to reach its threshold. Production
+recovery also needs external Velero/Kopia data and the encrypted
+etcd/PKI/config bundle. Backup object existence is not restore proof; run all
+five isolated component drills and replacement-cluster drills on a schedule. See
 [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
 ## Upgrades
@@ -186,16 +227,29 @@ CLUSTER_BACKUP_AGE_RECIPIENT=age1...
 ```
 
 The durable workflow backs up first, expands to the maximum source/target node
-counts, drains/resizes each retained node separately, verifies etcd before and
-after control-plane changes, applies target capabilities, migrates
+counts, drains/resizes each retained node separately, grows both the provider
+disk and the node root filesystem, verifies etcd before and after control-plane
+changes, applies target capabilities, migrates
 VictoriaMetrics single-to-cluster or cluster-to-single, validates, and backs
-up again. Resume skips completed checkpoints. Before finalization, rollback
 copies post-switch VictoriaMetrics samples back, restores the Helm/config
 baseline, and deliberately retains expanded nodes. Finalization is itself
 checkpointed: it removes disabled dependants first, retires old metrics/logging
 PVCs, removes excess workers then control planes through Kubespray, reconciles
 the exact target, takes a final backup, removes disabled backup resources last,
 and cleans unused cloud placement resources.
+
+Every completed node resize is followed by the full profile-aware platform
+health gate before the next node is touched. This includes expected node and
+database replica counts, workload readiness, storage, certificates, routes,
+security controls, and Helm release state. Vault is unsealed after each node
+restart before that gate runs.
+
+Provider root disks are grow-only. If two Hetzner server types have identical
+CPU and memory but the current type has a larger root disk, the migration
+retains that type and records the explicit override in
+`node-type-retention.tsv` and the active config. A transition that would need
+both a disk shrink and a compute-shape change fails before the backup/mutation
+stages and requires a separately planned one-node replacement workflow.
 
 After each step:
 
@@ -259,5 +313,7 @@ treating Helm rollback as sufficient.
 ```
 
 The confirmation must match the project. The script verifies deletion of
-project-prefixed Hetzner compute/network resources and preserves DNS and the
+project-prefixed Hetzner compute/network resources plus all CSI volumes captured
+by attachment to the project's servers or, for a context whose nodes all match
+the project, by the PV's Hetzner CSI volume handle. It preserves DNS and the
 global kubeconfig. Review the backup inventory before authorizing teardown.

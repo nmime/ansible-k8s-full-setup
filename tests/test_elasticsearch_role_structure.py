@@ -130,6 +130,11 @@ class TestTasks(unittest.TestCase):
         self.assertIn("es-data", self.content,
                       "Must deploy es-data StatefulSet")
 
+    def test_production_stateful_replicas_can_use_reserved_control_plane_capacity(self):
+        toleration = 'node-role.kubernetes.io/control-plane'
+        self.assertGreaterEqual(self.content.count(toleration), 2)
+        self.assertIn('if tier == "production" else []', self.content)
+
     def test_has_kibana_deployment(self):
         self.assertIn("kibana", self.content.lower(),
                       "Must deploy Kibana")
@@ -141,6 +146,50 @@ class TestTasks(unittest.TestCase):
     def test_has_credentials_secret(self):
         self.assertIn("es-credentials", self.content,
                       "Must create credentials secret")
+
+    def test_workloads_have_compact_node_startup_probes(self):
+        """Slow first boots must not be killed by liveness before quorum forms."""
+        self.assertEqual(self.content.count("startupProbe:"), 3)
+        self.assertEqual(self.content.count("failureThreshold: 40"), 2)
+        self.assertEqual(self.content.count("failureThreshold: 80"), 1)
+
+    def test_kibana_uses_a_service_account_token(self):
+        self.assertIn("ELASTICSEARCH_SERVICEACCOUNTTOKEN", self.content)
+        self.assertIn("kibana-service-token", self.content)
+        self.assertNotIn("name: ELASTICSEARCH_USERNAME", self.content)
+        self.assertIn("kibana-encryption-keys", self.content)
+        self.assertIn("XPACK_SECURITY_SECURECOOKIES", self.content)
+
+    def test_kibana_recreate_transition_removes_stale_rolling_update(self):
+        self.assertIn("type: Recreate", self.content)
+        self.assertIn("/spec/strategy/rollingUpdate", self.content)
+
+    def test_initial_master_nodes_is_bootstrap_only(self):
+        self.assertIn(
+            "Detect whether the Elasticsearch cluster has persistent master data",
+            self.content,
+        )
+        self.assertIn(
+            "Add the one-time Elasticsearch bootstrap node list for a new cluster",
+            self.content,
+        )
+        self.assertIn(
+            "Remove the one-time Elasticsearch bootstrap node list",
+            self.content,
+        )
+        self.assertIn("cluster.initial_master_nodes-", self.content)
+        statefulset = self.content.split("- name: Deploy ES master StatefulSet", 1)[1].split(
+            "- name: Add the one-time Elasticsearch bootstrap node list", 1
+        )[0]
+        self.assertNotIn("cluster.initial_master_nodes", statefulset)
+
+    def test_stateful_storage_growth_orphans_controllers_but_preserves_claims(self):
+        self.assertIn("Reject Elasticsearch master storage shrink attempts", self.content)
+        self.assertIn("Reject Elasticsearch data storage shrink attempts", self.content)
+        self.assertEqual(self.content.count("propagationPolicy: Orphan"), 2)
+        self.assertIn("state: patched", self.content)
+        self.assertIn("data-es-master-{{ item }}", self.content)
+        self.assertIn("data-es-data-{{ item }}", self.content)
 
 
 class TestNoLicenseFiles(unittest.TestCase):

@@ -32,10 +32,15 @@ Legend: **on** is enabled by the named profile; **off** can be enabled later.
 The `medium-optimized` profile intentionally has the same technology set as
 `medium`, but uses the `small` resource envelope plus explicit compact
 overrides for heavy services.
+The `production` profile also uses the conservative request envelope, while
+explicitly retaining HA replicas for Vault, databases, storage, GitLab,
+Argo CD, metrics, autoscaling, Temporal, alerting, tracing, and error tracking.
+Its three control planes are dedicated and its three 16 GiB workers are sized
+with failover headroom rather than steady-state-only fit.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
-`gitlab-runner`, `gitops`, `observability`, `coroot`, `tracing`, `autoscaling`,
+`gitlab-runner`, `gitops`, `observability`, `pmm`, `coroot`, `tracing`, `autoscaling`,
 `temporal`, `postal`, `backup`, `glitchtip`, `apm`, `blackbox`, `daytona`, and
 `hipaa`.
 
@@ -45,25 +50,33 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Secrets | `secrets.enabled` | Vault Raft with internal TLS | none | on | on | on | on | on |
 | ESO | `secrets.eso.enabled` | External Secrets Operator, Vault `ClusterSecretStore` | Secrets | off | off | on | on | on |
 | Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | on | on | on | on | on |
-| PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest, PMM client | Databases | on | on | on | on | on |
-| MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB, PBM, PMM client | Databases | off | off | on | on | on |
+| PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | on | on | on | on | on |
+| MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB and PBM; optional PMM client when PMM is selected | Databases | off | off | on | on | on |
 | Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | on | on |
 | Dragonfly | `dragonfly.enabled` | Dragonfly operator and Redis-compatible cache | none | off | on | on | on | on |
 | GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | on | on | on | on |
 | GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab | off | on | on | on | on |
 | GitOps | `gitops.enabled` | Argo CD with scoped source/resource allowlists | none | on | on | on | on | on |
-| Observability core | `observability.enabled` | VictoriaMetrics, Grafana, PMM, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
+| Observability core | `observability.enabled` | VictoriaMetrics, Grafana, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
+| PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | on | on |
 | Coroot | `coroot.enabled` | Coroot CE/operator, eBPF node agent, cluster agent, ClickHouse; VictoriaMetrics reused as external Prometheus | Observability | off | off | on | on | on |
 | Tracing | `tracing.enabled` | Tempo and OpenTelemetry Collector | Observability, object storage | off | off | on | on | on |
 | Autoscaling | `autoscaling.enabled` | KEDA | none | on | on | on | on | on |
-| Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL, Elasticsearch | off | off | on | on | on |
-| Postal | `postal.enabled` | Postal mail server and MariaDB | Dragonfly | off | off | on | on | on |
+| Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL | off | off | on | on | on |
+| Postal | `postal.enabled` | Postal mail server, schema initialize/update gate, and MariaDB; public SMTP 25/587 targets unprivileged container port 2525 | Dragonfly | off | off | on | on | on |
 | Backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, SeaweedFS jobs; external Velero/Kopia resource and PVC protection; encrypted etcd/PKI/config bundles; restore drills | Object storage; external DR endpoint for medium/production profiles | off | off | on | on | on |
 | GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | on | on | on |
 | APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | on | on |
 | Blackbox | `blackbox.enabled` | Prometheus Blackbox Exporter and VMProbe resources | Observability | off | off | on | on | on |
 | Daytona | `applications.daytona.enabled` | Daytona workspace platform | none | off | off | off | off | off |
 | HIPAA-oriented hardening | `compliance.hipaa.enabled` | Host audit rules, Vault TLS assertions, Cilium encryption assertion, and active log redaction | Secrets, observability | off | off | off | off | off |
+
+Storage profiles with more than one SeaweedFS volume server select placement
+`001`, migrate pre-existing single-copy volumes, fail if any volume remains
+under-replicated, and restart the filer after master/Raft topology changes.
+Minimal and small use `000` because they intentionally have only one volume
+server. Loki claims are retained independently of StatefulSet scale/delete and
+are retired only by the checkpointed migration finalizer.
 
 Alert transports are settings rather than removable workloads:
 `alerting.telegram.enabled` requires `ALERT_TELEGRAM_BOT_TOKEN` and
@@ -95,7 +108,7 @@ not inferred from live cluster state.
 
 | Removal class | Components | Boundary |
 |---|---|---|
-| Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, Coroot, Temporal, Postal, GlitchTip, Daytona | exact confirmation plus `--delete-data` |
+| Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, PMM, Coroot, Temporal, Postal, GlitchTip, Daytona | exact confirmation plus `--delete-data` |
 | Stateless/shared | ESO, GitLab Runner, tracing, KEDA, backup jobs, APM, Blackbox | exact confirmation; remote trace/backup objects are retained |
 | No generic rollback | HIPAA-oriented hardening | disable only; manual reviewed reversal |
 
@@ -114,8 +127,12 @@ again later and restored from its retained external backup; external backup
 and Loki archive objects are never deleted by profile finalization.
 
 The transition expands to the larger node topology, resizes retained nodes one
-at a time, migrates VictoriaMetrics between single and cluster mode when
-needed, then safely removes excess nodes through Kubespray. Larger existing PVC
+at a time, grows both the provider disk and root filesystem, and requires full
+platform health before touching the next node. It migrates VictoriaMetrics
+between single and cluster mode when needed, then safely removes excess nodes
+through Kubespray. Production taints control planes for general workloads but
+allows critical PostgreSQL, MongoDB, and Elasticsearch stateful replicas to
+tolerate them for one-worker failure capacity. Larger existing PVC
 requests are retained as named-profile overrides because Kubernetes does not
 support in-place shrink; obsolete component and old metrics-topology PVCs are
 retired after the final backup gate. SeaweedFS, Vault Raft, and same-topology
@@ -130,12 +147,12 @@ table is a review aid and must be updated with those values.
 
 | Layer | Current pin |
 |---|---|
-| Kubernetes / Kubespray / Cilium / Gateway API | `v1.35.6` / `v2.31.0` / `v1.19.5` / `v1.6.0` |
+| Kubernetes / Kubespray / Cilium / Gateway API | `v1.35.4` / `v2.31.0` / `v1.19.5` / `v1.6.0` |
 | cert-manager / MetalLB / Hetzner CCM / Hetzner CSI | `v1.21.0` / `v0.16.1` / `v1.33.0` / `v2.22.0` |
 | Headscale / Caddy | `0.28.0` / `2.11.4-alpine` |
 | SeaweedFS chart | `4.25.1` |
 | Vault chart / Vault / ESO chart | `0.34.0` / `2.0.3` / `2.7.0` |
-| Percona PostgreSQL operator / PostgreSQL | `3.0.0` / `18.3-1` |
+| Percona PostgreSQL operator / PostgreSQL / PgBouncer / pgBackRest / PMM client | `3.0.0` / `18.4-1` / `1.25.2-1` / `2.58.0-2` / `3.7.1` |
 | Percona MongoDB operator / MongoDB | `1.22.0` / `8.0.8-3` |
 | Velero chart / Velero / AWS object-store plugin | `12.1.0` / `v1.18.1` / `v1.14.2` |
 | GitLab / Runner charts | `10.1.2` / `0.88.3` |

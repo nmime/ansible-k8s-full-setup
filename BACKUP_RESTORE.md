@@ -18,7 +18,7 @@ complete only when all three succeed:
 | MongoDB | Percona/PBM backup | operator task / `PerconaServerMongoDBBackup` | `databases` |
 | PostgreSQL | Percona Operator pgBackRest | operator schedule / `PerconaPGBackup` | `databases` |
 | Vault | Raft snapshot to S3 | `vault-raft-snapshot` | `vault` |
-| SeaweedFS | topology and metadata artifact | `seaweedfs-backup-check` | `storage` |
+| SeaweedFS | topology check plus Velero/Kopia filesystem copy | `seaweedfs-backup-check` / `full-cluster` | `storage` / `velero` |
 | GitLab | chart Toolbox `backup-utility` | `gitlab-toolbox-backup` | `gitlab` |
 | GitLab encryption keys | Rails `secrets.yml` copy to S3 | `gitlab-rails-secrets-backup` | `gitlab` |
 | All Kubernetes resources | Velero backup | `full-cluster` schedule | `velero` |
@@ -36,6 +36,15 @@ recoverable filesystem copy, but it is not transactionally equivalent to the
 PostgreSQL, MongoDB, Vault, or GitLab native mechanisms. Keep the native and
 filesystem layers together. A component's guarded `--delete-data` flag is not
 evidence that a backup exists.
+
+Loki PVC retention is explicitly `Retain` for StatefulSet scale and deletion.
+If a restore is required, include the source Pod and PVC in the Velero restore
+so the node-agent can inject the filesystem replay. For a complete SeaweedFS
+cutover, restore the master, filer, volume data, and index claims together on a
+replacement cluster. The automated drill deliberately restores one selected
+claim into a dynamically provisioned, network-isolated PVC, proves the Kopia
+snapshot ID and byte count, and then removes it. It never registers restored
+volumes with the live master quorum.
 
 ## External disaster-recovery storage
 
@@ -149,6 +158,7 @@ Always start in dry-run mode and use an isolated test cluster/namespace:
 ./scripts/pg-restore-drill.sh --dry-run
 ./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
 ./scripts/vault-restore-drill.sh --dry-run
+./scripts/restore-drill.sh --component seaweedfs --backup VELERO_BACKUP --dry-run
 ./scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
 
 # Verify encryption and both checksum layers without a cluster mutation.
@@ -159,13 +169,17 @@ Always start in dry-run mode and use an isolated test cluster/namespace:
   --mode velero --confirm RESTORE_k8s
 ```
 
-The generic `restore-drill.sh` dispatcher supports MongoDB, Vault, and GitLab.
+The generic `restore-drill.sh` dispatcher supports PostgreSQL, MongoDB, Vault,
+SeaweedFS, and GitLab.
 The MongoDB path deploys a namespace-scoped Percona operator and disposable
 single-member cluster, applies `PerconaServerMongoDBRestore`, then verifies
 operator state, `mongosh` connectivity, and an optional database/collection
-sentinel. PostgreSQL has its dedicated isolated pgBackRest drill. SeaweedFS
-topology metadata alone is not data backup—the replacement-cluster Velero
-node-agent restore is the data layer.
+sentinel. PostgreSQL uses its dedicated isolated pgBackRest drill. The
+SeaweedFS path selects exactly one completed PodVolumeBackup, pre-creates a
+fresh PVC in an isolated namespace, waits for Velero's Kopia restore helper,
+matches the restored snapshot ID and byte count, verifies the data read-only,
+and cleans up. It proves a filesystem recovery primitive; a full cutover still
+requires all related claims on a replacement cluster.
 
 For a meaningful MongoDB integrity check, identify a stable sentinel:
 
@@ -183,14 +197,26 @@ a known path whose restored value must be readable:
 
 ```bash
 export OBJECT_STORAGE_ENDPOINT=https://s3.example.internal
-export VAULT_RESTORE_UNSEAL_KEY='...'
-export VAULT_RESTORE_TOKEN='...'
 export VAULT_RESTORE_VERIFY_PATH='secret/known-recovery-sentinel'
-./scripts/vault-restore-drill.sh --snapshot-name vault-20260716T020000Z.snap
+./scripts/vault-restore-drill.sh \
+  --snapshot-name vault-20260716T020000Z.snap \
+  --credentials-secret vault-restore-drill-credentials
 ```
 
-The GitLab artifact drill downloads and extracts the selected archive, restores
-its database dump into isolated PostgreSQL, and verifies repository payload.
+The source credentials Secret must contain `restore-token` and all original
+unseal shares needed to reach the threshold as newline-delimited
+`restore-unseal-keys`. The drill restores the snapshot, writes the documented
+single-peer `peers.json` recovery file for the isolated copy, unseals with the
+required number of shares, verifies one active voting leader and the sentinel,
+then cleans up. `VAULT_RESTORE_UNSEAL_KEY` remains a legacy convenience only
+for a one-share Vault.
+
+The GitLab artifact drill downloads the selected archive directly into an
+isolated PVC, verifies its remote and local sizes, safely extracts it with the
+source release's exact Toolbox image, and verifies metadata and repository
+payload. The platform configures Toolbox with `--skip db` because GitLab uses
+external Percona PostgreSQL; the matching pgBackRest restore drill is a
+separate mandatory gate rather than a database dump inside the archive.
 For a disaster recovery cutover, restore a same-version GitLab chart with the
 official Toolbox `backup-utility --restore`, restore the saved Rails secret,
 and follow the GitLab restore runbook. A Helm rollback is not a data restore.
@@ -243,13 +269,15 @@ path. Do not improvise a multi-member etcd restore while API servers are live.
 5. Rails secrets, object storage, databases, and repository data are all
    separate recovery dependencies.
 6. The external Velero target must not be the protected SeaweedFS cluster.
-7. Record artifact ID, source version, size, checks, and cleanup outcome.
+7. A SeaweedFS filesystem drill must match exactly one completed
+   PodVolumeBackup/PodVolumeRestore pair and must not join a live quorum.
+8. Record artifact ID, source version, size, checks, and cleanup outcome.
 
 ## Ongoing verification
 
 The `backup-verification` CronJob checks application artifacts daily. Velero
 validates the external `BackupStorageLocation` and records each resource/PVC
 backup phase. These are freshness gates, not proof of restorability. Schedule a
-replacement-cluster restore drill and the native PostgreSQL, Vault, GitLab, and
-MongoDB drills at the required RPO/RTO cadence. A backup is not accepted as
-production-ready until its restore drill has succeeded.
+replacement-cluster restore drill and the isolated PostgreSQL, Vault, GitLab,
+MongoDB, and SeaweedFS drills at the required RPO/RTO cadence. A backup is not
+accepted as production-ready until its restore drill has succeeded.

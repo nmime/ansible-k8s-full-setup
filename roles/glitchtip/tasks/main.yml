@@ -32,7 +32,7 @@
     namespace: "{{ gt_db_ns }}"
     name: "{{ gt_pg_cluster }}-pguser-{{ glitchtip_db_user }}"
   register: gt_pg_secret
-  until: gt_pg_secret.resources | length > 0
+  until: (gt_pg_secret.resources | default([])) | length > 0
   retries: 90
   delay: 10
   failed_when: false
@@ -47,6 +47,21 @@
 - name: Set GlitchTip PG password fact
   set_fact:
     gt_pg_password: "{{ gt_pg_secret.resources[0].data.password | b64decode }}"
+  no_log: true
+
+- name: Retrieve Dragonfly password for GlitchTip
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: dragonfly
+    name: dragonfly-auth
+  register: gt_dragonfly_secret
+  until: (gt_dragonfly_secret.resources | default([])) | length > 0
+  retries: 30
+  delay: 10
+
+- name: Set GlitchTip Dragonfly password fact
+  set_fact:
+    gt_dragonfly_password: "{{ gt_dragonfly_secret.resources[0].data.password | b64decode }}"
   no_log: true
 
 - name: Check if GlitchTip config secret already exists
@@ -83,7 +98,7 @@
       stringData:
         SECRET_KEY: "{{ gt_secret_key }}"
         DATABASE_URL: "postgres://{{ glitchtip_db_user }}:{{ gt_pg_password }}@{{ gt_pg_host_direct }}:5432/{{ glitchtip_db_name }}"
-        REDIS_URL: "redis://{{ glitchtip_redis_host }}:{{ glitchtip_redis_port }}/{{ glitchtip_redis_db }}"
+        REDIS_URL: "redis://:{{ gt_dragonfly_password | urlencode }}@{{ glitchtip_redis_host }}:{{ glitchtip_redis_port }}/{{ glitchtip_redis_db }}"
   no_log: true
   register: _r_gt_config
   retries: 3
@@ -98,6 +113,55 @@
   retries: 3
   delay: 10
   until: _r_gt_repo is not failed
+
+- name: Allow GlitchTip egress to DNS and stateful dependencies
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-glitchtip-dependencies
+        namespace: "{{ gt_ns }}"
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Egress
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+            ports:
+              - port: 53
+                protocol: UDP
+              - port: 53
+                protocol: TCP
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: "{{ gt_db_ns }}"
+            ports:
+              - port: 5432
+                protocol: TCP
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: dragonfly
+            ports:
+              - port: "{{ glitchtip_redis_port | int }}"
+                protocol: TCP
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: postal
+            ports:
+              - port: "{{ glitchtip_smtp_port | int }}"
+                protocol: TCP
+  register: _r_gt_dependency_egress
+  retries: 3
+  delay: 10
+  until: _r_gt_dependency_egress is not failed
 
 - name: Install GlitchTip via Helm
   kubernetes.core.helm:
@@ -235,7 +299,7 @@
     name: glitchtip-web
   register: gt_web_status
   until: >-
-    gt_web_status.resources | length > 0 and
+    (gt_web_status.resources | default([])) | length > 0 and
     (gt_web_status.resources[0].status.readyReplicas | default(0)) >= (glitchtip_web_replicas | int)
   retries: 60
   delay: 10

@@ -53,7 +53,7 @@
       - control-plane=controller-manager
   register: df_operator_deploy
   until: >
-    df_operator_deploy.resources | length > 0 and
+    (df_operator_deploy.resources | default([])) | length > 0 and
     (df_operator_deploy.resources[0].status.readyReplicas | default(0) | int) >= 1
   retries: 30
   delay: 10
@@ -77,6 +77,15 @@
   retries: 3
   delay: 10
   until: _r_create_dragonfly_auth_secret is not failed
+
+- name: Reconcile Dragonfly snapshot storage growth without replacing claims
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: '{{ df_ns }}'
+    storage_reconcile_statefulset: dragonfly
+    storage_reconcile_claim: df
+    storage_reconcile_desired: '{{ dragonfly_snapshot_storage }}'
+    storage_reconcile_orphan: false
 
 - name: Create Dragonfly instance
   kubernetes.core.k8s:
@@ -103,6 +112,19 @@
           limits:
             cpu: "{{ dragonfly_cpu_limit }}"
             memory: "{{ dragonfly_memory_limit }}"
+        podSecurityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: false
         snapshot:
           cron: "{{ dragonfly_snapshot_cron }}"
           persistentVolumeClaimSpec:
@@ -123,6 +145,38 @@
   retries: 3
   delay: 15
   until: _r_create_dragonfly_instance is not failed
+
+- name: Recreate Dragonfly controller after its desired storage update
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: '{{ df_ns }}'
+    storage_reconcile_statefulset: dragonfly
+    storage_reconcile_claim: df
+    storage_reconcile_desired: '{{ dragonfly_snapshot_storage }}'
+    storage_reconcile_wait: false
+
+- name: Wait for Dragonfly to adopt the expanded claim template
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ df_ns }}'
+    name: dragonfly
+  register: _dragonfly_expanded_statefulset
+  retries: 60
+  delay: 5
+  until:
+    - _dragonfly_expanded_statefulset.resources | length == 1
+    - _dragonfly_expanded_statefulset.resources[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == dragonfly_snapshot_storage
+    - _dragonfly_expanded_statefulset.resources[0].status.readyReplicas | default(0) | int >= (df_replicas | int)
+
+- name: Reconcile bound Dragonfly claims after operator adoption
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: '{{ df_ns }}'
+    storage_reconcile_statefulset: dragonfly
+    storage_reconcile_claim: df
+    storage_reconcile_desired: '{{ dragonfly_snapshot_storage }}'
+    storage_reconcile_orphan: false
 
 - name: Create allow-from-platform NetworkPolicies for Dragonfly
   kubernetes.core.k8s:
@@ -155,6 +209,45 @@
   delay: 10
   until: _r_create_df_netpols is not failed
 
+- name: Discover existing Dragonfly consumer namespaces
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+  register: _df_cluster_namespaces
+
+- name: Resolve existing Dragonfly consumer namespaces
+  ansible.builtin.set_fact:
+    df_existing_consumers: >-
+      {{ ['production', 'postal', 'glitchtip', 'daytona', 'gitlab'] |
+      intersect(_df_cluster_namespaces.resources |
+      map(attribute='metadata.name') | list) }}
+
+- name: Allow consumers to egress to Dragonfly
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-egress-to-dragonfly
+        namespace: "{{ item }}"
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: "{{ df_ns }}"
+            ports:
+              - protocol: TCP
+                port: 6379
+  loop: "{{ df_existing_consumers }}"
+  register: _r_create_df_consumer_netpols
+  retries: 3
+  delay: 10
+  until: _r_create_df_consumer_netpols is not failed
+
 - name: Wait for Dragonfly pods to be ready
   kubernetes.core.k8s_info:
     kind: Pod
@@ -164,7 +257,7 @@
       - role=master
   register: df_pods
   until: >
-    df_pods.resources | length > 0 and
+    (df_pods.resources | default([])) | length > 0 and
     (df_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
   retries: 30
   delay: 10
@@ -174,21 +267,26 @@
     path: "/tmp/dragonfly-operator-{{ df_operator_ver }}.yaml"
     state: absent
 
-- name: Create PodDisruptionBudget for Dragonfly
+- name: Remove legacy duplicate Dragonfly PodDisruptionBudget
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: policy/v1
       kind: PodDisruptionBudget
       metadata:
         name: dragonfly-pdb
         namespace: "{{ df_ns }}"
-      spec:
-        minAvailable: 1
-        selector:
-          matchLabels:
-            app: dragonfly
-            app.kubernetes.io/part-of: dragonfly
+
+- name: Verify the operator-managed Dragonfly PodDisruptionBudget
+  kubernetes.core.k8s_info:
+    api_version: policy/v1
+    kind: PodDisruptionBudget
+    namespace: "{{ df_ns }}"
+    name: dragonfly
+  register: df_operator_pdb
+  until: (df_operator_pdb.resources | default([])) | length == 1
+  retries: 10
+  delay: 5
   when: df_replicas | int > 1
 
 - name: Display Dragonfly deployment summary

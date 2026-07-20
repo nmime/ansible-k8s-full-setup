@@ -214,6 +214,17 @@ class TestScriptConfigIntegration:
             content = f.read()
         assert "tests/" in content, "Script should reference tests/ directory"
 
+    def test_generated_kubespray_checkout_is_excluded(self):
+        with open(os.path.join(REPO_ROOT, ".yamllint.yaml")) as f:
+            assert "playbooks/kubespray/" in f.read()
+        with open(os.path.join(REPO_ROOT, ".ansible-lint.yml")) as f:
+            ansible_lint = f.read()
+        assert "playbooks/kubespray/" in ansible_lint
+        assert "playbooks/.platform-secrets.yml" in ansible_lint
+        assert "playbooks/*-infra-facts.yml" in ansible_lint
+        with open(SCRIPT_PATH) as f:
+            assert "-not -path './playbooks/kubespray/*'" in f.read()
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # E2E Tests — run the script in a controlled environment

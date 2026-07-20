@@ -133,14 +133,16 @@ class TestAnsibleRoleVersion:
     def test_cr_has_v3_labels(self):
         assert 'app.kubernetes.io/managed-by' in self.tasks_text
 
-    def test_cr_has_custom_libraries(self):
-        assert 'customLibraries' in self.tasks_text
+    def test_cr_omits_ignored_custom_libraries(self):
+        assert 'customLibraries' not in self.tasks_text
 
-    def test_pgbouncer_flat_config(self):
-        # v3 uses flat config: poolMode, maxClientConn, defaultPoolSize
-        assert 'poolMode' in self.tasks_text
-        assert 'maxClientConn' in self.tasks_text
-        assert 'defaultPoolSize' in self.tasks_text
+    def test_pgbouncer_current_global_config(self):
+        # Operator 3.x passes PgBouncer's native snake_case keys under
+        # proxy.pgBouncer.config.global.
+        assert 'global:' in self.tasks_text
+        assert 'pool_mode:' in self.tasks_text
+        assert 'max_client_conn:' in self.tasks_text
+        assert 'default_pool_size:' in self.tasks_text
 
     def test_backup_repo_configuration(self):
         assert 'configuration:' in self.tasks_text
@@ -150,9 +152,38 @@ class TestAnsibleRoleVersion:
         assert 'repo2-path' in self.tasks_text
         assert 'keyPrefix' not in self.tasks_text
 
-    def test_no_old_v2_pgbouncer_global_config(self):
-        # Old style: config.global.pool_mode (nested) — should not be in CR
-        assert 'config:\n              global:\n                pool_mode' not in self.tasks_text
+    def test_no_ignored_camel_case_pgbouncer_config(self):
+        assert 'poolMode:' not in self.tasks_text
+        assert 'maxClientConn:' not in self.tasks_text
+        assert 'defaultPoolSize:' not in self.tasks_text
+
+    def test_postgresql_and_pgbouncer_replicas_use_hard_node_anti_affinity(self):
+        assert self.tasks_text.count(
+            'requiredDuringSchedulingIgnoredDuringExecution:'
+        ) >= 2
+        assert 'postgres-operator.crunchydata.com/cluster:' in self.tasks_text
+        assert 'postgres-operator.crunchydata.com/data: postgres' in self.tasks_text
+        assert 'postgres-operator.crunchydata.com/role: pgbouncer' in self.tasks_text
+
+    def test_mongodb_pmm3_token_is_written_to_the_operator_source_secret(self):
+        assert 'users: percona-server-mongodb-users' in self.tasks_text
+        assert 'Patch MongoDB users source secret with PMM_SERVER_TOKEN' in self.tasks_text
+        assert 'PMM_SERVER_TOKEN:' in self.tasks_text
+        assert 'percona/pmm-client:3.8.1' in self.tasks_text
+        assert 'Remove obsolete PMM 2 keys from the MongoDB users source secret' in self.tasks_text
+        assert 'PMM_SERVER_API_KEY: null' in self.tasks_text
+        assert "name: internal-{{ project_name | default('k8s') }}-mongo-users" not in self.tasks_text
+
+    def test_postgresql_wait_requires_all_data_and_proxy_replicas(self):
+        assert 'status.postgres.ready' in self.tasks_text
+        assert 'status.pgbouncer.ready' in self.tasks_text
+        assert 'Discover unscheduled PostgreSQL pods left from an obsolete template' in self.tasks_text
+
+    def test_database_pmm3_network_path_is_explicitly_allowed(self):
+        assert 'allow-pmm-egress' in self.tasks_text
+        assert 'allow-pmm-database-ingress' in self.tasks_text
+        assert "k8s:app: pmm-server" in self.tasks_text
+        assert "port: '8443'" in self.tasks_text
 
 
 class TestCheckScriptUnit:
@@ -305,6 +336,39 @@ class TestDrillScriptUnit:
     def test_backup_set_flag(self):
         assert "--backup-set" in self.text
 
+    def test_disposable_storage_size_is_configurable(self):
+        assert "--storage-size" in self.text
+        assert "storage: ${STORAGE_SIZE}" in self.text
+
+    def test_restore_images_are_inherited_from_the_source_cluster(self):
+        assert "SOURCE_JSON=$(kubectl get perconapgcluster" in self.text
+        assert ".spec.image // $fallback" in self.text
+        assert ".spec.backups.pgbackrest.image // $fallback" in self.text
+        assert "image: ${POSTGRES_IMAGE}" in self.text
+        assert "image: ${PGBACKREST_IMAGE}" in self.text
+
+    def test_cleanup_keeps_operator_alive_until_database_finalizers_are_removed(self):
+        cleanup = self.text.split("cleanup_drill()", 1)[1].split("cleanup_on_exit()", 1)[0]
+        assert cleanup.index("kubectl delete perconapgcluster") < cleanup.index("helm uninstall")
+        assert cleanup.index("kubectl wait --for=delete postgrescluster") < cleanup.index(
+            "helm uninstall"
+        )
+        assert "kubectl get perconapgbackup" in cleanup
+        assert "--timeout=2m" in cleanup
+        assert "This force-finalization is scoped only to the drill namespace" in cleanup
+        assert cleanup.index("helm uninstall") < cleanup.index("kubectl delete namespace")
+
+    def test_v3_primary_and_generated_user_credentials_are_used(self):
+        assert "postgres-operator.crunchydata.com/role=primary" in self.text
+        assert "postgres-operator.crunchydata.com/role=pguser" in self.text
+        assert "pguser-postgres" not in self.text
+
+    def test_quota_does_not_reject_operator_generated_restore_containers(self):
+        quota = self.text.split("kind: ResourceQuota", 1)[1].split("EOF", 1)[0]
+        assert "requests.storage" in quota
+        assert "requests.cpu" not in quota
+        assert "limits.memory" not in quota
+
     def test_colour_helpers(self):
         assert "RED=" in self.text and "GREEN=" in self.text
 
@@ -343,6 +407,7 @@ class TestDrillScriptUnit:
 
     def test_replication_check(self):
         assert "replication" in self.text.lower()
+        assert "No streaming replica became available within 10m" in self.text
 
     def test_connectivity_check(self):
         assert "connectivity" in self.text.lower()
@@ -416,8 +481,7 @@ class TestDrillScriptStepOrder:
             )
 
     def test_resource_quota_limits(self, text):
-        assert "requests.cpu" in text
-        assert "requests.memory" in text
+        assert "requests.storage" in text
         assert "pods:" in text
 
 
@@ -542,3 +606,9 @@ class TestDrillScriptDryRun:
             [str(DRILL_SH), "--bogus"], capture_output=True, text=True, timeout=10,
         )
         assert r.returncode == 2
+
+
+def test_production_database_replicas_can_use_reserved_control_plane_capacity():
+    tasks = (REPO_ROOT / "roles" / "k8s-databases" / "tasks" / "main.yml").read_text()
+    assert tasks.count('node-role.kubernetes.io/control-plane') >= 2
+    assert tasks.count('if tier == "production" else []') >= 2

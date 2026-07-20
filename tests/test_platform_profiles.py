@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,7 +20,7 @@ EXPECTED_PROFILE_TIERS = {
     "small": ("small", "small"),
     "medium": ("medium", "medium"),
     "medium-optimized": ("medium", "small"),
-    "production": ("production", "production"),
+    "production": ("production", "small"),
 }
 
 COMPONENT_PATHS = (
@@ -33,6 +34,7 @@ COMPONENT_PATHS = (
     "gitlab.runner.enabled",
     "gitops.enabled",
     "observability.enabled",
+    "observability.pmm.enabled",
     "coroot.enabled",
     "elasticsearch.enabled",
     "autoscaling.enabled",
@@ -170,6 +172,59 @@ class TestNamedProfileContract:
     def test_small_workers_meet_the_declared_eight_gib_floor(self):
         assert load_profile("small")["infrastructure"]["workers"]["type"] == "cx33"
 
+    def test_full_stack_scheduling_contract_matches_available_capacity(self):
+        medium = load_profile("medium")
+        production = load_profile("production")
+
+        # Medium intentionally counts its three HA control-plane nodes in the
+        # workload envelope; production adds a third worker and dedicates its
+        # control plane to cluster services.
+        assert medium["infrastructure"]["control_plane"]["schedulable"] is True
+        assert medium["infrastructure"]["workers"]["count"] == 2
+        assert production["infrastructure"]["control_plane"]["schedulable"] is False
+        assert production["infrastructure"]["workers"]["count"] == 3
+
+    def test_production_keeps_ha_explicit_on_the_conservative_envelope(self):
+        profile = load_profile("production")
+        assert profile["resource_tier"] == "small"
+        assert profile["kubernetes"]["cert_manager_replicas"] == 3
+        assert profile["secrets"]["vault"]["replicas"] == 3
+        assert profile["secrets"]["eso"]["replicas"] == 2
+        assert profile["databases"]["postgresql"]["replicas"] == 2
+        assert profile["databases"]["postgresql"]["proxy_replicas"] == 2
+        assert profile["databases"]["mongodb"]["replicas"] == 3
+        assert profile["gitlab"]["webservice_replicas"] == 2
+        assert profile["gitlab"]["sidekiq_replicas"] == 2
+        assert profile["gitlab"]["webservice_memory_request"] == "768Mi"
+        assert profile["gitlab"]["sidekiq_memory_request"] == "768Mi"
+        assert profile["gitlab"]["kas_memory_request"] == "128Mi"
+        assert profile["gitlab"]["toolbox_memory_request"] == "192Mi"
+        assert profile["gitops"]["server_replicas"] == 2
+        assert profile["gitops"]["repo_replicas"] == 2
+        assert profile["gitops"]["controller_replicas"] == 2
+        assert profile["observability"]["metrics"]["replicas"] == 2
+        assert profile["autoscaling"]["replicas"] == 2
+        assert profile["temporal"]["frontend_replicas"] == 2
+        assert profile["temporal"]["history_replicas"] == 2
+        assert profile["postal"]["smtp_replicas"] == 2
+        assert profile["postal"]["worker_replicas"] == 2
+        assert profile["alerting"]["replicas"] == 2
+        assert profile["tracing"]["collector_replicas"] == 2
+        assert profile["glitchtip"]["web_replicas"] == 2
+        assert profile["glitchtip"]["worker_replicas"] == 2
+        assert profile["coroot"]["node_agent"]["resources"]["memory_limit"] == "1Gi"
+
+    @pytest.mark.parametrize("profile_name", EXPECTED_PROFILE_TIERS)
+    def test_seaweedfs_raft_master_count_is_explicit_and_odd(self, profile_name):
+        storage = load_profile(profile_name)["storage"]
+        master_replicas = storage.get("master_replicas", storage.get("replicas"))
+        assert master_replicas >= 1
+        assert master_replicas % 2 == 1
+        if profile_name in {"medium", "production"}:
+            assert storage["master_replicas"] == 3
+            assert storage["volume_replicas"] == 3
+            assert storage["filer_replicas"] == 2
+
     def test_minimal_does_not_enable_gitlab_without_redis(self):
         profile = load_profile("minimal")
         assert profile["gitlab"]["enabled"] is False
@@ -205,6 +260,8 @@ class TestMediumOptimizedContract:
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
+        assert self.profile["infrastructure"]["control_plane"]["type"] == "cx33"
+        assert self.profile["infrastructure"]["workers"]["type"] == "cx33"
         assert self.profile["secrets"]["vault"]["replicas"] == 3
         assert self.profile["databases"]["postgresql"]["replicas"] == 3
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
@@ -262,10 +319,14 @@ class TestMediumOptimizedContract:
             "memory_request": "512Mi",
             "memory_limit": "1Gi",
         }
+        assert self.profile["coroot"]["node_agent"]["resources"]["memory_request"] == "384Mi"
 
     def test_profile_init_preserves_the_contract(self, tmp_path):
         orchestrator = tmp_path / "platform-orchestrator"
         shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        # A developer may have an ignored live selector in the source tree.
+        # The init test must exercise a clean checkout, not copy local runtime state.
+        (orchestrator / "platform.yaml").unlink(missing_ok=True)
         result = subprocess.run(
             ["bash", "platform.sh", "init", "medium-optimized"],
             cwd=orchestrator,
@@ -324,7 +385,7 @@ class TestResourceTierConsumers:
         ).read_text(encoding="utf-8")
         assert "Enforce the selected named profile mapping" in content
         assert "medium-optimized: {tier: medium, resource_tier: small}" in content
-        assert "production: {tier: production, resource_tier: production}" in content
+        assert "production: {tier: production, resource_tier: small}" in content
 
     def test_explicit_server_types_are_capacity_checked(self):
         content = (
@@ -333,6 +394,110 @@ class TestResourceTierConsumers:
         assert "Reject undersized explicit or auto-selected server types" in content
         assert "selected_cp_spec.cores" in content
         assert "selected_worker_spec.memory" in content
+
+    def test_server_create_uses_argument_safe_ssh_key_values(self):
+        content = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert content.count("'--ssh-key', hcloud_ssh_key") == 2
+        assert '- "{{ hcloud_ssh_key }}"' in content
+        assert "--placement-group', project + '-spread'" in content
+
+    def test_bastion_vmservicescrape_is_created_after_cluster_bootstrap(self):
+        network = (
+            REPO_ROOT / "roles" / "network-security" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        observability = (
+            REPO_ROOT / "roles" / "k8s-observability" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "Add VMServiceScrape for bastion node-exporter" not in network
+        assert "Add VMServiceScrape for bastion node-exporter" in observability
+        assert "after the Kubernetes API is ready" in observability
+
+    def test_cilium_119_uses_a_root_owned_host_cni_directory(self):
+        tasks = (
+            REPO_ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "cni_bin_owner: root" in tasks
+        assert "Make Kubespray create the Cilium host binary directory as root" in tasks
+        assert "0050-create_directories.yml" in tasks
+        assert "Verify Kubespray Cilium preinstall ownership patch" in tasks
+        assert "drop DAC_OVERRIDE" in tasks
+
+    def test_control_plane_schedulability_is_converged_during_profile_changes(self):
+        tasks = (
+            REPO_ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "Enforce dedicated control-plane scheduling contract" in tasks
+        assert "node-role.kubernetes.io/control-plane=:NoSchedule" in tasks
+        assert 'kubectl drain "$node"' in tasks
+        assert "--ignore-daemonsets --delete-emptydir-data" in tasks
+        assert 'kubectl uncordon "$node"' in tasks
+        assert "Enforce schedulable control-plane contract for compact profiles" in tasks
+        assert "not (cp_schedulable | default(false) | bool)" in tasks
+
+    def test_local_api_tunnel_is_portable_and_does_not_kill_unmanaged_ports(self):
+        tasks = (
+            REPO_ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        supervisor = (
+            REPO_ROOT / "scripts" / "kube-api-tunnel-supervisor.sh"
+        ).read_text(encoding="utf-8")
+        assert "local_api_port=16443" in tasks
+        assert "ExitOnForwardFailure=yes" in supervisor
+        assert 'TARGETS+=("$2")' in supervisor
+        assert "target_index=$(((target_index + 1) % ${#TARGETS[@]}))" in supervisor
+        assert "for target in (master_ips" in tasks
+        assert 'KUBECONFIG="$KUBECONFIG_FILE" kubectl' in supervisor
+        assert "get --raw=/readyz" in supervisor
+        assert "config set-cluster cluster.local" in tasks
+        assert "Refusing to kill PID" in tasks or "Refusing to kill PID" in supervisor
+        assert "fuser -k" not in tasks
+        assert "ss -tlnp" not in tasks
+        teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
+        assert '${PROJECT}-api-tunnel.pid' in teardown
+        assert "REFUSED to kill unmanaged PID" in teardown
+        assert 'kill "$tunnel_pid"' in teardown
+        assert '"kube-api-tunnel-supervisor.sh"' in teardown
+        continuation = (
+            REPO_ROOT / "playbooks" / "continue_post_kubespray.yml"
+        ).read_text(encoding="utf-8")
+        assert "skip_kubespray: true" in continuation
+        assert "ss -tlnp" not in continuation
+        assert "sed -i" not in continuation
+
+    def test_teardown_captures_csi_volumes_by_project_server_id(self):
+        teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
+        assert "PROJECT_VOLUME_IDS" in teardown
+        assert "project_server_ids" in teardown
+        assert ".server as $server" in teardown
+        assert '--arg prefix "$PREFIX"' in teardown
+        assert "add_project_volume_id" in teardown
+        assert 'all(.items[]; .metadata.name | startswith($prefix))' in teardown
+        assert '.spec.csi.driver == "csi.hetzner.cloud"' in teardown
+        assert ".spec.csi.volumeHandle" in teardown
+        assert 'hcloud volume delete "$volume_id"' in teardown
+        assert 'hcloud volume describe "$volume_id"' in teardown
+
+    def test_hcloud_ccm_has_single_ownership_contract(self):
+        tasks = (
+            REPO_ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "cloud_provider: external" in tasks
+        assert "external_cloud_provider: manual" in tasks
+        assert "providerID: 'hcloud://{{ (item.stdout | from_json).id }}'" in tasks
+        assert "HCLOUD_LOAD_BALANCERS_ENABLED" in tasks
+        assert "HCLOUD_NETWORK_ROUTES_ENABLED" in tasks
+        assert "Verify every Kubernetes node has a Hetzner provider ID" in tasks
+
+    def test_network_node_hardening_uses_infrastructure_ip_maps(self):
+        content = (
+            REPO_ROOT / "roles" / "network-security" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "network_control_plane_ips" in content
+        assert "network_worker_ips" in content
+        assert "network_node_ips | join(' ')" in content
+        assert not re.search(r"(?<!network_)control_plane_ips", content)
 
     def test_dns_capability_is_checked_before_provisioning(self):
         content = (
@@ -481,6 +646,7 @@ class TestComponentLifecycle:
             "blackbox",
             "daytona",
             "coroot",
+            "pmm",
             "hipaa",
         ):
             assert component in result.stdout
@@ -489,6 +655,7 @@ class TestComponentLifecycle:
         ("component", "enabled_paths"),
         (
             ("coroot", ("coroot.enabled", "observability.enabled")),
+            ("pmm", ("observability.pmm.enabled", "observability.enabled")),
             (
                 "hipaa",
                 (
@@ -549,12 +716,13 @@ class TestComponentLifecycle:
             ("gitlab.enabled", "dragonfly.enabled", "GitLab chart 10 requires"),
             ("glitchtip.enabled", "dragonfly.enabled", "GlitchTip requires"),
             ("apm.enabled", "elasticsearch.enabled", "APM Server requires"),
-            ("temporal.enabled", "elasticsearch.enabled", "Temporal requires"),
+            ("temporal.enabled", "databases.postgresql.enabled", "Temporal requires"),
             ("postal.enabled", "dragonfly.enabled", "Postal requires"),
             ("tracing.enabled", "storage.enabled", "Tempo tracing requires"),
             ("backup.enabled", "storage.enabled", "Backup automation requires"),
             ("alerting.email.enabled", "postal.enabled", "Email alerting requires"),
             ("coroot.enabled", "observability.enabled", "Coroot require observability"),
+            ("observability.pmm.enabled", "observability.enabled", "PMM"),
             ("compliance.hipaa.enabled", "secrets.enabled", "HIPAA-oriented controls require"),
         ),
     )
@@ -670,6 +838,7 @@ class TestComponentLifecycle:
             "gitlab-runner",
             "gitops",
             "observability",
+            "pmm",
             "coroot",
             "tracing",
             "autoscaling",
@@ -695,3 +864,29 @@ class TestComponentLifecycle:
         assert "auto-unseal mechanism (Kubernetes secrets)" not in plan
         assert "verify keys in K8s secrets" not in plan
         assert "wait for re-election and auto-unseal" not in plan.lower()
+
+    def test_component_deploys_load_persisted_infrastructure_facts(self):
+        deploy = (REPO_ROOT / "playbooks" / "deploy_platform.yml").read_text(
+            encoding="utf-8"
+        )
+        observability = (
+            REPO_ROOT / "roles" / "k8s-observability" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+
+        assert "Check for persisted infrastructure facts" in deploy
+        assert "Load persisted infrastructure facts for component-only runs" in deploy
+        assert "{{ project_name }}-infra-facts.yml" in deploy
+        assert "bastion_private_ip" in observability
+        assert "bastion_metrics_ip" in observability
+
+    def test_vmsingle_uses_current_embedded_pvc_schema(self):
+        observability = (
+            REPO_ROOT / "roles" / "k8s-observability" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        vmsingle = observability.split(
+            "name: Deploy VMSingle (standalone mode for minimal/small)", 1
+        )[1].split("- name:", 1)[0]
+
+        assert "storageClassName:" in vmsingle
+        assert "storage:" in vmsingle
+        assert "volumeClaimTemplate:" not in vmsingle

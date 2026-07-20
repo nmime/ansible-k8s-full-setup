@@ -115,7 +115,7 @@
     content: |
       ---
       # Auto-generated platform secrets - DO NOT COMMIT TO GIT
-      # Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+      # Generated: {{ ansible_facts.date_time.iso8601 | default('unknown') }}
       object_storage_access_key: "{{ object_storage_access_key }}"
       object_storage_secret_key: "{{ object_storage_secret_key }}"
       grafana_admin_user: "{{ grafana_admin_user }}"
@@ -149,7 +149,7 @@
         content: |
           ---
           # Auto-generated platform secrets - DO NOT COMMIT TO GIT
-          # Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+          # Generated: {{ ansible_facts.date_time.iso8601 | default('unknown') }}
           object_storage_access_key: "{{ object_storage_access_key }}"
           object_storage_secret_key: "{{ object_storage_secret_key }}"
           grafana_admin_user: "{{ grafana_admin_user }}"
@@ -180,6 +180,8 @@
         argv:
           - ansible-vault
           - encrypt
+          - --encrypt-vault-id
+          - default
           - --vault-password-file
           - "{{ resolved_vault_password_file }}"
           - --output

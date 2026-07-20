@@ -23,7 +23,10 @@ backup_mongodb_pbm_config_map: pbm-s3-creds
 backup_mongodb_verify_after: true
 backup_vault_enabled: true
 backup_vault_namespace: vault
-backup_vault_server: "{{ 'http' if vault_tls_disabled | default(false) | bool else 'https' }}://vault.{{ backup_vault_namespace }}.svc.cluster.local:8200"
+# Snapshot requests must go directly to the active Raft member. The generic
+# Vault service can select a standby, whose redirect produces a truncated
+# snapshot archive (missing SHA256SUMS.sealed).
+backup_vault_server: "{{ 'http' if vault_tls_disabled | default(false) | bool else 'https' }}://vault-active.{{ backup_vault_namespace }}.svc.cluster.local:8200"
 backup_vault_snapshot_bucket: "{{ backup_storage_bucket }}/{{ backup_project_name }}/vault"
 backup_vault_snapshot_retention: "{{ backup_retention_days }}"
 backup_vault_verify_after: true
@@ -55,6 +58,7 @@ backup_job_cpu_limit: 500m
 backup_job_memory_request: 128Mi
 backup_job_memory_limit: 512Mi
 backup_alpine_image: alpine:3.22
+backup_curl_image: curlimages/curl:8.21.0
 backup_vault_image: "hashicorp/vault:2.0.3"
 backup_mongo_image: mongodb/mongodb-community-server:7.0.15
 backup_s3cli_image: amazon/aws-cli:2.34.48

@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULTS = ROOT / "defaults" / "main.yml"
 
 EXPECTED = {
-    "k8s_version": "v1.35.6",
+    "k8s_version": "v1.35.4",
     "cilium_version": "v1.19.5",
     "gateway_api_version": "v1.6.0",
     "cert_manager_version": "v1.21.0",
@@ -38,6 +38,7 @@ EXPECTED = {
     "dragonfly_image_version": "v1.39.0",
     "vm_operator_version": "0.66.2",
     "pmm_server_version": "3.8.1",
+    "hcloud_exporter_version": "3.21.0",
     "vault_version": "2.0.3",
     "vault_chart_version": "0.34.0",
     "caddy_image_tag": "2.11.4-alpine",
@@ -51,7 +52,7 @@ EXPECTED = {
 }
 
 STALE = [
-    "v1.35.4", "v1.19.4", "v1.5.1", "v1.20.2",
+    "v1.35.6", "v1.19.4", "v1.5.1", "v1.20.2",
     "v0.15.3", "v1.31.0", "v2.21.0", "v1.42.0",
     "2.19.0", "9.4.1", "3.3.6",
     "11.10.0", "v1.5.0", "v1.38.1",
@@ -82,6 +83,13 @@ class TestCentralDefaults:
         """All expected version variables exist."""
         for var in EXPECTED:
             assert var in data, f"Missing version variable: {var}"
+
+    def test_all_sha256_pins_are_exact_lowercase_digests(self, data):
+        for name, digest in data.items():
+            if name.endswith("_sha256"):
+                assert re.fullmatch(r"[0-9a-f]{64}", str(digest)), (
+                    f"{name} must be an exact 64-character lowercase SHA-256 digest"
+                )
 
 
 class TestNoStaleVersions:
@@ -176,6 +184,8 @@ class TestRoleVersionsMatchCentral:
     def test_blackbox(self, central):
         r = yaml.safe_load((ROOT / "roles/blackbox-exporter/defaults/main.yml").read_text())
         assert r.get("blackbox_chart_version") == central["blackbox_chart_version"]
+        assert r.get("blackbox_image_registry") == "docker.io"
+        assert r.get("blackbox_image") == "prom/blackbox-exporter"
 
     def test_apm(self, central):
         r = yaml.safe_load((ROOT / "roles/apm-server/defaults/main.yml").read_text())
@@ -235,6 +245,13 @@ class TestAllK8sVersionsMatch:
                 f"{yml.relative_to(ROOT)} has wrong k8s version"
         inv = (ROOT / "inventory.example").read_text()
         assert f"k8s_version: {exp}" in inv, "inventory.example has wrong k8s version"
+
+    def test_kubespray_role_enforces_its_real_checksum_matrix(self):
+        role = (ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml").read_text()
+        assert "kubespray_defaults/vars/main/checksums.yml" in role
+        assert "kubespray_checksum_matrix.content | b64decode | from_yaml" in role
+        assert ".kubeadm_checksums.amd64" in role
+        assert "Kubernetes {{ k8s_ver }} is not supported by Kubespray" in role
 
 
 # ==================== E2E TESTS ====================

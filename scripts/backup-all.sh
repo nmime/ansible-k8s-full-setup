@@ -27,6 +27,12 @@ done
 if [ -n "$CONFIG_FILE" ]; then
   [ -f "$CONFIG_FILE" ] || { error "Platform config not found: $CONFIG_FILE"; exit 1; }
   command -v yq >/dev/null 2>&1 || { error "yq is required with --config"; exit 1; }
+  if [ -z "${PROJECT_NAME:-}" ]; then
+    PROJECT_NAME=$(yq -r '.global.project // ""' "$CONFIG_FILE")
+    [ -n "$PROJECT_NAME" ] \
+      || { error "global.project is required in $CONFIG_FILE"; exit 1; }
+    export PROJECT_NAME
+  fi
 fi
 
 component_expected() {
@@ -69,13 +75,43 @@ if [ "$DRY_RUN" = "true" ]; then
   info "[DRY RUN] Would verify object storage reachability"
 else
   [ -z "$OBJ" ] && OBJ=$(kubectl get secret -n storage seaweedfs-s3-config -o jsonpath='{.data.endpoint}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+  if [ -z "$OBJ" ] && kubectl get service seaweedfs-filer -n storage >/dev/null 2>&1; then
+    OBJ=http://seaweedfs-filer.storage.svc.cluster.local:8333
+  fi
   [ -n "$OBJ" ] || { error "Object storage endpoint is unavailable"; exit 1; }
-  curl -sS --max-time 5 -o /dev/null "$OBJ" || { error "Object storage is unreachable: $OBJ"; exit 1; }
+  if [[ "$OBJ" == *".svc"* || "$OBJ" == *".svc."* ]]; then
+    probe="backup-storage-probe-$(date +%s)"
+    probe_overrides=$(jq -cn --arg name "$probe" --arg url "$OBJ" '{spec:{securityContext:{runAsNonRoot:true,seccompProfile:{type:"RuntimeDefault"}},containers:[{name:$name,image:"curlimages/curl:8.17.0",command:["curl","-sS","--max-time","10","-o","/dev/null",$url],securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]},runAsNonRoot:true,runAsUser:100,runAsGroup:1000}}]}}')
+    kubectl run "$probe" --namespace storage --rm -i --restart=Never \
+      --image=curlimages/curl:8.17.0 --overrides="$probe_overrides" \
+      || { error "Object storage is unreachable from the cluster: $OBJ"; exit 1; }
+  else
+    curl -sS --max-time 5 -o /dev/null "$OBJ" || { error "Object storage is unreachable: $OBJ"; exit 1; }
+  fi
   info "Storage reachable"
 fi
 TS=$(date -u +%Y%m%dT%H%M%SZ); RF="${PROJECT_ROOT}/.backup-results-${TS}.log"
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
-check_comp() { kubectl get pods -n "$1" -l "$2" -o name 2>/dev/null | grep -q .; }
+check_comp() {
+  kubectl get pods -n "$1" -l "$2" -o json 2>/dev/null \
+    | jq -e '.items | length > 0' >/dev/null
+}
+wait_for_job() {
+  local ns="$1" job="$2" deadline phase
+  deadline=$((SECONDS + 3600))
+  while (( SECONDS < deadline )); do
+    phase=$(kubectl get job "$job" -n "$ns" -o json 2>/dev/null | jq -r '
+      if any(.status.conditions[]?; .type == "Complete" and .status == "True") then "complete"
+      elif any(.status.conditions[]?; .type == "Failed" and .status == "True") then "failed"
+      else "running" end' 2>/dev/null || echo missing)
+    case "$phase" in
+      complete) return 0 ;;
+      failed|missing) return 1 ;;
+    esac
+    sleep 5
+  done
+  return 1
+}
 run_backup() {
   local comp="$1" cronjob="$2" ns="$3" lbl="$4"; TOTAL=$((TOTAL+1))
   if dry_run_component_is_disabled "$comp"; then
@@ -102,7 +138,17 @@ run_backup() {
   job="${cronjob}-manual-${job_suffix}"
   job="${job//:/-}"
   if kubectl create job "$job" --from="cronjob/${cronjob}" -n "$ns" 2>&1 | tee -a "$RF" &&
-     kubectl wait --for=condition=complete "job/${job}" -n "$ns" --timeout=3600s 2>&1 | tee -a "$RF"; then
+     wait_for_job "$ns" "$job"; then
+    if [ "$comp" = gitlab ]; then
+      local gitlab_logs
+      gitlab_logs=$(kubectl logs "job/${job}" -n "$ns" --all-containers 2>&1)
+      printf '%s\n' "$gitlab_logs" >> "$RF"
+      if printf '%s\n' "$gitlab_logs" | grep -Eq 'Unable to check existence of bucket|Skipping backup of (registry|uploads|artifacts|lfs|packages|external_diffs|terraform_state|pages|ci_secure_files|agent_plan_content)'; then
+        error "GitLab Toolbox completed after skipping one or more required object-storage components"
+        FAILED=$((FAILED+1)); echo "${comp}: FAIL-incomplete" >> "$RF"
+        return 0
+      fi
+    fi
     PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"
   else
     kubectl logs "job/${job}" -n "$ns" --all-containers --tail=200 2>&1 | tee -a "$RF" || true
@@ -143,10 +189,11 @@ spec:
   clusterName: ${cluster}
   storageName: s3-object-storage
 EOF
-  local state attempts=0
+  local state state_lower attempts=0
   while [ "$attempts" -lt 360 ]; do
     state=$(kubectl get perconaservermongodbbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
-    case "${state,,}" in
+    state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
+    case "$state_lower" in
       ready|successful) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; return 0 ;;
       error|failed) break ;;
     esac
@@ -158,7 +205,11 @@ EOF
 }
 run_postgresql_backup() {
   local comp=postgresql ns=databases cluster="${PROJECT_NAME:-k8s}-pg"
-  local backup state attempts=0
+  local backup state state_lower job_name attempts=0 repo="${BACKUP_POSTGRESQL_REPO:-repo2}"
+  local timeout_seconds="${BACKUP_POSTGRESQL_TIMEOUT_SECONDS:-1800}" max_attempts
+  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] && [ "$timeout_seconds" -ge 10 ] \
+    || { error "BACKUP_POSTGRESQL_TIMEOUT_SECONDS must be an integer >= 10"; FAILED=$((FAILED+1)); return 0; }
+  max_attempts=$((timeout_seconds / 10))
   backup="${cluster}-manual-$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')"
   TOTAL=$((TOTAL+1))
   if dry_run_component_is_disabled "$comp"; then
@@ -179,6 +230,12 @@ run_postgresql_backup() {
     fi
     return 0
   fi
+  if ! kubectl get perconapgcluster "$cluster" -n "$ns" -o json \
+    | jq -e --arg repo "$repo" '.spec.backups.pgbackrest.repos | any(.name == $repo)' >/dev/null; then
+    error "PostgreSQL backup repository ${repo} is not configured on ${ns}/${cluster}"
+    FAILED=$((FAILED+1)); echo "${comp}: FAIL-missing-${repo}" >> "$RF"
+    return 0
+  fi
   kubectl apply -f - <<EOF | tee -a "$RF"
 apiVersion: pgv2.percona.com/v2
 kind: PerconaPGBackup
@@ -187,18 +244,32 @@ metadata:
   namespace: ${ns}
 spec:
   pgCluster: ${cluster}
-  repoName: repo1
+  repoName: ${repo}
   options:
     - --type=full
 EOF
-  while [ "$attempts" -lt 360 ]; do
+  while [ "$attempts" -lt "$max_attempts" ]; do
     state=$(kubectl get perconapgbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
-    case "${state,,}" in
+    state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
+    case "$state_lower" in
       succeeded|successful|ready) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; return 0 ;;
       failed|error) break ;;
     esac
+    # Percona 3.x can leave the CR at Running after its backing Job has
+    # exhausted retries. Observe the Job directly so a terminal failure does
+    # not turn into an hour-long false wait.
+    job_name=$(kubectl get perconapgbackup "$backup" -n "$ns" \
+      -o jsonpath='{.status.jobName}' 2>/dev/null || true)
+    if [ -n "$job_name" ] && kubectl get job "$job_name" -n "$ns" -o json 2>/dev/null \
+      | jq -e 'any(.status.conditions[]?; .type == "Failed" and .status == "True")' >/dev/null; then
+      state=failed
+      break
+    fi
     attempts=$((attempts+1)); sleep 10
   done
+  if [ -n "${job_name:-}" ]; then
+    kubectl logs "job/${job_name}" -n "$ns" --all-containers --tail=200 2>&1 | tee -a "$RF" || true
+  fi
   kubectl describe perconapgbackup "$backup" -n "$ns" | tee -a "$RF" || true
   error "PostgreSQL backup ${ns}/${backup} failed or timed out"
   FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
@@ -207,7 +278,24 @@ run_named_backup() {
   case "$1" in
     postgresql) run_postgresql_backup ;;
     mongodb)   run_mongodb_backup ;;
-    vault)     run_backup vault vault-raft-snapshot vault app.kubernetes.io/name=vault ;;
+    vault)
+      if [[ "$DRY_RUN" == true ]]; then
+        run_backup vault vault-raft-snapshot vault app.kubernetes.io/name=vault
+      else
+        vault_storage=$(kubectl exec -n vault vault-0 -- vault status -format=json 2>/dev/null | jq -r '.storage_type // "unknown"' 2>/dev/null || echo unknown)
+        if [[ "$vault_storage" == raft ]]; then
+          run_backup vault vault-raft-snapshot vault app.kubernetes.io/name=vault
+        elif [[ "$vault_storage" == file && "${BACKUP_ALLOW_VELERO_VAULT_FALLBACK:-false}" == true ]]; then
+          TOTAL=$((TOTAL+1)); SKIPPED=$((SKIPPED+1))
+          warn "Vault uses file storage; native Raft snapshot deferred to the mandatory Velero filesystem backup"
+          echo "vault: VELERO-FALLBACK" >> "$RF"
+        else
+          TOTAL=$((TOTAL+1)); FAILED=$((FAILED+1))
+          error "Vault native backup requires integrated Raft storage (detected: ${vault_storage})"
+          echo "vault: FAIL-${vault_storage}" >> "$RF"
+        fi
+      fi
+      ;;
     seaweedfs) run_backup seaweedfs seaweedfs-backup-check storage app.kubernetes.io/name=seaweedfs ;;
     gitlab)
       run_backup gitlab gitlab-toolbox-backup gitlab 'release=gitlab,app=toolbox'

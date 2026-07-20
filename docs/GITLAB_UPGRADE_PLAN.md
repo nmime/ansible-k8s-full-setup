@@ -115,15 +115,20 @@ kubectl get perconapgcluster -n databases
 Create a new backup rather than relying only on an old S3 object:
 
 ```bash
-scripts/backup-all.sh --component gitlab --force
+scripts/backup-all.sh --force
 scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
+scripts/pg-restore-drill.sh --dry-run --backup-set PGBACKREST_SET
 ```
 
-The GitLab backup must include database and repository data. Rails secrets and
-object-storage content are separate recovery dependencies and must also be
-available. Record the backup ID, bucket, size, creation time, GitLab version,
-and restore-drill result in the maintenance ticket. A backup without a recent
-isolated restore result is not an acceptable rollback gate.
+The Toolbox archive must include repository/application data. The database is
+deliberately excluded from that archive because GitLab uses the external
+Percona PostgreSQL cluster; `backup-all.sh` protects it with the native,
+major-version-matched pgBackRest workflow. Rails secrets and object-storage
+content are separate recovery dependencies. Record the Toolbox backup ID, the
+matching PostgreSQL backup set, buckets, sizes, creation times, GitLab and
+PostgreSQL versions, and both restore-drill results in the maintenance ticket.
+A backup set without recent isolated restore results is not an acceptable
+rollback gate.
 
 ### Capture exact rollback state
 
@@ -232,14 +237,15 @@ the recorded revision. It exits nonzero if Helm or health gates fail.
 ### After a successful 10.x migration
 
 Rolling chart `10.x` back to chart `9.x` is not automatically data-safe. Stop
-writes, restore the GitLab backup to a working GitLab instance of the same
-version that created the backup, restore Rails secrets and object-storage data,
-then run the isolated restore and smoke-test sequence. Never treat `helm
-rollback` alone as database rollback across the major boundary.
+writes, restore the external PostgreSQL backup, restore the GitLab Toolbox
+archive to a working GitLab instance of the same version that created it,
+restore Rails secrets and object-storage data, then run the isolated restore
+and smoke-test sequence. Never treat `helm rollback` alone as database rollback
+across the major boundary.
 
-Use `scripts/gitlab-restore-test.sh` to verify the database and repository
-payload in an isolated namespace before directing users to a recovered
-instance.
+Use `scripts/pg-restore-drill.sh` for the database and
+`scripts/gitlab-restore-test.sh` for the Toolbox archive in isolated namespaces
+before directing users to a recovered instance.
 
 ## Risk assessment
 

@@ -2,15 +2,20 @@
 # PRODUCTION TIER - higher-availability platform footprint
 # ============================================
 # Best for: Full HA, medium-high traffic
-# Nodes: 6+ x cx43 16Gi-class nodes (3 masters, 3+ workers) + cx23 bastion + lb11
+# Nodes: 6 x cx43 16Gi-class nodes (3 masters, 3 workers) + cx23 bastion + lb11
 # HA: Three-way control plane with higher stateless workload redundancy
-# Storage: 4x150Gi object storage, 100Gi PostgreSQL, 150Gi metrics
+# Storage: resource-efficient HA defaults with online grow-only expansion
+# Scheduling: application requests are deliberately sized to leave failover
+# headroom on three 16Gi workers while the three control planes stay dedicated.
 # Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
 # ============================================
 
 platform_profile: production
 tier: production
-resource_tier: production
+# Production capabilities and HA topology, with the same conservative request
+# envelope used by medium-optimized. Critical replica counts are explicit below
+# so reducing reservations never silently reduces availability.
+resource_tier: small
 cost_estimate: "Provider-price dependent: 3 x cx43 control plane, 3 x cx43 worker, cx23 bastion, lb11"
 
 global:
@@ -58,9 +63,10 @@ network:
 # Kubernetes
 # ---------------------------------------------
 kubernetes:
-  version: v1.35.6
+  version: v1.35.4
   cni: cilium
   ha_control_plane: true
+  cert_manager_replicas: 3
   features:
     gateway_api: true
     hubble: true
@@ -73,8 +79,13 @@ kubernetes:
 storage:
   enabled: true
   mode: distributed
-  replicas: 4
-  size_per_replica: 150Gi
+  master_replicas: 3
+  # Three independent servers preserve the selected 001 replica placement;
+  # capacity growth should increase size/quota before adding a fourth server.
+  volume_replicas: 3
+  filer_replicas: 2
+  replication_placement: "001"
+  size_per_replica: 100Gi
 
 # ---------------------------------------------
 # Secrets
@@ -86,6 +97,7 @@ secrets:
     storage_size: 20Gi
   eso:
     enabled: true
+    replicas: 2
 
 # ---------------------------------------------
 # Databases
@@ -94,21 +106,31 @@ databases:
   enabled: true
   postgresql:
     enabled: true
-    replicas: 3
-    storage_size: 100Gi
+    # Primary plus synchronous standby; Kubernetes control plane remains 3+3.
+    replicas: 2
+    proxy_replicas: 2
+    storage_size: 50Gi
   mongodb:
     enabled: true
     replicas: 3
-    storage_size: 100Gi
+    storage_size: 20Gi
 
 # ---------------------------------------------
 # GitLab
 # ---------------------------------------------
 gitlab:
   enabled: true
+  # Keep the full external-service architecture and redundant Rails pods, but
+  # use the chart's conservative per-pod worker envelope on 16Gi workers.
+  mode: light
   webservice_replicas: 2
   sidekiq_replicas: 2
+  webservice_memory_request: 768Mi
+  sidekiq_memory_request: 768Mi
+  kas_memory_request: 128Mi
+  toolbox_memory_request: 192Mi
   gitaly_replicas: 1
+  gitaly_storage_size: 50Gi
   runner:
     enabled: true
     concurrent_jobs: 20
@@ -119,16 +141,23 @@ gitlab:
 gitops:
   enabled: true
   ha_enabled: true
+  server_replicas: 2
+  repo_replicas: 2
+  controller_replicas: 2
 
 # ---------------------------------------------
 # Observability
 # ---------------------------------------------
 observability:
   enabled: true
+  pmm:
+    enabled: true
+    storage_size: 50Gi
   metrics:
     enabled: true
+    replicas: 2
     retention: 30d
-    storage_size: 150Gi
+    storage_size: 100Gi
 
   logging:
     enabled: true
@@ -137,36 +166,118 @@ observability:
 
   grafana:
     enabled: true
-    replicas: 2
+    # One persistent instance is intentional: the bundled SQLite/RWO setup is
+    # not safe for active-active replicas without an external Grafana database.
+    replicas: 1
 
 # ---------------------------------------------
 # Autoscaling
 # ---------------------------------------------
 autoscaling:
   enabled: true
+  replicas: 2
   defaults:
     min_replicas: 2
     max_replicas: 20
 
 elasticsearch:
   enabled: true
+  master:
+    replicas: 3
+    storage_size: 20Gi
+    memory_request: 512Mi
+    memory_limit: 1536Mi
+    cpu_request: 250m
+    cpu_limit: 1
+    heap: 512m
+  data:
+    replicas: 1
+    storage_size: 100Gi
+    memory_request: 1Gi
+    memory_limit: 2Gi
+    cpu_request: 500m
+    cpu_limit: 2
+    heap: 1g
+  kibana:
+    replicas: 1
+    memory_request: 256Mi
+    memory_limit: 1Gi
+    cpu_request: 100m
 
 dragonfly:
   enabled: true
+  replicas: 2
+  snapshot_storage: 20Gi
+  memory_request: 256Mi
+  memory_limit: 768Mi
+  cpu_request: 250m
+  cpu_limit: 1
 
 temporal:
   enabled: true
+  replicas: 2
+  history_replicas: 2
+  matching_replicas: 2
+  frontend_replicas: 2
+  frontend_memory_request: 256Mi
+  frontend_memory_limit: 1Gi
+  history_memory_request: 384Mi
+  history_memory_limit: 1536Mi
+  matching_memory_request: 192Mi
+  matching_memory_limit: 768Mi
+  worker_memory_request: 192Mi
+  worker_memory_limit: 768Mi
 
 coroot:
   enabled: true
+  storage_size: 20Gi
+  resources:
+    cpu_request: 250m
+    cpu_limit: 1
+    memory_request: 512Mi
+    memory_limit: 2Gi
+  clickhouse:
+    storage_size: 50Gi
+    resources:
+      cpu_request: 250m
+      cpu_limit: 1
+      memory_request: 384Mi
+      memory_limit: 2Gi
+  node_agent:
+    resources:
+      cpu_request: 50m
+      cpu_limit: 500m
+      memory_request: 256Mi
+      memory_limit: 1Gi
+  cluster_agent:
+    resources:
+      cpu_request: 50m
+      cpu_limit: 500m
+      memory_request: 128Mi
+      memory_limit: 512Mi
 
 tracing:
   enabled: true
+  collector_replicas: 2
   retention: 72h
-  storage_size: 40Gi
+  storage_size: 20Gi
 
 postal:
   enabled: true
+  web_replicas: 1
+  smtp_replicas: 2
+  worker_replicas: 2
+  mariadb_storage: 20Gi
+  mariadb_memory: 512Mi
+  web_memory_request: 256Mi
+  web_memory_limit: 1Gi
+  web_cpu_request: 250m
+  smtp_memory_request: 256Mi
+  smtp_memory_limit: 1Gi
+  smtp_cpu_request: 250m
+  worker_memory_request: 256Mi
+  worker_memory_limit: 1Gi
+  worker_cpu_request: 250m
 
 # ---------------------------------------------
 # Backup
@@ -194,12 +305,25 @@ backup:
 # ---------------------------------------------
 glitchtip:
   enabled: true
+  web_replicas: 2
+  web_memory_request: 256Mi
+  web_memory_limit: 1Gi
+  web_cpu_request: 150m
+  worker_enabled: true
+  worker_replicas: 2
+  worker_memory_request: 192Mi
+  worker_memory_limit: 768Mi
+  worker_cpu_request: 100m
 
 # ---------------------------------------------
 # APM Server (distributed tracing via Elasticsearch)
 # ---------------------------------------------
 apm:
   enabled: true    # Elastic APM; traces written to existing ES, 14d ILM retention
+  replicas: 2
+  memory_request: 256Mi
+  memory_limit: 1Gi
+  cpu_request: 150m
 
 # ---------------------------------------------
 # Blackbox Exporter (uptime/synthetic probes)
@@ -208,6 +332,7 @@ blackbox:
   enabled: true    # Probes all public URLs + internal TCP every 60s
 
 alerting:
+  replicas: 2
   telegram:
     enabled: false
   email:

@@ -263,6 +263,10 @@ class TestRestoreDrillScriptUnit:
 
     def test_unseals_vault(self):
         assert "unseal" in self.content.lower()
+        assert 'restore-unseal-keys' in self.content
+        assert 'vault operator unseal -format=json "$key"' in self.content
+        assert "--credentials-secret" in self.content
+        assert "temporary initialization material entirely inside" in self.content
 
     def test_verifies_secrets(self):
         assert "secret" in self.content.lower() and ("kv put" in self.content.lower() or "write" in self.content.lower())
@@ -412,19 +416,57 @@ class TestRestoreDrillCompleteness:
 
     def test_applies_resource_limits(self):
         assert "ResourceQuota" in self.content
-        assert "requests.cpu" in self.content or "limits.cpu" in self.content
+        assert "requests.storage" in self.content
+        quota = self.content.split("kind: ResourceQuota", 1)[1].split("---", 1)[0]
+        assert "requests.cpu" not in quota
 
     def test_downloads_snapshot(self):
         assert "snapshot" in self.content.lower()
         assert "s3 cp" in self.content.lower() or "s3 ls" in self.content.lower()
+        assert "pod/vault-snapshot-list" in self.content
+        assert "kubectl run vault-snapshot-list" not in self.content
 
     def test_deploys_vault_standalone(self):
         assert "vault" in self.content.lower()
         assert "standalone" in self.content.lower() or "replicas: 1" in self.content
 
+    def test_uses_vault_from_the_official_image_path(self):
+        assert 'command: ["vault"]' in self.content
+        assert "/vault/bin/vault" not in self.content
+
+    def test_restored_raft_volume_has_non_root_pod_permissions(self):
+        deployment = self.content.split("kind: Deployment", 1)[1]
+        assert "fsGroup: 1000" in deployment
+        assert "fsGroupChangePolicy: OnRootMismatch" in deployment
+        assert "seccompProfile:" in deployment
+        assert "mountPath: /vault/audit" in deployment
+        assert "sizeLimit: 256Mi" in deployment
+
+    def test_exec_targets_only_a_non_terminating_ready_pod(self):
+        assert "wait_for_ready_vault_pod" in self.content
+        assert "wait_for_vault_api" in self.content
+        assert "wait_for_vault_active" in self.content
+        assert ".is_self == true" in self.content
+        assert ".metadata.deletionTimestamp == null" in self.content
+        assert '"pod/$VAULT_POD"' in self.content
+        assert "kubectl exec -n \"$DRILL_NS\" deployment/vault" not in self.content
+
+    def test_credentials_secret_token_is_not_expanded_locally(self):
+        assert 'env VAULT_TOKEN="$RESTORE_TOKEN"' not in self.content
+        assert "/vault/restore-credentials/restore-token" in self.content
+        assert "defaultMode: 0400" in self.content
+
+    def test_restore_is_network_isolated_and_reforms_single_node_quorum(self):
+        assert "vault-restore-network-isolation" in self.content
+        assert "policyTypes: [Ingress, Egress]" in self.content
+        assert "/vault/data/raft/peers.json" in self.content
+        assert "vault-drill" in self.content
+        assert "vault operator raft list-peers -format=json" in self.content
+
     def test_has_vault_config(self):
         assert "listener" in self.content.lower()
         assert "storage" in self.content.lower()
+        assert 'cluster_addr = "http://127.0.0.1:8201"' in self.content
 
     def test_initializes_or_restores(self):
         assert "init" in self.content.lower()

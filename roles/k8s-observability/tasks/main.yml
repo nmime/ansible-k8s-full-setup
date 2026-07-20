@@ -1,6 +1,7 @@
 - name: Set observability tier-specific variables
   set_fact:
     monitoring_namespace: monitoring
+    logging_agent_namespace: logging-agents
     vm_operator_version: "{{ vm_operator_version | default('0.66.2') }}"
     loki_chart_version: 6.55.0
     grafana_chart_version: 10.5.15
@@ -10,6 +11,15 @@
     loki_retention: '{{ logging_retention | default(''14d'') }}'
     vm_replicas: '{{ observability.metrics.replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) | int }}'
     grafana_replicas: '{{ observability.grafana.replicas | default(2 if resource_tier == ''production'' else 1) }}'
+    bastion_metrics_ip: >-
+      {{ bastion_private_ip | default(bastion_public_ip | default('')) }}
+- name: Require a persisted bastion address for host metrics
+  ansible.builtin.assert:
+    that:
+    - bastion_metrics_ip | length > 0
+    fail_msg: >-
+      Bastion address is unavailable. Deploy infrastructure first so
+      playbooks/{{ project_name }}-infra-facts.yml can be loaded.
 - name: Create monitoring namespace
   kubernetes.core.k8s:
     state: present
@@ -80,6 +90,65 @@
 - name: Wait for operator webhook endpoint to be serving
   ansible.builtin.pause:
     seconds: 15
+- name: Remove legacy bastion node-exporter Endpoints object
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Endpoints
+    namespace: '{{ monitoring_namespace }}'
+    name: bastion-node-exporter
+    state: absent
+- name: Add bastion node-exporter EndpointSlice after the Kubernetes API is ready
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: discovery.k8s.io/v1
+      kind: EndpointSlice
+      metadata:
+        name: bastion-node-exporter
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app: bastion-node-exporter
+          kubernetes.io/service-name: bastion-node-exporter
+      addressType: IPv4
+      endpoints:
+      - addresses: ['{{ bastion_metrics_ip }}']
+      ports:
+      - name: metrics
+        port: 9100
+        protocol: TCP
+- name: Add bastion node-exporter headless Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: bastion-node-exporter
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app: bastion-node-exporter
+      spec:
+        clusterIP: None
+        ports:
+        - name: metrics
+          port: 9100
+          protocol: TCP
+- name: Add VMServiceScrape for bastion node-exporter
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: bastion-node-exporter
+        namespace: '{{ monitoring_namespace }}'
+      spec:
+        selector:
+          matchLabels:
+            app: bastion-node-exporter
+        endpoints:
+        - port: metrics
+          interval: 30s
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
     state: present
@@ -144,12 +213,10 @@
       spec:
         retentionPeriod: '{{ vm_retention }}'
         storage:
-          volumeClaimTemplate:
-            spec:
-              storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
-              resources:
-                requests:
-                  storage: '{{ vm_storage_size }}'
+          storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
+          resources:
+            requests:
+              storage: '{{ vm_storage_size }}'
         resources:
           requests:
             cpu: '{{ ''100m'' if resource_tier in [''minimal'', ''small''] else ''200m'' }}'
@@ -196,7 +263,7 @@
   retries: 3
   delay: 10
   until: _r_add_grafana_helm_repository is not failed
-  when: log_stack == "loki"
+  when: log_stack in ["loki", "elk"]
 - name: Create Loki S3 credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -230,6 +297,9 @@
       deploymentMode: '{{ ''SingleBinary'' if tier in [''minimal'', ''small''] else ''SimpleScalable'' }}'
       loki:
         auth_enabled: false
+        podSecurityContext:
+          seccompProfile:
+            type: RuntimeDefault
         commonConfig:
           replication_factor: '{{ 2 if resource_tier in [''medium'', ''production''] else 1 }}'
         storage:
@@ -278,6 +348,9 @@
             memory: 512Mi
         persistence:
           enabled: true
+          enableStatefulSetAutoDeletePVC: false
+          whenDeleted: Retain
+          whenScaled: Retain
           size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       backend:
@@ -291,6 +364,9 @@
             memory: 512Mi
         persistence:
           enabled: true
+          enableStatefulSetAutoDeletePVC: false
+          whenDeleted: Retain
+          whenScaled: Retain
           size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       singleBinary:
@@ -304,13 +380,23 @@
             memory: 512Mi
         persistence:
           enabled: true
+          enableStatefulSetAutoDeletePVC: false
+          whenDeleted: Retain
+          whenScaled: Retain
           size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       gateway:
         enabled: true
         replicas: 1
+        podSecurityContext:
+          seccompProfile:
+            type: RuntimeDefault
         nginxConfig:
           resolver: coredns.kube-system.svc.cluster.local.
+      lokiCanary:
+        podSecurityContext:
+          seccompProfile:
+            type: RuntimeDefault
       chunksCache:
         enabled: false
       resultsCache:
@@ -322,12 +408,40 @@
   delay: 10
   until: _r_install_loki_with_helm is not failed
   when: log_stack == "loki"
+- name: Remove legacy Promtail release from the baseline monitoring namespace
+  kubernetes.core.helm:
+    name: promtail
+    release_namespace: '{{ monitoring_namespace }}'
+    release_state: absent
+    wait: true
+  when: log_stack in ["loki", "elk"]
+- name: Remove Promtail node agents when Loki is not the selected log backend
+  kubernetes.core.helm:
+    name: promtail
+    release_namespace: '{{ logging_agent_namespace }}'
+    release_state: absent
+    wait: true
+  when: log_stack != "loki"
+- name: Create isolated privileged namespace for node log agents
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ logging_agent_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: observability
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+  when: log_stack in ["loki", "elk"]
 - name: Install Promtail for log collection
   kubernetes.core.helm:
     name: promtail
     chart_ref: grafana/promtail
     chart_version: 6.17.1
-    release_namespace: '{{ monitoring_namespace }}'
+    release_namespace: '{{ logging_agent_namespace }}'
     create_namespace: true
     release_state: present
     wait: false
@@ -358,6 +472,49 @@
   delay: 10
   until: _r_install_promtail_for_log_collection is not failed
   when: log_stack == "loki"
+- name: Remove legacy invalid Cilium default-deny for logging agents
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ logging_agent_namespace }}'
+  when: log_stack in ["loki", "elk"]
+- name: Create default-deny NetworkPolicy for logging agents
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ logging_agent_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
+  when: log_stack in ["loki", "elk"]
+- name: Allow logging agents to reach the selected backend and Kubernetes discovery
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-logging-egress
+        namespace: '{{ logging_agent_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEntities:
+          - cluster
+          - kube-apiserver
+  when: log_stack in ["loki", "elk"]
 - name: Fetch Elasticsearch credentials for Grafana datasource
   kubernetes.core.k8s_info:
     kind: Secret
@@ -382,6 +539,10 @@
     wait: false
     values:
       replicas: '{{ grafana_replicas | int }}'
+      # The bundled persistence is a single RWO volume backed by SQLite. A
+      # surge rollout deadlocks on multi-attach; replace the singleton cleanly.
+      deploymentStrategy:
+        type: Recreate
       adminUser: '{{ grafana_admin_user | default(''admin'') }}'
       adminPassword: '{{ grafana_admin_password }}'
       persistence:
@@ -391,36 +552,48 @@
       datasources:
         datasources.yaml:
           apiVersion: 1
-          datasources:
-          - name: VictoriaMetrics
-            type: prometheus
-            uid: victoria-metrics
-            url: '{{ ''http://vmselect-vmcluster.'' + monitoring_namespace + ''.svc:8481/select/0/prometheus'' if tier in [''medium'', ''production''] else ''http://vmsingle-vmsingle.'' + monitoring_namespace
-              + ''.svc:8429'' }}'
-            access: proxy
-            isDefault: true
-            jsonData:
-              timeInterval: 15s
-          - name: '{{ ''Loki'' if log_stack == ''loki'' else ''Elasticsearch'' }}'
-            type: '{{ ''loki'' if log_stack == ''loki'' else ''elasticsearch'' }}'
-            uid: '{{ ''loki'' if log_stack == ''loki'' else ''elasticsearch'' }}'
-            url: '{{ ''http://loki-gateway.'' + monitoring_namespace + ''.svc.cluster.local'' if log_stack == ''loki'' else ''https://elasticsearch.elasticsearch.svc.cluster.local:9200'' }}'
-            access: proxy
-            basicAuth: '{{ false if log_stack == ''loki'' else true }}'
-            basicAuthUser: '{{ '''' if log_stack == ''loki'' else ''elastic'' }}'
-            jsonData:
-              maxLines: '{{ 1000 if log_stack == ''loki'' else omit }}'
-              timeField: '{{ omit if log_stack == ''loki'' else ''@timestamp'' }}'
-              esVersion: '{{ omit if log_stack == ''loki'' else ''8.0.0'' }}'
-              tlsSkipVerify: '{{ omit if log_stack == ''loki'' else true }}'
-            secureJsonData: '{{ omit if log_stack == ''loki'' else {''basicAuthPassword'': grafana_es_password} }}'
-          - name: PMM
-            type: prometheus
-            uid: pmm
-            url: http://pmm-server.{{ monitoring_namespace }}.svc.cluster.local/prometheus
-            access: proxy
-            jsonData:
-              timeInterval: 5s
+          deleteDatasources: '{{ [] if (pmm_enabled | bool) else [{"name": "PMM", "orgId": 1}] }}'
+          datasources: >-
+            {{
+              [{
+                'name': 'VictoriaMetrics',
+                'type': 'prometheus',
+                'uid': 'victoria-metrics',
+                'url': ('http://vmselect-vmcluster.' ~ monitoring_namespace ~ '.svc:8481/select/0/prometheus')
+                  if tier in ['medium', 'production']
+                  else ('http://vmsingle-vmsingle.' ~ monitoring_namespace ~ '.svc:8429'),
+                'access': 'proxy',
+                'isDefault': true,
+                'jsonData': {'timeInterval': '15s'}
+              }]
+              + ([{
+                'name': 'Loki',
+                'type': 'loki',
+                'uid': 'loki',
+                'url': 'http://loki-gateway.' ~ monitoring_namespace ~ '.svc.cluster.local',
+                'access': 'proxy',
+                'basicAuth': false,
+                'jsonData': {'maxLines': 1000}
+              }] if log_stack == 'loki' else [{
+                'name': 'Elasticsearch',
+                'type': 'elasticsearch',
+                'uid': 'elasticsearch',
+                'url': 'https://elasticsearch.elasticsearch.svc.cluster.local:9200',
+                'access': 'proxy',
+                'basicAuth': true,
+                'basicAuthUser': 'elastic',
+                'jsonData': {'timeField': '@timestamp', 'esVersion': '8.0.0', 'tlsSkipVerify': true},
+                'secureJsonData': {'basicAuthPassword': grafana_es_password}
+              }])
+              + ([{
+                'name': 'PMM',
+                'type': 'prometheus',
+                'uid': 'pmm',
+                'url': 'http://pmm-server.' ~ monitoring_namespace ~ '.svc.cluster.local/prometheus',
+                'access': 'proxy',
+                'jsonData': {'timeInterval': '5s'}
+              }] if (pmm_enabled | bool) else [])
+            }}
       dashboardProviders:
         dashboardproviders.yaml:
           apiVersion: 1
@@ -544,6 +717,7 @@
   delay: 10
   until: _r_create_tls_certificate_for_grafana is not failed
 - name: Create PMM admin password secret
+  when: pmm_enabled | bool
   no_log: true
   kubernetes.core.k8s:
     state: present
@@ -561,6 +735,7 @@
   delay: 10
   until: _r_create_pmm_admin_password_secret is not failed
 - name: Create PMM ServiceAccount
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -577,6 +752,7 @@
   delay: 10
   until: _r_create_pmm_sa is not failed
 - name: Create PMM Server PVC
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -596,7 +772,29 @@
   retries: 3
   delay: 10
   until: _r_create_pmm_server_pvc is not failed
+- name: Read existing PMM Deployment before security-context reconciliation
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ monitoring_namespace }}'
+    name: pmm-server
+  register: _pmm_existing_deployment
+  when: pmm_enabled | bool
+- name: Remove the legacy privileged PMM permission init container
+  kubernetes.core.k8s_json_patch:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ monitoring_namespace }}'
+    name: pmm-server
+    patch:
+      - op: remove
+        path: /spec/template/spec/initContainers
+  when:
+    - pmm_enabled | bool
+    - (_pmm_existing_deployment.resources | default([])) | length == 1
+    - _pmm_existing_deployment.resources[0].spec.template.spec.initContainers | default([]) | length > 0
 - name: Deploy PMM Server
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -609,6 +807,10 @@
           app: pmm-server
       spec:
         replicas: 1
+        # The single PMM instance mounts a ReadWriteOnce Hetzner volume. A
+        # rolling update deadlocks on multi-attach, so release the old pod first.
+        strategy:
+          type: Recreate
         selector:
           matchLabels:
             app: pmm-server
@@ -618,23 +820,15 @@
               app: pmm-server
           spec:
             securityContext:
-              runAsNonRoot: false
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+              fsGroupChangePolicy: OnRootMismatch
               seccompProfile:
                 type: RuntimeDefault
             serviceAccountName: pmm-server
             enableServiceLinks: false
-            initContainers:
-            - name: fix-perms
-              image: busybox:1.36.1
-              command:
-              - sh
-              - -c
-              - chown -R 1000:0 /srv
-              volumeMounts:
-              - name: pmm-data
-                mountPath: /srv
-              securityContext:
-                runAsUser: 0
             containers:
             - name: pmm-server
               image: percona/pmm-server:{{ pmm_server_version }}
@@ -649,12 +843,12 @@
                   drop:
                   - ALL
               env:
-              - name: DISABLE_UPDATES
-                value: '1'
-              - name: METRICS_RESOLUTION
+              - name: PMM_ENABLE_UPDATES
+                value: 'false'
+              - name: PMM_METRICS_RESOLUTION
                 value: 5s
-              - name: DISABLE_TELEMETRY
-                value: '1'
+              - name: PMM_ENABLE_TELEMETRY
+                value: 'false'
               - name: PMM_ADMIN_PASSWORD
                 valueFrom:
                   secretKeyRef:
@@ -694,6 +888,7 @@
   delay: 10
   until: _r_deploy_pmm_server is not failed
 - name: Create PMM Server Service
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -722,41 +917,108 @@
   delay: 10
   until: _r_create_pmm_server_service is not failed
 - name: Wait for PMM Server to be ready
+  when: pmm_enabled | bool
   kubernetes.core.k8s_info:
     kind: Deployment
     namespace: '{{ monitoring_namespace }}'
     name: pmm-server
   register: pmm_deploy
-  until: 'pmm_deploy.resources | length > 0 and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: '(pmm_deploy.resources | default([])) | length > 0 and (pmm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
 
     '
   retries: 30
   delay: 15
-  failed_when: false
 - name: Get PMM Server pod name
+  when: pmm_enabled | bool
   shell: kubectl get pod -n {{ monitoring_namespace }} -l app=pmm-server -o jsonpath='{.items[0].metadata.name}'
   register: pmm_pod_name
   changed_when: false
-  failed_when: false
-- name: Generate PMM API key for database monitoring
-  shell: "kubectl exec -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash -c '\n  supervisorctl stop pmm-managed 2>/dev/null; sleep 3;\n  SA_ID=$(curl -sf -X POST -H \"Content-Type: application/json\"\
-    \ \\\n    -u \"admin:{{ grafana_admin_password }}\" \\\n    http://127.0.0.1:8080/graph/api/serviceaccounts \\\n    -d \"{\\\"name\\\":\\\"percona-db-sa\\\",\\\"role\\\":\\\"Admin\\\"}\" 2>/dev/null\
-    \ | python3 -c \"import sys,json;print(json.load(sys.stdin).get(\\\"id\\\",\\\"\\\"))\" 2>/dev/null);\n  if [ -z \"$SA_ID\" ]; then\n    SA_ID=$(curl -sf -u \"admin:{{ grafana_admin_password }}\" \\\
-    \n      \"http://127.0.0.1:8080/graph/api/serviceaccounts/search?query=percona-db-sa\" 2>/dev/null | python3 -c \"import sys,json;sa=json.load(sys.stdin).get(\\\"serviceAccounts\\\",[]);print(sa[0][\\\
-    \"id\\\"] if sa else \\\"\\\")\" 2>/dev/null);\n  fi;\n  KEY=$(curl -sf -X POST -H \"Content-Type: application/json\" \\\n    -u \"admin:{{ grafana_admin_password }}\" \\\n    \"http://127.0.0.1:8080/graph/api/serviceaccounts/${SA_ID}/tokens\"\
-    \ \\\n    -d \"{\\\"name\\\":\\\"percona-db-key-{{ ansible_date_time.epoch }}\\\"}\" 2>/dev/null | python3 -c \"import sys,json;print(json.load(sys.stdin).get(\\\"key\\\",\\\"\\\"))\" 2>/dev/null);\n\
-    \  supervisorctl start pmm-managed 2>/dev/null;\n  echo \"$KEY\"'\n"
-  register: pmm_api_key_result
-  failed_when: false
+  retries: 30
+  delay: 5
+  until: pmm_pod_name.stdout | default('') | length > 0
+- name: Issue a validated PMM 3 service-account token
+  shell: |
+    kubectl exec -i -n {{ monitoring_namespace }} {{ pmm_pod_name.stdout }} -- bash <<'PMM_TOKEN_SCRIPT'
+    set -euo pipefail
+    COOKIE_FILE=$(mktemp)
+    trap 'rm -f "$COOKIE_FILE"' EXIT
+
+    # PMM only applies PMM_ADMIN_PASSWORD on first boot. Reconcile the
+    # persisted Grafana database before using its authenticated API.
+    grafana cli --homepath /usr/share/grafana \
+      --config /etc/grafana/grafana.ini \
+      admin reset-admin-password "$PMM_ADMIN_PASSWORD" >/dev/null 2>&1
+
+    LOGIN_JSON=$(python3 -c 'import json,os; print(json.dumps({"user":"admin","password":os.environ["PMM_ADMIN_PASSWORD"]}))')
+    curl -sf -c "$COOKIE_FILE" -H 'Content-Type: application/json' \
+      --data-binary "$LOGIN_JSON" \
+      http://127.0.0.1:3000/graph/login >/dev/null
+
+    SA_ID=$(curl -sf -b "$COOKIE_FILE" \
+      'http://127.0.0.1:3000/graph/api/serviceaccounts/search?query=percona-db-sa' \
+      | python3 -c 'import json,sys; accounts=json.load(sys.stdin).get("serviceAccounts",[]); print(accounts[0]["id"] if accounts else "")')
+    if [ -z "$SA_ID" ]; then
+      SA_ID=$(curl -sf -X POST -b "$COOKIE_FILE" \
+        -H 'Content-Type: application/json' \
+        -d '{"name":"percona-db-sa","role":"Admin"}' \
+        http://127.0.0.1:3000/graph/api/serviceaccounts \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')
+    fi
+
+    KEY=$(curl -sf -X POST -b "$COOKIE_FILE" \
+      -H 'Content-Type: application/json' \
+      -d "{\"name\":\"percona-db-key-$(date +%s%N)\"}" \
+      "http://127.0.0.1:3000/graph/api/serviceaccounts/${SA_ID}/tokens" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("key",""))')
+    case "$KEY" in
+      glsa_*) ;;
+      *) exit 1 ;;
+    esac
+    printf '%s\n' "$KEY"
+    PMM_TOKEN_SCRIPT
+  register: pmm_server_token_result
+  retries: 12
+  delay: 10
+  until: >-
+    pmm_server_token_result.rc == 0 and
+    (pmm_server_token_result.stdout_lines | default([]) | last | default('')).startswith('glsa_')
+  failed_when: >-
+    pmm_server_token_result.rc != 0 or
+    not (pmm_server_token_result.stdout_lines | default([]) | last | default('')).startswith('glsa_')
   changed_when: false
   no_log: true
-  when: pmm_pod_name.stdout | default('') | length > 0
-- name: Set PMM API key fact
+  when:
+    - pmm_enabled | bool
+    - pmm_pod_name.stdout | default('') | length > 0
+- name: Set PMM service-account token fact
   set_fact:
-    pmm_api_key: '{{ pmm_api_key_result.stdout_lines | default([]) | last | default('''') }}'
-  when: pmm_api_key_result.rc | default(1) == 0
-  failed_when: false
+    pmm_server_token: '{{ pmm_server_token_result.stdout_lines | default([]) | last | default('''') }}'
+  when:
+    - pmm_enabled | bool
+    - pmm_server_token_result.rc | default(1) == 0
+- name: Require a non-empty PMM service-account token for database monitoring
+  ansible.builtin.assert:
+    that:
+      - pmm_server_token | default('') | length > 0
+    fail_msg: PMM did not issue a database-monitoring service-account token.
+  no_log: true
+  when: pmm_enabled | bool
+- name: Persist the PMM service-account token for component-only reconciliations
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pmm-client-credentials
+        namespace: '{{ monitoring_namespace }}'
+      type: Opaque
+      stringData:
+        PMM_SERVER_TOKEN: '{{ pmm_server_token }}'
+  no_log: true
+  when: pmm_enabled | bool
 - name: Create PMM HTTPRoute (VPN-only via admin-gateway)
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -785,6 +1047,7 @@
   delay: 10
   until: _r_create_pmm_httproute_vpn_only_via_admin_ is not failed
 - name: Create TLS Certificate for PMM
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -806,7 +1069,7 @@
   until: _r_create_tls_certificate_for_pmm is not failed
 - name: Create VMServiceScrape for PostgreSQL exporter
   kubernetes.core.k8s:
-    state: present
+    state: '{{ "present" if (platform_postgresql_enabled | default(true) | bool) else "absent" }}'
     definition:
       apiVersion: operator.victoriametrics.com/v1beta1
       kind: VMServiceScrape
@@ -830,7 +1093,7 @@
   until: _r_create_vmservicescrape_for_postgresql_ex is not failed
 - name: Create VMServiceScrape for MongoDB exporter
   kubernetes.core.k8s:
-    state: present
+    state: '{{ "present" if (platform_mongodb_enabled | default(false) | bool) else "absent" }}'
     definition:
       apiVersion: operator.victoriametrics.com/v1beta1
       kind: VMServiceScrape
@@ -853,6 +1116,7 @@
   delay: 10
   until: _r_create_vmservicescrape_for_mongodb_expor is not failed
 - name: Create VMServiceScrape for PMM Server
+  when: pmm_enabled | bool
   kubernetes.core.k8s:
     state: present
     definition:
@@ -978,19 +1242,20 @@
   until: _r_deploy_vmrule_for_alerting is not failed
 - name: Display observability deployment info
   debug:
-    msg:
-    - ==========================================
-    - '  Observability Stack Deployed'
-    - ==========================================
-    - '  Grafana: https://{{ grafana_domain }}'
-    - '    User: {{ grafana_admin_user }} / ****'
-    - '  VictoriaMetrics: {{ ''Cluster'' if tier in [''medium'', ''production''] else ''Single'' }} mode'
-    - '  Loki: SimpleScalable mode'
-    - '  PMM Server: https://pmm.{{ domain }}'
-    - '    User: admin / ****'
-    - '  Retention: metrics={{ vm_retention }}, logs={{ loki_retention }}'
-    - '  DB Dashboards: PostgreSQL, MongoDB, Replication, PMM'
-    - ==========================================
+    msg: >-
+      {{
+        ['==========================================',
+         '  Observability Stack Deployed',
+         '==========================================',
+         '  Grafana: https://' ~ grafana_domain,
+         '    User: ' ~ grafana_admin_user ~ ' / ****',
+         '  VictoriaMetrics: ' ~ ('Cluster' if tier in ['medium', 'production'] else 'Single') ~ ' mode',
+         '  Logs: ' ~ ('Loki' if log_stack == 'loki' else 'Elasticsearch'),
+         '  Retention: metrics=' ~ vm_retention ~ ', logs=' ~ logging_retention]
+        + (['  PMM Server: https://pmm.' ~ domain,
+             '    User: admin / ****'] if (pmm_enabled | bool) else ['  PMM Server: DISABLED'])
+        + ['==========================================']
+      }}
 - name: Add Elastic Helm repository
   kubernetes.core.helm_repository:
     name: elastic
@@ -1000,12 +1265,51 @@
   delay: 10
   until: _r_add_elastic_helm_repository is not failed
   when: log_stack == "elk"
+- name: Remove legacy Filebeat release from Elasticsearch namespace
+  kubernetes.core.helm:
+    name: filebeat
+    release_namespace: elasticsearch
+    release_state: absent
+    wait: true
+  when: log_stack == "elk"
+- name: Read Elasticsearch secrets for the isolated Filebeat agent
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: elasticsearch
+    name: '{{ item }}'
+  loop:
+  - es-tls-certs
+  - es-credentials
+  register: _r_filebeat_source_secrets
+  no_log: true
+  when: log_stack == "elk"
+- name: Replicate the minimum Elasticsearch credentials into the agent namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: '{{ item.name }}'
+        namespace: '{{ logging_agent_namespace }}'
+      type: Opaque
+      data: '{{ item.data }}'
+  loop:
+  - name: es-tls-certs
+    data:
+      ca.crt: '{{ _r_filebeat_source_secrets.results[0].resources[0].data["ca.crt"] }}'
+  - name: es-credentials
+    data:
+      ELASTIC_PASSWORD: '{{ _r_filebeat_source_secrets.results[1].resources[0].data.ELASTIC_PASSWORD }}'
+  no_log: true
+  when: log_stack == "elk"
 - name: Install Filebeat for log collection (ELK)
   kubernetes.core.helm:
     name: filebeat
     chart_ref: elastic/filebeat
     chart_version: 8.5.1
-    release_namespace: elasticsearch
+    release_namespace: '{{ logging_agent_namespace }}'
     create_namespace: false
     release_state: present
     wait: false
@@ -1016,7 +1320,11 @@
         filebeatConfig:
           filebeat.yml: |
             filebeat.inputs:
-              - type: container
+              - type: filestream
+                id: kubernetes-container-logs
+                prospector.scanner.symlinks: true
+                parsers:
+                  - container: ~
                 paths:
                   - /var/log/containers/*.log
             processors:
@@ -1179,21 +1487,45 @@
             labels:
               app: hetzner-cloud-exporter
           spec:
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1337
+              runAsGroup: 1337
+              seccompProfile:
+                type: RuntimeDefault
             containers:
             - name: exporter
-              image: ghcr.io/promhetznercloud/prometheus-hetzner-sd:v0.5.0
-              args:
-              - --hcloud.token=$(HCLOUD_TOKEN)
-              - --output.format=prometheus
+              image: promhippie/hcloud-exporter:{{ hcloud_exporter_version }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
               env:
-              - name: HCLOUD_TOKEN
+              - name: HCLOUD_EXPORTER_TOKEN
                 valueFrom:
                   secretKeyRef:
                     name: hetzner-cloud-token
                     key: token
+              - name: HCLOUD_EXPORTER_COLLECTOR_SERVER_METRICS
+                value: 'true'
               ports:
-              - containerPort: 9090
+              - containerPort: 9501
                 name: metrics
+              readinessProbe:
+                httpGet:
+                  # /metrics performs live cloud API collection. Probing it
+                  # multiplies API traffic and can exhaust Hetzner quotas.
+                  path: /healthz
+                  port: metrics
+                initialDelaySeconds: 5
+                periodSeconds: 10
+              livenessProbe:
+                httpGet:
+                  path: /healthz
+                  port: metrics
+                initialDelaySeconds: 15
+                periodSeconds: 30
               resources:
                 requests:
                   cpu: 50m
@@ -1221,8 +1553,8 @@
         selector:
           app: hetzner-cloud-exporter
         ports:
-        - port: 9090
-          targetPort: 9090
+        - port: 9501
+          targetPort: 9501
           name: metrics
   when: hetzner_metrics_enabled | default(true) | bool
   register: _r_create_hetzner_exporter_svc
@@ -1244,7 +1576,10 @@
             app: hetzner-cloud-exporter
         endpoints:
         - port: metrics
-          interval: 60s
+          # Cloud inventory changes slowly and each scrape fans out across
+          # multiple provider API endpoints. Keep generous quota headroom for
+          # provisioning, backup, and autoscaling control-plane operations.
+          interval: 5m
   when: hetzner_metrics_enabled | default(true) | bool
   register: _r_create_hetzner_vmservicescrape
   retries: 3
@@ -1253,14 +1588,19 @@
 - name: Deploy VMServiceScrapes for platform services (VictoriaMetrics)
   kubernetes.core.k8s:
     state: present
-    src: '{{ playbook_dir }}/../roles/k8s-observability/templates/vmservicescrapes.yml'
-  vars:
-    prometheus_enabled: '{{ prometheus_enabled | default(false) }}'
+    definition: >-
+      {{ lookup('ansible.builtin.template',
+         playbook_dir + '/../roles/k8s-observability/templates/vmservicescrapes.yml')
+         | from_yaml_all | list }}
+  when:
+  - platform_object_storage_enabled | default(false) | bool
+    or platform_secrets_enabled | default(false) | bool
+    or platform_elasticsearch_enabled | default(false) | bool
 - name: Deploy cert-manager alert (cert expiry warning)
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: monitoring.coreos.com/v1
+      apiVersion: operator.victoriametrics.com/v1beta1
       kind: VMRule
       metadata:
         name: cert-expiry-alerts
@@ -1293,17 +1633,31 @@
             annotations:
                 summary: Certificate {{ '{{ $labels.name }}' }} renewal FAILED
                 description: cert-manager cannot renew {{ '{{ $labels.name }}' }} in {{ '{{ $labels.namespace }}' }}
-- name: Create default-deny for monitoring namespace
+- name: Remove legacy invalid Cilium default-deny for monitoring namespace
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: default-deny
         namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
+- name: Create default-deny NetworkPolicy for monitoring namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ monitoring_namespace | default(''monitoring'') }}'
       spec:
-        endpointSelector: {}
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
 - name: Allow Grafana ingress from gateway
   kubernetes.core.k8s:
     state: present

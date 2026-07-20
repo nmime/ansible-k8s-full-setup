@@ -32,3 +32,10 @@ bash scripts/validate-local.sh
 Cluster-changing checks and destructive restore drills are intentionally not
 run on shared CI runners. Run their explicit dry-run modes locally first, then
 execute them against an authorized test cluster during a maintenance window.
+The live acceptance sequence is `scripts/health-gates.sh` followed by
+`scripts/live-tier-smoke.sh`: the first enforces full controller, storage,
+certificate, route, Helm, and runtime-security readiness; the second validates
+the selected profile with temporary service-level read/write sentinels and
+tests every selected Gateway API TLS route from inside the cluster using its
+declared hostname, Gateway address, and listener port. This also covers
+VPN-only admin routes without weakening their intended public isolation.

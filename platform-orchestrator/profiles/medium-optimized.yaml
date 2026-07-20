@@ -2,7 +2,7 @@
 # MEDIUM-OPTIMIZED PROFILE - full medium toolset, small resource envelope
 # ============================================
 # Best for: Full platform toolset on a constrained CX23/CX33 budget shape
-# Nodes: 3 x cx23 control plane + 4 x cx33 workers + 1 x cx23 bastion + lb11
+# Nodes: 3 x cx33 control plane + 4 x cx33 workers + 1 x cx23 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -11,7 +11,7 @@
 platform_profile: medium-optimized
 tier: medium
 resource_tier: small
-cost_estimate: "Provider-price dependent: 3 x cx23 control plane, 4 x cx33 worker, cx23 bastion, lb11"
+cost_estimate: "Provider-price dependent: 3 x cx33 control plane, 4 x cx33 worker, cx23 bastion, lb11"
 
 global:
   project: k8s
@@ -39,7 +39,7 @@ infrastructure:
   region: hel1
   control_plane:
     count: 3
-    type: cx23
+    type: cx33
     schedulable: true
   workers:
     count: 4
@@ -64,7 +64,7 @@ network:
 # Kubernetes
 # ---------------------------------------------
 kubernetes:
-  version: v1.35.6
+  version: v1.35.4
   cni: cilium
   ha_control_plane: true
   features:
@@ -81,6 +81,7 @@ storage:
   mode: distributed
   master_replicas: 3
   volume_replicas: 3
+  replication_placement: "001"
   filer_replicas: 1
   master_size: 2Gi
   size_per_replica: 40Gi
@@ -147,6 +148,8 @@ gitops:
 # ---------------------------------------------
 observability:
   enabled: true
+  pmm:
+    enabled: true
   metrics:
     enabled: true
     retention: 14d
@@ -186,9 +189,9 @@ elasticsearch:
   kibana:
     replicas: 1
     cpu_request: 100m
-    cpu_limit: 250m
-    memory_request: 384Mi
-    memory_limit: 768Mi
+    cpu_limit: 1000m
+    memory_request: 512Mi
+    memory_limit: 1Gi
 
 # ---------------------------------------------
 # Autoscaling
@@ -279,7 +282,7 @@ coroot:
     resources:
       cpu_request: 100m
       cpu_limit: 500m
-      memory_request: 200Mi
+      memory_request: 384Mi
       memory_limit: 1Gi
   cluster_agent:
     resources:

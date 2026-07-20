@@ -53,6 +53,19 @@
     name: vmware-tanzu
     repo_url: https://vmware-tanzu.github.io/helm-charts
 
+# Velero consumes skipImmediately and then owns that field. Helm 4 uses
+# server-side apply, so a later upgrade otherwise conflicts with velero-server
+# and can leave the release failed. Scheduled backups do not use owner
+# references, so replacing this declarative schedule never removes backups.
+- name: "Backup-DR | Replace the controller-mutated Helm schedule safely"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: velero.io/v1
+    kind: Schedule
+    namespace: "{{ backup_dr_namespace }}"
+    name: velero-full-cluster
+    wait: true
+
 - name: "Backup-DR | Deploy Velero with node-agent filesystem backups"
   kubernetes.core.helm:
     name: velero
@@ -61,6 +74,11 @@
     release_namespace: "{{ backup_dr_namespace }}"
     create_namespace: false
     state: present
+    # Operational recovery can temporarily patch node-agent resources while a
+    # node is constrained. Helm 4 uses server-side apply, so reclaim those
+    # fields on the next declarative run instead of leaving the release failed
+    # on a managed-fields conflict.
+    force_conflicts: true
     wait: true
     timeout: 10m0s
     atomic: true
@@ -103,19 +121,31 @@
       deployNodeAgent: true
       resources:
         requests:
-          cpu: "{{ backup_dr_velero_cpu_request }}"
-          memory: "{{ backup_dr_velero_memory_request }}"
+          cpu: "{{ '25m' if resource_tier in ['minimal', 'small'] else backup_dr_velero_cpu_request }}"
+          memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else backup_dr_velero_memory_request }}"
         limits:
-          cpu: "{{ backup_dr_velero_cpu_limit }}"
-          memory: "{{ backup_dr_velero_memory_limit }}"
+          cpu: "{{ '250m' if resource_tier in ['minimal', 'small'] else backup_dr_velero_cpu_limit }}"
+          # Full API exports can exceed 256Mi even on a two-node cluster. Keep
+          # the reservation tiny, but allow a bounded serialization burst.
+          memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else backup_dr_velero_memory_limit }}"
       nodeAgent:
+        # Medium-optimized deliberately schedules stateful workloads on the
+        # tainted control plane. A node agent must therefore run there too or
+        # an otherwise healthy full-cluster backup silently skips those PVCs.
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+          - key: node-role.kubernetes.io/master
+            operator: Exists
+            effect: NoSchedule
         resources:
           requests:
-            cpu: "{{ backup_dr_node_agent_cpu_request }}"
-            memory: "{{ backup_dr_node_agent_memory_request }}"
+            cpu: "{{ '25m' if resource_tier != 'production' else backup_dr_node_agent_cpu_request }}"
+            memory: "{{ '64Mi' if resource_tier != 'production' else backup_dr_node_agent_memory_request }}"
           limits:
-            cpu: "{{ backup_dr_node_agent_cpu_limit }}"
-            memory: "{{ backup_dr_node_agent_memory_limit }}"
+            cpu: "{{ '500m' if resource_tier != 'production' else backup_dr_node_agent_cpu_limit }}"
+            memory: "{{ '512Mi' if resource_tier != 'production' else backup_dr_node_agent_memory_limit }}"
       schedules:
         full-cluster:
           disabled: false
@@ -128,6 +158,10 @@
             storageLocation: default
             includeClusterResources: true
             defaultVolumesToFsBackup: true
+  register: backup_dr_velero_helm
+  until: backup_dr_velero_helm is succeeded
+  retries: 3
+  delay: 10
 
 - name: "Backup-DR | Wait for the Velero server"
   ansible.builtin.command:
@@ -139,8 +173,18 @@
 - name: "Backup-DR | Wait for node agents on every schedulable node"
   ansible.builtin.command:
     cmd: >-
-      kubectl rollout status daemonset/velero-node-agent
+      kubectl rollout status daemonset/node-agent
       --namespace {{ backup_dr_namespace }} --timeout=600s
+  changed_when: false
+
+- name: "Backup-DR | Prove node-agent coverage on every schedulable node"
+  ansible.builtin.shell: |
+    set -o pipefail
+    schedulable=$(kubectl get nodes -o json | jq '[.items[] | select(.spec.unschedulable != true)] | length')
+    covered=$(kubectl get daemonset/node-agent --namespace {{ backup_dr_namespace }} -o jsonpath='{.status.numberReady}')
+    test "${covered:-0}" -eq "$schedulable"
+  args:
+    executable: /bin/bash
   changed_when: false
 
 - name: "Backup-DR | Require an available external backup location"

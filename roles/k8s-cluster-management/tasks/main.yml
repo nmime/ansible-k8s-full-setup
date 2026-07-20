@@ -1,12 +1,12 @@
 ---
 # K8s Cluster Management - Kubespray v2.31.0 + Cilium v1.19.5 + Gateway API v1.6.0
 # Installs Kubernetes cluster with core addons
-# Components: K8s v1.35.6, Hetzner CCM v1.33.0, Hetzner CSI v2.22.0, cert-manager v1.21.0, MetalLB v0.16.1
+# Components: K8s v1.35.4, Hetzner CCM v1.33.0, Hetzner CSI v2.22.0, cert-manager v1.21.0, MetalLB v0.16.1
 
 - name: Set cluster management variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
-    k8s_ver: "{{ k8s_version | default('v1.35.6') }}"
+    k8s_ver: "{{ k8s_version | default('v1.35.4') }}"
     kubespray_version: "v2.31.0"
     cilium_ver: "{{ cilium_version | default('v1.19.5') }}"
     gateway_api_ver: "{{ gateway_api_version | default('v1.6.0') }}"
@@ -35,6 +35,27 @@
     version: "{{ kubespray_version }}"
     depth: 1
   when: not kubespray_dir.stat.exists
+  delegate_to: localhost
+  become: false
+
+- name: Read the pinned Kubespray Kubernetes compatibility matrix
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/kubespray/roles/kubespray_defaults/vars/main/checksums.yml"
+  register: kubespray_checksum_matrix
+  delegate_to: localhost
+  become: false
+
+- name: Reject Kubernetes versions unsupported by the pinned Kubespray release
+  ansible.builtin.assert:
+    that:
+      - >-
+        (k8s_ver | regex_replace('^v', '')) in
+        ((kubespray_checksum_matrix.content | b64decode | from_yaml)
+          .kubeadm_checksums.amd64)
+    fail_msg: >-
+      Kubernetes {{ k8s_ver }} is not supported by Kubespray
+      {{ kubespray_version }} for amd64. Align the central Kubernetes pin with
+      the pinned Kubespray checksum matrix before provisioning a cluster.
   delegate_to: localhost
   become: false
 
@@ -136,7 +157,17 @@
       enable_nodelocaldns: true
       kubelet_max_pods: 110
       kubelet_rotate_certificates: true
+      # Kubelet must delegate cloud identity to the external provider. The CCM
+      # itself is installed and pinned below instead of by Kubespray.
+      cloud_provider: external
+      external_cloud_provider: manual
+      additional_sysctl:
+        - name: vm.max_map_count
+          value: 262144
       dashboard_enabled: false
+      # Cilium 1.19 init containers drop DAC_OVERRIDE. The host CNI directory
+      # must therefore be root-owned so their root UID can install helpers.
+      cni_bin_owner: root
       # Security
       podsecuritypolicy_enabled: false
       kube_pod_security_use_default: true
@@ -217,6 +248,41 @@
   delegate_to: localhost
   become: false
 
+- name: Bound Kubespray SSH multiplex lifetime and detect dead bastion paths
+  ansible.builtin.lineinfile:
+    path: "{{ playbook_dir }}/kubespray/ansible.cfg"
+    regexp: '^ssh_args'
+    line: >-
+      ssh_args = -o ControlMaster=auto -o ControlPersist=10m
+      -o ConnectionAttempts=10 -o ServerAliveInterval=15
+      -o ServerAliveCountMax=3 -o UserKnownHostsFile=/dev/null
+  delegate_to: localhost
+  become: false
+
+- name: Make Kubespray create the Cilium host binary directory as root
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/kubespray/roles/kubernetes/preinstall/tasks/0050-create_directories.yml"
+    after: '- name: Create cni directories'
+    before: '- name: Create calico cni directories'
+    regexp: 'owner: "\{\{ kube_owner \}\}"'
+    replace: 'owner: root'
+  delegate_to: localhost
+  become: false
+  register: kubespray_cni_owner_patch
+
+- name: Verify Kubespray Cilium preinstall ownership patch
+  ansible.builtin.command:
+    argv:
+      - sed
+      - -n
+      - /Create cni directories/,/Create calico cni directories/p
+      - "{{ playbook_dir }}/kubespray/roles/kubernetes/preinstall/tasks/0050-create_directories.yml"
+  delegate_to: localhost
+  become: false
+  register: kubespray_cni_directory_block
+  changed_when: false
+  failed_when: "'owner: root' not in kubespray_cni_directory_block.stdout"
+
 - name: Adopt GatewayClass cilium for Helm (idempotent)
   ansible.builtin.shell: |
     ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }} '
@@ -250,6 +316,15 @@
   register: kubespray_result
   changed_when: true
   when: not (skip_kubespray | default(false) | bool)
+
+- name: Record the completed Kubespray reconciliation checkpoint
+  ansible.builtin.file:
+    path: '{{ profile_migration_kubespray_checkpoint }}'
+    state: touch
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: profile_migration_kubespray_checkpoint | default('') | length > 0
 
 # Fix CNI binary directory permissions (Kubespray creates it owned by kube user)
 - name: Fix /opt/cni/bin ownership for Cilium
@@ -289,25 +364,71 @@
 
 - name: Ensure SSH tunnel to k8s API is active
   ansible.builtin.shell: |
-    fuser -k 6443/tcp 2>/dev/null || true
-    sleep 1
-    nohup ssh -o StrictHostKeyChecking=accept-new -N -L 6443:{{ first_master_ip | default('10.0.1.1') }}:6443 root@{{ bastion_public_ip }} > /dev/null 2>&1 &
+    set -euo pipefail
+    kubeconfig={{ lookup('env', 'HOME') }}/.kube/config
+    tunnel_pid_file={{ lookup('env', 'HOME') }}/.kube/{{ project }}-api-tunnel.pid
+    local_api_port=16443
+    if [ -f "$tunnel_pid_file" ]; then
+      old_pid=$(cat "$tunnel_pid_file")
+      if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+        old_command=$(ps -p "$old_pid" -o command=)
+        if [[ "$old_command" != *"kube-api-tunnel-supervisor.sh"* || "$old_command" != *"--local-port ${local_api_port}"* ]]; then
+          echo "Refusing to kill PID $old_pid because it is not a managed API tunnel: $old_command" >&2
+          exit 1
+        fi
+        kill "$old_pid"
+        # The supervisor may be inside its 15-second health interval. Wait
+        # beyond that interval so its TERM trap can reap the SSH child and
+        # release the listener before the replacement starts.
+        for _ in $(seq 1 120); do kill -0 "$old_pid" 2>/dev/null || break; sleep 0.25; done
+        if kill -0 "$old_pid" 2>/dev/null; then
+          echo "Managed API tunnel PID $old_pid did not stop within 30 seconds" >&2
+          exit 1
+        fi
+        for _ in $(seq 1 120); do
+          nc -z 127.0.0.1 "$local_api_port" >/dev/null 2>&1 || break
+          sleep 0.25
+        done
+      fi
+      rm -f "$tunnel_pid_file"
+    fi
+    if nc -z 127.0.0.1 "$local_api_port" >/dev/null 2>&1; then
+      echo "Local port $local_api_port is occupied by an unmanaged process" >&2
+      lsof -nP -iTCP:"$local_api_port" -sTCP:LISTEN >&2 || true
+      exit 1
+    fi
+    nohup {{ playbook_dir }}/../scripts/kube-api-tunnel-supervisor.sh \
+      --bastion {{ bastion_public_ip | quote }} \
+      {% for target in (master_ips | default({}) | dict2items | sort(attribute='key') | map(attribute='value') | list) or [first_master_ip | default('10.0.1.1')] %}
+      --target {{ target | quote }} \
+      {% endfor %}
+      --kubeconfig "$kubeconfig" \
+      --local-port "$local_api_port" > /dev/null 2>&1 &
+    tunnel_pid=$!
+    printf '%s\n' "$tunnel_pid" > "$tunnel_pid_file"
+    chmod 600 "$tunnel_pid_file"
     for attempt in $(seq 1 30); do
-      if ss -tlnp | grep -q ':6443'; then
+      if nc -z 127.0.0.1 "$local_api_port" >/dev/null 2>&1; then
         echo "SSH tunnel ready after ${attempt}s"
         break
       fi
+      if ! kill -0 "$tunnel_pid" 2>/dev/null; then
+        echo "SSH tunnel exited before becoming ready" >&2
+        exit 1
+      fi
       sleep 1
     done
-    sed -i 's|https://{{ first_master_ip | default("10.0.1.1") }}:6443|https://127.0.0.1:6443|g' {{ lookup('env', 'HOME') }}/.kube/config
+    nc -z 127.0.0.1 "$local_api_port" >/dev/null 2>&1 || { echo "SSH tunnel timed out" >&2; exit 1; }
+    kubectl --kubeconfig "$kubeconfig" config set-cluster cluster.local \
+      --server="https://127.0.0.1:${local_api_port}" >/dev/null
     for verify in $(seq 1 5); do
-      if KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes 2>/dev/null; then
+      if KUBECONFIG="$kubeconfig" kubectl get nodes 2>/dev/null; then
         exit 0
       fi
       sleep 2
     done
     echo "kubectl failed after 5 retries"
-    KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config kubectl get nodes
+    KUBECONFIG="$kubeconfig" kubectl get nodes
   args:
     executable: /bin/bash
   delegate_to: localhost
@@ -342,6 +463,56 @@
   become: false
   changed_when: false
 
+- name: Enforce dedicated control-plane scheduling contract
+  ansible.builtin.shell: |
+    set -euo pipefail
+    changed=false
+    for node in {{ master_ips.keys() | list | join(' ') }}; do
+      if kubectl get node "$node" -o json | jq -e '
+        any(.spec.taints[]?;
+          (.key == "node-role.kubernetes.io/control-plane"
+            or .key == "node-role.kubernetes.io/master")
+          and .effect == "NoSchedule")
+      ' >/dev/null; then
+        continue
+      fi
+      kubectl taint node "$node" node-role.kubernetes.io/control-plane=:NoSchedule --overwrite
+      if ! kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data \
+        --force --timeout=10m; then
+        kubectl uncordon "$node" >/dev/null 2>&1 || true
+        kubectl taint node "$node" node-role.kubernetes.io/control-plane:NoSchedule- \
+          >/dev/null 2>&1 || true
+        exit 1
+      fi
+      kubectl uncordon "$node"
+      changed=true
+    done
+    echo "changed=$changed"
+  args:
+    executable: /bin/bash
+  register: dedicated_control_plane
+  changed_when: "'changed=true' in dedicated_control_plane.stdout"
+  retries: 2
+  delay: 30
+  until: dedicated_control_plane is success
+  when: not (cp_schedulable | default(false) | bool)
+
+- name: Enforce schedulable control-plane contract for compact profiles
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - taint
+      - node
+      - '{{ item }}'
+      - node-role.kubernetes.io/control-plane:NoSchedule-
+  loop: '{{ master_ips.keys() | list }}'
+  register: schedulable_control_plane
+  changed_when: schedulable_control_plane.rc == 0
+  failed_when:
+    - schedulable_control_plane.rc != 0
+    - "'not found' not in schedulable_control_plane.stderr"
+  when: cp_schedulable | default(false) | bool
+
 - name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop
   ansible.builtin.shell: |
     kubectl -n kube-system get cm coredns -o json | \
@@ -360,7 +531,7 @@
 
 - name: Verify DNS resolution in cluster
   ansible.builtin.shell: |
-    kubectl run dns-test-{{ ansible_date_time.epoch }} --rm -i --restart=Never --image=busybox --wait=true -- nslookup kubernetes.default.svc.cluster.local
+    kubectl run dns-test-{{ ansible_facts.date_time.epoch }} --rm -i --restart=Never --image=busybox --wait=true -- nslookup kubernetes.default.svc.cluster.local
   args:
     executable: /bin/bash
   delegate_to: localhost
@@ -392,6 +563,39 @@
   delay: 10
   until: _r_create_hcloud_token_secret_for_ccm is not failed
 
+- name: Resolve Hetzner server identities for Kubernetes nodes
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - server
+      - describe
+      - '{{ item }}'
+      - -o
+      - json
+  environment:
+    HCLOUD_TOKEN: "{{ hcloud_token | default(lookup('env', 'HCLOUD_TOKEN')) }}"
+  loop: '{{ (master_ips.keys() | list) + (worker_ips.keys() | list) }}'
+  register: hcloud_node_identities
+  changed_when: false
+  no_log: true
+
+- name: Reconcile Kubernetes node provider IDs with Hetzner server IDs
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: '{{ item.item }}'
+      spec:
+        providerID: 'hcloud://{{ (item.stdout | from_json).id }}'
+  loop: '{{ hcloud_node_identities.results }}'
+  register: hcloud_node_provider_ids
+  retries: 3
+  delay: 10
+  until: hcloud_node_provider_ids is not failed
+  no_log: true
+
 - name: Download verified Hetzner Cloud Controller Manager manifest
   ansible.builtin.get_url:
     url: "https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/{{ hetzner_ccm_ver }}/ccm-networks.yaml"
@@ -417,6 +621,18 @@
       - op: replace
         path: /spec/progressDeadlineSeconds
         value: 1800
+      # MetalLB owns Gateway API service addresses and Hetzner LBs are created
+      # by the infrastructure role. CCM should only reconcile cloud node data.
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: HCLOUD_LOAD_BALANCERS_ENABLED
+          value: 'false'
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: HCLOUD_NETWORK_ROUTES_ENABLED
+          value: 'false'
   register: _r_patch_ccm_progress_deadline
   retries: 3
   delay: 10
@@ -429,7 +645,7 @@
     name: hcloud-cloud-controller-manager
   register: ccm_pre_patch
   until: >
-    ccm_pre_patch.resources | length > 0
+    (ccm_pre_patch.resources | default([])) | length > 0
     and (ccm_pre_patch.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
@@ -466,11 +682,25 @@
     name: hcloud-cloud-controller-manager
   register: ccm_deploy
   until: >
-    ccm_deploy.resources | length > 0
+    (ccm_deploy.resources | default([])) | length > 0
     and (ccm_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 60
   delay: 15
   failed_when: false
+
+- name: Verify every Kubernetes node has a Hetzner provider ID
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl get nodes -o json | python3 -c '
+    import json, sys
+    nodes = json.load(sys.stdin)["items"]
+    invalid = [n["metadata"]["name"] for n in nodes if not n["spec"].get("providerID", "").startswith("hcloud://")]
+    if invalid:
+        raise SystemExit("nodes without Hetzner provider IDs: " + ", ".join(invalid))
+    '
+  args:
+    executable: /bin/bash
+  changed_when: false
 
 
 # ============================================
@@ -514,7 +744,7 @@
     name: hcloud-csi-controller
   register: csi_deploy
   until: >
-    csi_deploy.resources | length > 0
+    (csi_deploy.resources | default([])) | length > 0
     and (csi_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
@@ -527,7 +757,7 @@
     name: hcloud-csi-node
   register: csi_node_ds
   until: >
-    csi_node_ds.resources | length > 0
+    (csi_node_ds.resources | default([])) | length > 0
     and (csi_node_ds.resources[0].status.numberReady | default(0)) >= (csi_node_ds.resources[0].status.desiredNumberScheduled | default(1))
   retries: 120
   delay: 15
@@ -614,7 +844,7 @@
         template:
           metadata:
             annotations:
-              kubectl.kubernetes.io/restartedAt: "{{ ansible_date_time.iso8601 }}"
+              kubectl.kubernetes.io/restartedAt: "{{ ansible_facts.date_time.iso8601 }}"
   register: _r_restart_cilium_operator_to_pick_up_gatew
   retries: 3
   delay: 10
@@ -719,7 +949,7 @@
       - "io.cilium.gateway/owning-gateway=main-gateway"
   when: k8s_create_external_tls | default(true) | bool
   register: gw_svc
-  until: gw_svc.resources | length > 0
+  until: (gw_svc.resources | default([])) | length > 0
   retries: 30
   delay: 10
   failed_when: false
@@ -797,7 +1027,7 @@
       - "io.cilium.gateway/owning-gateway=admin-gateway"
   when: k8s_create_external_tls | default(true) | bool
   register: admin_gw_svc
-  until: admin_gw_svc.resources | length > 0
+  until: (admin_gw_svc.resources | default([])) | length > 0
   retries: 30
   delay: 10
 
@@ -1112,6 +1342,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_platform_namespaces
   retries: 3
   delay: 10
@@ -1161,6 +1392,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_default_deny_netpol
   retries: 3
   delay: 10
@@ -1211,6 +1443,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_allow_apiserver_webhooks_netpol
   retries: 3
   delay: 10
@@ -1249,6 +1482,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_allow_dns_to_host_cnp
   retries: 3
   delay: 10
@@ -1287,6 +1521,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_allow_kube_apiserver_cnp
   retries: 3
   delay: 10
@@ -1314,6 +1549,8 @@
                     protocol: TCP
                   - port: "443"
                     protocol: TCP
+                  - port: "6443"
+                    protocol: TCP
                   - port: "8080"
                     protocol: TCP
   loop:
@@ -1329,6 +1566,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_allow_webhook_ingress_cnp
   retries: 3
   delay: 10
@@ -1367,6 +1605,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_intra_ns_cnp
   retries: 3
   delay: 10
@@ -1457,9 +1696,12 @@
                     protocol: TCP
                   - port: "9001"
                     protocol: TCP
+                  - port: "8333"
+                    protocol: TCP
   loop:
     - gitlab
     - databases
+    - vault
     - production
     - temporal
   register: _r_create_storage_egress_cnp
@@ -1573,6 +1815,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_intra_ns_netpol
   retries: 3
   delay: 10
@@ -1607,11 +1850,41 @@
     - temporal
     - elasticsearch
     - postal
+    - glitchtip
     - production
   register: _r_create_gw_netpol
   retries: 3
   delay: 10
   until: _r_create_gw_netpol is not failed
+
+- name: Allow the Cilium Gateway ingress identity to reach routed services
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-from-cilium-ingress
+        namespace: "{{ item }}"
+      spec:
+        endpointSelector: {}
+        ingress:
+          - fromEntities:
+              - ingress
+  loop:
+    - gitlab
+    - argocd
+    - monitoring
+    - storage
+    - temporal
+    - elasticsearch
+    - postal
+    - glitchtip
+    - production
+  register: _r_create_cilium_ingress_netpol
+  retries: 3
+  delay: 10
+  until: _r_create_cilium_ingress_netpol is not failed
 
 - name: Create allow-monitoring-scrape NetworkPolicy
   kubernetes.core.k8s:
@@ -1652,6 +1925,7 @@
     - dragonfly
     - elasticsearch
     - postal
+    - glitchtip
   register: _r_create_mon_netpol
   retries: 3
   delay: 10
@@ -1702,6 +1976,7 @@
     - vault
     - temporal
     - postal
+    - glitchtip
     - production
   register: _r_create_egress_netpol
   retries: 3
@@ -1735,6 +2010,9 @@
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: temporal
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: glitchtip
             ports:
               - protocol: TCP
                 port: 5432
@@ -1771,6 +2049,9 @@
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: databases
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: vault
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: production

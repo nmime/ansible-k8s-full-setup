@@ -1,0 +1,100 @@
+---
+# Kubernetes does not permit changing a StatefulSet volumeClaimTemplate in
+# place. Grow the live PVCs first, orphan only the controller, and let the
+# owning chart/operator recreate it around the same pods and claims.
+
+- name: 'Read {{ storage_reconcile_statefulset }} StatefulSet storage contract'
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ storage_reconcile_namespace }}'
+    name: '{{ storage_reconcile_statefulset }}'
+  register: _storage_reconcile_sts
+
+- name: 'Resolve {{ storage_reconcile_statefulset }} claim-template size'
+  ansible.builtin.set_fact:
+    _storage_reconcile_current: >-
+      {{
+        (
+          _storage_reconcile_sts.resources[0].spec.volumeClaimTemplates
+          | selectattr('metadata.name', 'equalto', storage_reconcile_claim)
+          | map(attribute='spec.resources.requests.storage')
+          | first
+        )
+        if _storage_reconcile_sts.resources | length > 0 else ''
+      }}
+
+- name: 'Reject {{ storage_reconcile_statefulset }} storage shrink attempts'
+  ansible.builtin.assert:
+    that:
+      - _storage_reconcile_current is match('^[1-9][0-9]*Gi$')
+      - storage_reconcile_desired is match('^[1-9][0-9]*Gi$')
+      - (storage_reconcile_desired | regex_replace('Gi$', '') | int) >= (_storage_reconcile_current | regex_replace('Gi$', '') | int)
+    fail_msg: >-
+      Refusing to shrink {{ storage_reconcile_namespace }}/{{ storage_reconcile_statefulset }}
+      storage from {{ _storage_reconcile_current }} to {{ storage_reconcile_desired }}.
+  when: _storage_reconcile_current | length > 0
+
+- name: 'Read {{ storage_reconcile_statefulset }} live claims'
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ storage_reconcile_namespace }}'
+    name: '{{ storage_reconcile_claim }}-{{ storage_reconcile_statefulset }}-{{ item }}'
+  loop: >-
+    {{ range(0, _storage_reconcile_sts.resources[0].spec.replicas | int) | list
+       if (_storage_reconcile_sts.resources | default([])) | length > 0 else [] }}
+  register: _storage_reconcile_claims
+
+- name: 'Reject {{ storage_reconcile_statefulset }} live-claim shrink attempts'
+  ansible.builtin.assert:
+    that:
+      - (storage_reconcile_desired | regex_replace('Gi$', '') | int) >= (item.resources[0].spec.resources.requests.storage | regex_replace('Gi$', '') | int)
+    quiet: true
+    fail_msg: >-
+      Refusing to shrink {{ storage_reconcile_namespace }}/{{ item.resources[0].metadata.name }}
+      from {{ item.resources[0].spec.resources.requests.storage }} to {{ storage_reconcile_desired }}.
+  loop: '{{ _storage_reconcile_claims.results | default([]) }}'
+  loop_control:
+    label: '{{ item.item | default("unknown") }}'
+  when: (item.resources | default([])) | length == 1
+  no_log: true
+
+- name: 'Expand {{ storage_reconcile_statefulset }} claims before template reconciliation'
+  # JSON Patch changes only the permitted storage request. A merge patch can
+  # serialize defaulted empty fields (notably volumeName) and Kubernetes then
+  # rejects an otherwise valid growth while a newly scaled claim is Pending.
+  kubernetes.core.k8s_json_patch:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: '{{ item.resources[0].metadata.name }}'
+    namespace: '{{ storage_reconcile_namespace }}'
+    patch:
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: '{{ storage_reconcile_desired }}'
+  loop: '{{ _storage_reconcile_claims.results | default([]) }}'
+  loop_control:
+    label: '{{ item.item | default("unknown") }}'
+  when:
+    - _storage_reconcile_current | length > 0
+    - (item.resources | default([])) | length == 1
+    # Kubernetes permits storage growth only after a claim is Bound. A Pending
+    # claim created during an operator scale-up is reconciled after adoption.
+    - item.resources[0].status.phase | default('') == 'Bound'
+    - (storage_reconcile_desired | regex_replace('Gi$', '') | int) > (item.resources[0].spec.resources.requests.storage | regex_replace('Gi$', '') | int)
+
+- name: 'Orphan {{ storage_reconcile_statefulset }} pods and claims for immutable template growth'
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ storage_reconcile_namespace }}'
+    name: '{{ storage_reconcile_statefulset }}'
+    delete_options:
+      propagationPolicy: Orphan
+    wait: '{{ storage_reconcile_wait | default(true) | bool }}'
+  when:
+    - _storage_reconcile_current | length > 0
+    - _storage_reconcile_current != storage_reconcile_desired
+    - storage_reconcile_orphan | default(true) | bool

@@ -18,6 +18,7 @@
           - tier in ['minimal', 'small', 'medium', 'production']
           - resource_tier in ['minimal', 'small', 'medium', 'production']
           - object_storage_replicas | int >= 1
+          - object_storage_replicas | int % 2 == 1
           - object_storage_volume_replicas | int >= 1
           - vault_replicas | int >= 1
           - postgresql_replicas | int >= 1

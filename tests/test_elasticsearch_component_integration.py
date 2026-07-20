@@ -150,9 +150,13 @@ class TestSecurityConfiguration(unittest.TestCase):
         self.assertIn("xpack.security.enabled", self.content,
                       "X-Pack security must be enabled")
 
-    def test_audit_logging_enabled(self):
-        self.assertIn("xpack.security.audit.enabled", self.content,
-                      "Audit logging must be enabled")
+    def test_basic_license_does_not_enable_unsupported_audit_logging(self):
+        definitions = self.content.split(
+            "- name: Remove unsupported Basic-license audit settings", 1
+        )[0]
+        self.assertNotIn("- name: xpack.security.audit.enabled", definitions,
+                         "Basic license rejects Elasticsearch audit logging")
+        self.assertIn("xpack.security.audit.enabled-", self.content)
 
     def test_run_as_non_root(self):
         self.assertIn("runAsNonRoot: true", self.content,

@@ -1,0 +1,59 @@
+---
+- name: Read current Vault pod revision
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ vault_ns }}'
+    name: 'vault-{{ vault_pod_index }}'
+  register: _vault_revision_pod
+
+- name: Restart Vault pod when its OnDelete revision is stale
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    namespace: '{{ vault_ns }}'
+    name: 'vault-{{ vault_pod_index }}'
+  when:
+  - _vault_revision_pod.resources | length == 1
+  - >-
+    _vault_revision_pod.resources[0].metadata.labels['controller-revision-hash'] |
+    default('') != _vault_statefulset.resources[0].status.updateRevision
+
+- name: Wait for reconciled Vault server container
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ vault_ns }}'
+    name: 'vault-{{ vault_pod_index }}'
+  register: _vault_reconciled_pod
+  until:
+  - _vault_reconciled_pod.resources | length == 1
+  - >-
+    _vault_reconciled_pod.resources[0].metadata.labels['controller-revision-hash'] |
+    default('') == _vault_statefulset.resources[0].status.updateRevision
+  - _vault_reconciled_pod.resources[0].status.containerStatuses | default([]) | length > 0
+  - _vault_reconciled_pod.resources[0].status.containerStatuses[0].state.running is defined
+  retries: 120
+  delay: 5
+
+# Do not move on to the next Raft member while this one is sealed. Otherwise a
+# three-member cluster can lose quorum during an OnDelete chart/config rollout.
+- name: Unseal reconciled Vault member before continuing the rolling reconcile
+  kubernetes.core.k8s_exec:
+    namespace: '{{ vault_ns }}'
+    pod: 'vault-{{ vault_pod_index }}'
+    command: >-
+      sh -c 'for key do
+      vault operator unseal "$key" >/dev/null 2>&1 || true;
+      vault status >/dev/null 2>&1; rc=$?;
+      [ "$rc" -eq 0 ] && exit 0;
+      done;
+      exit 1' --
+      {{ vault_init_data.unseal_keys_b64 | join(' ') }}
+  register: _vault_reconciled_unseal
+  retries: 3
+  delay: 5
+  until: _vault_reconciled_unseal is not failed
+  no_log: true
+  when: vault_init_data is defined
