@@ -143,6 +143,14 @@ profile-controlled PVC requests to Hetzner's 10Gi minimum. Test certificates
 default to `letsencrypt-staging` so repeated campaigns do not consume the
 registered-domain production issuance limit.
 
+If Hetzner reports `resource_unavailable` for the default `cx` pool, add
+`--capacity-family cpx`. The runner substitutes `cpx22`, `cpx32`, and `cpx42`
+at the same 2/4, 4/8, and 8/16 vCPU/GiB floors. It does not change node counts,
+HA, replicas, or enabled technologies. Explicit per-controller
+`--bastion-type`, `--cp-type`, and `--worker-type` overrides are also available
+and are rejected by the infrastructure role if they fall below a profile's
+capacity floor.
+
 ```bash
 # Plan all five controllers without Git worktrees or cloud mutations.
 ./run_all.sh --campaign-id lab01 --minimum-storage --dry-run
@@ -150,6 +158,7 @@ registered-domain production issuance limit.
 # Create an independent disposable DR target, then deploy all five profiles.
 eval "$(./scripts/test-dr-endpoint.sh up lab01 | grep '^export ')"
 ./run_all.sh --campaign-id lab01 --minimum-storage --manage-dns \
+  --capacity-family cpx \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" --dr-bucket "$BACKUP_DR_BUCKET"
 ```
 
@@ -158,6 +167,12 @@ and never guesses that teardown is safe. It prints the exact per-controller
 cleanup commands. After evidence is secured, remove those five projects and
 run `./scripts/test-dr-endpoint.sh down lab01`; verify the cloud and parent DNS
 zone returned to their recorded baseline.
+
+Teardown selects servers, load balancers, firewalls, networks, and volumes by
+the exact `project` label, not by a name prefix. This is required when project
+names overlap (for example `medium` and `medium-optimized`) and makes parallel
+cleanup safe. Legacy placement groups are removed only by the exact
+`${project}-spread` name.
 
 When `global.domain` is a delegated name below an existing Hetzner zone, set
 top-level `hetzner_dns_zone` to the parent, for example

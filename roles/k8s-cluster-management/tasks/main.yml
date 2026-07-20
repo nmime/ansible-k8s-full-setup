@@ -19,7 +19,7 @@
     controller_known_hosts_file: >-
       {{ lookup('env', 'HOME') }}/.ssh/known_hosts-{{ project_name | default('k8s') }}
     kubespray_control_path_dir: >-
-      {{ lookup('env', 'HOME') }}/.ansible/cp/{{ project_name | default('k8s') }}/kubespray
+      /tmp/ansible-k8s-cp/{{ (project_name | default('k8s') | hash('sha256'))[:16] }}
     cluster_manifest_dir: >-
       {{ lookup('env', 'HOME') }}/.cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests
     local_api_port: "{{ k8s_api_local_port | default(16443) | int }}"

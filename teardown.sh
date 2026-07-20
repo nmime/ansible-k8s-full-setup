@@ -33,21 +33,24 @@ command -v hcloud >/dev/null || fail "hcloud CLI is required"
 PREFIX="${PROJECT}-"
 FAILURES=0
 PROJECT_VOLUME_IDS=()
+PROJECT_VOLUME_COUNT=0
 
 add_project_volume_id() {
   local candidate="$1" existing
   [[ "$candidate" =~ ^[0-9]+$ ]] || return 0
-  for existing in "${PROJECT_VOLUME_IDS[@]}"; do
+  for existing in "${PROJECT_VOLUME_IDS[@]:-}"; do
     [[ "$existing" != "$candidate" ]] || return 0
   done
   PROJECT_VOLUME_IDS+=("$candidate")
+  PROJECT_VOLUME_COUNT=$((PROJECT_VOLUME_COUNT + 1))
 }
 
-list_prefixed() {
-  hcloud "$1" list -o noheader -o columns=name 2>/dev/null | awk -v p="$PREFIX" 'index($0,p)==1'
+list_project_labeled() {
+  hcloud "$1" list -o json 2>/dev/null \
+    | jq -r --arg project "$PROJECT" '.[] | select(.labels.project == $project) | .name'
 }
 
-delete_prefixed() {
+delete_project_labeled() {
   local resource="$1" name
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
@@ -56,7 +59,7 @@ delete_prefixed() {
       printf '  FAILED to delete %s: %s\n' "$resource" "$name" >&2
       FAILURES=$((FAILURES + 1))
     fi
-  done < <(list_prefixed "$resource")
+  done < <(list_project_labeled "$resource")
 }
 
 printf '=== Tearing down Hetzner project resources: %s ===\n' "$PROJECT"
@@ -93,19 +96,20 @@ if command -v kubectl >/dev/null 2>&1 && nodes_json=$(kubectl get nodes -o json 
     log "Skipping PV volume capture because the active Kubernetes context is not exclusively this project"
   fi
 fi
-log "Captured ${#PROJECT_VOLUME_IDS[@]} project volume ID(s) before server deletion"
+log "Captured ${PROJECT_VOLUME_COUNT} project volume ID(s) before server deletion"
 
 # Remove ingress first, then compute. Volumes are handled only after servers
 # have disappeared so attached CSI volumes are not silently skipped.
-delete_prefixed load-balancer
-delete_prefixed server
+delete_project_labeled load-balancer
+delete_project_labeled server
 
 for _ in 1 2 3 4 5 6; do
-  [[ -z "$(list_prefixed server)" ]] && break
+  [[ -z "$(list_project_labeled server)" ]] && break
   sleep 5
 done
 
-for volume_id in "${PROJECT_VOLUME_IDS[@]}"; do
+for volume_id in "${PROJECT_VOLUME_IDS[@]:-}"; do
+  [[ -n "$volume_id" ]] || continue
   hcloud volume describe "$volume_id" >/dev/null 2>&1 || continue
   log "Detaching captured project volume if attached: $volume_id"
   hcloud volume detach "$volume_id" >/dev/null 2>&1 || true
@@ -116,8 +120,17 @@ for volume_id in "${PROJECT_VOLUME_IDS[@]}"; do
   fi
 done
 
-delete_prefixed firewall
-delete_prefixed placement-group
+delete_project_labeled firewall
+delete_project_labeled placement-group
+
+# Placement groups created by releases before project labels were added are
+# still safe to remove by their single exact conventional name. Never use a
+# project-name prefix here: projects such as "medium" and
+# "medium-optimized" may be torn down concurrently.
+if hcloud placement-group describe "${PROJECT}-spread" >/dev/null 2>&1; then
+  log "Deleting legacy exact placement-group: ${PROJECT}-spread"
+  hcloud placement-group delete "${PROJECT}-spread" || FAILURES=$((FAILURES + 1))
+fi
 
 if hcloud ssh-key describe "${PROJECT}-key" >/dev/null 2>&1; then
   log "Deleting ssh-key: ${PROJECT}-key"
@@ -136,10 +149,11 @@ fi
 
 REMAINING=""
 for resource in load-balancer server volume firewall placement-group; do
-  names="$(list_prefixed "$resource")"
+  names="$(list_project_labeled "$resource")"
   [[ -z "$names" ]] || REMAINING+="${resource}: ${names}"$'\n'
 done
-for volume_id in "${PROJECT_VOLUME_IDS[@]}"; do
+for volume_id in "${PROJECT_VOLUME_IDS[@]:-}"; do
+  [[ -n "$volume_id" ]] || continue
   if hcloud volume describe "$volume_id" >/dev/null 2>&1; then
     REMAINING+="captured volume: ${volume_id}"$'\n'
   fi

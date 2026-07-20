@@ -21,6 +21,7 @@ Options:
   --dr-endpoint URL      External S3-compatible DR endpoint
   --dr-bucket NAME       External DR bucket; prefixes remain per-project
   --certificate-issuer   ClusterIssuer (default: letsencrypt-staging)
+  --capacity-family NAME Use capacity-equivalent server family (supported: cpx)
   --manage-dns           Permit each profile deployment to manage DNS
   --minimum-storage      Use 10Gi profile-controlled PVC requests
   --dry-run              Generate five runtime configs, but do not use Git/cloud
@@ -46,6 +47,7 @@ DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 MANAGE_DNS=false
 MINIMUM_STORAGE=false
 CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-letsencrypt-staging}"
+CAPACITY_FAMILY=""
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --dr-endpoint) require_value "$1" "${2:-}"; DR_ENDPOINT="$2"; shift 2 ;;
     --dr-bucket) require_value "$1" "${2:-}"; DR_BUCKET="$2"; shift 2 ;;
     --certificate-issuer) require_value "$1" "${2:-}"; CERTIFICATE_ISSUER="$2"; shift 2 ;;
+    --capacity-family) require_value "$1" "${2:-}"; CAPACITY_FAMILY="$2"; shift 2 ;;
     --manage-dns) MANAGE_DNS=true; shift ;;
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -73,6 +76,8 @@ done
   || die "invalid base domain '$BASE_DOMAIN'"
 [[ "$EMAIL" == *@*.* ]] || die "invalid email '$EMAIL'"
 [[ "$CERTIFICATE_ISSUER" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "invalid certificate issuer"
+[[ -z "$CAPACITY_FAMILY" || "$CAPACITY_FAMILY" == cpx ]] \
+  || die "unsupported capacity family '$CAPACITY_FAMILY' (supported: cpx)"
 if [[ ! "$API_PORT_BASE" =~ ^[0-9]+$ ]] || ((API_PORT_BASE < 1024 || API_PORT_BASE > 65531)); then
   die "invalid API port base '$API_PORT_BASE'"
 fi
@@ -207,6 +212,15 @@ for profile in $PROFILES; do
     --dns-zone "$BASE_DOMAIN"
     --certificate-issuer "$CERTIFICATE_ISSUER"
   )
+  if [[ "$CAPACITY_FAMILY" == cpx ]]; then
+    args+=(--bastion-type cpx22)
+    case "$profile" in
+      minimal) args+=(--cp-type cpx22 --worker-type cpx22) ;;
+      small) args+=(--cp-type cpx22 --worker-type cpx32) ;;
+      medium|production) args+=(--cp-type cpx42 --worker-type cpx42) ;;
+      medium-optimized) args+=(--cp-type cpx32 --worker-type cpx32) ;;
+    esac
+  fi
   [[ -z "$DR_ENDPOINT" ]] || args+=(--dr-endpoint "$DR_ENDPOINT")
   [[ -z "$DR_BUCKET" ]] || args+=(--dr-bucket "$DR_BUCKET")
   $MANAGE_DNS && args+=(--manage-dns)

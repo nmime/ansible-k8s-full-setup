@@ -41,7 +41,7 @@
   delegate_to: localhost
   become: false
 - name: Update and install required packages on bastion
-  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} ''bash -s'' << ''REMOTECMD''
+  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} ''bash -s'' << ''REMOTECMD''
 
     apt-get -o DPkg::Lock::Timeout=300 update -q
 
@@ -56,7 +56,7 @@
   until: bastion_pkg_result is success
 - name: Install tools directly on bastion
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'
     set -euo pipefail
     K8S_VER={{ k8s_version }}
     HELM_VER={{ helm_cli_version }}
@@ -94,7 +94,7 @@
   delay: 30
   until: tools_result is success
 - name: Configure fail2ban on bastion
-  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} ''bash -s'' << ''REMOTECMD''
+  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} ''bash -s'' << ''REMOTECMD''
 
     cat > /etc/fail2ban/jail.local << ''EOF''
 
@@ -120,7 +120,7 @@
 
     '
 - name: Configure UFW firewall on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nDEFAULT_IF=$(ip route show default | awk '/default/ {print $5}'\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nDEFAULT_IF=$(ip route show default | awk '/default/ {print $5}'\
     \ | head -1)\nDEFAULT_IF=\"${DEFAULT_IF:-eth0}\"\nPRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)\nPRIV_IF=\"${PRIV_IF:-enp7s0}\"\nsed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY=\"\
     ACCEPT\"/' /etc/default/ufw\nsed -i 's/^#net\\/ipv4\\/ip_forward=1/net\\/ipv4\\/ip_forward=1/' /etc/ufw/sysctl.conf\nsed -i 's/^net\\/ipv4\\/ip_forward=0/net\\/ipv4\\/ip_forward=1/' /etc/ufw/sysctl.conf\n\
     sysctl -w net.ipv4.ip_forward=1\ngrep -q '^net.ipv4.ip_forward' /etc/sysctl.conf && sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf\n\
@@ -131,7 +131,7 @@
     \ -A FORWARD -i \"$PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT\niptables -C FORWARD -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i\
     \ \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state RELATED,ESTABLISHED -j ACCEPT\nREMOTECMD\n"
 - name: Harden SSH on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nfor setting in \\\n  'PasswordAuthentication no' \\\n  'PermitRootLogin\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nfor setting in \\\n  'PasswordAuthentication no' \\\n  'PermitRootLogin\
     \ prohibit-password' \\\n  'MaxAuthTries 5' \\\n  'MaxStartups 100:30:200' \\\n  'MaxSessions 50' \\\n  'AllowTcpForwarding yes' \\\n  'AllowStreamLocalForwarding no' \\\n; do\n  key=$(echo \"$setting\"\
     \ | cut -d' ' -f1)\n  grep -q \"^$key\" /etc/ssh/sshd_config \\\n    && sed -i \"s/^.*$key.*/$setting/\" /etc/ssh/sshd_config \\\n    || echo \"$setting\" >> /etc/ssh/sshd_config\ndone\nsystemctl restart\
     \ ssh 2>/dev/null || systemctl restart sshd\nREMOTECMD\n"
@@ -153,7 +153,7 @@
   become: false
   changed_when: false
 - name: Enable IP forwarding and NAT on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nsysctl -w net.ipv4.ip_forward=1\necho 'net.ipv4.ip_forward = 1'\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nsysctl -w net.ipv4.ip_forward=1\necho 'net.ipv4.ip_forward = 1'\
     \ > /etc/sysctl.d/99-nat.conf\nDEFAULT_IF=$(ip route show default | awk '/default/ {print $5}' | head -1)\nDEFAULT_IF=\"${DEFAULT_IF:-eth0}\"\nPRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print\
     \ $2}' | head -1)\nPRIV_IF=\"${PRIV_IF:-enp7s0}\"\niptables -t nat -C POSTROUTING -s 10.0.0.0/16 -o \"$DEFAULT_IF\" -j MASQUERADE 2>/dev/null || \\\n  iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o\
     \ \"$DEFAULT_IF\" -j MASQUERADE\niptables -C FORWARD -i \"$PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT 2>/dev/null || \\\n  iptables -A FORWARD -i \"$PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT\niptables -C FORWARD\
@@ -252,26 +252,26 @@
   delay: 15
   until: route_result.rc == 0
 - name: Install Docker on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nif ! command -v docker &>/dev/null; then\n  apt-get -o DPkg::Lock::Timeout=300 update\n  apt-get -o DPkg::Lock::Timeout=300 install -y docker.io docker-compose-v2\n  systemctl enable docker\n  systemctl start docker\nfi\nREMOTECMD\n"
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nif ! command -v docker &>/dev/null; then\n  apt-get -o DPkg::Lock::Timeout=300 update\n  apt-get -o DPkg::Lock::Timeout=300 install -y docker.io docker-compose-v2\n  systemctl enable docker\n  systemctl start docker\nfi\nREMOTECMD\n"
 - name: Re-apply NAT after Docker install
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nsysctl -w net.ipv4.ip_forward=1\nDEFAULT_IF=$(ip route show default\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nsysctl -w net.ipv4.ip_forward=1\nDEFAULT_IF=$(ip route show default\
     \ | awk '/default/ {print $5}' | head -1)\nDEFAULT_IF=\"${DEFAULT_IF:-eth0}\"\nPRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)\nPRIV_IF=\"${PRIV_IF:-enp7s0}\"\niptables\
     \ -t nat -C POSTROUTING -s 10.0.0.0/16 -o \"$DEFAULT_IF\" -j MASQUERADE 2>/dev/null || \\\n  iptables -t nat -A POSTROUTING -s 10.0.0.0/16 -o \"$DEFAULT_IF\" -j MASQUERADE\niptables -C FORWARD -i \"\
     $PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT 2>/dev/null || \\\n  iptables -A FORWARD -i \"$PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT\niptables -C FORWARD -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state\
     \ RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \\\n  iptables -A FORWARD -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state RELATED,ESTABLISHED -j ACCEPT\niptables-save > /etc/iptables/rules.v4\nREMOTECMD\n"
 - name: Create Headscale directories
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} \\\n  'mkdir -p /etc/headscale /var/lib/headscale /opt/headscale'\n"
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'mkdir -p /etc/headscale /var/lib/headscale /opt/headscale'\n"
 - name: Deploy Headscale configuration
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/headscale/config.yaml << 'EOF'\nserver_url: https://{{\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/headscale/config.yaml << 'EOF'\nserver_url: https://{{\
     \ vpn_domain }}\nlisten_addr: 0.0.0.0:8080\nmetrics_listen_addr: 0.0.0.0:9090\nnoise:\n  private_key_path: /var/lib/headscale/noise_private.key\nprefixes:\n  v4: 100.64.0.0/10\n  v6: fd7a:115c:a1e0::/48\n\
     derp:\n  server:\n    enabled: true\n    region_id: 999\n    stun_listen_addr: 0.0.0.0:3478\n    private_key_path: /var/lib/headscale/derp_server_private.key\n  urls:\n      - https://controlplane.tailscale.com/derpmap/default\n\
     \  auto_update_enabled: true\n  update_frequency: 24h\ndatabase:\n  type: sqlite\n  sqlite:\n    path: /var/lib/headscale/db.sqlite\ndns:\n  magic_dns: true\n  base_domain: vpn.internal\n  nameservers:\n\
     \    global:\n      - 1.1.1.1\n      - 8.8.8.8\nlog:\n  level: info\nEOF\nREMOTECMD\n"
 - name: Create Caddyfile for Headscale TLS termination
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/Caddyfile << 'EOF'\n{{ vpn_domain }} {\n  reverse_proxy\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/Caddyfile << 'EOF'\n{{ vpn_domain }} {\n  reverse_proxy\
     \ headscale:8080\n}\nEOF\nREMOTECMD\n"
 - name: Deploy Headscale Docker Compose
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/docker-compose.yml << 'EOF'\nservices:\n  headscale:\n\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/docker-compose.yml << 'EOF'\nservices:\n  headscale:\n\
     \    container_name: headscale\n    image: headscale/headscale:{{ headscale_version }}\n    restart: always\n    command: serve\n    ports:\n      - \"9090:9090\"\n      - \"3478:3478/udp\"\n    volumes:\n\
     \      - /var/lib/headscale:/var/lib/headscale\n      - /etc/headscale:/etc/headscale:ro\n    environment:\n      - TZ=UTC\n    security_opt:\n      - no-new-privileges:true\n    read_only: true\n \
     \   tmpfs:\n      - /tmp\n      - /run\n      - /var/run/headscale\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\n  caddy:\n    container_name: caddy\n    image: caddy:{{ caddy_image_tag }}\n\
@@ -279,22 +279,22 @@
     \    depends_on:\n      - headscale\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\nvolumes:\n  caddy_data:\n  caddy_config:\n\
     EOF\nREMOTECMD\n"
 - name: Start Headscale container
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} \\\n  'cd /opt/headscale && docker compose up -d'\n"
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'cd /opt/headscale && docker compose up -d'\n"
 - name: Wait for Headscale to be ready
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nfor i in $(seq 1 30); do\n  docker exec headscale headscale version\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nfor i in $(seq 1 30); do\n  docker exec headscale headscale version\
     \ 2>/dev/null && break\n  sleep 2\ndone\nREMOTECMD\n"
 - name: Create Headscale admin user
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create admin 2>/dev/null || true'\n"
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create admin 2>/dev/null || true'\n"
 - name: Create Headscale dev user
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create dev 2>/dev/null || true'\n"
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create dev 2>/dev/null || true'\n"
 - name: Create pre-auth key for admin
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} \\\n  'docker exec headscale headscale preauthkeys create --user admin --reusable --expiration\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale preauthkeys create --user admin --reusable --expiration\
     \ 720h 2>/dev/null | tail -1'\n"
   register: admin_preauth_key
 - name: Install Tailscale client on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nif ! command -v tailscale &>/dev/null; then\n  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg\n  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list\n  apt-get -o DPkg::Lock::Timeout=300 update\n  apt-get -o DPkg::Lock::Timeout=300 install -y tailscale\nfi\nREMOTECMD\n"
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nif ! command -v tailscale &>/dev/null; then\n  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg\n  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list\n  apt-get -o DPkg::Lock::Timeout=300 update\n  apt-get -o DPkg::Lock::Timeout=300 install -y tailscale\nfi\nREMOTECMD\n"
 - name: Connect bastion to Headscale VPN
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} \\\n  \"tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  \"tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout\
     \ | trim }} --hostname {{ project }}-bastion --advertise-routes=10.0.0.0/16 2>/dev/null || true\"\n"
   when: admin_preauth_key.stdout is defined and admin_preauth_key.stdout | trim | length > 0
 - name: Display network security summary
@@ -325,7 +325,7 @@
       certificate valid for bastion_log_ingest_host.
   when: bastion_log_shipping | default(false) | bool
 - name: Install and configure Promtail on bastion (for Loki)
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nset -e\n\nif [ -f /usr/bin/promtail ]; then\n  echo \"Promtail\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nset -e\n\nif [ -f /usr/bin/promtail ]; then\n  echo \"Promtail\
     \ already installed\"\n  exit 0\nfi\n\nPROMTAIL_VERSION=\"{{ promtail_version }}\"\ncd /tmp\ncurl -fsSL -o promtail.zip \"https://github.com/grafana/loki/releases/download/v${PROMTAIL_VERSION}/promtail-linux-amd64.zip\"\
     \necho '{{ promtail_linux_amd64_sha256 }}  promtail.zip' | sha256sum -c -\nunzip -o promtail.zip\nchmod +x promtail-linux-amd64\nmv promtail-linux-amd64 /usr/bin/promtail\nrm -f promtail.zip\n\nmkdir -p /etc/promtail /var/lib/promtail\nREMOTECMD\n"
   when: bastion_log_shipping | default(false) | bool and log_stack | default('loki') == 'loki'
@@ -334,14 +334,14 @@
   delay: 5
   until: _r_install_promtail_bastion is not failed
 - name: Configure Promtail on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/promtail/config.yml << 'EOF'\nserver:\n  http_listen_port:\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/promtail/config.yml << 'EOF'\nserver:\n  http_listen_port:\
     \ 9080\n  grpc_listen_port: 0\n\npositions:\n  filename: /var/lib/promtail/positions.yaml\n\nclients:\n  - url: {{ bastion_log_ingest_scheme | default('https') }}://{{ bastion_log_ingest_host }}:{{ bastion_log_ingest_port | default(443) }}/loki/api/v1/push\n    tenant_id: bastion\n\nscrape_configs:\n\
     \  - job_name: bastion-system\n    static_configs:\n      - targets:\n          - localhost\n        labels:\n          job: bastion\n          host: {{ project }}-bastion\n          __path__: /var/log/*.log\n\
     \n  - job_name: bastion-journal\n    journal:\n      max_age: 12h\n      labels:\n        job: bastion-journal\n        host: {{ project }}-bastion\n    relabel_configs:\n      - source_labels: ['__journal__systemd_unit']\n\
     \        target_label: 'unit'\n      - source_labels: ['__journal__hostname']\n        target_label: 'hostname'\nEOF\nREMOTECMD\n"
   when: bastion_log_shipping | default(false) | bool and log_stack | default('loki') == 'loki'
 - name: Create Promtail systemd service on bastion
-  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} ''bash -s'' << ''REMOTECMD''
+  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} ''bash -s'' << ''REMOTECMD''
 
     cat > /etc/systemd/system/promtail.service << ''EOF''
 
@@ -381,7 +381,7 @@
     '
   when: bastion_log_shipping | default(false) | bool and log_stack | default('loki') == 'loki'
 - name: Install and configure Filebeat on bastion (for ELK)
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nset -e\n\nif [ -f /usr/bin/filebeat ]; then\n  echo \"Filebeat\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nset -e\n\nif [ -f /usr/bin/filebeat ]; then\n  echo \"Filebeat\
     \ already installed\"\nelse\n  curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg\n  echo \"deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg]\
     \ https://artifacts.elastic.co/packages/9.x/apt stable main\" > /etc/apt/sources.list.d/elastic-9.x.list\n  apt-get -o DPkg::Lock::Timeout=300 update && apt-get -o DPkg::Lock::Timeout=300 install -y filebeat={{ es_version }}\nfi\nREMOTECMD\n"
   when: bastion_log_shipping | default(false) | bool and log_stack | default('loki') in ['elk', 'efk']
@@ -390,7 +390,7 @@
   delay: 5
   until: _r_install_filebeat_bastion is not failed
 - name: Configure Filebeat on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/filebeat/filebeat.yml << 'EOF'\nfilebeat.inputs:\n  -\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/filebeat/filebeat.yml << 'EOF'\nfilebeat.inputs:\n  -\
     \ type: log\n    enabled: true\n    paths:\n      - /var/log/*.log\n      - /var/log/syslog\n      - /var/log/auth.log\n    fields:\n      host: {{ project }}-bastion\n      job: bastion\n    fields_under_root:\
     \ true\n\n  - type: journald\n    enabled: true\n    id: bastion-journal\n\noutput.elasticsearch:\n  hosts: [\"https://{{ network_control_plane_ips | first }}:31443\"]\n  username: \"elastic\"\n  password: \"{{\
     \ es_superuser_password }}\"\n  ssl.verification_mode: full\n  ssl.certificate_authorities: [\"/etc/filebeat/es-ca.crt\"]\n  index: \"bastion-%{+yyyy.MM.dd}\"\n\nsetup.ilm.enabled: false\nsetup.template.name: \"bastion\"\nsetup.template.pattern: \"\
@@ -415,7 +415,7 @@
   when: control_plane_log_shipping | default(false) | bool and log_stack | default('loki') in ['elk', 'efk'] and es_tls_secret_available | default(false) | bool
   no_log: true
 - name: Install SSH MFA (Google Authenticator) on bastion
-  ansible.builtin.shell: ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} "apt-get -o DPkg::Lock::Timeout=300 update && apt-get -o DPkg::Lock::Timeout=300 install -y libpam-google-authenticator && (grep -q pam_google_authenticator /etc/pam.d/sshd ||
+  ansible.builtin.shell: ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} "apt-get -o DPkg::Lock::Timeout=300 update && apt-get -o DPkg::Lock::Timeout=300 install -y libpam-google-authenticator && (grep -q pam_google_authenticator /etc/pam.d/sshd ||
     sed -i "/@include common-auth/i auth required pam_google_authenticator.so nullok" /etc/pam.d/sshd) && sed -i "s/^#.*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/" /etc/ssh/sshd_config
     && (grep -q "AuthenticationMethods publickey,keyboard-interactive" /etc/ssh/sshd_config || echo "AuthenticationMethods publickey,keyboard-interactive" >> /etc/ssh/sshd_config) && systemctl restart sshd"
   when: ssh_mfa_enabled | default(false) | bool
@@ -427,7 +427,7 @@
   when: ssh_mfa_enabled | default(false) | bool
 - name: Install auditd and unattended-upgrades on bastion
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
     set -euo pipefail
     # A freshly configured host can still have cloud-init or apt-daily holding
     # dpkg's locks.  Stop scheduled package jobs, let an active transaction
@@ -458,7 +458,7 @@
   delay: 10
   until: bastion_audit_packages is success
 - name: 'Configure auditd rules on bastion (HIPAA: syscall logging)'
-  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} ''bash -s'' << ''RULES''
+  ansible.builtin.shell: 'ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} ''bash -s'' << ''RULES''
 
     cat > /etc/audit/rules.d/hipaa.rules << ''EOF''
 
@@ -487,7 +487,7 @@
     '
   when: hipaa_compliance | default(false) | bool
 - name: Install node-exporter on bastion for Prometheus metrics
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_host }} 'bash -s' << 'EXPORTER'\nif [ ! -f /usr/local/bin/node_exporter ]; then\n  cd /tmp\n  curl -fsSL https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz\
+  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'EXPORTER'\nif [ ! -f /usr/local/bin/node_exporter ]; then\n  cd /tmp\n  curl -fsSL https://github.com/prometheus/node_exporter/releases/download/v1.7.0/node_exporter-1.7.0.linux-amd64.tar.gz\
     \ -o node_exporter.tar.gz\n  echo '{{ node_exporter_linux_amd64_sha256 }}  node_exporter.tar.gz' | sha256sum -c -\n  tar xzf node_exporter.tar.gz\n  mv node_exporter-*/node_exporter /usr/local/bin/\n  rm -rf node_exporter*\nfi\ncat > /etc/systemd/system/node_exporter.service << 'SVC'\n\
     [Unit]\nDescription=Node Exporter\nAfter=network.target\n[Service]\nType=simple\nExecStart=/usr/local/bin/node_exporter\nRestart=always\n[Install]\nWantedBy=multi-user.target\nSVC\nsystemctl daemon-reload\n\
     systemctl enable node_exporter\nsystemctl restart node_exporter\nEXPORTER\n"

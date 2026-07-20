@@ -504,7 +504,8 @@ class TestResourceTierConsumers:
         assert "fact_caching_connection = ~/.ansible/facts" in ansible_cfg
         assert "control_path_dir = ~/.ansible/cp" in ansible_cfg
         assert "known_hosts-{{ project_name | default('k8s') }}" in cluster
-        assert ".ansible/cp/{{ project_name | default('k8s') }}/kubespray" in cluster
+        assert "/tmp/ansible-k8s-cp/" in cluster
+        assert "hash('sha256')" in cluster
         assert ".cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests" in cluster
         assert "control_path_dir = {{ kubespray_control_path_dir }}" in cluster
         assert "UserKnownHostsFile=/dev/null" not in cluster
@@ -512,6 +513,8 @@ class TestResourceTierConsumers:
         assert "find /root/.ssh" not in cluster
         assert "ssh-keygen" in network
         assert '"{{ controller_known_hosts_file }}"' in network
+        runner = (REPO_ROOT / "run_tier.sh").read_text(encoding="utf-8")
+        assert 'SHORT_CONTROL_PATH_DIR="/tmp/ansible-k8s-cp/' in runner
         for fixed_manifest in (
             "/tmp/hcloud-ccm-networks.yaml",
             "/tmp/hcloud-csi.yaml",
@@ -519,6 +522,13 @@ class TestResourceTierConsumers:
             "/tmp/gateway-api-experimental.yaml",
         ):
             assert fixed_manifest not in cluster
+
+    def test_teardown_selects_exact_project_labels_not_name_prefixes(self):
+        teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
+        assert ".labels.project == $project" in teardown
+        assert "list_project_labeled" in teardown
+        assert "list_prefixed" not in teardown
+        assert 'placement-group describe "${PROJECT}-spread"' in teardown
 
     def test_parent_hetzner_dns_zone_uses_relative_record_names(self):
         defaults = (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")

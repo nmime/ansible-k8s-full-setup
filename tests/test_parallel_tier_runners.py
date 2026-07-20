@@ -105,6 +105,8 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
             "--dr-bucket",
             "tier-tests",
             "--minimum-storage",
+            "--capacity-family",
+            "cpx",
             "--dry-run",
         ],
         cwd=ROOT,
@@ -133,6 +135,18 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
         status = yaml.safe_load((controller / "state" / "status.json").read_text(encoding="utf-8"))
         assert status["state"] == "planned"
         ports.add(status["api_port"])
+        console = (campaign_root / "results" / f"{profile}.console.log").read_text(
+            encoding="utf-8"
+        )
+        expected_size = {
+            "minimal": "22",
+            "small": "32",
+            "medium": "42",
+            "medium-optimized": "32",
+            "production": "42",
+        }[profile]
+        assert "hetzner_bastion_type=cpx22" in console
+        assert f"hetzner_worker_type=cpx{expected_size}" in console
 
     assert len(projects) == 5
     assert ports == set(range(18443, 18448))
