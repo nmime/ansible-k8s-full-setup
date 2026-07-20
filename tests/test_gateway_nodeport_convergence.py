@@ -63,8 +63,17 @@ def test_minimal_tier_reuses_bastion_as_an_sni_aware_edge():
     assert "cert_manager_cluster_issuer == 'letsencrypt-prod'" in cluster
     certificate = cluster.index("Create wildcard TLS certificate")
     ready = cluster.index("Wait for the selected wildcard certificate issuer to become ready")
-    strict_tls = cluster.index("Require minimal-tier TLS ingress through the bastion edge")
+    sync = cluster.index("Wait for Cilium to sync the current Gateway certificate")
+    served = cluster.index("Wait for the public Gateway to serve the current certificate")
+    strict_tls = cluster.index("Require public TLS ingress with the selected certificate issuer")
     assert certificate < ready < strict_tls
+    assert ready < sync < served < strict_tls
+    assert "selectattr('observedGeneration', 'defined')" in cluster[ready:strict_tls]
+    assert "wildcard_tls_certificate.resources[0].metadata.generation" in cluster[ready:strict_tls]
+    assert "namespace: gateway-secrets" in cluster
+    assert "gateway-secrets-wildcard-tls" in cluster[sync:served]
+    assert "expected_gateway_certificate_fingerprint.stdout" in cluster[served:strict_tls]
+    assert "not (lb_enabled | default(false) | bool)" not in cluster[strict_tls:]
 
     assert "127.0.0.1:8443:443" in network
     assert "127.0.0.1:8080:80" in network

@@ -960,6 +960,56 @@
   delay: 10
   until: _r_create_cilium_secrets_namespace is not failed
 
+- name: Create Gateway source secrets namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gateway-secrets
+        labels:
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/warn: restricted
+  register: _r_create_gateway_source_secrets_namespace
+  retries: 3
+  delay: 10
+  until: _r_create_gateway_source_secrets_namespace is not failed
+
+- name: Check for the dedicated Gateway source secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: gateway-secrets
+    name: wildcard-tls
+  register: gateway_source_secret_before_migration
+  no_log: true
+
+- name: Check for the legacy in-place Cilium Gateway source secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: cilium-secrets
+    name: wildcard-tls
+  register: legacy_gateway_source_secret
+  no_log: true
+
+- name: Preserve the existing wildcard certificate while separating Cilium source and sync namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: wildcard-tls
+        namespace: gateway-secrets
+      type: kubernetes.io/tls
+      data: "{{ legacy_gateway_source_secret.resources[0].data }}"
+  when:
+    - gateway_source_secret_before_migration.resources | default([]) | length == 0
+    - legacy_gateway_source_secret.resources | default([]) | length == 1
+  no_log: true
+
 - name: Create ReferenceGrant for Gateway to access TLS secrets
   kubernetes.core.k8s:
     state: present
@@ -968,7 +1018,7 @@
       kind: ReferenceGrant
       metadata:
         name: allow-gateway-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         from:
           - group: gateway.networking.k8s.io
@@ -1009,7 +1059,7 @@
               mode: Terminate
               certificateRefs:
                 - name: wildcard-tls
-                  namespace: cilium-secrets
+                  namespace: gateway-secrets
             allowedRoutes:
               namespaces:
                 from: All
@@ -1340,7 +1390,7 @@
               mode: Terminate
               certificateRefs:
                 - name: wildcard-tls
-                  namespace: cilium-secrets
+                  namespace: gateway-secrets
             allowedRoutes:
               namespaces:
                 from: All
@@ -1554,7 +1604,7 @@
       kind: Certificate
       metadata:
         name: wildcard-tls
-        namespace: cilium-secrets
+        namespace: gateway-secrets
       spec:
         secretName: wildcard-tls
         issuerRef:
@@ -1573,7 +1623,7 @@
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
     kind: Certificate
-    namespace: cilium-secrets
+    namespace: gateway-secrets
     name: wildcard-tls
   register: wildcard_tls_certificate
   retries: 60
@@ -1585,22 +1635,113 @@
       wildcard_tls_certificate.resources[0].status.conditions | default([])
       | selectattr('type', 'equalto', 'Ready')
       | selectattr('status', 'equalto', 'True')
+      | selectattr('observedGeneration', 'defined')
+      | selectattr(
+          'observedGeneration',
+          'ge',
+          wildcard_tls_certificate.resources[0].metadata.generation | default(1)
+        )
       | list | length == 1
   when: k8s_create_external_tls | default(true) | bool
 
-- name: Require minimal-tier TLS ingress through the bastion edge
+- name: Read the ready Gateway source certificate secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: gateway-secrets
+    name: wildcard-tls
+  register: gateway_source_secret
+  when: k8s_create_external_tls | default(true) | bool
+  no_log: true
+
+- name: Wait for Cilium to sync the current Gateway certificate
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: cilium-secrets
+    name: gateway-secrets-wildcard-tls
+  register: cilium_gateway_synced_secret
+  retries: 40
+  delay: 5
+  until:
+    - cilium_gateway_synced_secret.resources | default([]) | length == 1
+    - >-
+      cilium_gateway_synced_secret.resources[0].data['tls.crt']
+      == gateway_source_secret.resources[0].data['tls.crt']
+    - >-
+      cilium_gateway_synced_secret.resources[0].data['tls.key']
+      == gateway_source_secret.resources[0].data['tls.key']
+  when: k8s_create_external_tls | default(true) | bool
+  no_log: true
+
+- name: Calculate the expected public Gateway certificate fingerprint
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -noout
+      - -fingerprint
+      - -sha256
+    stdin: "{{ gateway_source_secret.resources[0].data['tls.crt'] | b64decode }}"
+  register: expected_gateway_certificate_fingerprint
+  changed_when: false
+  when: k8s_create_external_tls | default(true) | bool
+  no_log: true
+
+- name: Wait for the public Gateway to serve the current certificate
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      openssl s_client
+      -connect {{ domain | quote }}:443
+      -servername {{ domain | quote }}
+      </dev/null 2>/dev/null |
+      openssl x509 -noout -fingerprint -sha256
+    executable: /bin/bash
+  register: served_gateway_certificate_fingerprint
+  changed_when: false
+  retries: 40
+  delay: 5
+  until:
+    - served_gateway_certificate_fingerprint.rc == 0
+    - >-
+      served_gateway_certificate_fingerprint.stdout
+      == expected_gateway_certificate_fingerprint.stdout
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Require public TLS ingress with the selected certificate issuer
   ansible.builtin.uri:
     url: https://{{ domain }}/
     validate_certs: "{{ cert_manager_cluster_issuer == 'letsencrypt-prod' }}"
     status_code: [200, 301, 302, 308, 401, 403, 404]
     timeout: 15
-  register: minimal_edge_https
+  register: public_tls_ingress
   retries: 12
   delay: 5
-  until: minimal_edge_https is not failed
-  when:
-    - not (lb_enabled | default(false) | bool)
-    - k8s_create_external_tls | default(true) | bool
+  until: public_tls_ingress is not failed
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Remove the legacy wildcard Certificate from the Cilium sync namespace
+  kubernetes.core.k8s:
+    state: absent
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: cilium-secrets
+    name: wildcard-tls
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Remove legacy in-place Cilium Gateway TLS secrets
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    namespace: cilium-secrets
+    name: "{{ item }}"
+  loop:
+    - wildcard-tls
+    - cilium-secrets-wildcard-tls
+  when: k8s_create_external_tls | default(true) | bool
+  no_log: true
 
 
 # ============================================
