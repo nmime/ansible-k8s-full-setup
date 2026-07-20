@@ -314,7 +314,7 @@
         set -euo pipefail
         kubectl exec --namespace "{{ object_storage_namespace_resolved }}" \
           "{{ object_storage_release_name | default('seaweedfs') }}-master-0" -- \
-          sh -c "printf 'lock\nvolume.deleteEmpty -quietFor=1h -apply\nunlock\n' | weed shell -master=127.0.0.1:9333"
+          sh -c "printf 'lock\nvolume.deleteEmpty -quietFor=10m -apply\nunlock\n' | weed shell -master=127.0.0.1:9333"
       args:
         executable: /bin/bash
       register: _r_reclaim_stale_empty_seaweedfs_volumes
