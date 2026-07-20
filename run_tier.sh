@@ -36,6 +36,7 @@ Options:
   --manage-dns           Permit the infrastructure role to manage DNS
   --minimum-storage      Set every profile-controlled PVC request to 10Gi
   --skip-kubespray       Resume after a verified successful Kubespray run
+  --controller-forks N   Ansible worker forks for this controller (default: 2)
   --dry-run              Generate and validate inputs; print, do not deploy
   -h, --help             Show this help
 
@@ -81,6 +82,7 @@ WORKER_TYPE=""
 MANAGE_DNS=false
 MINIMUM_STORAGE=false
 SKIP_KUBESPRAY=false
+CONTROLLER_FORKS="${CONTROLLER_FORKS:-2}"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -106,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     --manage-dns) MANAGE_DNS=true; shift ;;
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
     --skip-kubespray) SKIP_KUBESPRAY=true; shift ;;
+    --controller-forks) require_value "$1" "${2:-}"; CONTROLLER_FORKS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1'" ;;
@@ -138,6 +141,9 @@ done
 if [[ ! "$API_PORT" =~ ^[0-9]+$ ]] || ((API_PORT < 1024 || API_PORT > 65535)); then
   die "invalid API port '$API_PORT'"
 fi
+if [[ ! "$CONTROLLER_FORKS" =~ ^[0-9]+$ ]] || ((CONTROLLER_FORKS < 1 || CONTROLLER_FORKS > 20)); then
+  die "controller forks must be between 1 and 20"
+fi
 [[ "$SSH_KEY_PATH" == /* ]] || die "SSH key path must be absolute"
 [[ -f "$PROFILE_FILE" ]] || die "profile source is missing: $PROFILE_FILE"
 command -v yq >/dev/null 2>&1 || die "yq v4 is required"
@@ -163,6 +169,8 @@ export ANSIBLE_LOCAL_TEMP="$RUN_ROOT/ansible-local"
 export ANSIBLE_REMOTE_TEMP="/tmp/.ansible-${PROJECT}"
 export ANSIBLE_SSH_CONTROL_PATH_DIR="$SHORT_CONTROL_PATH_DIR"
 export ANSIBLE_COLLECTIONS_PATH="$CONTROLLER_COLLECTIONS_PATH"
+export ANSIBLE_FORKS="$CONTROLLER_FORKS"
+export ANSIBLE_PIPELINING=true
 export HELM_CACHE_HOME="$CONTROLLER_HOME/.cache/helm"
 export HELM_CONFIG_HOME="$CONTROLLER_HOME/.config/helm"
 export HELM_DATA_HOME="$CONTROLLER_HOME/.local/share/helm"

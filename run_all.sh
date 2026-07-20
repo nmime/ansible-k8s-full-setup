@@ -25,6 +25,7 @@ Options:
   --manage-dns           Permit each profile deployment to manage DNS
   --minimum-storage      Use 10Gi profile-controlled PVC requests
   --skip-kubespray       Resume all five after verified successful Kubespray
+  --controller-forks N   Ansible forks per controller (default: 1 for 5-way runs)
   --dry-run              Generate five runtime configs, but do not use Git/cloud
   -h, --help             Show this help
 
@@ -48,6 +49,7 @@ DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 MANAGE_DNS=false
 MINIMUM_STORAGE=false
 SKIP_KUBESPRAY=false
+CONTROLLER_FORKS="${CONTROLLER_FORKS:-1}"
 CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-letsencrypt-staging}"
 CAPACITY_FAMILY=""
 DRY_RUN=false
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --manage-dns) MANAGE_DNS=true; shift ;;
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
     --skip-kubespray) SKIP_KUBESPRAY=true; shift ;;
+    --controller-forks) require_value "$1" "${2:-}"; CONTROLLER_FORKS="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1'" ;;
@@ -83,6 +86,9 @@ done
   || die "unsupported capacity family '$CAPACITY_FAMILY' (supported: cpx)"
 if [[ ! "$API_PORT_BASE" =~ ^[0-9]+$ ]] || ((API_PORT_BASE < 1024 || API_PORT_BASE > 65531)); then
   die "invalid API port base '$API_PORT_BASE'"
+fi
+if [[ ! "$CONTROLLER_FORKS" =~ ^[0-9]+$ ]] || ((CONTROLLER_FORKS < 1 || CONTROLLER_FORKS > 20)); then
+  die "controller forks must be between 1 and 20"
 fi
 
 CAMPAIGN_SHORT="$(printf '%s' "$CAMPAIGN_ID" | tr '[:upper:]_.' '[:lower:]--' | tr -cd 'a-z0-9-' | cut -c1-14)"
@@ -214,6 +220,7 @@ for profile in $PROFILES; do
     --dr-prefix "${project}/velero"
     --dns-zone "$BASE_DOMAIN"
     --certificate-issuer "$CERTIFICATE_ISSUER"
+    --controller-forks "$CONTROLLER_FORKS"
   )
   if [[ "$CAPACITY_FAMILY" == cpx ]]; then
     args+=(--bastion-type cpx22)

@@ -165,3 +165,6 @@ def test_runner_source_declares_all_profiles_and_parallel_waits():
     assert "--skip-kubespray" in tier_source
     assert 'DEPLOY_ARGS+=(-e "skip_kubespray=true")' in tier_source
     assert "--skip-kubespray" in all_source
+    assert 'export ANSIBLE_FORKS="$CONTROLLER_FORKS"' in tier_source
+    assert '--controller-forks "$CONTROLLER_FORKS"' in all_source
+    assert 'CONTROLLER_FORKS="${CONTROLLER_FORKS:-1}"' in all_source
