@@ -128,6 +128,43 @@ $EDITOR platform.yaml
 ./platform.sh deploy all
 ```
 
+For concurrent clusters, use a separate worktree and `HOME` for each controller
+process, a unique `global.project`, and a unique `k8s_api_local_port`. The
+controller keeps kubeconfig, SSH trust, Ansible facts, and outer SSH sockets
+under that `HOME`; Kubespray sockets and downloaded manifests are also scoped
+by project. `KUBECONFIG` alone is not sufficient because the playbooks
+deliberately use `$HOME/.kube/config`.
+
+The disposable five-profile campaign runner prepares those boundaries and
+launches every named profile concurrently from one immutable commit. Use the
+minimum-storage switch only to stay inside a test account's CSI quota; it keeps
+the real topology, replicas, components, and compute node types while reducing
+profile-controlled PVC requests to Hetzner's 10Gi minimum. Test certificates
+default to `letsencrypt-staging` so repeated campaigns do not consume the
+registered-domain production issuance limit.
+
+```bash
+# Plan all five controllers without Git worktrees or cloud mutations.
+./run_all.sh --campaign-id lab01 --minimum-storage --dry-run
+
+# Create an independent disposable DR target, then deploy all five profiles.
+eval "$(./scripts/test-dr-endpoint.sh up lab01 | grep '^export ')"
+./run_all.sh --campaign-id lab01 --minimum-storage --manage-dns \
+  --dr-endpoint "$BACKUP_DR_ENDPOINT" --dr-bucket "$BACKUP_DR_BUCKET"
+```
+
+`run_all.sh` deliberately retains successful or partial clusters for evidence
+and never guesses that teardown is safe. It prints the exact per-controller
+cleanup commands. After evidence is secured, remove those five projects and
+run `./scripts/test-dr-endpoint.sh down lab01`; verify the cloud and parent DNS
+zone returned to their recorded baseline.
+
+When `global.domain` is a delegated name below an existing Hetzner zone, set
+top-level `hetzner_dns_zone` to the parent, for example
+`global.domain: small.lab.example.com` with
+`hetzner_dns_zone: example.com`. The role then manages `small.lab`,
+`*.small.lab`, and `vpn.small.lab` records in the parent zone.
+
 Set at least `global.domain` and `global.email` in `platform.yaml`. Review every
 enabled component and infrastructure size before deployment.
 
@@ -192,6 +229,19 @@ ansible-playbook playbooks/validate_profile.yml \
 ./scripts/live-tier-smoke.sh --dry-run
 ./scripts/live-tier-smoke.sh
 
+# Bounded profile-sized load plus before/after JSON and TSV evidence
+./scripts/tier-load-test.sh \
+  --config platform-orchestrator/platform.yaml \
+  --kubeconfig "$KUBECONFIG" --dry-run
+./scripts/tier-load-test.sh \
+  --config platform-orchestrator/platform.yaml \
+  --kubeconfig "$KUBECONFIG"
+
+# Read-only evidence snapshot without running load
+./scripts/collect-live-evidence.sh \
+  --config platform-orchestrator/platform.yaml \
+  --kubeconfig "$KUBECONFIG" --stage operator-check
+
 # Explicitly remove a disabled, stateless component
 ./platform-orchestrator/platform.sh remove blackbox --confirm blackbox
 
@@ -234,6 +284,13 @@ sentinels, verifies metrics/logging/GitOps HTTP paths and every selected
 Gateway API TLS route from inside the private cluster, then removes its test
 data. Run its mutating mode only against an
 explicitly authorized disposable or maintenance-window cluster.
+`tier-load-test.sh` scales bounded HTTP, S3, PostgreSQL, Vault, and Dragonfly
+work to the selected named profile, skips disabled technologies, and fails
+closed on operation errors, phase timeouts, node pressure, unhealthy workloads,
+or excessive restart growth. It uses version-pinned clients, removes every
+test key/object/table/path, and writes `summary.json`, `phases.tsv`, logs, and
+secret-free live snapshots below the selected output directory. Vault load
+requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 
 ## Documentation
 

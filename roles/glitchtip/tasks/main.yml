@@ -253,7 +253,7 @@
       spec:
         secretName: glitchtip-tls
         issuerRef:
-          name: letsencrypt-prod
+          name: "{{ cert_manager_cluster_issuer }}"
           kind: ClusterIssuer
         commonName: "{{ glitchtip_domain }}"
         dnsNames:

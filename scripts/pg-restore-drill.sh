@@ -46,6 +46,7 @@ STORAGE_SIZE="20Gi"
 TTL_HOURS=24
 SKIP_CLEANUP=false
 DRY_RUN=false
+PG_DRILL_SPEC=""
 POSTGRES_IMAGE="${PG_RESTORE_POSTGRES_IMAGE:-percona/percona-distribution-postgresql:18.4-1}"
 PGBACKREST_IMAGE="${PG_RESTORE_PGBACKREST_IMAGE:-percona/percona-pgbackrest:2.58.0-2}"
 DRILL_CREATED=false
@@ -96,6 +97,7 @@ cleanup_drill() {
 cleanup_on_exit() {
   local rc=$?
   if [[ "$SKIP_CLEANUP" == false ]]; then cleanup_drill; fi
+  [[ -z "$PG_DRILL_SPEC" ]] || rm -f "$PG_DRILL_SPEC"
   return "$rc"
 }
 trap cleanup_on_exit EXIT
@@ -294,7 +296,9 @@ if [ "$BACKUP_SET" != "latest" ]; then
   exit 2
 fi
 
-cat > /tmp/pg-drill-spec.yaml <<EOF
+PG_DRILL_SPEC=$(mktemp "${TMPDIR:-/tmp}/pg-drill-spec.${DRILL_NS}.XXXXXX")
+chmod 600 "$PG_DRILL_SPEC"
+cat > "$PG_DRILL_SPEC" <<EOF
 apiVersion: pgv2.percona.com/v2
 kind: PerconaPGCluster
 metadata:
@@ -353,7 +357,7 @@ spec:
             region: ${AWS_REGION:-us-east-1}
 EOF
 
-kubectl apply -f /tmp/pg-drill-spec.yaml
+kubectl apply -f "$PG_DRILL_SPEC"
 
 info "Waiting for restore (up to 60m)..."
 for _ in $(seq 1 360); do
@@ -476,7 +480,8 @@ if [ "$SKIP_CLEANUP" = "false" ]; then
   drill_pass "Cleanup completed"
 fi
 
-rm -f /tmp/pg-drill-spec.yaml
+rm -f "$PG_DRILL_SPEC"
+PG_DRILL_SPEC=""
 
 [ "$DRILL_FAIL" -gt 0 ] && exit 1
 pass "Restore drill — exit 0"

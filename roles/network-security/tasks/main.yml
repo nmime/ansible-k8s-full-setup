@@ -9,6 +9,24 @@
     network_node_ips: >-
       {{ (master_ips | default({}) | dict2items | map(attribute='value') | list)
          + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}
+    controller_known_hosts_file: >-
+      {{ lookup('env', 'HOME') }}/.ssh/known_hosts-{{ project_name | default('k8s') }}
+- name: Create controller SSH directory
+  ansible.builtin.file:
+    path: '{{ controller_known_hosts_file | dirname }}'
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+- name: Create project-scoped SSH trust storage on the controller
+  ansible.builtin.file:
+    path: '{{ controller_known_hosts_file }}'
+    state: touch
+    mode: '0600'
+    access_time: preserve
+    modification_time: preserve
+  delegate_to: localhost
+  become: false
 - name: Validate bastion IP is available
   assert:
     that:
@@ -126,7 +144,7 @@
   delegate_to: localhost
   become: false
 - name: Flush SSH control sockets after bastion SSH restart
-  ansible.builtin.shell: 'rm -rf /tmp/outer-ansible-cp/root@{{ bastion_host }}* 2>/dev/null
+  ansible.builtin.shell: 'rm -rf {{ (lookup(''env'', ''HOME'') + ''/.ansible/cp'') | quote }} 2>/dev/null
 
     true
 
@@ -158,14 +176,20 @@
       - ssh-keygen
       - -R
       - "{{ item }}"
+      - -f
+      - "{{ controller_known_hosts_file }}"
   loop: "{{ newly_created_node_ips | default([]) }}"
   delegate_to: localhost
   become: false
   register: recycled_node_host_keys
   changed_when: "'not found in' not in (recycled_node_host_keys.stdout | default(''))"
 - name: Wait for private nodes to be SSH-reachable via bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \\\n  -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10\
-    \ -W %h:%p root@{{ bastion_host }}' \\\n  root@{{ item }} 'echo ok'\n"
+   \ -W %h:%p root@{{ bastion_host }}' \\\n  root@{{ item }} 'echo ok'\n"
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' \
+      root@{{ item }} 'echo ok'
   loop: '{{ (master_ips | default({}) | dict2items | map(attribute=''value'') | list) + (worker_ips | default({}) | dict2items | map(attribute=''value'') | list) }}'
   when: item is defined and item | length > 0
   register: ssh_check
@@ -173,10 +197,22 @@
   delay: 15
   until: ssh_check.rc == 0
 - name: Configure DNS on private-only nodes
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 \\\n  -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30\
-    \ -W %h:%p root@{{ bastion_host }}' \\\n  root@{{ item }} 'bash -s' << 'REMOTECMD'\nmkdir -p /etc/systemd/resolved.conf.d\nprintf '[Resolve]\\nDNS=185.12.64.1 185.12.64.2\\n' > /etc/systemd/resolved.conf.d/dns.conf\n\
-    systemctl restart systemd-resolved 2>/dev/null || true\nif [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -q stub; then\n  true\nelse\n  printf 'nameserver 185.12.64.1\\nnameserver 185.12.64.2\\\
-    n' > /etc/resolv.conf\nfi\nmkdir -p /etc/cloud/cloud.cfg.d\necho \"manage_resolv_conf: false\" > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg\nREMOTECMD\n"
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' \
+      root@{{ item }} 'bash -s' << 'REMOTECMD'
+    mkdir -p /etc/systemd/resolved.conf.d
+    printf '[Resolve]\nDNS=185.12.64.1 185.12.64.2\n' > /etc/systemd/resolved.conf.d/dns.conf
+    systemctl restart systemd-resolved 2>/dev/null || true
+    if [ -L /etc/resolv.conf ] && readlink /etc/resolv.conf | grep -q stub; then
+      true
+    else
+      printf 'nameserver 185.12.64.1\nnameserver 185.12.64.2\n' > /etc/resolv.conf
+    fi
+    mkdir -p /etc/cloud/cloud.cfg.d
+    echo "manage_resolv_conf: false" > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg
+    REMOTECMD
   loop: '{{ (groups.get(''k8s_nodes'', []) | default([])) + (master_ips | default({}) | dict2items | map(attribute=''value'') | list) + (worker_ips | default({}) | dict2items | map(attribute=''value'')
     | list) }}'
   when: item is defined and item | length > 0
@@ -185,10 +221,30 @@
   delay: 30
   until: dns_result.rc == 0
 - name: Add default route on private-only nodes
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new \\\n  -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -W %h:%p root@{{ bastion_host\
-    \ }}' \\\n  root@{{ item }} 'bash -s' << 'REMOTECMD'\nPRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)\nPRIV_IF=\"${PRIV_IF:-enp7s0}\"\nip route del default 2>/dev/null;\
-    \ ip route add default via 10.0.0.1 dev \"$PRIV_IF\" mtu 1450\nif [ -d /etc/netplan ]; then\n  cat > /etc/netplan/60-private-routes.yaml << NPEOF\nnetwork:\n  version: 2\n  ethernets:\n    ${PRIV_IF}:\n\
-    \      dhcp4: true\n      routes:\n        - to: default\n          via: 10.0.0.1\n          metric: 100\n          mtu: 1450\nNPEOF\nfi\nREMOTECMD\n"
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_host }}' \
+      root@{{ item }} 'bash -s' << 'REMOTECMD'
+    PRIV_IF=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    PRIV_IF="${PRIV_IF:-enp7s0}"
+    ip route del default 2>/dev/null
+    ip route add default via 10.0.0.1 dev "$PRIV_IF" mtu 1450
+    if [ -d /etc/netplan ]; then
+      cat > /etc/netplan/60-private-routes.yaml << NPEOF
+    network:
+      version: 2
+      ethernets:
+        ${PRIV_IF}:
+          dhcp4: true
+          routes:
+            - to: default
+              via: 10.0.0.1
+              metric: 100
+              mtu: 1450
+    NPEOF
+    fi
+    REMOTECMD
   loop: '{{ (master_ips | default({}) | dict2items | map(attribute=''value'') | list) + (worker_ips | default({}) | dict2items | map(attribute=''value'') | list) }}'
   when: item is defined and item | length > 0
   register: route_result
@@ -342,7 +398,7 @@
   when: bastion_log_shipping | default(false) | bool and log_stack | default('loki') in ['elk', 'efk'] and es_tls_secret_available | default(false) | bool
   no_log: true
 - name: Ship K8s audit logs to Loki (control plane nodes)
-  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -J root@{{ bastion_host }} root@${CP_IP} 'bash -s' <<'RCMD'\nset -e\n[ -f /usr/bin/promtail\
+  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${CP_IP} 'bash -s' <<'RCMD'\nset -e\n[ -f /usr/bin/promtail\
     \ ] || { curl -fsSL -o /tmp/p.zip https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-linux-amd64.zip && echo '{{ promtail_linux_amd64_sha256 }}  /tmp/p.zip' | sha256sum -c - && cd /tmp && unzip -o p.zip && mv promtail-linux-amd64 /usr/bin/promtail && chmod\
     \ +x /usr/bin/promtail; }\nmkdir -p /etc/promtail /var/lib/promtail\nprintf 'server:\n  http_listen_port: 9080\npositions:\n  filename: /var/lib/promtail/positions.yaml\nclients:\n  - url: http://127.0.0.1:31000/loki/api/v1/push\n\
     \    tenant_id: k8s-audit\nscrape_configs:\n  - job_name: k8s-audit\n    static_configs:\n      - targets: [localhost]\n        labels:\n          job: k8s-audit\n          __path__: /var/log/kube-apiserver-audit.log\n\
@@ -350,7 +406,7 @@
     [Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/promtail.service\nsystemctl daemon-reload && systemctl enable promtail && systemctl restart promtail\nRCMD\ndone\n"
   when: control_plane_log_shipping | default(false) | bool and log_stack | default('loki') == 'loki'
 - name: Ship K8s audit logs to ELK (control plane nodes)
-  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -J root@{{ bastion_host }} root@${CP_IP} 'bash -s' <<'RCMD'\ncommand -v filebeat >/dev/null\
+  ansible.builtin.shell: "for CP_IP in {{ network_control_plane_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${CP_IP} 'bash -s' <<'RCMD'\ncommand -v filebeat >/dev/null\
     \ || { curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg 2>/dev/null; echo 'deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg]\
     \ https://artifacts.elastic.co/packages/9.x/apt stable main' > /etc/apt/sources.list.d/elastic-9.x.list; apt-get -o DPkg::Lock::Timeout=300 update && apt-get -o DPkg::Lock::Timeout=300 install -y filebeat={{ es_version }}; }\nprintf 'filebeat.inputs:\n  - type: log\n \
     \   paths: [\"/var/log/kube-apiserver-audit.log\"]\n    json.keys_under_root: true\n    fields: {log_type: k8s-audit}\noutput.elasticsearch:\n  hosts: [\"https://127.0.0.1:31443\"]\n  username: elastic\n\
@@ -439,7 +495,7 @@
   ansible.builtin.shell: |
     set -euo pipefail
     for NODE_IP in {{ network_node_ips | join(' ') }}; do
-      ssh -o StrictHostKeyChecking=accept-new -J root@{{ bastion_host }} root@${NODE_IP} 'bash -s' <<'REMOTECMD'
+      ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${NODE_IP} 'bash -s' <<'REMOTECMD'
     set -euo pipefail
     systemctl stop apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
     systemctl stop unattended-upgrades.service >/dev/null 2>&1 || true
@@ -467,7 +523,7 @@
   delay: 10
   until: node_audit_packages is success
 - name: Configure auditd rules on K8s nodes (HIPAA)
-  ansible.builtin.shell: "for NODE_IP in {{ network_node_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -J root@{{ bastion_host }} root@${NODE_IP} 'bash -s' <<'ARULES'\ncat >\
+  ansible.builtin.shell: "for NODE_IP in {{ network_node_ips | join(' ') }}; do\n  ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -J root@{{ bastion_host }} root@${NODE_IP} 'bash -s' <<'ARULES'\ncat >\
     \ /etc/audit/rules.d/hipaa.rules << 'EOF'\n-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity\n-w /etc/sudoers -p wa -k actions\n-w /var/log/auth.log -p wa -k logins\n-a always,exit\
     \ -F arch=b64 -S execve -k exec\nEOF\naugenrules --load\nARULES\ndone\n"
   when: hipaa_compliance | default(false) | bool

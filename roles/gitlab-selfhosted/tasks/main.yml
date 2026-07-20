@@ -558,7 +558,7 @@
       spec:
         secretName: gitlab-tls
         issuerRef:
-          name: letsencrypt-prod
+          name: '{{ cert_manager_cluster_issuer }}'
           kind: ClusterIssuer
         dnsNames:
         - '{{ gitlab_domain }}'

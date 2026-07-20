@@ -23,6 +23,9 @@ Pytest coverage includes:
 - Elasticsearch Basic-license integrity and security resources;
 - GitLab, PostgreSQL, and Vault upgrade contracts;
 - backup/restore safety gates;
+- bounded profile-aware HTTP/S3/PostgreSQL/Vault/Dragonfly load planning,
+  pinned probe images, cleanup traps, thresholds, and secret-free JSON/TSV
+  evidence contracts;
 - validation-script fail-closed behavior and version compatibility.
 
 Individual suites can be run with `pytest tests/test_platform_profiles.py -q`

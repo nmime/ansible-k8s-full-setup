@@ -9,6 +9,10 @@
 tier: medium
 platform_profile: "{{ tier }}"
 resource_tier: "{{ tier }}"
+# Certificate resources use the production issuer by default.  Disposable
+# integration campaigns can select letsencrypt-staging without rewriting every
+# component manifest or consuming the registered-domain production rate limit.
+cert_manager_cluster_issuer: letsencrypt-prod
 
 # Global settings
 project_name: k8s
@@ -52,6 +56,10 @@ hetzner_image: ubuntu-24.04
 ssh_key_path: ~/.ssh/id_ed25519
 storage_class: hcloud-volumes
 ansible_ssh_strict_host_key_checking: true
+# Controller-local state must be unique when several clusters are reconciled
+# concurrently. Override the port per cluster and run each controller with an
+# isolated HOME; project-specific SSH state is created below that HOME.
+k8s_api_local_port: 16443
 
 # Kubernetes
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
@@ -101,6 +109,9 @@ services_subnet: 10.0.10.0/24
 
 # Live-test safety gates (disable external/dns side effects in disposable validation)
 hetzner_manage_dns: true
+# May be a parent of `domain` (for example domain=small.lab.example.com and
+# hetzner_dns_zone=example.com). Records are then written relative to this zone.
+hetzner_dns_zone: "{{ domain | default('', true) }}"
 k8s_create_external_tls: true
 object_storage_create_external_routes: true
 object_storage_enabled: true

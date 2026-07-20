@@ -16,6 +16,43 @@
     hetzner_csi_ver: "{{ hetzner_csi_version | default('v2.22.0') }}"
     cluster_tier: "{{ tier | default('medium') }}"
     certmanager_replicas: "{{ kubernetes.cert_manager_replicas | default(1 if resource_tier in ['minimal', 'small'] else 3) }}"
+    controller_known_hosts_file: >-
+      {{ lookup('env', 'HOME') }}/.ssh/known_hosts-{{ project_name | default('k8s') }}
+    kubespray_control_path_dir: >-
+      {{ lookup('env', 'HOME') }}/.ansible/cp/{{ project_name | default('k8s') }}/kubespray
+    cluster_manifest_dir: >-
+      {{ lookup('env', 'HOME') }}/.cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests
+    local_api_port: "{{ k8s_api_local_port | default(16443) | int }}"
+
+- name: Validate the controller-local Kubernetes API port
+  ansible.builtin.assert:
+    that:
+      - (k8s_api_local_port | default(16443) | string) is match('^[0-9]+$')
+      - local_api_port | int >= 1024
+      - local_api_port | int <= 65535
+    fail_msg: k8s_api_local_port must be an integer between 1024 and 65535.
+
+- name: Create project-scoped controller state directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ controller_known_hosts_file | dirname }}", mode: '0700'}
+    - {path: "{{ kubespray_control_path_dir }}", mode: '0700'}
+    - {path: "{{ cluster_manifest_dir }}", mode: '0700'}
+  delegate_to: localhost
+  become: false
+
+- name: Create the project-scoped controller known-hosts file
+  ansible.builtin.file:
+    path: "{{ controller_known_hosts_file }}"
+    state: touch
+    mode: '0600'
+    access_time: preserve
+    modification_time: preserve
+  delegate_to: localhost
+  become: false
 
 # ============================================
 # Kubespray Setup
@@ -176,7 +213,7 @@
         - NodeRestriction
         - PodSecurity
       # SSH
-      ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o ProxyCommand="ssh -o StrictHostKeyChecking=accept-new -W %h:%p root@{{ bastion_public_ip | default("") }}"'
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -o ProxyCommand="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip | default("") }}"'
       ansible_user: root
       # etcd
       etcd_deployment_type: host
@@ -217,10 +254,9 @@
 
 - name: Clean stale SSH control sockets before Kubespray
   ansible.builtin.shell: |
-    rm -rf /tmp/kubespray-cp /tmp/outer-ansible-cp/root@{{ bastion_public_ip }}* 2>/dev/null
-    find /tmp -maxdepth 2 -name 'root@*' -type s -delete 2>/dev/null
-    find /root/.ssh -name 'ansible-*' -type s -delete 2>/dev/null
-    mkdir -p /tmp/kubespray-cp /tmp/outer-ansible-cp
+    rm -rf {{ kubespray_control_path_dir | quote }}
+    mkdir -p {{ kubespray_control_path_dir | quote }}
+    chmod 700 {{ kubespray_control_path_dir | quote }}
     true
   delegate_to: localhost
   become: false
@@ -228,7 +264,11 @@
 
 - name: Verify SSH connectivity to k8s nodes via bastion before Kubespray
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15       -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -W %h:%p root@{{ bastion_public_ip }}'       root@{{ item }} 'echo CONNECTIVITY_OK'
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ConnectTimeout=15 \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
+      root@{{ item }} 'echo CONNECTIVITY_OK'
   delegate_to: localhost
   become: false
   loop: "{{ (master_ips | default({}) | dict2items | map(attribute='value') | list) + (worker_ips | default({}) | dict2items | map(attribute='value') | list) }}"
@@ -244,7 +284,7 @@
     path: "{{ playbook_dir }}/kubespray/ansible.cfg"
     insertafter: '^\[ssh_connection\]'
     regexp: '^control_path_dir'
-    line: 'control_path_dir = /tmp/kubespray-cp'
+    line: 'control_path_dir = {{ kubespray_control_path_dir }}'
   delegate_to: localhost
   become: false
 
@@ -255,7 +295,8 @@
     line: >-
       ssh_args = -o ControlMaster=auto -o ControlPersist=10m
       -o ConnectionAttempts=10 -o ServerAliveInterval=15
-      -o ServerAliveCountMax=3 -o UserKnownHostsFile=/dev/null
+      -o ServerAliveCountMax=3
+      -o UserKnownHostsFile={{ controller_known_hosts_file }}
   delegate_to: localhost
   become: false
 
@@ -285,7 +326,9 @@
 
 - name: Adopt GatewayClass cilium for Helm (idempotent)
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }} '
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_public_ip }} '
       if kubectl get gatewayclass cilium >/dev/null 2>&1; then
         kubectl annotate gatewayclass cilium \
           meta.helm.sh/release-name=cilium \
@@ -330,7 +373,8 @@
 - name: Fix /opt/cni/bin ownership for Cilium
   ansible.builtin.shell: |
     ssh -o StrictHostKeyChecking=accept-new \
-      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -W %h:%p root@{{ bastion_public_ip }}' \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
       root@{{ item }} 'bash -s' << 'REMOTECMD'
     chown -R root:root /opt/cni
     chmod 755 /opt/cni /opt/cni/bin
@@ -350,12 +394,13 @@
 
 - name: Copy kubeconfig from master via ProxyCommand
   ansible.builtin.shell: |
-    mkdir -p {{ lookup('env', 'HOME') }}/.kube
+    mkdir -p {{ (lookup('env', 'HOME') + '/.kube') | quote }}
     ssh -o StrictHostKeyChecking=accept-new \
-      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -W %h:%p root@{{ bastion_public_ip }}' \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
       root@{{ first_master_ip | default('10.0.1.1') }} 'cat /etc/kubernetes/admin.conf' \
-      > {{ lookup('env', 'HOME') }}/.kube/config
-    chmod 600 {{ lookup('env', 'HOME') }}/.kube/config
+      > {{ (lookup('env', 'HOME') + '/.kube/config') | quote }}
+    chmod 600 {{ (lookup('env', 'HOME') + '/.kube/config') | quote }}
   args:
     executable: /bin/bash
   delegate_to: localhost
@@ -367,7 +412,7 @@
     set -euo pipefail
     kubeconfig={{ lookup('env', 'HOME') }}/.kube/config
     tunnel_pid_file={{ lookup('env', 'HOME') }}/.kube/{{ project }}-api-tunnel.pid
-    local_api_port=16443
+    local_api_port={{ local_api_port | int }}
     if [ -f "$tunnel_pid_file" ]; then
       old_pid=$(cat "$tunnel_pid_file")
       if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
@@ -403,6 +448,7 @@
       --target {{ target | quote }} \
       {% endfor %}
       --kubeconfig "$kubeconfig" \
+      --known-hosts-file {{ controller_known_hosts_file | quote }} \
       --local-port "$local_api_port" > /dev/null 2>&1 &
     tunnel_pid=$!
     printf '%s\n' "$tunnel_pid" > "$tunnel_pid_file"
@@ -599,14 +645,14 @@
 - name: Download verified Hetzner Cloud Controller Manager manifest
   ansible.builtin.get_url:
     url: "https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/download/{{ hetzner_ccm_ver }}/ccm-networks.yaml"
-    dest: /tmp/hcloud-ccm-networks.yaml
+    dest: "{{ cluster_manifest_dir }}/hcloud-ccm-networks.yaml"
     checksum: "sha256:{{ hetzner_ccm_manifest_sha256 }}"
     mode: '0600'
 
 - name: Install Hetzner Cloud Controller Manager
   kubernetes.core.k8s:
     state: present
-    src: /tmp/hcloud-ccm-networks.yaml
+    src: "{{ cluster_manifest_dir }}/hcloud-ccm-networks.yaml"
   register: _r_install_hetzner_cloud_controller_manager
   retries: 3
   delay: 10
@@ -710,14 +756,14 @@
 - name: Download verified Hetzner CSI Driver manifest
   ansible.builtin.get_url:
     url: "https://raw.githubusercontent.com/hetznercloud/csi-driver/{{ hetzner_csi_ver }}/deploy/kubernetes/hcloud-csi.yml"
-    dest: /tmp/hcloud-csi.yaml
+    dest: "{{ cluster_manifest_dir }}/hcloud-csi.yaml"
     checksum: "sha256:{{ hetzner_csi_manifest_sha256 }}"
     mode: '0600'
 
 - name: Install Hetzner CSI Driver
   kubernetes.core.k8s:
     state: present
-    src: /tmp/hcloud-csi.yaml
+    src: "{{ cluster_manifest_dir }}/hcloud-csi.yaml"
   register: _r_install_hetzner_csi_driver
   retries: 3
   delay: 10
@@ -770,14 +816,14 @@
 - name: Download verified Gateway API standard CRDs
   ansible.builtin.get_url:
     url: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/standard-install.yaml"
-    dest: /tmp/gateway-api-standard.yaml
+    dest: "{{ cluster_manifest_dir }}/gateway-api-standard.yaml"
     checksum: "sha256:{{ gateway_api_standard_sha256 }}"
     mode: '0600'
 
 - name: Install Gateway API CRDs (standard)
   kubernetes.core.k8s:
     state: present
-    src: /tmp/gateway-api-standard.yaml
+    src: "{{ cluster_manifest_dir }}/gateway-api-standard.yaml"
   register: _r_install_gateway_api_crds_standard
   retries: 3
   delay: 10
@@ -800,14 +846,14 @@
 - name: Download verified Gateway API experimental CRDs
   ansible.builtin.get_url:
     url: "https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_ver }}/experimental-install.yaml"
-    dest: /tmp/gateway-api-experimental.yaml
+    dest: "{{ cluster_manifest_dir }}/gateway-api-experimental.yaml"
     checksum: "sha256:{{ gateway_api_experimental_sha256 }}"
     mode: '0600'
 
 - name: Install Gateway API CRDs (experimental - TCPRoute, TLSRoute, GRPCRoute)
   kubernetes.core.k8s:
     state: present
-    src: /tmp/gateway-api-experimental.yaml
+    src: "{{ cluster_manifest_dir }}/gateway-api-experimental.yaml"
   register: _r_install_gateway_api_crds_experimental_tc
   retries: 3
   delay: 10
@@ -1237,7 +1283,7 @@
       spec:
         secretName: wildcard-tls
         issuerRef:
-          name: letsencrypt-prod
+          name: "{{ cert_manager_cluster_issuer }}"
           kind: ClusterIssuer
         dnsNames:
           - "{{ domain }}"

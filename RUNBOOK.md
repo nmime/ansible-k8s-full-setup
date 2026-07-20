@@ -25,6 +25,73 @@ kubectl get cronjob -A
 Investigate any non-Ready node, failed Helm release, missing required component,
 expired certificate, or missed backup before continuing maintenance.
 
+## Bounded live load and evidence
+
+Plan the exact profile-aware load first. Dry-run writes the evidence schema and
+phase plan but does not require a reachable cluster or mutate Kubernetes:
+
+```bash
+./scripts/tier-load-test.sh \
+  --config platform-orchestrator/platform.yaml \
+  --kubeconfig /absolute/path/to/tier.kubeconfig \
+  --output /secure/evidence/tier-name \
+  --run-id tier-name-01 \
+  --dry-run
+```
+
+For a disposable live cluster, set `ANSIBLE_VAULT_PASSWORD_FILE` so the Vault
+phase can read the encrypted `.vault-init-PROJECT.json`, then remove
+`--dry-run`. The defaults increase concurrency and operation counts from
+`minimal` through `production`; explicit bounds are available when a smaller
+step is needed:
+
+```bash
+./scripts/tier-load-test.sh \
+  --config platform-orchestrator/platform.yaml \
+  --kubeconfig /absolute/path/to/tier.kubeconfig \
+  --vault-init playbooks/.vault-init-PROJECT.json \
+  --clients 8 \
+  --http-requests 5000 \
+  --s3-objects 250 \
+  --pg-transactions 2500 \
+  --vault-operations 500 \
+  --dragonfly-requests 10000 \
+  --phase-timeout 900 \
+  --max-error-percent 1 \
+  --max-restart-delta 10
+```
+
+The phases use pinned OCI clients and execute sequentially inside one cluster.
+After every phase, temporary S3 objects, PostgreSQL tables, Vault metadata, and
+Dragonfly keys are removed before a new health snapshot. A failed cleanup,
+timeout, node-pressure condition, unavailable controller, unbound PVC,
+unhealthy certificate/route, APIService failure, or excessive restart delta is
+a hard stop. Interrupt traps attempt the same cleanup; if the API was lost,
+inspect the failed phase log and verify its `tier-load/RUN_ID` prefix manually.
+
+The output contract is:
+
+- `summary.json`: run/profile, bounds, pinned images, overall result, phases;
+- `phases.tsv`: operations, errors, error percentage, duration, log path;
+- `logs/`: one log per enabled load phase;
+- `evidence/STAGE/evidence.json`: health and readiness counts;
+- `resources.tsv`, `top-nodes.tsv`, `top-pods.tsv`, `warning-events.tsv`.
+
+Evidence collection is read-only and never retrieves Secrets. It can also be
+run independently:
+
+```bash
+./scripts/collect-live-evidence.sh \
+  --config platform-orchestrator/platform.yaml \
+  --kubeconfig /absolute/path/to/tier.kubeconfig \
+  --output /secure/evidence/operator-check \
+  --stage operator-check
+```
+
+For concurrent tier campaigns, give every invocation a distinct kubeconfig,
+run ID, and output directory. Never point parallel processes at a shared active
+context.
+
 For Postal, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:
 
@@ -316,4 +383,7 @@ The confirmation must match the project. The script verifies deletion of
 project-prefixed Hetzner compute/network resources plus all CSI volumes captured
 by attachment to the project's servers or, for a context whose nodes all match
 the project, by the PV's Hetzner CSI volume handle. It preserves DNS and the
-global kubeconfig. Review the backup inventory before authorizing teardown.
+global kubeconfig. The orchestrator passes the configured
+`k8s_api_local_port`, so teardown stops only that project's matching tunnel and
+removes only its project-specific known-hosts file. Review the backup inventory
+before authorizing teardown.

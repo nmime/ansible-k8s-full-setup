@@ -40,6 +40,13 @@ Available profiles are `minimal`, `small`, `medium`, `medium-optimized`, and
 `production`. Set `global.domain` and `global.email`; review server counts,
 regions, storage, backup, and every component `enabled` flag.
 
+Parallel controller runs require a separate worktree and `HOME`, unique
+`global.project`, and unique `k8s_api_local_port` for each cluster. This keeps
+kubeconfig, API tunnel PID/listener, known-hosts, Ansible facts, Kubespray
+control sockets, and temporary manifests isolated. If the cluster domain is a
+subdomain of an existing Hetzner zone, set top-level `hetzner_dns_zone` to
+that parent instead of creating an undelegated child zone.
+
 There are four runtime tiers. `medium-optimized` is intentionally a named
 profile rather than a fifth tier: it sets `tier: medium` to retain every medium
 service and `resource_tier: small` to select the compact resource envelope.

@@ -90,6 +90,15 @@ fi
 [[ -f "$CONFIG_FILE" ]] || fail "platform config not found: $CONFIG_FILE"
 PROJECT=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
 DOMAIN=$(yq -r '.global.domain // ""' "$CONFIG_FILE")
+DNS_ZONE=$(yq -r '.hetzner_dns_zone // .global.domain // ""' "$CONFIG_FILE")
+[[ -n "$DNS_ZONE" ]] || DNS_ZONE="$DOMAIN"
+if [[ "$DOMAIN" == "$DNS_ZONE" ]]; then
+  DNS_RECORD_ROOT=@
+elif [[ "$DOMAIN" == *."$DNS_ZONE" ]]; then
+  DNS_RECORD_ROOT="${DOMAIN%."$DNS_ZONE"}"
+else
+  fail "global.domain must equal or be a subdomain of hetzner_dns_zone"
+fi
 PROFILE=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 if [[ -z "$SSH_IDENTITY" ]]; then
   SSH_IDENTITY=$(yq -r '.infrastructure.ssh_key_path // ""' "$CONFIG_FILE")
@@ -405,8 +414,13 @@ if [[ "$SKIP_CLOUD" != true ]]; then
       printf '{"state":"absent","name":"%s"}\n' "$name" > "$STAGE_DIR/cloud/${file}.json"
     fi
   done
-  if hcloud_safe zone describe "$DOMAIN" >/dev/null 2>&1; then
-    hcloud_safe zone rrset list "$DOMAIN" -o json > "$STAGE_DIR/cloud/zone-rrsets.json"
+  if [[ -n "$DNS_ZONE" ]] && hcloud_safe zone describe "$DNS_ZONE" >/dev/null 2>&1; then
+    hcloud_safe zone rrset list "$DNS_ZONE" -o json \
+      | jq --arg root "$DNS_RECORD_ROOT" '[.[] | select(
+          .name == $root
+          or .name == (if $root == "@" then "*" else "*." + $root end)
+          or .name == (if $root == "@" then "vpn" else "vpn." + $root end)
+        )]' > "$STAGE_DIR/cloud/zone-rrsets.json"
   fi
   volume_ids=$(kubectl get pv -o json | jq '[.items[]
     | select(.spec.csi.driver=="csi.hetzner.cloud")

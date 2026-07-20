@@ -59,8 +59,14 @@ load_config() {
   RESOURCE_TIER=$(yq '.resource_tier // .tier // "small"' "$CONFIG_FILE")
   DOMAIN=$(yq '.global.domain' "$CONFIG_FILE")
   EMAIL=$(yq '.global.email' "$CONFIG_FILE")
+  K8S_API_LOCAL_PORT=$(yq '.k8s_api_local_port // 16443' "$CONFIG_FILE")
   [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "global.domain is required in $CONFIG_FILE"; exit 1; }
   [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "global.email is required in $CONFIG_FILE"; exit 1; }
+  if [[ ! "$K8S_API_LOCAL_PORT" =~ ^[0-9]+$ ]] \
+    || (( K8S_API_LOCAL_PORT < 1024 || K8S_API_LOCAL_PORT > 65535 )); then
+    error "k8s_api_local_port must be an integer between 1024 and 65535"
+    exit 1
+  fi
   [[ "$TIER" =~ ^(minimal|small|medium|production)$ ]] || {
     error "Invalid capability tier: $TIER"
     exit 1
@@ -476,7 +482,8 @@ destroy_all() {
   read -rp "Type 'DESTROY': " confirm
   [[ "$confirm" != "DESTROY" ]] && exit 0
   check_env
-  "${ANSIBLE_DIR}/teardown.sh" "$PROJECT" --confirm "$PROJECT" 2>&1 | tee -a "${LOG_DIR}/destroy.log"
+  "${ANSIBLE_DIR}/teardown.sh" "$PROJECT" --confirm "$PROJECT" \
+    --api-port "$K8S_API_LOCAL_PORT" 2>&1 | tee -a "${LOG_DIR}/destroy.log"
   rm -rf "${STATE_DIR:?}"/*
   log "Destroy verified. DNS zone/records and your global kubeconfig were preserved."
 }
