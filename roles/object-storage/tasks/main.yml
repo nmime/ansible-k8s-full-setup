@@ -173,6 +173,19 @@
             enabled: true
             replicas: "{{ object_storage_replicas | int }}"
             defaultReplication: "{{ object_storage_replication_placement | default('000') }}"
+            # The upstream default allocates seven logical volumes whenever a
+            # single-copy collection first writes. On resource-efficient 10Gi
+            # claims that can consume every available volume slot with one
+            # mostly-empty collection and make unrelated S3 writes fail. Grow
+            # one logical volume at a time for every replication topology.
+            config: |-
+              [master.volume_growth]
+              copy_1 = 1
+              copy_2 = 1
+              copy_3 = 1
+              copy_other = 1
+              threshold = 0.9
+              disable = false
             # HashiCorp Raft supports explicit, observable membership changes
             # and reliable snapshots during Kubernetes rolling maintenance.
             raftHashicorp: true

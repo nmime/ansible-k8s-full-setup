@@ -450,7 +450,9 @@ spec:
                   printf '%s:%s' "\$RUN_ID" "\$object" >"\$value"; rm -f "\$readback"
                   aws --endpoint-url "\$endpoint" s3 cp "\$value" "\$key" >/dev/null || errors=\$((errors+1))
                   aws --endpoint-url "\$endpoint" s3 cp "\$key" "\$readback" >/dev/null || errors=\$((errors+1))
-                  cmp -s "\$value" "\$readback" || errors=\$((errors+1))
+                  expected="\$RUN_ID:\$object"
+                  actual=\$(cat "\$readback" 2>/dev/null || true)
+                  [ "\$actual" = "\$expected" ] || errors=\$((errors+1))
                   aws --endpoint-url "\$endpoint" s3 rm "\$key" >/dev/null || errors=\$((errors+1))
                   i=\$((i+1))
                 done
