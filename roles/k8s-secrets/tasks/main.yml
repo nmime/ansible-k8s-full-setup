@@ -10,6 +10,9 @@
     # every tier supports application-consistent snapshots and safe expansion.
     vault_ha: true
     vault_storage: '{{ vault_storage_size | default(''20Gi'') }}'
+    # Audit logs are append-only but do not need a claim larger than the Raft
+    # data claim on compact tiers. Operators can still opt into a larger size.
+    vault_audit_storage: '{{ vault_audit_storage_size | default(vault_storage_size | default(''20Gi'')) }}'
     vault_domain: vault.{{ domain }}
 - name: Create Vault namespace
   kubernetes.core.k8s:
@@ -211,7 +214,7 @@
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         auditStorage:
           enabled: true
-          size: 20Gi
+          size: '{{ vault_audit_storage }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         extraEnvironmentVars:
           VAULT_CACERT: "{{ '' if vault_tls_disabled | bool else '/vault/tls/ca.crt' }}"
