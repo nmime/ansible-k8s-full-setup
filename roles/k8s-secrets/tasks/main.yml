@@ -115,36 +115,6 @@
   ansible.builtin.set_fact:
     vault_helm_post_renderer: >-
       {{ 'vault-dns' if vault_helm_major | int >= 4 else '/tmp/vault-post-renderer.sh' }}
-- name: Read Vault StatefulSet field ownership before Helm 4 reconcile
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: StatefulSet
-    namespace: vault
-    name: vault
-  register: _vault_statefulset_ownership
-  when: vault_helm_major | int >= 4
-- name: Clear inconsistent Vault field ownership before Helm 4 reconcile
-  ansible.builtin.shell: |
-    set -euo pipefail
-    # Kubernetes documents a single empty managedFields entry as the explicit
-    # reset for inconsistent ownership. Helm immediately repopulates ownership
-    # in the following task; the StatefulSet spec and pods are not modified.
-    kubectl patch statefulset vault --namespace vault --type=merge \
-      --patch '{"metadata":{"managedFields":[{}]}}'
-  args:
-    executable: /bin/bash
-  register: _r_clear_vault_field_ownership
-  changed_when: true
-  retries: 3
-  delay: 10
-  until: _r_clear_vault_field_ownership.rc == 0
-  when:
-    - vault_helm_major | int >= 4
-    - (_vault_statefulset_ownership.resources | default([]) | length) == 1
-    - >-
-      'kubectl-replace' in
-      (_vault_statefulset_ownership.resources[0].metadata.managedFields |
-       default([]) | map(attribute='manager') | list)
 - name: Install Vault via Helm
   kubernetes.core.helm:
     name: vault
@@ -153,6 +123,7 @@
     release_namespace: vault
     create_namespace: true
     release_state: present
+    force_conflicts: '{{ vault_helm_major | int >= 4 }}'
     # Removed values must not linger in Helm's stored release state. This is
     # particularly important for chart-owned environment variables such as
     # VAULT_API_ADDR and VAULT_CLUSTER_ADDR, which setNodeId renders itself.
