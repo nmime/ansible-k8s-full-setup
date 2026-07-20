@@ -1316,24 +1316,15 @@
     - k8s_create_external_tls | default(true) | bool
 
 - name: Require minimal-tier TLS ingress through the bastion edge
-  ansible.builtin.command:
-    argv:
-      - curl
-      - --silent
-      - --show-error
-      - --insecure
-      - --output
-      - /dev/null
-      - --connect-timeout
-      - '10'
-      - --resolve
-      - '{{ domain }}:443:{{ bastion_public_ip }}'
-      - https://{{ domain }}/
+  ansible.builtin.uri:
+    url: https://{{ domain }}/
+    validate_certs: "{{ cert_manager_cluster_issuer == 'letsencrypt-prod' }}"
+    status_code: [200, 301, 302, 308, 401, 403, 404]
+    timeout: 15
   register: minimal_edge_https
-  changed_when: false
   retries: 12
   delay: 5
-  until: minimal_edge_https.rc == 0
+  until: minimal_edge_https is not failed
   when:
     - not (lb_enabled | default(false) | bool)
     - k8s_create_external_tls | default(true) | bool
