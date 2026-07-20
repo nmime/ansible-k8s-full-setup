@@ -309,6 +309,20 @@
       delay: 10
       until: _r_verify_seaweedfs_raft_membership is not failed
 
+    - name: Reclaim stale empty SeaweedFS volumes from the legacy growth policy
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl exec --namespace "{{ object_storage_namespace_resolved }}" \
+          "{{ object_storage_release_name | default('seaweedfs') }}-master-0" -- \
+          sh -c "printf 'lock\nvolume.deleteEmpty -quietFor=1h -apply\nunlock\n' | weed shell -master=127.0.0.1:9333"
+      args:
+        executable: /bin/bash
+      register: _r_reclaim_stale_empty_seaweedfs_volumes
+      changed_when: "'empty volume' in _r_reclaim_stale_empty_seaweedfs_volumes.stdout"
+      retries: 3
+      delay: 10
+      until: _r_reclaim_stale_empty_seaweedfs_volumes is not failed
+
     - name: Detect SeaweedFS volumes using an obsolete replica placement
       ansible.builtin.shell: |
         set -euo pipefail
