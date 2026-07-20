@@ -410,6 +410,7 @@
       hcloud placement-group create
       --name {{ project }}-spread
       --type spread
+      --label project={{ project }}
   when: infra_tier in ['medium', 'production'] and pg_check.rc != 0
 
 # ============================================

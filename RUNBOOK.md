@@ -92,6 +92,15 @@ For concurrent tier campaigns, give every invocation a distinct kubeconfig,
 run ID, and output directory. Never point parallel processes at a shared active
 context.
 
+The repository's five-profile controller does this automatically. When the
+default Hetzner `cx` pool returns `resource_unavailable`, rerun with
+`./run_all.sh --capacity-family cpx ...`; the mapping preserves each profile's
+CPU/RAM floor and topology. Do not compensate for provider capacity by lowering
+node counts or selecting a type that the role's capacity assertions reject.
+After evidence capture, parallel teardown is safe because resource selection
+uses the exact `project` label; always verify that no campaign-labeled resources
+or campaign DNS records remain.
+
 For Postal, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:
 

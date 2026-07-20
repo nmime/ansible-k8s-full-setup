@@ -30,6 +30,9 @@ Options:
   --dr-prefix PREFIX     Unique bucket prefix (default: PROJECT/velero)
   --dns-zone DOMAIN      Authoritative Hetzner parent zone
   --certificate-issuer   ClusterIssuer for test certificates
+  --bastion-type TYPE    Capacity-equivalent bastion server type override
+  --cp-type TYPE         Capacity-equivalent control-plane type override
+  --worker-type TYPE     Capacity-equivalent worker server type override
   --manage-dns           Permit the infrastructure role to manage DNS
   --minimum-storage      Set every profile-controlled PVC request to 10Gi
   --dry-run              Generate and validate inputs; print, do not deploy
@@ -71,6 +74,9 @@ DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 DR_PREFIX="${BACKUP_DR_PREFIX:-}"
 DNS_ZONE="${HETZNER_DNS_ZONE:-}"
 CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-letsencrypt-staging}"
+BASTION_TYPE=""
+CP_TYPE=""
+WORKER_TYPE=""
 MANAGE_DNS=false
 MINIMUM_STORAGE=false
 DRY_RUN=false
@@ -92,6 +98,9 @@ while [[ $# -gt 0 ]]; do
     --dr-prefix) require_value "$1" "${2:-}"; DR_PREFIX="$2"; shift 2 ;;
     --dns-zone) require_value "$1" "${2:-}"; DNS_ZONE="$2"; shift 2 ;;
     --certificate-issuer) require_value "$1" "${2:-}"; CERTIFICATE_ISSUER="$2"; shift 2 ;;
+    --bastion-type) require_value "$1" "${2:-}"; BASTION_TYPE="$2"; shift 2 ;;
+    --cp-type) require_value "$1" "${2:-}"; CP_TYPE="$2"; shift 2 ;;
+    --worker-type) require_value "$1" "${2:-}"; WORKER_TYPE="$2"; shift 2 ;;
     --manage-dns) MANAGE_DNS=true; shift ;;
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -118,6 +127,10 @@ STATUS_FILE="${RUN_ROOT}/status.json"
 [[ "$DOMAIN" == "$DNS_ZONE" || "$DOMAIN" == *."$DNS_ZONE" ]] \
   || die "domain '$DOMAIN' is not within DNS zone '$DNS_ZONE'"
 [[ "$CERTIFICATE_ISSUER" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "invalid certificate issuer"
+for server_type in "$BASTION_TYPE" "$CP_TYPE" "$WORKER_TYPE"; do
+  [[ -z "$server_type" || "$server_type" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] \
+    || die "invalid Hetzner server type '$server_type'"
+done
 [[ "$EMAIL" == *@*.* ]] || die "invalid email '$EMAIL'"
 if [[ ! "$API_PORT" =~ ^[0-9]+$ ]] || ((API_PORT < 1024 || API_PORT > 65535)); then
   die "invalid API port '$API_PORT'"
@@ -128,14 +141,16 @@ command -v yq >/dev/null 2>&1 || die "yq v4 is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
 mkdir -p "$RUN_ROOT" "$CONTROLLER_HOME/.kube" "$(dirname "$CONFIG_FILE")" "$(dirname "$LOG_FILE")"
-mkdir -p "$RUN_ROOT/tmp" "$RUN_ROOT/ansible-facts" "$RUN_ROOT/ansible-local" "$RUN_ROOT/ssh-control"
+CONTROL_PATH_HASH="$(printf '%s' "${PROJECT}:${API_PORT}" | shasum -a 256 | cut -c1-16)"
+SHORT_CONTROL_PATH_DIR="/tmp/ansible-k8s-cp/${CONTROL_PATH_HASH}"
+mkdir -p "$RUN_ROOT/tmp" "$RUN_ROOT/ansible-facts" "$RUN_ROOT/ansible-local" "$SHORT_CONTROL_PATH_DIR"
 RUN_ROOT="$(cd "$RUN_ROOT" && pwd)"
 CONTROLLER_HOME="$(cd "$CONTROLLER_HOME" && pwd)"
 CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
 LOG_FILE="$(cd "$(dirname "$LOG_FILE")" && pwd)/$(basename "$LOG_FILE")"
 STATUS_FILE="${RUN_ROOT}/status.json"
 chmod 700 "$RUN_ROOT" "$CONTROLLER_HOME" "$CONTROLLER_HOME/.kube" "$RUN_ROOT/tmp" \
-  "$RUN_ROOT/ansible-facts" "$RUN_ROOT/ansible-local" "$RUN_ROOT/ssh-control"
+  "$RUN_ROOT/ansible-facts" "$RUN_ROOT/ansible-local" "$SHORT_CONTROL_PATH_DIR"
 
 export HOME="$CONTROLLER_HOME"
 export TMPDIR="$RUN_ROOT/tmp"
@@ -143,7 +158,7 @@ export KUBECONFIG="$CONTROLLER_HOME/.kube/config"
 export ANSIBLE_CACHE_PLUGIN_CONNECTION="$RUN_ROOT/ansible-facts"
 export ANSIBLE_LOCAL_TEMP="$RUN_ROOT/ansible-local"
 export ANSIBLE_REMOTE_TEMP="/tmp/.ansible-${PROJECT}"
-export ANSIBLE_SSH_CONTROL_PATH_DIR="$RUN_ROOT/ssh-control"
+export ANSIBLE_SSH_CONTROL_PATH_DIR="$SHORT_CONTROL_PATH_DIR"
 export ANSIBLE_COLLECTIONS_PATH="$CONTROLLER_COLLECTIONS_PATH"
 export HELM_CACHE_HOME="$CONTROLLER_HOME/.cache/helm"
 export HELM_CONFIG_HOME="$CONTROLLER_HOME/.config/helm"
@@ -253,6 +268,9 @@ DEPLOY_ARGS=(
   -e "backup_dr_storage_bucket=${DR_BUCKET}"
   -e "backup_dr_storage_prefix=${DR_PREFIX}"
 )
+[[ -z "$BASTION_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_bastion_type=${BASTION_TYPE}")
+[[ -z "$CP_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_cp_type=${CP_TYPE}")
+[[ -z "$WORKER_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_worker_type=${WORKER_TYPE}")
 
 printf 'Campaign: %s\nProfile: %s\nProject: %s\nDomain: %s\nAPI port: %s\nConfig: %s\nLog: %s\n' \
   "$CAMPAIGN_ID" "$PROFILE" "$PROJECT" "$DOMAIN" "$API_PORT" "$CONFIG_FILE" "$LOG_FILE"

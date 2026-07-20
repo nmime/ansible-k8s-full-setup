@@ -10,7 +10,7 @@
 
 - name: Install the pinned Filebeat package on the bastion
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }} 'bash -s' <<'EOF'
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_public_ip }} 'bash -s' <<'EOF'
     set -euo pipefail
     install -d -m 0755 /usr/share/keyrings
     curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch \
@@ -41,13 +41,13 @@
 - name: Install Elasticsearch CA on the bastion
   ansible.builtin.shell: >-
     printf '%s' '{{ filebeat_es_tls.resources[0].data['ca.crt'] }}' |
-    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }}
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_public_ip }}
     'install -d -m 0755 /etc/filebeat && base64 -d > /etc/filebeat/es-ca.crt && chmod 0644 /etc/filebeat/es-ca.crt'
   no_log: true
 
 - name: Configure verified Filebeat output on the bastion
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new root@{{ bastion_public_ip }} 'bash -s' <<'EOF'
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_public_ip }} 'bash -s' <<'EOF'
     set -e
     cat > /etc/filebeat/filebeat.yml <<'CONFIG'
     filebeat.inputs:
