@@ -204,8 +204,10 @@ class TestVaultTLS:
             self.content,
         )
         assert "Remove legacy duplicate Vault PodDisruptionBudget" in self.content
-        assert "Reconcile the chart-created Vault PodDisruptionBudget for maintenance" in self.content
-        assert "name: vault-pdb" in self.content
+        assert "Reconcile the chart-created Vault PodDisruptionBudget for maintenance" not in self.content
+        renderer = read("roles/k8s-secrets/files/vault-post-renderer.sh")
+        assert '.metadata.name == "vault"' in renderer
+        assert ".spec.maxUnavailable) = 1" in renderer
         assert "state: absent" in self.content
 
     def test_vault_tls_retries_transient_admission_webhook_recovery(self):
