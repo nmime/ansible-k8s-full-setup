@@ -27,12 +27,28 @@ class TestChart10ValuesStructure:
         assert "email:" in self.content
 
     @pytest.mark.component
+    def test_chart_gateway_and_issuer_are_disabled_for_platform_gateway(self):
+        assert "gatewayApi:" in self.content
+        assert "installEnvoy: false" in self.content
+        assert self.content.count("configureCertmanager: false") >= 2
+
+    @pytest.mark.component
     def test_webservice_configured(self):
         assert "webservice:" in self.content and "replicaCount:" in self.content
 
     @pytest.mark.component
     def test_sidekiq_configured(self):
         assert "sidekiq:" in self.content
+
+    def test_heavy_rails_workloads_prefer_different_nodes(self):
+        assert self.content.count("topologySpreadConstraints:") >= 2
+        assert self.content.count("whenUnsatisfiable: ScheduleAnyway") >= 2
+        assert self.content.count("- webservice") >= 2
+        assert self.content.count("- sidekiq") >= 2
+        assert self.content.count("topologyKey: kubernetes.io/hostname") >= 2
+        assert "Add cross-component anti-affinity to GitLab Rails workloads" in self.content
+        assert "weight: 100" in self.content
+        assert "Rebalance GitLab Rails workloads when a rolling update co-locates them" in self.content
 
     @pytest.mark.component
     def test_gitlab_shell_configured(self):
@@ -85,6 +101,49 @@ class TestDefaultsTasksConsistency:
     def test_tier_logic_preserved(self):
         assert "gitlab_mode" in self.tasks_raw
 
+    @pytest.mark.component
+    def test_toolbox_skips_database_covered_by_native_percona_backup(self):
+        assert "--skip db" in self.tasks_raw
+        assert "--s3tool awscli" in self.tasks_raw
+
+    @pytest.mark.component
+    def test_toolbox_awscli_receives_minio_credentials(self):
+        for token in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_DEFAULT_REGION",
+            "AWS_REQUEST_CHECKSUM_CALCULATION",
+            "accesskey",
+            "secretkey",
+        ):
+            assert token in self.tasks_raw
+
+    @pytest.mark.component
+    def test_every_toolbox_backup_bucket_is_bootstrapped(self):
+        buckets = read(os.path.join(REPO_ROOT, "roles", "object-storage", "defaults", "main.yml"))
+        for bucket in (
+            "gitlab-artifacts",
+            "gitlab-registry",
+            "gitlab-lfs",
+            "gitlab-uploads",
+            "gitlab-packages",
+            "gitlab-mr-diffs",
+            "gitlab-terraform-state",
+            "gitlab-pages",
+            "gitlab-ci-secure-files",
+            "gitlab-agent-plan-content",
+            "gitlab-backups",
+            "gitlab-tmp",
+        ):
+            assert f"- {bucket}" in buckets
+
+    @pytest.mark.component
+    def test_kas_gateway_ingress_is_explicitly_allowed(self):
+        assert "Allow GitLab KAS ingress from gateway" in self.tasks_raw
+        assert "name: allow-kas-ingress" in self.tasks_raw
+        assert "app: kas" in self.tasks_raw
+        assert "port: '8150'" in self.tasks_raw
+
 class TestBackupCompatibility:
     @pytest.fixture(autouse=True)
     def _content(self):
@@ -109,6 +168,12 @@ class TestBackupCompatibility:
     def test_official_toolbox_backup_is_required(self):
         if self.content:
             assert "gitlab-toolbox-backup" in self.content
+
+    @pytest.mark.component
+    def test_external_database_backup_contract_is_documented(self):
+        if self.content:
+            assert "external Percona" in self.content
+            assert "version-matched backup" in self.content
 
 class TestNoDeprecatedKeys:
     @pytest.fixture(autouse=True)

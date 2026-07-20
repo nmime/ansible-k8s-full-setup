@@ -1,6 +1,8 @@
 # Platform secrets (auto-generated credentials)
 .platform-secrets.yml
 .object-storage-credentials
+.vault-init.json
+.vault-init-*.json
 
 # GitLab license (generated keys and license files)
 .gitlab-license/
@@ -16,6 +18,7 @@ platform-orchestrator/platform.yaml
 # Encrypted local disaster-recovery bundles and resumable migration state
 cluster-backups/
 .migration-state/
+snapshot/
 .backup-results-*.log
 
 # Ansible retry files

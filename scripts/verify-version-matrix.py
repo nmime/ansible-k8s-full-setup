@@ -19,16 +19,16 @@ from pathlib import Path
 # - Version registry -
 VERSION_REGISTRY = {
     "k8s_version": {
-        "value": "v1.35.6",
+        "value": "v1.35.4",
         "files": [
-            ("defaults/main.yml", "k8s_version: v1.35.6"),
-            ("inventory.example", "k8s_version: v1.35.6"),
-            ("roles/k8s-cluster-management/tasks/main.yml", "k8s_version | default('v1.35.6')"),
-            ("platform-orchestrator/profiles/medium.yaml", "version: v1.35.6"),
-            ("platform-orchestrator/profiles/medium-optimized.yaml", "version: v1.35.6"),
-            ("platform-orchestrator/profiles/minimal.yaml", "version: v1.35.6"),
-            ("platform-orchestrator/profiles/production.yaml", "version: v1.35.6"),
-            ("platform-orchestrator/profiles/small.yaml", "version: v1.35.6"),
+            ("defaults/main.yml", "k8s_version: v1.35.4"),
+            ("inventory.example", "k8s_version: v1.35.4"),
+            ("roles/k8s-cluster-management/tasks/main.yml", "k8s_version | default('v1.35.4')"),
+            ("platform-orchestrator/profiles/medium.yaml", "version: v1.35.4"),
+            ("platform-orchestrator/profiles/medium-optimized.yaml", "version: v1.35.4"),
+            ("platform-orchestrator/profiles/minimal.yaml", "version: v1.35.4"),
+            ("platform-orchestrator/profiles/production.yaml", "version: v1.35.4"),
+            ("platform-orchestrator/profiles/small.yaml", "version: v1.35.4"),
         ],
     },
     "cilium_version": {
@@ -141,6 +141,16 @@ VERSION_REGISTRY = {
             ("roles/k8s-observability/tasks/main.yml", "percona/pmm-server:{{ pmm_server_version }}"),
         ],
     },
+    "hcloud_exporter_version": {
+        "value": "3.21.0",
+        "files": [
+            ("defaults/main.yml", 'hcloud_exporter_version: "3.21.0"'),
+            (
+                "roles/k8s-observability/tasks/main.yml",
+                "promhippie/hcloud-exporter:{{ hcloud_exporter_version }}",
+            ),
+        ],
+    },
     "vault_version": {
         "value": "2.0.3",
         "files": [
@@ -212,7 +222,7 @@ VERSION_REGISTRY = {
 }
 
 STALE_VERSIONS = [
-    "v1.35.4", "v1.19.4", "v1.5.1", "v1.20.2",
+    "v1.35.6", "v1.19.4", "v1.5.1", "v1.20.2",
     "v0.15.3", "v1.31.0", "v2.21.0", "v1.42.0",
     "2.19.0", "9.4.1", "3.3.6",
     "11.10.0", "v1.5.0", "v1.38.1",
@@ -256,7 +266,8 @@ def check_version_consistency(root: Path) -> list[str]:
 
 def check_no_stale_versions(root: Path) -> list[str]:
     errors = []
-    for yml in list(root.rglob("roles/**/*.yml")) + list(root.rglob("roles/**/*.yaml")):
+    roles = root / "roles"
+    for yml in list(roles.rglob("*.yml")) + list(roles.rglob("*.yaml")):
         content = yml.read_text()
         for stale in STALE_VERSIONS:
             if stale in content:
@@ -266,7 +277,8 @@ def check_no_stale_versions(root: Path) -> list[str]:
 
 def check_no_latest_tags(root: Path) -> list[str]:
     errors = []
-    for yml in list(root.rglob("roles/**/*.yml")) + list(root.rglob("roles/**/*.yaml")):
+    roles = root / "roles"
+    for yml in list(roles.rglob("*.yml")) + list(roles.rglob("*.yaml")):
         content = yml.read_text()
         clean = re.sub(r'pod-security\.kubernetes\.io[^\n]*', '', content)
         if "releases/latest/" in clean:

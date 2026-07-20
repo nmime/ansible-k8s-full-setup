@@ -3,8 +3,8 @@
     temporal_ns: temporal
     temporal_chart_ver: 1.2.0
     temporal_server_ver: 1.31.0
-    temporal_ui_ver: 2.44.0
-    temporal_admin_tools_ver: 1.29.1-tctl-1.18.4-cli-1.5.0
+    temporal_ui_ver: 2.49.1
+    temporal_admin_tools_ver: 1.31.0
     temporal_domain: temporal.{{ domain }}
     temporal_num_history_shards: '{{ temporal.history_shards | default(512) }}'
     temporal_replicas: '{{ temporal.replicas | default(2 if resource_tier == ''production'' else 1) }}'
@@ -29,6 +29,8 @@
     temporal_worker_cpu_lim: '{{ temporal.worker_cpu_limit | default(''250m'' if resource_tier in [''minimal'', ''small''] else ''500m'') }}'
     temporal_worker_mem_lim: '{{ temporal.worker_memory_limit | default(''256Mi'' if resource_tier in [''minimal'', ''small''] else ''1Gi'') }}'
     temporal_web_replicas: '{{ temporal.web_replicas | default(1) }}'
+    temporal_sql_max_conns: '{{ temporal.sql_max_connections | default(5 if resource_tier in [''minimal'', ''small''] else 10) }}'
+    temporal_sql_max_idle_conns: '{{ temporal.sql_max_idle_connections | default(2 if resource_tier in [''minimal'', ''small''] else 5) }}'
     db_ns: databases
     pg_host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
     pg_host_direct: '{{ project_name | default(''k8s'') }}-pg-primary.databases.svc.cluster.local'
@@ -57,7 +59,7 @@
     namespace: '{{ db_ns }}'
     name: '{{ project_name | default(''k8s'') }}-pg-pguser-temporal'
   register: temporal_pg_secret
-  until: temporal_pg_secret.resources | length > 0
+  until: (temporal_pg_secret.resources | default([])) | length > 0
   retries: 90
   delay: 10
   failed_when: false
@@ -86,23 +88,6 @@
   delay: 10
   until: _r_create_temporal_db_credentials_secret is not failed
   no_log: true
-- name: Create Temporal ES credentials secret
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: temporal-es-credentials
-        namespace: '{{ temporal_ns }}'
-      type: Opaque
-      stringData:
-        password: '{{ es_superuser_password | default('''') }}'
-  no_log: true
-  register: _r_create_temporal_es_credentials
-  retries: 3
-  delay: 10
-  until: _r_create_temporal_es_credentials is not failed
 - name: Get PG primary pod for CREATEDB grant
   kubernetes.core.k8s_info:
     kind: Pod
@@ -141,76 +126,62 @@
     wait: true
     timeout: 15m0s
     values:
-      cassandra:
-        enabled: false
-      elasticsearch:
-        enabled: false
-      prometheus:
-        enabled: false
-      grafana:
-        enabled: false
-      mysql:
-        enabled: false
       server:
         enabled: true
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
         image:
           repository: temporalio/server
           tag: '{{ temporal_server_ver }}'
           pullPolicy: IfNotPresent
         config:
           logLevel: info
-          numHistoryShards: '{{ temporal_num_history_shards | int }}'
           persistence:
             defaultStore: default
-            additionalStores:
-              es-visibility:
-                elasticsearch:
-                  version: v7
-                  logLevel: info
-                  url:
-                    scheme: https
-                    host: elasticsearch.elasticsearch.svc.cluster.local:9200
-                  username: elastic
-                  password: will-be-overridden
-                  existingSecret: temporal-es-credentials
-                  indices:
-                    visibility: temporal_visibility_v1
+            visibilityStore: visibility
+            numHistoryShards: '{{ temporal_num_history_shards | int }}'
+            datastores:
+              default:
+                sql:
+                  createDatabase: true
+                  manageSchema: true
+                  pluginName: postgres12
+                  driverName: postgres12
+                  databaseName: temporal
+                  connectAddr: '{{ pg_host_direct }}:5432'
+                  connectProtocol: tcp
+                  user: temporal
+                  existingSecret: temporal-db-credentials
+                  secretKey: password
+                  maxConns: '{{ temporal_sql_max_conns | int }}'
+                  maxIdleConns: '{{ temporal_sql_max_idle_conns | int }}'
+                  maxConnLifetime: 1h
                   tls:
                     enabled: true
                     enableHostVerification: false
-            default:
-              driver: sql
-              sql:
-                driver: postgres12
-                host: '{{ pg_host_direct }}'
-                port: 5432
-                database: temporal
-                user: temporal
-                password: will-be-overridden
-                existingSecret: temporal-db-credentials
-                maxConns: 20
-                maxIdleConns: 20
-                maxConnLifetime: 1h
-                tls:
-                  enabled: true
-                  enableHostVerification: false
-            visibility:
-              driver: sql
-              sql:
-                driver: postgres12
-                host: '{{ pg_host_direct }}'
-                port: 5432
-                database: temporal_visibility
-                user: temporal
-                password: will-be-overridden
-                existingSecret: temporal-db-credentials
-                maxConns: 20
-                maxIdleConns: 20
-                maxConnLifetime: 1h
-                tls:
-                  enabled: true
-                  enableHostVerification: false
-            visibilityStore: visibility
+              visibility:
+                sql:
+                  createDatabase: true
+                  manageSchema: true
+                  pluginName: postgres12
+                  driverName: postgres12
+                  databaseName: temporal_visibility
+                  connectAddr: '{{ pg_host_direct }}:5432'
+                  connectProtocol: tcp
+                  user: temporal
+                  existingSecret: temporal-db-credentials
+                  secretKey: password
+                  maxConns: '{{ temporal_sql_max_conns | int }}'
+                  maxIdleConns: '{{ temporal_sql_max_idle_conns | int }}'
+                  maxConnLifetime: 1h
+                  tls:
+                    enabled: true
+                    enableHostVerification: false
           namespaces:
             create: true
             namespace:
@@ -228,11 +199,12 @@
             limits:
               cpu: '{{ temporal_frontend_cpu_lim }}'
               memory: '{{ temporal_frontend_mem_lim }}'
-          podSecurityContext:
+          containerSecurityContext:
             runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
             seccompProfile:
               type: RuntimeDefault
-          containerSecurityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
@@ -248,11 +220,12 @@
             limits:
               cpu: '{{ temporal_history_cpu_lim }}'
               memory: '{{ temporal_history_mem_lim }}'
-          podSecurityContext:
+          containerSecurityContext:
             runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
             seccompProfile:
               type: RuntimeDefault
-          containerSecurityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
@@ -268,11 +241,12 @@
             limits:
               cpu: '{{ temporal_matching_cpu_lim }}'
               memory: '{{ temporal_matching_mem_lim }}'
-          podSecurityContext:
+          containerSecurityContext:
             runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
             seccompProfile:
               type: RuntimeDefault
-          containerSecurityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
@@ -288,11 +262,12 @@
             limits:
               cpu: '{{ temporal_worker_cpu_lim }}'
               memory: '{{ temporal_worker_mem_lim }}'
-          podSecurityContext:
+          containerSecurityContext:
             runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
             seccompProfile:
               type: RuntimeDefault
-          containerSecurityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
@@ -303,14 +278,23 @@
           serviceMonitor:
             enabled: false
       schema:
-        createDatabase:
-          enabled: true
-        setup:
-          enabled: true
-          backoffLimit: 100
-        update:
-          enabled: true
-          backoffLimit: 100
+        useHelmHooks: true
+        backoffLimit: 100
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      shims:
+        dockerize: false
+        elasticsearchTool: false
       admintools:
         enabled: true
         image:
@@ -323,6 +307,18 @@
           limits:
             cpu: 300m
             memory: 512Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
       web:
         enabled: true
         replicaCount: '{{ temporal_web_replicas | int }}'
@@ -339,6 +335,18 @@
           limits:
             cpu: 300m
             memory: 512Mi
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
   register: _r_install_temporal_server_via_helm
   retries: 3
   delay: 10
@@ -350,7 +358,7 @@
     namespace: '{{ temporal_ns }}'
     name: temporal-frontend
   register: temporal_frontend_status
-  until: 'temporal_frontend_status.resources | length > 0 and (temporal_frontend_status.resources[0].status.readyReplicas | default(0) | int) >= 1
+  until: '(temporal_frontend_status.resources | default([])) | length > 0 and (temporal_frontend_status.resources[0].status.readyReplicas | default(0) | int) >= 1
 
     '
   retries: 40
@@ -362,7 +370,7 @@
     namespace: '{{ temporal_ns }}'
     name: temporal-history
   register: temporal_history_status
-  until: 'temporal_history_status.resources | length > 0 and (temporal_history_status.resources[0].status.readyReplicas | default(0) | int) >= 1
+  until: '(temporal_history_status.resources | default([])) | length > 0 and (temporal_history_status.resources[0].status.readyReplicas | default(0) | int) >= 1
 
     '
   retries: 40
@@ -374,7 +382,7 @@
     namespace: '{{ temporal_ns }}'
     name: temporal-web
   register: temporal_web_status
-  until: 'temporal_web_status.resources | length > 0 and (temporal_web_status.resources[0].status.readyReplicas | default(0) | int) >= 1
+  until: '(temporal_web_status.resources | default([])) | length > 0 and (temporal_web_status.resources[0].status.readyReplicas | default(0) | int) >= 1
 
     '
   retries: 40
@@ -445,17 +453,31 @@
     - '  Web UI: https://{{ temporal_domain }} (VPN-only)'
     - '  gRPC endpoint: temporal-frontend.{{ temporal_ns }}.svc.cluster.local:7233'
     - ==========================================
-- name: Create default-deny NetworkPolicy for Temporal namespace
+- name: Remove legacy invalid Cilium default-deny for Temporal namespace
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: default-deny
-        namespace: '{{ temporal_namespace }}'
+        namespace: '{{ temporal_ns }}'
+- name: Create default-deny NetworkPolicy for Temporal namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ temporal_ns }}'
       spec:
-        endpointSelector: {}
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
 - name: Allow Temporal ingress from cluster (workers/apps connect)
   kubernetes.core.k8s:
     state: present
@@ -464,7 +486,7 @@
       kind: CiliumNetworkPolicy
       metadata:
         name: allow-temporal-ingress
-        namespace: '{{ temporal_namespace }}'
+        namespace: '{{ temporal_ns }}'
       spec:
         endpointSelector:
           matchLabels:
@@ -480,6 +502,8 @@
               protocol: TCP
             - port: '7235'
               protocol: TCP
+            - port: '8080'
+              protocol: TCP
 - name: Allow Temporal egress to PostgreSQL
   kubernetes.core.k8s:
     state: present
@@ -488,7 +512,7 @@
       kind: CiliumNetworkPolicy
       metadata:
         name: allow-temporal-to-postgres
-        namespace: '{{ temporal_namespace }}'
+        namespace: '{{ temporal_ns }}'
       spec:
         endpointSelector: {}
         egress:
@@ -501,15 +525,15 @@
               protocol: TCP
         - toEntities:
           - kube-apiserver
-- name: Create Temporal ServiceMonitor
+- name: Create Temporal VMServiceScrape
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
       metadata:
         name: temporal
-        namespace: '{{ temporal_namespace | default("temporal") }}'
+        namespace: '{{ temporal_ns }}'
         labels:
           release: prometheus
       spec:
@@ -519,3 +543,4 @@
         endpoints:
         - port: metrics
           interval: 30s
+  when: platform_observability_enabled | default(false) | bool

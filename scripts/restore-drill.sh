@@ -14,15 +14,14 @@ CLEANUP_HOURS=""
 
 usage() {
   cat <<'EOF'
-Usage: restore-drill.sh --component <mongodb|vault|gitlab> --backup <ref> [--dry-run|--force]
+Usage: restore-drill.sh --component <postgresql|mongodb|vault|seaweedfs|gitlab> --backup <ref> [--dry-run|--force]
 
 Supported automated drills:
+  postgresql Dispatches to pg-restore-drill.sh with a pgBackRest backup set.
   mongodb Dispatches to mongodb-restore-drill.sh with a backup CR name or S3 URI.
   vault   Dispatches to vault-restore-drill.sh with the snapshot name.
+  seaweedfs Dispatches to seaweedfs-restore-drill.sh with a Velero backup name.
   gitlab  Dispatches to gitlab-restore-test.sh with the Toolbox backup ID.
-
-SeaweedFS restore automation is provided only by the replacement-cluster
-Velero workflow. This component dispatcher fails closed for SeaweedFS.
 EOF
 }
 
@@ -56,6 +55,10 @@ echo "Component: $COMPONENT"
 echo "Backup: $BACKUP_REF"
 
 case "$COMPONENT" in
+  postgresql)
+    exec "${SCRIPT_DIR}/pg-restore-drill.sh" \
+      --backup-set "$BACKUP_REF" "${common_args[@]}"
+    ;;
   mongodb)
     exec "${SCRIPT_DIR}/mongodb-restore-drill.sh" \
       --backup "$BACKUP_REF" "${common_args[@]}"
@@ -69,8 +72,8 @@ case "$COMPONENT" in
       --restore --backup "$BACKUP_REF" "${common_args[@]}"
     ;;
   seaweedfs)
-    echo "[ERROR] No verified isolated $COMPONENT restore implementation exists" >&2
-    exit 2
+    exec "${SCRIPT_DIR}/seaweedfs-restore-drill.sh" \
+      --backup "$BACKUP_REF" "${common_args[@]}"
     ;;
   *)
     echo "[ERROR] Invalid component: $COMPONENT" >&2

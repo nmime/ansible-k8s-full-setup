@@ -71,6 +71,37 @@
       delay: 10
       until: _r_seaweedfs_s3_secret is not failed
 
+    # Kubelet health probes originate from the node identity, not another pod.
+    # Install this before Helm waits so namespace default-deny policies cannot
+    # make healthy master/volume/filer containers fail their probes.
+    - name: Allow node health probes to SeaweedFS
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: allow-seaweedfs-node-health-probes
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            endpointSelector:
+              matchLabels:
+                app.kubernetes.io/name: seaweedfs
+            ingress:
+              - fromEntities:
+                  - host
+                  - remote-node
+                toPorts:
+                  - ports:
+                      - { port: '8080', protocol: TCP }
+                      - { port: '8333', protocol: TCP }
+                      - { port: '8888', protocol: TCP }
+                      - { port: '9333', protocol: TCP }
+      register: _r_allow_seaweedfs_node_health_probes
+      retries: 3
+      delay: 10
+      until: _r_allow_seaweedfs_node_health_probes is not failed
+
     - name: Create object storage credentials secret
       no_log: true
       kubernetes.core.k8s:
@@ -105,6 +136,23 @@
       delay: 10
       until: _r_seaweedfs_repo is not failed
 
+    - name: Read the current SeaweedFS Helm values
+      ansible.builtin.command: >-
+        helm get values {{ object_storage_release_name | default('seaweedfs') }}
+        --namespace {{ object_storage_namespace_resolved }} --output json
+      register: _seaweedfs_current_values
+      changed_when: false
+      failed_when: false
+
+    - name: Detect a legacy SeaweedFS Raft backend
+      ansible.builtin.set_fact:
+        _seaweedfs_migrate_to_hashicorp_raft: >-
+          {{
+            _seaweedfs_current_values.rc == 0 and
+            not (((_seaweedfs_current_values.stdout | from_json).master.raftHashicorp |
+              default(false)) | bool)
+          }}
+
     - name: Install SeaweedFS via official Helm chart
       kubernetes.core.helm:
         name: "{{ object_storage_release_name | default('seaweedfs') }}"
@@ -116,9 +164,18 @@
         wait: false
         timeout: 10m0s
         values:
+          global:
+            seaweedfs:
+              enableReplication: "{{ object_storage_replication_placement | default('000') != '000' }}"
+              replicationPlacement: "{{ object_storage_replication_placement | default('000') }}"
           master:
             enabled: true
             replicas: "{{ object_storage_replicas | int }}"
+            defaultReplication: "{{ object_storage_replication_placement | default('000') }}"
+            # HashiCorp Raft supports explicit, observable membership changes
+            # and reliable snapshots during Kubernetes rolling maintenance.
+            raftHashicorp: true
+            raftBootstrap: false
             data:
               type: persistentVolumeClaim
               storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
@@ -160,6 +217,15 @@
       retries: 3
       delay: 10
       until: _r_install_seaweedfs is not failed
+
+    - name: Restart SeaweedFS masters once when migrating the Raft backend
+      ansible.builtin.command: >-
+        kubectl delete pods --namespace {{ object_storage_namespace_resolved }}
+        --selector app.kubernetes.io/component=master,app.kubernetes.io/instance={{ object_storage_release_name | default('seaweedfs') }}
+        --wait=false
+      register: _r_restart_seaweedfs_masters_for_raft
+      changed_when: _r_restart_seaweedfs_masters_for_raft.rc == 0
+      when: _seaweedfs_migrate_to_hashicorp_raft | bool
 
     - name: Restart SeaweedFS filer when S3 auth config changes
       ansible.builtin.shell: |
@@ -212,6 +278,84 @@
         namespace: "{{ object_storage_namespace_resolved }}"
         name: object-storage-bucket-bootstrap
       failed_when: false
+
+    - name: Verify SeaweedFS HashiCorp Raft membership
+      ansible.builtin.shell: |
+        set -euo pipefail
+        output=$(kubectl exec --namespace "{{ object_storage_namespace_resolved }}" \
+          "{{ object_storage_release_name | default('seaweedfs') }}-master-0" -- \
+          sh -c "printf 'cluster.raft.ps\\n' | weed shell -master=127.0.0.1:9333")
+        printf '%s\n' "$output"
+        grep -Fq "the raft cluster has {{ object_storage_replicas | int }} servers" <<<"$output"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: _r_verify_seaweedfs_raft_membership
+      retries: 30
+      delay: 10
+      until: _r_verify_seaweedfs_raft_membership is not failed
+
+    - name: Detect SeaweedFS volumes using an obsolete replica placement
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl exec --namespace "{{ object_storage_namespace_resolved }}" \
+          "{{ object_storage_release_name | default('seaweedfs') }}-master-0" -- \
+          sh -c "printf 'volume.list\n' | weed shell -master=127.0.0.1:9333" \
+          | grep 'volume Id:' \
+          | grep -vc 'ReplicaPlacement:{{ object_storage_replication_placement | default('000') }}' || true
+      args:
+        executable: /bin/bash
+      register: _r_seaweedfs_obsolete_replication
+      changed_when: false
+      when: object_storage_replication_placement | default('000') != '000'
+
+    - name: Migrate existing SeaweedFS volumes to the selected replica placement
+      ansible.builtin.shell: |
+        set -euo pipefail
+        kubectl exec --namespace "{{ object_storage_namespace_resolved }}" \
+          "{{ object_storage_release_name | default('seaweedfs') }}-master-0" -- sh -c \
+          "printf 'lock\nvolume.configure.replication -collectionPattern=* -replication={{ object_storage_replication_placement }}\nvolume.fix.replication -collectionPattern=* -apply -doDelete=false -maxParallelization=4 -volumesPerStep=10 -retry=5\nunlock\n' | weed shell -master=127.0.0.1:9333"
+      args:
+        executable: /bin/bash
+      register: _r_migrate_seaweedfs_replication
+      changed_when: true
+      when:
+        - object_storage_replication_placement | default('000') != '000'
+        - _r_seaweedfs_obsolete_replication.stdout | int > 0
+
+    - name: Verify every SeaweedFS volume satisfies the selected replica placement
+      ansible.builtin.shell: |
+        set -euo pipefail
+        output=$(kubectl exec --namespace "{{ object_storage_namespace_resolved }}" \
+          "{{ object_storage_release_name | default('seaweedfs') }}-master-0" -- \
+          sh -c "printf 'volume.list\nvolume.fix.replication -collectionPattern=* -doDelete=false -verbose\n' | weed shell -master=127.0.0.1:9333")
+        ! grep 'volume Id:' <<<"$output" | grep -vq 'ReplicaPlacement:{{ object_storage_replication_placement | default('000') }}'
+        ! grep -Fq 'under replicated' <<<"$output"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: object_storage_replication_placement | default('000') != '000'
+
+    - name: Refresh SeaweedFS filer topology after a chart or Raft change
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ns="{{ object_storage_namespace_resolved }}"
+        release="{{ object_storage_release_name | default('seaweedfs') }}"
+        restarted=0
+        for workload in "statefulset/${release}-filer" "deployment/${release}-filer"; do
+          if kubectl -n "$ns" get "$workload" >/dev/null 2>&1; then
+            kubectl -n "$ns" rollout restart "$workload"
+            kubectl -n "$ns" rollout status "$workload" --timeout=10m
+            restarted=1
+          fi
+        done
+        test "$restarted" -eq 1
+      args:
+        executable: /bin/bash
+      when:
+        - _r_install_seaweedfs is changed or _seaweedfs_migrate_to_hashicorp_raft | bool
+      register: _r_refresh_seaweedfs_filer_topology
+      changed_when: true
 
     - name: Bootstrap object storage buckets idempotently
       kubernetes.core.k8s:
@@ -317,6 +461,30 @@
       retries: 3
       delay: 10
       until: _r_object_storage_api_cert is not failed
+
+    - name: Allow Gateway API traffic to SeaweedFS filer endpoints
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: allow-object-storage-gateway-ingress
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            endpointSelector:
+              matchLabels:
+                app.kubernetes.io/component: filer
+            ingress:
+              - fromEntities:
+                  - cluster
+                toPorts:
+                  - ports:
+                      - port: "8333"
+                        protocol: TCP
+                      - port: "8888"
+                        protocol: TCP
+      when: object_storage_create_external_routes | default(true) | bool
 
     - name: Create object storage Console HTTPRoute
       kubernetes.core.k8s:
@@ -425,17 +593,33 @@
       delay: 10
       until: _r_object_storage_consumer_secrets is not failed
 
-    - name: Create default-deny for object storage namespace
+    - name: Remove legacy invalid Cilium default-deny for object storage namespace
       kubernetes.core.k8s:
-        state: present
+        state: absent
         definition:
           apiVersion: cilium.io/v2
           kind: CiliumNetworkPolicy
           metadata:
             name: default-deny
             namespace: "{{ object_storage_namespace_resolved }}"
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Create default-deny NetworkPolicy for object storage namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: default-deny
+            namespace: "{{ object_storage_namespace_resolved }}"
           spec:
-            endpointSelector: {}
+            podSelector: {}
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress: []
+            egress: []
       when: object_storage_network_policy_enabled | default(false) | bool
 
     - name: Allow object storage ingress on SeaweedFS ports
@@ -462,24 +646,6 @@
                       - { port: '19333', protocol: TCP }
                       - { port: '9327', protocol: TCP }
       when: object_storage_network_policy_enabled | default(false) | bool
-
-    - name: Create SeaweedFS ServiceMonitor
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: monitoring.coreos.com/v1
-          kind: ServiceMonitor
-          metadata:
-            name: seaweedfs
-            namespace: "{{ object_storage_namespace_resolved }}"
-          spec:
-            selector:
-              matchLabels:
-                app.kubernetes.io/instance: "{{ object_storage_release_name | default('seaweedfs') }}"
-            endpoints:
-              - port: metrics
-                interval: 30s
-      failed_when: false
 
     - name: Display object storage summary
       ansible.builtin.debug:

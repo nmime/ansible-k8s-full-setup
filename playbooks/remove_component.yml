@@ -67,6 +67,19 @@
       observability:
         namespaces: [monitoring]
         requires_data_confirmation: true
+      pmm:
+        namespaces: []
+        requires_data_confirmation: true
+        resources:
+          - {api_version: apps/v1, kind: Deployment, name: pmm-server, namespace: monitoring}
+          - {api_version: v1, kind: Service, name: pmm-server, namespace: monitoring}
+          - {api_version: v1, kind: ServiceAccount, name: pmm-server, namespace: monitoring}
+          - {api_version: v1, kind: Secret, name: pmm-secret, namespace: monitoring}
+          - {api_version: v1, kind: Secret, name: pmm-secret, namespace: databases}
+          - {api_version: v1, kind: PersistentVolumeClaim, name: pmm-server-data, namespace: monitoring}
+          - {api_version: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: pmm, namespace: monitoring}
+          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMServiceScrape, name: pmm-server, namespace: monitoring}
+          - {api_version: cert-manager.io/v1, kind: Certificate, name: pmm-tls, namespace: cilium-secrets}
       coroot:
         namespaces: [coroot]
         requires_data_confirmation: true
@@ -162,6 +175,7 @@
           gitlab-runner: "{{ platform_gitlab_runner_enabled }}"
           gitops: "{{ platform_gitops_enabled }}"
           observability: "{{ platform_observability_enabled }}"
+          pmm: "{{ platform_pmm_enabled }}"
           coroot: "{{ platform_coroot_enabled }}"
           tracing: "{{ platform_tracing_enabled }}"
           autoscaling: "{{ platform_autoscaling_enabled }}"

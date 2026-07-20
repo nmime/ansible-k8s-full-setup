@@ -9,6 +9,10 @@
     gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
     gitlab_webservice_max_replicas: '{{ gitlab.webservice_max_replicas | default(10) }}'
     gitlab_webservice_worker_processes: '{{ gitlab.worker_processes | default(2) }}'
+    gitlab_webservice_memory_request: '{{ gitlab.webservice_memory_request | default("1Gi" if gitlab.mode | default("light") == "light" else "2.5Gi") }}'
+    gitlab_sidekiq_memory_request: '{{ gitlab.sidekiq_memory_request | default("1Gi" if gitlab.mode | default("light") == "light" else "1.5Gi") }}'
+    gitlab_kas_memory_request: '{{ gitlab.kas_memory_request | default("256Mi") }}'
+    gitlab_toolbox_memory_request: '{{ gitlab.toolbox_memory_request | default("350M") }}'
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
     gitlab_sidekiq_max_replicas: '{{ gitlab.sidekiq_max_replicas | default(10) }}'
     gitlab_registry_max_replicas: '{{ gitlab.registry_max_replicas | default(5) }}'
@@ -52,6 +56,8 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
+        accesskey: "{{ object_storage_access_key }}"
+        secretkey: "{{ object_storage_secret_key }}"
         connection: |
           provider: AWS
           region: us-east-1
@@ -140,6 +146,10 @@
         ingress:
           enabled: false
           configureCertmanager: false
+        gatewayApi:
+          enabled: false
+          installEnvoy: false
+          configureCertmanager: false
         time_zone: UTC
         email:
           from: gitlab@{{ domain }}
@@ -204,10 +214,25 @@
           replicaCount: '{{ gitlab_webservice_replicas | int }}'
           minReplicas: '{{ gitlab_webservice_replicas | int }}'
           maxReplicas: '{{ gitlab_webservice_max_replicas | int }}'
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchExpressions:
+                  - key: release
+                    operator: In
+                    values:
+                      - gitlab
+                  - key: app
+                    operator: In
+                    values:
+                      - webservice
+                      - sidekiq
           resources:
             requests:
               cpu: '{{ ''100m'' if gitlab_mode == ''light'' else ''300m'' }}'
-              memory: '{{ ''1Gi'' if gitlab_mode == ''light'' else ''2.5Gi'' }}'
+              memory: '{{ gitlab_webservice_memory_request }}'
             limits:
               cpu: '{{ ''1500m'' if gitlab_mode == ''light'' else ''2000m'' }}'
               memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''5Gi'' }}'
@@ -216,10 +241,25 @@
           replicaCount: '{{ gitlab_sidekiq_replicas | int }}'
           minReplicas: 1
           maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchExpressions:
+                  - key: release
+                    operator: In
+                    values:
+                      - gitlab
+                  - key: app
+                    operator: In
+                    values:
+                      - webservice
+                      - sidekiq
           resources:
             requests:
               cpu: '{{ ''50m'' if gitlab_mode == ''light'' else ''200m'' }}'
-              memory: '{{ ''1Gi'' if gitlab_mode == ''light'' else ''1.5Gi'' }}'
+              memory: '{{ gitlab_sidekiq_memory_request }}'
             limits:
               cpu: '{{ ''1000m'' if gitlab_mode == ''light'' else ''1500m'' }}'
               memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''3Gi'' }}'
@@ -251,8 +291,34 @@
         kas:
           enabled: true
           minReplicas: '{{ gitlab_webservice_replicas | int }}'
+          resources:
+            requests:
+              cpu: 50m
+              memory: '{{ gitlab_kas_memory_request }}'
+            limits:
+              cpu: 500m
+              memory: 1Gi
         toolbox:
           enabled: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: '{{ gitlab_toolbox_memory_request }}'
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          extraEnvFrom:
+            AWS_ACCESS_KEY_ID:
+              secretKeyRef:
+                name: gitlab-object-storage
+                key: accesskey
+            AWS_SECRET_ACCESS_KEY:
+              secretKeyRef:
+                name: gitlab-object-storage
+                key: secretkey
+          extraEnv:
+            AWS_DEFAULT_REGION: us-east-1
+            AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
           backups:
             objectStorage:
               backend: s3
@@ -267,6 +333,7 @@
               successfulJobsHistoryLimit: 3
               failedJobsHistoryLimit: 1
               extraArgs: >-
+                --skip db
                 --s3tool awscli
                 --aws-s3-endpoint-url {{ object_storage_endpoint }}
               persistence:
@@ -311,6 +378,78 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_ce_with_helm is not failed
+- name: Add cross-component anti-affinity to GitLab Rails workloads
+  kubernetes.core.k8s:
+    state: present
+    merge_type: strategic-merge
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: '{{ item }}'
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        template:
+          spec:
+            affinity:
+              podAntiAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    podAffinityTerm:
+                      labelSelector:
+                        matchExpressions:
+                          - key: release
+                            operator: In
+                            values:
+                              - gitlab
+                          - key: app
+                            operator: In
+                            values:
+                              - webservice
+                              - sidekiq
+                      topologyKey: kubernetes.io/hostname
+  loop:
+    - gitlab-webservice-default
+    - gitlab-sidekiq-all-in-1-v2
+  register: gitlab_rails_affinity
+- name: Wait for optimized GitLab Rails workload rollouts
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - --namespace
+      - '{{ gitlab_namespace }}'
+      - 'deployment/{{ item }}'
+      - --timeout=10m
+  loop:
+    - gitlab-webservice-default
+    - gitlab-sidekiq-all-in-1-v2
+  register: _r_wait_for_gitlab_rails_rollouts
+  retries: 3
+  delay: 10
+  until: _r_wait_for_gitlab_rails_rollouts.rc == 0
+  changed_when: false
+- name: Rebalance GitLab Rails workloads when a rolling update co-locates them
+  ansible.builtin.shell: |
+    set -euo pipefail
+    web_node=$(kubectl get pod -n {{ gitlab_namespace | quote }} -l release=gitlab,app=webservice \
+      --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[-1].spec.nodeName}')
+    sidekiq_pod=$(kubectl get pod -n {{ gitlab_namespace | quote }} -l release=gitlab,app=sidekiq \
+      --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{.items[-1].metadata.name}')
+    sidekiq_node=$(kubectl get pod -n {{ gitlab_namespace | quote }} "$sidekiq_pod" \
+      -o jsonpath='{.spec.nodeName}')
+    if [[ -n "$web_node" && "$web_node" == "$sidekiq_node" ]]; then
+      kubectl delete pod -n {{ gitlab_namespace | quote }} "$sidekiq_pod" --wait=false
+      kubectl rollout status -n {{ gitlab_namespace | quote }} deployment/gitlab-sidekiq-all-in-1-v2 --timeout=10m
+      printf 'rebalanced\n'
+    fi
+  args:
+    executable: /bin/bash
+  register: gitlab_rails_rebalance
+  changed_when: "'rebalanced' in gitlab_rails_rebalance.stdout"
 - name: Wait for GitLab webservice to be ready
   kubernetes.core.k8s_info:
     kind: Deployment
@@ -502,17 +641,31 @@
   retries: 3
   delay: 10
   until: _r_create_s3_cache_secret_for_gitlab_runner is not failed
-- name: Create default-deny for GitLab namespace
+- name: Remove legacy invalid Cilium default-deny for GitLab namespace
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: default-deny
         namespace: '{{ gitlab_namespace }}'
+- name: Create default-deny NetworkPolicy for GitLab namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ gitlab_namespace }}'
       spec:
-        endpointSelector: {}
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
 - name: Allow GitLab ingress from gateway
   kubernetes.core.k8s:
     state: present
@@ -552,6 +705,26 @@
           toPorts:
           - ports:
             - port: '5000'
+              protocol: TCP
+- name: Allow GitLab KAS ingress from gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-kas-ingress
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: kas
+        ingress:
+        - fromEntities:
+          - cluster
+          toPorts:
+          - ports:
+            - port: '8150'
               protocol: TCP
 - name: Allow GitLab egress to PostgreSQL and object storage
   kubernetes.core.k8s:
@@ -597,12 +770,12 @@
               protocol: TCP
             - port: '53'
               protocol: UDP
-- name: Create GitLab ServiceMonitor
+- name: Create GitLab VMServiceScrape
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
       metadata:
         name: gitlab
         namespace: '{{ gitlab_namespace }}'
@@ -616,6 +789,7 @@
         - port: http-workhorse
           interval: 30s
           path: /-/metrics
+  when: platform_observability_enabled | default(false) | bool
 - name: Display GitLab deployment info
   debug:
     msg:

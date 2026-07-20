@@ -49,16 +49,26 @@
                 restartPolicy: OnFailure
                 securityContext:
                   fsGroup: 1000
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
                 containers:
                   - name: topology-collector
-                    image: curlimages/curl:8.12.1
+                    image: curlimages/curl:8.17.0
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      runAsNonRoot: true
+                      runAsUser: 100
+                      runAsGroup: 1000
                     command:
                       - /bin/sh
                       - -c
                       - |
                         set -euo pipefail
                         TS=$(date -u +%Y%m%dT%H%M%SZ)
-                        curl -fsS "http://seaweedfs-master.${backup_seaweedfs_namespace}.svc.cluster.local:9333/volume/topology" \
+                        curl -fsS "http://seaweedfs-master.{{ backup_seaweedfs_namespace }}.svc.cluster.local:9333/dir/status" \
                           -o "/backup/topology-${TS}.json"
                         test -s "/backup/topology-${TS}.json"
                         printf '%s' "$TS" > /backup/ready
@@ -74,6 +84,13 @@
                         memory: "{{ backup_job_memory_limit | default('512Mi') }}"
                   - name: topology-uploader
                     image: "{{ backup_s3cli_image | default('amazon/aws-cli:2.34.48') }}"
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
                     command:
                       - /bin/sh
                       - -c
@@ -97,7 +114,9 @@
                           [ -z "$D" ] && continue
                           E=$(date -d "$D" +%s 2>/dev/null || echo 0)
                           C=$(( $(date +%s) - (RETENTION * 86400) ))
-                          [ "$E" -gt 0 ] && [ "$E" -lt "$C" ] && aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 rm "s3://${BUCKET}/${BP}/${F}"
+                          if [ "$E" -gt 0 ] && [ "$E" -lt "$C" ]; then
+                            aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 rm "s3://${BUCKET}/${BP}/${F}"
+                          fi
                         done
                         echo "=== SeaweedFS topology artifact completed ==="
                     env:

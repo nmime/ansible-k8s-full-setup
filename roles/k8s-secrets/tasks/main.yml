@@ -6,7 +6,9 @@
     vault_version: "{{ vault_version | default('2.0.3') }}"
     eso_chart_ver: 2.7.0
     vault_replicas: '{{ secrets.vault.replicas | default(3 if resource_tier in [''medium'', ''production''] else 1) }}'
-    vault_ha: '{{ (secrets.vault.replicas | default(3 if resource_tier in [''medium'', ''production''] else 1) | int) > 1 }}'
+    # Integrated Raft is used even for a one-replica compact deployment so
+    # every tier supports application-consistent snapshots and safe expansion.
+    vault_ha: true
     vault_storage: '{{ vault_storage_size | default(''20Gi'') }}'
     vault_domain: vault.{{ domain }}
 - name: Create Vault namespace
@@ -28,6 +30,31 @@
 - name: Prepare Vault internal TLS certificates
   ansible.builtin.include_tasks: vault_tls.yml
   when: not (vault_tls_disabled | bool)
+- name: Detect protected Vault initialization material before a rolling reconcile
+  ansible.builtin.stat:
+    path: '{{ vault_init_output_file }}'
+  register: _vault_pre_reconcile_init_stat
+  delegate_to: localhost
+  become: false
+- name: Load protected Vault initialization material before a rolling reconcile
+  ansible.builtin.command:
+    argv:
+    - ansible-vault
+    - view
+    - --vault-password-file
+    - '{{ resolved_vault_password_file | default(vault_password_file | expanduser) }}'
+    - '{{ vault_init_output_file }}'
+  register: _vault_pre_reconcile_init_view
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  no_log: true
+  when: _vault_pre_reconcile_init_stat.stat.exists
+- name: Prepare protected unseal keys for one-member-at-a-time reconciliation
+  ansible.builtin.set_fact:
+    vault_init_data: '{{ _vault_pre_reconcile_init_view.stdout | from_json }}'
+  no_log: true
+  when: _vault_pre_reconcile_init_stat.stat.exists
 - name: Add HashiCorp Helm repository
   kubernetes.core.helm_repository:
     name: hashicorp
@@ -36,6 +63,55 @@
   retries: 3
   delay: 15
   until: _r_add_hashicorp_helm_repository is not failed
+- name: Detect local Helm major version for post-renderer compatibility
+  ansible.builtin.command: helm version --short
+  register: vault_helm_version
+  changed_when: false
+- name: Resolve local Helm major version
+  ansible.builtin.set_fact:
+    vault_helm_major: >-
+      {{ vault_helm_version.stdout | regex_replace('^v?([0-9]+).*', '\1') | int }}
+- name: Install the Vault Helm 3 DNS post-renderer executable
+  ansible.builtin.copy:
+    src: vault-post-renderer.sh
+    dest: /tmp/vault-post-renderer.sh
+    mode: '0700'
+  when: vault_helm_major | int < 4
+- name: Discover Helm 4 plugin directory
+  ansible.builtin.command: helm env HELM_PLUGINS
+  register: vault_helm_plugins
+  changed_when: false
+  when: vault_helm_major | int >= 4
+- name: Create the Helm 4 Vault DNS post-renderer plugin directory
+  ansible.builtin.file:
+    path: '{{ vault_helm_plugins.stdout }}/vault-dns'
+    state: directory
+    mode: '0700'
+  when: vault_helm_major | int >= 4
+- name: Install the Helm 4 Vault DNS post-renderer executable
+  ansible.builtin.copy:
+    src: vault-post-renderer.sh
+    dest: '{{ vault_helm_plugins.stdout }}/vault-dns/vault-post-renderer.sh'
+    mode: '0700'
+  when: vault_helm_major | int >= 4
+- name: Install the Helm 4 Vault DNS post-renderer plugin manifest
+  ansible.builtin.copy:
+    dest: '{{ vault_helm_plugins.stdout }}/vault-dns/plugin.yaml'
+    mode: '0600'
+    content: |
+      apiVersion: v1
+      type: postrenderer/v1
+      name: vault-dns
+      version: 1.0.0
+      runtime: subprocess
+      runtimeConfig:
+        platformCommand:
+          - command: ${HELM_PLUGIN_DIR}/vault-post-renderer.sh
+  when: vault_helm_major | int >= 4
+- name: Resolve the version-compatible Vault DNS post-renderer
+  ansible.builtin.set_fact:
+    vault_helm_post_renderer: >-
+      {{ 'vault-dns' if vault_helm_major | int >= 4 else '/tmp/vault-post-renderer.sh' }}
 - name: Install Vault via Helm
   kubernetes.core.helm:
     name: vault
@@ -44,8 +120,13 @@
     release_namespace: vault
     create_namespace: true
     release_state: present
+    # Removed values must not linger in Helm's stored release state. This is
+    # particularly important for chart-owned environment variables such as
+    # VAULT_API_ADDR and VAULT_CLUSTER_ADDR, which setNodeId renders itself.
+    reset_values: true
     wait: true
     timeout: 10m0s
+    post_renderer: '{{ vault_helm_post_renderer }}'
     set_values:
     - value: server.ha.replicas={{ vault_replicas }}
     - value: server.ha.enabled={{ (vault_ha | bool) | lower }}
@@ -57,30 +138,69 @@
       injector:
         enabled: false
       server:
+        # Hash the rendered HCL into the OnDelete pod template so the revision
+        # reconciler below can detect and roll configuration-only changes.
+        includeConfigAnnotation: true
+        # Keep a single chart-created PDB across every tier. A value of one
+        # permits one-node-at-a-time maintenance and preserves quorum for the
+        # three-replica tiers. Chart 0.34.0 hard-codes zero for one replica, so
+        # the role reconciles that special case immediately after Helm below.
         image:
           repository: hashicorp/vault
           tag: '{{ vault_version }}'
           pullPolicy: IfNotPresent
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 100
-          runAsGroup: 1000
-          fsGroup: 1000
-        containerSecurityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-            - ALL
-        affinity:
+        # Empty PVCs created while expanding from one to three Raft members do
+        # not contain Vault's storage subdirectory. Create it as the hardened
+        # Vault UID/GID before the server starts; the volume's fsGroup grants
+        # the required write access without a privileged or root init process.
+        extraInitContainers:
+        - name: prepare-raft-data
+          image: 'hashicorp/vault:{{ vault_version }}'
+          imagePullPolicy: IfNotPresent
+          command:
+          - sh
+          - -ec
+          - mkdir -p /vault/data/raft; find /vault/data/raft -type f -exec chmod 0600 {} +
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+              - ALL
+          volumeMounts:
+          - name: data
+            mountPath: /vault/data
+        statefulSet:
+          securityContext:
+            pod:
+              runAsNonRoot: true
+              runAsUser: 100
+              runAsGroup: 1000
+              fsGroup: 1000
+              fsGroupChangePolicy: OnRootMismatch
+              seccompProfile:
+                type: RuntimeDefault
+            container:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+        # The Vault chart consumes affinity as a templated YAML string. Keeping
+        # this value a string avoids Helm coalescing type warnings while still
+        # rendering the same preferred anti-affinity PodSpec.
+        affinity: |
           podAntiAffinity:
             preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app.kubernetes.io/name: vault
-                    component: server
-                topologyKey: kubernetes.io/hostname
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: vault
+                      component: server
+                  topologyKey: kubernetes.io/hostname
         tolerations:
         - key: node-role.kubernetes.io/control-plane
           operator: Exists
@@ -94,8 +214,6 @@
           size: 20Gi
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
         extraEnvironmentVars:
-          VAULT_API_ADDR: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://$(HOSTNAME).vault-internal:8200"
-          VAULT_CLUSTER_ADDR: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://$(HOSTNAME).vault-internal:8201"
           VAULT_CACERT: "{{ '' if vault_tls_disabled | bool else '/vault/tls/ca.crt' }}"
         volumes: >-
           {{ [] if vault_tls_disabled | bool else
@@ -104,6 +222,9 @@
           {{ [] if vault_tls_disabled | bool else
              [{'name': 'vault-tls', 'mountPath': '/vault/tls', 'readOnly': true}] }}
         ha:
+          disruptionBudget:
+            enabled: true
+            maxUnavailable: 1
           raft:
             setNodeId: true
             config: |
@@ -112,6 +233,9 @@
                 tls_disable = {{ 1 if vault_tls_disabled | bool else 0 }}
                 address = "[::]:8200"
                 cluster_address = "[::]:8201"
+                telemetry {
+                  unauthenticated_metrics_access = true
+                }
               {% if not (vault_tls_disabled | bool) %}
                 tls_cert_file = "/vault/tls/tls.crt"
                 tls_key_file = "/vault/tls/tls.key"
@@ -120,19 +244,22 @@
               telemetry {
                 prometheus_retention_time = "30s"
                 disable_hostname = true
-                unauthenticated_metrics_access = true
               }
               storage "raft" {
-                path = "/vault/data"
+                path = "/vault/data/raft"
               {% for peer in range(0, vault_replicas | int) %}
                 retry_join {
-                  leader_api_addr = "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault-{{ peer }}.vault-internal:8200"
+                  leader_api_addr = "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault-{{ peer }}.vault-internal.{{ vault_ns }}.svc.cluster.local:8200"
               {% if not (vault_tls_disabled | bool) %}
                   leader_ca_cert_file = "/vault/tls/ca.crt"
               {% endif %}
                 }
               {% endfor %}
               }
+              # Maintain the vault-active/vault-standby service selectors. The
+              # backup path intentionally targets vault-active because the
+              # snapshot API cannot safely follow a standby redirect.
+              service_registration "kubernetes" {}
         standalone:
           config: |
             ui = true
@@ -140,6 +267,9 @@
               tls_disable = {{ 1 if vault_tls_disabled | bool else 0 }}
               address = "[::]:8200"
               cluster_address = "[::]:8201"
+              telemetry {
+                unauthenticated_metrics_access = true
+              }
             {% if not (vault_tls_disabled | bool) %}
               tls_cert_file = "/vault/tls/tls.crt"
               tls_key_file = "/vault/tls/tls.key"
@@ -148,7 +278,6 @@
             telemetry {
               prometheus_retention_time = "30s"
               disable_hostname = true
-              unauthenticated_metrics_access = true
             }
             storage "file" {
               path = "/vault/data"
@@ -163,6 +292,45 @@
   retries: 3
   delay: 15
   until: _r_install_vault_via_helm is not failed
+
+- name: Roll Vault safely when its mounted TLS certificate changes
+  kubernetes.core.k8s:
+    state: patched
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ vault_ns }}'
+    name: vault
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              platform.example.com/vault-tls-resource-version: >-
+                {{ vault_tls_secret.resources[0].metadata.resourceVersion }}
+  when: not (vault_tls_disabled | bool)
+
+- name: Read the desired Vault StatefulSet revision
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ vault_ns }}'
+    name: vault
+  register: _vault_statefulset
+  until:
+  - _vault_statefulset.resources | length == 1
+  - _vault_statefulset.resources[0].status.updateRevision | default('') | length > 0
+  retries: 30
+  delay: 5
+
+# The upstream chart deliberately uses OnDelete so an operator controls sealed
+# server restarts. Reconcile peers first and the primary last, one pod at a time,
+# before applying the protected unseal keys below.
+- name: Reconcile Vault pods to the desired OnDelete revision
+  ansible.builtin.include_tasks: reconcile_vault_pod.yml
+  loop: '{{ (range(1, vault_replicas | int) | list) + [0] }}'
+  loop_control:
+    loop_var: vault_pod_index
+
 - name: Wait for Vault pods to be running
   kubernetes.core.k8s_info:
     kind: Pod
@@ -171,69 +339,39 @@
     - app.kubernetes.io/name=vault
     - component=server
   register: vault_pods
-  until: 'vault_pods.resources | length >= (vault_replicas | int) and vault_pods.resources | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas | int)
+  until: '(vault_pods.resources | default([])) | length >= (vault_replicas | int) and (vault_pods.resources | default([])) | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas | int)
 
     '
   retries: 120
   delay: 15
   failed_when: false
   when: not (vault_initialized | default(false) | bool) and vault_ha | bool
-- name: Patch Vault StatefulSet DNS to bypass nodelocaldns
-  kubernetes.core.k8s:
-    state: patched
-    kind: StatefulSet
-    name: vault
-    namespace: '{{ vault_ns }}'
-    definition:
-      spec:
-        template:
-          spec:
-            dnsPolicy: None
-            dnsConfig:
-              nameservers:
-              - 10.233.0.3
-              searches:
-              - '{{ vault_ns }}.svc.cluster.local'
-              - svc.cluster.local
-              - cluster.local
-              options:
-              - name: ndots
-                value: '5'
-  when: vault_ha | bool
-- name: Delete Vault pods to apply DNS patch
-  kubernetes.core.k8s:
-    state: absent
-    kind: Pod
-    namespace: '{{ vault_ns }}'
-    label_selectors:
-    - app.kubernetes.io/name=vault
-    - component=server
-  when: vault_ha | bool
-- name: Wait for Vault pods to be running after DNS patch
+- name: Wait for the Vault server container before checking initialization
   kubernetes.core.k8s_info:
     kind: Pod
     namespace: '{{ vault_ns }}'
-    label_selectors:
-    - app.kubernetes.io/name=vault
-    - component=server
-  register: vault_pods_dns
-  until: 'vault_pods_dns.resources | length >= (vault_replicas | int) and vault_pods_dns.resources | map(attribute=''status.phase'') | select(''equalto'', ''Running'') | list | length >= (vault_replicas
-    | int)
-
-    '
+    name: vault-0
+  register: vault_server_pod
+  until:
+    - vault_server_pod.resources | length == 1
+    - vault_server_pod.resources[0].status.phase | default('') == 'Running'
+    - vault_server_pod.resources[0].status.containerStatuses | default([]) | length > 0
+    - vault_server_pod.resources[0].status.containerStatuses[0].state.running is defined
   retries: 120
-  delay: 15
-  failed_when: false
-  when: vault_ha | bool
+  delay: 5
+
 - name: Check Vault init status
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-0
     command: vault status -format=json
   register: vault_status_raw
-  retries: 3
-  delay: 15
-  until: vault_status_raw is not failed
+  retries: 60
+  delay: 5
+  until:
+    - vault_status_raw.rc is defined
+    - vault_status_raw.rc in [0, 2]
+    - vault_status_raw.stdout | default('') | length > 0
   failed_when: false
   changed_when: false
 - name: Refuse to continue when Vault initialization state is unknown
@@ -250,6 +388,23 @@
     vault_initialized: '{{ (vault_status_raw.stdout | from_json).initialized | default(false) }}'
   when: vault_status_raw.rc is defined and (vault_status_raw.rc == 0 or vault_status_raw.rc == 2)
   failed_when: false
+- name: Prove Vault initialization material can be encrypted before initialization
+  ansible.builtin.command:
+    argv:
+    - ansible-vault
+    - encrypt_string
+    - --vault-password-file
+    - '{{ resolved_vault_password_file | default(vault_password_file | expanduser) }}'
+    - --encrypt-vault-id
+    - default
+    - --name
+    - probe
+    - probe
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  no_log: true
+  when: not (vault_initialized | default(false) | bool)
 - name: Initialize Vault (if not initialized)
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
@@ -285,6 +440,8 @@
       - encrypt
       - --vault-password-file
       - '{{ resolved_vault_password_file | default(vault_password_file | expanduser) }}'
+      - --encrypt-vault-id
+      - default
       - --output
       - '{{ vault_init_output_file }}'
       - '{{ vault_init_output_file }}.tmp'
@@ -292,6 +449,15 @@
     become: false
     changed_when: true
     no_log: true
+    register: vault_init_encrypt
+  rescue:
+  - name: Refuse to discard unencrypted Vault recovery material
+    ansible.builtin.fail:
+      msg: >-
+        Vault initialization material encryption failed. The mode-0600
+        recovery file was retained at {{ vault_init_output_file }}.tmp.
+        Protect and encrypt it before retrying; it is the only copy of the
+        current unseal keys and root token.
   always:
   - name: Remove temporary Vault initialization material
     ansible.builtin.file:
@@ -300,6 +466,7 @@
     delegate_to: localhost
     become: false
     no_log: true
+    when: vault_init_encrypt is defined and vault_init_encrypt is succeeded
   when: vault_init is changed
 - name: Check encrypted Vault initialization material for an existing cluster
   ansible.builtin.stat:
@@ -341,33 +508,44 @@
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-0
-    command: vault operator unseal {{ vault_init_data.unseal_keys_b64[item] }}
-  loop:
-  - 0
-  - 1
-  - 2
-  when: vault_init is changed
+    command: >-
+      sh -c 'for key do
+      vault operator unseal "$key" >/dev/null 2>&1 || true;
+      sleep 1;
+      vault status >/dev/null 2>&1; rc=$?;
+      [ "$rc" -eq 0 ] && exit 0;
+      done;
+      exit 1' --
+      {{ vault_init_data.unseal_keys_b64 | join(' ') }}
+  when: vault_init_data is defined
   no_log: true
   register: _r_unseal_vault__primary_
   retries: 3
-  delay: 15
+  delay: 5
   until: _r_unseal_vault__primary_ is not failed
 - name: Wait for Vault leader to be ready for raft
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-0
-    command: vault status -format=json
-  when: vault_ha | bool and vault_init is changed
+    command: vault status
+  when: vault_ha | bool and vault_init_data is defined
   register: _r_vault_leader_status
   retries: 12
   delay: 5
-  until: _r_vault_leader_status.stdout is defined and (_r_vault_leader_status.stdout | from_json).sealed == false
+  until: _r_vault_leader_status.rc is defined and _r_vault_leader_status.rc == 0
   failed_when: false
+- name: Require the primary Vault server to be unsealed
+  ansible.builtin.assert:
+    that:
+    - _r_vault_leader_status.rc is defined
+    - _r_vault_leader_status.rc == 0
+    fail_msg: Vault remained sealed after applying the protected operator unseal keys.
+  when: vault_ha | bool and vault_init_data is defined
 - name: Join raft peers (HA mode)
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-{{ item }}
-    command: vault operator raft join http://vault-0.vault-internal:8200
+    command: vault operator raft join https://vault-0.vault-internal.{{ vault_ns }}.svc.cluster.local:8200
   loop: '{{ range(1, vault_replicas | int) | list }}'
   when: vault_ha | bool and vault_init is changed
   register: _r_join_raft_peers__ha_mode_
@@ -380,7 +558,7 @@
     pod: vault-{{ item }}
     command: vault status -format=json
   loop: '{{ range(1, vault_replicas | int) | list }}'
-  when: vault_ha | bool and vault_init is changed
+  when: vault_ha | bool and vault_init_data is defined
   register: _r_wait_raft_init
   retries: 120
   delay: 5
@@ -389,14 +567,22 @@
 - name: Unseal raft peers (HA mode)
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
-    pod: vault-{{ item.0 }}
-    command: vault operator unseal {{ vault_init_data.unseal_keys_b64[item.1] }}
-  loop: '{{ range(1, vault_replicas | int) | list | product([0, 1, 2]) | list }}'
-  when: vault_ha | bool and vault_init is changed
+    pod: vault-{{ item }}
+    command: >-
+      sh -c 'for key do
+      vault operator unseal "$key" >/dev/null 2>&1 || true;
+      sleep 1;
+      vault status >/dev/null 2>&1; rc=$?;
+      [ "$rc" -eq 0 ] && exit 0;
+      done;
+      exit 1' --
+      {{ vault_init_data.unseal_keys_b64 | join(' ') }}
+  loop: '{{ range(1, vault_replicas | int) | list }}'
+  when: vault_ha | bool and vault_init_data is defined
   no_log: true
   register: _r_unseal_raft_peers__ha_mode_
-  retries: 5
-  delay: 15
+  retries: 3
+  delay: 5
   until: _r_unseal_raft_peers__ha_mode_ is not failed
 - name: Remove legacy in-cluster Vault auto-unseal job
   kubernetes.core.k8s:
@@ -532,7 +718,7 @@
               type: PathPrefix
               value: /
           backendRefs:
-          - name: vault-ui
+          - name: vault
             port: 8200
   register: _r_create_vault_httproute_vpn_only_via_admi
   retries: 3
@@ -589,7 +775,7 @@
     namespace: '{{ eso_ns }}'
     name: external-secrets
   register: eso_deploy
-  until: 'eso_deploy.resources | length > 0 and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  until: '(eso_deploy.resources | default([])) | length > 0 and (eso_deploy.resources[0].status.readyReplicas | default(0)) >= 1
 
     '
   retries: 120
@@ -695,26 +881,37 @@
   delay: 15
   until: _r_create_example_externalsecret is not failed
   when: eso_enabled | bool
-- name: Create PodDisruptionBudget for Vault (HA mode)
+- name: Remove legacy duplicate Vault PodDisruptionBudget
+  kubernetes.core.k8s:
+    state: absent
+    api_version: policy/v1
+    kind: PodDisruptionBudget
+    name: vault-pdb
+    namespace: '{{ vault_ns }}'
+  register: _r_remove_legacy_vault_pdb
+  retries: 3
+  delay: 10
+  until: _r_remove_legacy_vault_pdb is not failed
+- name: Reconcile the chart-created Vault PodDisruptionBudget for maintenance
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: policy/v1
       kind: PodDisruptionBudget
       metadata:
-        name: vault-pdb
+        name: vault
         namespace: '{{ vault_ns }}'
       spec:
         maxUnavailable: 1
         selector:
           matchLabels:
             app.kubernetes.io/name: vault
+            app.kubernetes.io/instance: vault
             component: server
-  when: vault_ha | bool
-  register: _r_create_vault_pdb
+  register: _r_reconcile_vault_pdb
   retries: 3
   delay: 10
-  until: _r_create_vault_pdb is not failed
+  until: _r_reconcile_vault_pdb is not failed
 - name: Create PodDisruptionBudget for ESO
   kubernetes.core.k8s:
     state: present
@@ -749,17 +946,31 @@
     - '  UI: {{ vault_domain }}'
     - "  ClusterSecretStore: {{ 'vault-backend' if eso_enabled | bool else 'disabled' }}"
     - ==========================================
-- name: Create default-deny for Vault namespace
+- name: Remove legacy invalid Cilium default-deny for Vault namespace
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: default-deny
         namespace: '{{ vault_ns | default(''vault'') }}'
+- name: Create default-deny NetworkPolicy for Vault namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ vault_ns | default(''vault'') }}'
       spec:
-        endpointSelector: {}
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
 - name: Allow Vault ingress from cluster (ExternalSecrets + gateway)
   kubernetes.core.k8s:
     state: present
@@ -804,24 +1015,3 @@
               protocol: TCP
         - toEntities:
           - kube-apiserver
-- name: Create Vault ServiceMonitor
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
-        name: vault
-        namespace: '{{ vault_ns | default("vault") }}'
-        labels:
-          release: prometheus
-      spec:
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: vault
-        endpoints:
-        - port: https
-          scheme: https
-          interval: 30s
-          tlsConfig:
-            insecureSkipVerify: true

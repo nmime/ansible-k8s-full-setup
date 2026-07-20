@@ -14,32 +14,33 @@
   until:
     - _r_check_vm_operator.resources | length > 0
     - _r_check_vm_operator.resources[0].status.phase | default('') == 'Running'
-  ignore_errors: true
 
 - name: Check VMSingle health (minimal/small)
   kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Pod
+    api_version: operator.victoriametrics.com/v1beta1
+    kind: VMSingle
     namespace: '{{ monitoring_namespace | default("monitoring") }}'
-    label_selectors:
-      - app: vmsingle
+    name: vmsingle
   register: _r_check_vmsingle
   retries: 10
   delay: 10
-  until: [_r_check_vmsingle.resources | length > 0]
-  ignore_errors: true
+  until:
+    - _r_check_vmsingle.resources | length > 0
+    - _r_check_vmsingle.resources[0].status.updateStatus | default('') == 'operational'
   when: tier in ['minimal', 'small']
 
 - name: Check VMCluster health (medium/production)
   kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: StatefulSet
+    api_version: operator.victoriametrics.com/v1beta1
+    kind: VMCluster
     namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    name: vmcluster
   register: _r_check_vmcluster
   retries: 10
   delay: 10
-  until: [_r_check_vmcluster.resources | length > 0]
-  ignore_errors: true
+  until:
+    - _r_check_vmcluster.resources | length > 0
+    - _r_check_vmcluster.resources[0].status.updateStatus | default('') == 'operational'
   when: tier in ['medium', 'production']
 
 - name: Check Loki health
@@ -55,8 +56,22 @@
   until:
     - _r_check_loki.resources | length > 0
     - _r_check_loki.resources[0].status.phase | default('') == 'Running'
-  ignore_errors: true
   when: log_stack == 'loki'
+
+- name: Check Filebeat node coverage
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: '{{ logging_agent_namespace | default("logging-agents") }}'
+    name: filebeat-filebeat
+  register: _r_check_filebeat
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_filebeat.resources | length > 0
+    - _r_check_filebeat.resources[0].status.desiredNumberScheduled | default(0) | int > 0
+    - _r_check_filebeat.resources[0].status.numberReady | default(0) | int == _r_check_filebeat.resources[0].status.desiredNumberScheduled | int
+  when: log_stack == 'elk'
 
 - name: Check Grafana health
   kubernetes.core.k8s_info:
@@ -71,7 +86,62 @@
   until:
     - _r_check_grafana.resources | length > 0
     - _r_check_grafana.resources[0].status.phase | default('') == 'Running'
-  ignore_errors: true
+
+- name: Check VMAgent health
+  kubernetes.core.k8s_info:
+    api_version: operator.victoriametrics.com/v1beta1
+    kind: VMAgent
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    name: vmagent
+  register: _r_check_vmagent
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_vmagent.resources | length > 0
+    - _r_check_vmagent.resources[0].status.updateStatus | default('') == 'operational'
+
+- name: Check Promtail node coverage
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: '{{ logging_agent_namespace | default("logging-agents") }}'
+    name: promtail
+  register: _r_check_promtail
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_promtail.resources | length > 0
+    - _r_check_promtail.resources[0].status.desiredNumberScheduled | default(0) | int > 0
+    - _r_check_promtail.resources[0].status.numberReady | default(0) | int == _r_check_promtail.resources[0].status.desiredNumberScheduled | int
+  when: log_stack == 'loki'
+
+- name: Check PMM Server health
+  when: pmm_enabled | bool
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    name: pmm-server
+  register: _r_check_pmm
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_pmm.resources | length > 0
+    - _r_check_pmm.resources[0].status.readyReplicas | default(0) | int == _r_check_pmm.resources[0].spec.replicas | int
+
+- name: Check Hetzner Cloud Exporter health
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    name: hetzner-cloud-exporter
+  register: _r_check_hcloud_exporter
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_hcloud_exporter.resources | length > 0
+    - _r_check_hcloud_exporter.resources[0].status.readyReplicas | default(0) | int == _r_check_hcloud_exporter.resources[0].spec.replicas | int
+  when: hetzner_metrics_enabled | default(true) | bool
 
 - name: Check Tempo health
   kubernetes.core.k8s_info:
@@ -86,7 +156,6 @@
   until:
     - _r_check_tempo.resources | length > 0
     - _r_check_tempo.resources[0].status.phase | default('') == 'Running'
-  ignore_errors: true
   when: tracing_enabled | bool
 
 - name: Check OTel Collector health
@@ -95,14 +164,13 @@
     kind: Pod
     namespace: '{{ monitoring_namespace | default("monitoring") }}'
     label_selectors:
-      - app.kubernetes.io/name=otel-collector
+      - app.kubernetes.io/name=opentelemetry-collector
   register: _r_check_otel
   retries: 10
   delay: 10
   until:
     - _r_check_otel.resources | length > 0
     - _r_check_otel.resources[0].status.phase | default('') == 'Running'
-  ignore_errors: true
   when: tracing_enabled | bool
 
 - name: Display observability health summary

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -17,10 +18,11 @@ SCRIPTS = ROOT / "scripts"
 BACKUP = SCRIPTS / "cluster-backup.sh"
 RESTORE = SCRIPTS / "cluster-restore.sh"
 MIGRATE = SCRIPTS / "migrate-profile.sh"
+VAULT_MIGRATE = SCRIPTS / "vault-storage-migrate.sh"
 VELERO = ROOT / "roles" / "backup-restore" / "tasks" / "velero.yml"
 
 
-@pytest.mark.parametrize("script", (BACKUP, RESTORE, MIGRATE))
+@pytest.mark.parametrize("script", (BACKUP, RESTORE, MIGRATE, VAULT_MIGRATE))
 def test_scripts_are_executable_and_parse(script):
     assert script.is_file()
     assert os.access(script, os.X_OK)
@@ -28,7 +30,23 @@ def test_scripts_are_executable_and_parse(script):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("script", (BACKUP, RESTORE, MIGRATE))
+def test_operational_shell_scripts_do_not_require_bash_4_case_conversion():
+    incompatible = re.compile(r"\$\{[^}]+(?:,,|\^\^)")
+    for script in SCRIPTS.glob("*.sh"):
+        assert incompatible.search(script.read_text(encoding="utf-8")) is None, script
+
+
+def test_vault_offline_migration_supports_ondelete_statefulset():
+    content = VAULT_MIGRATE.read_text(encoding="utf-8")
+    assert "uses an OnDelete StatefulSet" in content
+    assert "kubectl wait --for=delete pod/vault-0" in content
+    assert "kubectl rollout status statefulset/vault" not in content
+    assert "resuming from an already stopped Vault StatefulSet" in content
+    assert "backup.platform.io/pvc" in content
+    assert "backup.platform.io/image" in content
+
+
+@pytest.mark.parametrize("script", (BACKUP, RESTORE, MIGRATE, VAULT_MIGRATE))
 def test_scripts_have_help(script):
     result = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True)
     assert result.returncode == 0
@@ -74,10 +92,138 @@ def test_backup_skips_are_fail_closed_without_explicit_incomplete_mode():
 
 def test_backup_requires_filesystem_copy_for_every_mounted_pvc_volume():
     content = BACKUP.read_text(encoding="utf-8")
+    assert "BACKUP_ALLOW_VELERO_VAULT_FALLBACK=true" in content
+    assert 'backup.velero.io/backup-volumes=${volumes}' in content
+    assert "restore_backup_annotations" in content
+    assert "defaultVolumesToFsBackup: false" in content
     assert "mounted-pod-volumes.expected.tsv" in content
     assert "mounted-pod-volumes.completed.tsv" in content
     assert "pod-volume-backups.json" in content
     assert "comm -23" in content
+    assert content.count('select($pod.status.phase == "Running")') >= 2
+    assert 'failed_volume_backups=$(kubectl get podvolumebackups' in content
+    assert 'Velero filesystem backup(s) failed before the backup completed' in content
+    assert '[[ -f "$POD_ANNOTATIONS_FILE" && -s "$POD_ANNOTATIONS_FILE" ]]' in content
+
+
+def test_compact_velero_has_low_requests_but_working_memory_burst_limit():
+    content = VELERO.read_text(encoding="utf-8")
+    assert "'64Mi' if resource_tier in ['minimal', 'small']" in content
+    assert "'512Mi' if resource_tier in ['minimal', 'small']" in content
+    assert "Full API exports can exceed 256Mi" in content
+
+
+def test_backup_uses_an_explicit_noninteractive_ssh_identity():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert "--ssh-identity" in content
+    assert "CLUSTER_BACKUP_SSH_IDENTITY" in content
+    assert "-o IdentitiesOnly=yes" in content
+    assert 'ProxyCommand=${proxy_command}' in content
+    assert "-W %h:%p" in content
+    assert 'fail "SSH identity is missing:' in content
+
+
+def test_migration_prepares_private_network_before_kubespray_expansion():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "--tags infrastructure,network,security,cluster" in content
+    assert "Newly created private-only nodes require the bastion NAT" in content
+
+
+def test_migration_recovers_from_an_accepted_hcloud_action_after_client_failure():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "PROFILE_MIGRATION_HCLOUD_CLIENT_TIMEOUT_SECONDS" in content
+    assert "PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS" in content
+    assert "run_with_timeout" in content
+    assert "wait_for_server_settled" in content
+    assert "Hetzner accepted the type change" in content
+
+
+def test_migration_waits_for_etcd_after_a_control_plane_restart():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS" in content
+    assert "etcd quorum is not fully ready yet" in content
+    assert "etcd cluster did not become healthy within" in content
+
+
+def test_migration_enforces_control_plane_schedulability_in_both_directions():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert 'reconcile_control_plane_schedulability "$TARGET_CONFIG"' in content
+    assert 'reconcile_control_plane_schedulability "$ROLLBACK_CONFIG"' in content
+    assert 'check_control_plane_schedulability_contract "$STEADY_CONFIG"' in content
+    assert 'check_control_plane_schedulability_contract "$TARGET_CONFIG"' in content
+    assert "node-role.kubernetes.io/control-plane=:NoSchedule --overwrite" in content
+    assert "node-role.kubernetes.io/control-plane:NoSchedule-" in content
+    assert "node-role.kubernetes.io/master:NoSchedule-" in content
+    assert 'schedulability-${node}.done' in content
+    assert "Taint the complete control plane before the first eviction" in content
+    assert "Apply the target's resource envelope before evacuating" in content
+    assert content.index('run_playbook "$CONFIG_FILE" --skip-tags') < content.index(
+        'reconcile_control_plane_schedulability "$TARGET_CONFIG"'
+    )
+    assert 'kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data' in content
+    assert 'failed to evacuate ordinary workloads from dedicated control-plane node $node' in content
+    assert "PROFILE_MIGRATION_VAULT_MEMBER_TIMEOUT_SECONDS" in content
+    assert "while (( SECONDS < deadline ))" in content
+    assert "Vault member $pod did not report initialized within" in content
+    assert "etcdctl endpoint health --cluster' </dev/null" in content
+    assert 'apply-target-platform.done' in content
+    drain_reconcile = content.split("reconcile_control_plane_schedulability()", 1)[1].split(
+        "stage_migrate_vault_storage()", 1
+    )[0]
+    assert drain_reconcile.index("unseal_vault_members") < drain_reconcile.index("check_etcd_health")
+
+
+def test_cluster_management_checks_control_plane_taints_structurally():
+    content = (
+        ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    task = content.split("- name: Enforce dedicated control-plane scheduling contract", 1)[1]
+    task = task.split("- name: Enforce schedulable control-plane contract", 1)[0]
+    assert "kubectl get node \"$node\" -o json | jq -e" in task
+    assert 'any(.spec.taints[]?;' in task
+    assert '.key == "node-role.kubernetes.io/control-plane"' in task
+    assert '.key == "node-role.kubernetes.io/master"' in task
+    assert '.effect == "NoSchedule"' in task
+    assert "jsonpath='{.spec.taints}'" not in task
+
+
+def test_resume_and_finalize_accept_the_generated_target_as_active_config():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert 'persist_active_config "$TARGET_CONFIG"' in content
+    assert 'persist_active_config "$ROLLBACK_CONFIG"' in content
+    assert "finalize-reconcile-kubespray.done" in content
+    assert "expand-kubespray.done" in content
+    assert "-e skip_kubespray=true" in content
+    assert '--start-at-task "' not in content
+    cluster = (ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml").read_text()
+    assert "Record the completed Kubespray reconciliation checkpoint" in cluster
+
+
+def test_backup_retries_api_exports_and_never_keeps_partial_yaml():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert "capture_with_retry()" in content
+    assert "Helm release inventory failed after retries" in content
+    assert "Helm manifest capture failed after retries" in content
+    assert "kubectl_export()" in content
+    assert "--request-timeout=90s" in content
+    assert "for attempt in 1 2 3" in content
+    assert 'temporary="${destination}.tmp"' in content
+
+
+def test_cloud_capture_is_portable_to_bash_32_with_nounset():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert 'if [[ "$kind" == load-balancer ]]' in content
+    assert "describe_args" not in content
+    assert "describe_rc" in content
+
+
+def test_migration_never_advances_after_a_failed_cluster_bundle():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "encrypted cluster backup gate failed" in content
+    backup_call = '"$SCRIPT_DIR/cluster-backup.sh" "${args[@]}"'
+    failure_gate = '|| fail "encrypted cluster backup gate failed'
+    assert backup_call in content
+    assert content.index(backup_call) < content.index(failure_gate)
 
 
 def _make_encrypted_fixture(tmp_path: Path, passphrase: str) -> Path:
@@ -314,15 +460,16 @@ def test_downgrade_plan_retains_only_non_shrinkable_pvc_requests(tmp_path):
     target = yaml.safe_load((state / "target-platform.yaml").read_text())
     retention = (state / "storage-retention.tsv").read_text()
     stateful_retention = (state / "stateful-retention.tsv").read_text()
-    assert target["storage"]["size_per_replica"] == "150Gi"
-    assert target["databases"]["postgresql"]["storage_size"] == "100Gi"
-    assert target["observability"]["metrics"]["storage_size"] == "150Gi"
-    assert "seaweedfs-volume\t150Gi\t40Gi" in retention
-    assert "postgresql\t100Gi\t30Gi" in retention
-    assert target["storage"]["master_replicas"] == 4
-    assert target["storage"]["volume_replicas"] == 4
+    assert target["storage"]["size_per_replica"] == "100Gi"
+    assert target["databases"]["postgresql"]["storage_size"] == "50Gi"
+    assert target["observability"]["metrics"]["storage_size"] == "100Gi"
+    assert "seaweedfs-volume\t100Gi\t40Gi" in retention
+    assert "seaweedfs-index\t4Gi\t2Gi" in retention
+    assert "postgresql\t50Gi\t30Gi" in retention
+    assert target["storage"]["master_replicas"] == 3
+    assert target["storage"]["volume_replicas"] == 3
     assert target["observability"]["metrics"]["replicas"] == 2
-    assert "seaweedfs-master\t4\t3" in stateful_retention
+    assert "seaweedfs-master" not in stateful_retention
     assert "victoriametrics-cluster\t2\t1" in stateful_retention
 
 
@@ -373,6 +520,7 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
         "backup",
         "expand",
         "resize",
+        "migrate-vault-storage",
         "apply-target",
         "migrate-data",
         "validate",
@@ -381,28 +529,118 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
         assert stage in content
     assert "cluster-backup.sh" in content
     assert "kubectl drain" in content
+    assert "wait_for_node_runtime" in content
+    assert "maintain_node_root_disk" in content
+    assert "expand_node_root_disk" in content
+    assert "primary_disk_size" in content
+    assert "preserve_non_shrinking_node_types" in content
+    assert "node-type-retention.tsv" in content
+    assert "cannot shrink" in content
+    assert 'for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$ROLLBACK_CONFIG"' in content
+    assert 'current_cores" != "$target_cores' in content
+    assert 'hcloud server change-type "$node" "$target_type"' in content
+    assert 'change-type --keep-disk "$node"' not in content
+    assert 'growpart "/dev/$parent" "$partnum"' in content
+    assert 'resize2fs "$root_source"' in content
+    assert "SSH did not recover" in content
+    resize_node = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+    assert 'check_platform_health "$TARGET_CONFIG"' in resize_node
+    assert "condition=DiskPressure=False" in content
+    assert "crictl rmi --prune" in content
+    assert "wait_for_api_ready" in content
+    assert "unseal_vault_members" in content
+    assert "ANSIBLE_VAULT_PASSWORD_FILE" in content
+    assert "vault operator unseal" in content
+    assert 'spec.nodeName=${node}' in content
+    assert 'csi.hetzner.cloud' in content
     assert "etcdctl endpoint health --cluster" in content
+    cluster_management = (ROOT / "roles/k8s-cluster-management/tasks/main.yml").read_text()
+    assert "Bound Kubespray SSH multiplex lifetime and detect dead bastion paths" in cluster_management
+    assert "ServerAliveInterval=15" in cluster_management
+    assert "ServerAliveCountMax=3" in cluster_management
+    assert "ConnectionAttempts=10" in cluster_management
     assert "Nodes were deliberately retained".lower() in content.lower()
     assert "FINALIZE_STAGES" in content
+    assert "active_config:$activeConfig" in content
+    assert 'persist_active_config "$TARGET_CONFIG"' in content
+    assert 'persist_active_config "$ROLLBACK_CONFIG"' in content
     assert "remove-node.yml" in content
     assert content.index("remove-node.yml") < content.index('hcloud server delete "$node"')
     assert "hetzner_allow_destructive_reconcile=true" in content
     assert "kubectl delete vmsingle" in content
     assert "kubectl delete vmcluster" in content
     assert "helm uninstall" in content
+    assert "helm status promtail -n logging-agents" in content
     assert "--vm-native-src-addr=${source_addr}" in content
     assert "--vm-native-dst-addr=${target_addr}" in content
     assert "http://vmselect-vmcluster.monitoring.svc:8481/select/0/prometheus" in content
     assert "http://vmsingle-vmsingle.monitoring.svc:8429" in content
     assert "--vm-native-filter-time-start" in content
+    assert "${4:-1970-01-01T00:00:00Z}" in content
     assert "            - -s" in content
     assert "            - --disable-progress-bar" in content
     assert "storage-retention.tsv" in content
     assert "stateful-retention.tsv" in content
     assert "deployments,statefulsets,daemonsets" in content
+    assert 'if ! HEALTH_REQUIRE_ARGOCD="$require_argocd"' in content
+    assert '"$SCRIPT_DIR/health-gates.sh"; then' in content
+    assert "return 1" in content
     assert "certificates --all-namespaces" in content
     assert "PerconaPGCluster".lower() in content.lower()
     assert "PerconaServerMongoDB".lower() in content.lower()
+    assert "-o IdentitiesOnly=yes" in content
+    assert 'ProxyCommand=${proxy_command}' in content
+    assert "ETCDCTL_API=3" not in content
+    assert "vault-storage-migrate.sh" in content
+    assert "--skip-tags infrastructure,network,security,cluster" in content
+    assert "post-target-backup-platform.yaml" in content
+    assert 'run_playbook "$POST_BACKUP_CONFIG" --tags gitlab,backup' in content
+    assert 'run_playbook "$BACKUP_CONFIG" --tags gitlab,backup' in content
+    final_backup = content.split("final-backup)", 1)[1].split("retire-backup)", 1)[0]
+    assert 'run_playbook "$POST_BACKUP_CONFIG" --tags gitlab,backup' in final_backup
+    assert 'cluster_backup "$POST_BACKUP_CONFIG"' in final_backup
+    assert 'if ! component_enabled "$TARGET_CONFIG" backup' in content
+    assert "-e target_component=backup -e confirm_component_removal=backup" in content
+
+
+def test_vmctl_migration_job_uses_restricted_pod_security():
+    content = MIGRATE.read_text(encoding="utf-8")
+    vmctl_job = content.split("run_vmctl_migration()", 1)[1].split(
+        "vm_addresses()", 1
+    )[0]
+    for contract in (
+        "automountServiceAccountToken: false",
+        "runAsNonRoot: true",
+        "runAsUser: 1000",
+        "seccompProfile:",
+        "allowPrivilegeEscalation: false",
+        'drop: ["ALL"]',
+        "readOnlyRootFilesystem: true",
+    ):
+        assert contract in vmctl_job
+
+
+def test_mutating_migrations_are_single_writer_and_use_process_unique_temp_files():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert 'MIGRATION_LOCK="${STATE_BASE}/.${PROJECT}-profile-migration.lock"' in content
+    assert 'another migration process is active for $PROJECT' in content
+    assert "kill -0 \"$lock_pid\"" in content
+    assert "trap 'rm -rf \"$MIGRATION_LOCK\"' EXIT INT TERM" in content
+    assert '${STATE_FILE}.tmp.$$' in content
+    assert '$STATE_FILE.tmp"' not in content
+
+
+def test_vault_storage_migration_is_offline_retains_pvc_and_is_fail_closed():
+    content = VAULT_MIGRATE.read_text(encoding="utf-8")
+    assert "vault operator migrate" in content
+    assert "kubectl scale statefulset vault" in content
+    assert "replicas=0" in content
+    assert "storage_source \"file\"" in content
+    assert "storage_destination \"raft\"" in content
+    assert "/vault/data/raft" in content
+    assert "helm uninstall vault" in content
+    assert "Vault remains stopped" in content
+    assert "kubectl get pvc" in content
 
 
 def test_completed_migration_has_an_explicit_dry_run_finalization(tmp_path):
@@ -485,6 +723,8 @@ def test_application_backup_orchestrator_triggers_postgresql_full_backup():
     assert "for c in postgresql mongodb vault seaweedfs gitlab" in content
     assert "component_expected" in content
     assert "--config" in content
+    assert 'elif any(.status.conditions[]?; .type == "Failed"' in content
+    assert 'failed|missing) return 1' in content
 
 
 def test_application_backup_dry_run_honors_profile_selection():
@@ -518,3 +758,13 @@ def test_backup_removal_cleans_local_velero_but_retains_remote_objects():
     assert "namespaces: [backups, velero]" in content
     assert "{name: velero, namespace: velero}" in content
     assert "Remote\n          object-storage backup" in content
+
+
+def test_infrastructure_role_cannot_bulk_delete_or_resize_cluster_nodes():
+    content = (ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "Refuse unsafe server deletion or bulk type convergence" in content
+    assert "migrate-profile.sh" in content
+    assert "hcloud server change-type --keep-disk {{ item.name }}" not in content
+    assert "hcloud server delete {{ item }}" not in content

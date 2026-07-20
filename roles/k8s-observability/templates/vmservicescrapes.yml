@@ -1,93 +1,57 @@
 ---
-# VMServiceScrape resources for VictoriaMetrics
-# Optional Prometheus ServiceMonitor path gated by prometheus_enabled
-
-{% if prometheus_enabled | default(false) | bool %}
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+# Scrape resources for services deployed before the observability operator.
+# Services deployed later in deploy_platform.yml own their scrape resources.
+{% if platform_object_storage_enabled | default(false) | bool %}
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
 metadata:
   name: seaweedfs
-  namespace: storage
+  namespace: {{ object_storage_namespace_resolved | default('storage') }}
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/instance: seaweedfs
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: vault
-  namespace: vault
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: vault
-  endpoints:
-    - port: http
-      path: /v1/sys/metrics
-      params:
-        format: [prometheus]
-      interval: 30s
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: temporal
-  namespace: temporal
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: temporal
+      app.kubernetes.io/instance: {{ object_storage_release_name | default('seaweedfs') }}
   endpoints:
     - port: metrics
+      path: /metrics
       interval: 30s
----
 {% endif %}
----
-apiVersion: operator.victoriametrics.com/v1beta1
-kind: VMServiceScrape
-metadata:
-  name: seaweedfs
-  namespace: storage
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/instance: seaweedfs
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
+{% if platform_secrets_enabled | default(false) | bool %}
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMServiceScrape
 metadata:
   name: vault
-  namespace: vault
+  namespace: {{ vault_ns | default('vault') }}
 spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: vault
   endpoints:
-    - port: http
+    - port: https
+      scheme: https
       path: /v1/sys/metrics
       params:
         format: [prometheus]
+      tlsConfig:
+        insecureSkipVerify: true
       interval: 30s
+{% endif %}
+{% if platform_elasticsearch_enabled | default(false) | bool %}
 ---
 apiVersion: operator.victoriametrics.com/v1beta1
 kind: VMServiceScrape
 metadata:
-  name: temporal
-  namespace: temporal
+  name: elasticsearch
+  namespace: {{ es_ns | default('elasticsearch') }}
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: temporal
+      app: elasticsearch
   endpoints:
-    - port: metrics
+    - port: https
+      scheme: https
+      tlsConfig:
+        insecureSkipVerify: true
       interval: 30s
+{% endif %}

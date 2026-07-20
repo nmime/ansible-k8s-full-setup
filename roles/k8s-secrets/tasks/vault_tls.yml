@@ -9,6 +9,10 @@
         name: platform-selfsigned
       spec:
         selfSigned: {}
+  register: _vault_selfsigned_issuer
+  retries: 6
+  delay: 10
+  until: _vault_selfsigned_issuer is not failed
 
 - name: Create the platform internal CA certificate
   kubernetes.core.k8s:
@@ -31,6 +35,10 @@
         issuerRef:
           name: platform-selfsigned
           kind: ClusterIssuer
+  register: _vault_internal_ca_certificate
+  retries: 6
+  delay: 10
+  until: _vault_internal_ca_certificate is not failed
 
 - name: Wait for the platform internal CA secret
   kubernetes.core.k8s_info:
@@ -39,7 +47,7 @@
     namespace: cert-manager
     name: internal-ca-secret
   register: internal_ca_secret
-  until: internal_ca_secret.resources | length == 1
+  until: (internal_ca_secret.resources | default([])) | length == 1
   retries: 30
   delay: 5
 
@@ -54,6 +62,10 @@
       spec:
         ca:
           secretName: internal-ca-secret
+  register: _vault_internal_ca_issuer
+  retries: 6
+  delay: 10
+  until: _vault_internal_ca_issuer is not failed
 
 - name: Issue the Vault internal TLS certificate
   kubernetes.core.k8s:
@@ -71,14 +83,50 @@
         issuerRef:
           name: internal-ca
           kind: ClusterIssuer
+        # The Vault CLI inside the server container defaults to 127.0.0.1.
+        # Include loopback so local operator/init commands retain TLS verification.
+        ipAddresses:
+          - 127.0.0.1
         dnsNames:
           - vault
           - "vault.{{ vault_ns }}"
           - "vault.{{ vault_ns }}.svc"
           - "vault.{{ vault_ns }}.svc.cluster.local"
+          - vault-active
+          - "vault-active.{{ vault_ns }}"
+          - "vault-active.{{ vault_ns }}.svc"
+          - "vault-active.{{ vault_ns }}.svc.cluster.local"
+          - vault-standby
+          - "vault-standby.{{ vault_ns }}"
+          - "vault-standby.{{ vault_ns }}.svc"
+          - "vault-standby.{{ vault_ns }}.svc.cluster.local"
           - vault-internal
+          - "*.vault-internal"
           - "vault-internal.{{ vault_ns }}.svc.cluster.local"
           - "*.vault-internal.{{ vault_ns }}.svc.cluster.local"
+  register: vault_internal_certificate
+  retries: 6
+  delay: 10
+  until: vault_internal_certificate is not failed
+
+- name: Wait for the current Vault internal certificate revision
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: "{{ vault_ns }}"
+    name: vault-internal-tls
+  register: vault_internal_certificate_status
+  until:
+    - vault_internal_certificate_status.resources | length == 1
+    - >-
+      vault_internal_certificate_status.resources[0].status.conditions | default([]) |
+      selectattr('type', 'equalto', 'Ready') |
+      selectattr('status', 'equalto', 'True') |
+      selectattr('observedGeneration', 'ge',
+        vault_internal_certificate_status.resources[0].metadata.generation | default(1)) |
+      list | length == 1
+  retries: 60
+  delay: 5
 
 - name: Wait for the Vault TLS secret
   kubernetes.core.k8s_info:
@@ -87,6 +135,6 @@
     namespace: "{{ vault_ns }}"
     name: vault-internal-tls
   register: vault_tls_secret
-  until: vault_tls_secret.resources | length == 1
+  until: (vault_tls_secret.resources | default([])) | length == 1
   retries: 30
   delay: 5

@@ -1,6 +1,7 @@
 ---
 blackbox_namespace: monitoring
 blackbox_chart_version: "11.15.1"   # prometheus-community/prometheus-blackbox-exporter
+blackbox_image_registry: "docker.io"
 blackbox_image: "prom/blackbox-exporter"
 blackbox_replicas: "{{ blackbox.replicas | default(1) }}"
 

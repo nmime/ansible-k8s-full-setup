@@ -26,7 +26,11 @@ rules:
 ignore: |
   .git/
   .venv/
+  .ansible/
+  .migration-state/
+  snapshot/
   node_modules/
+  playbooks/kubespray/
   __pycache__/
   .pre-commit-config.yaml
   roles/k8s-cluster-management/

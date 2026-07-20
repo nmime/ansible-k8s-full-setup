@@ -19,6 +19,7 @@ VERIFY_COLLECTION=""
 MIN_DOCUMENTS=1
 TIMEOUT_SECONDS=3600
 TTL_HOURS=24
+STORAGE_SIZE="20Gi"
 SKIP_CLEANUP=false
 DRY_RUN=false
 DRILL_CREATED=false
@@ -44,6 +45,7 @@ Options:
   --min-documents COUNT       Minimum sentinel documents (default: 1)
   --timeout-seconds SECONDS   Restore timeout (default: 3600)
   --ttl-hours HOURS           Expiry label for external janitors (default: 24)
+  --storage-size SIZE         Disposable MongoDB PVC size (default: 20Gi)
   --skip-cleanup              Preserve the namespace after a successful drill
   --dry-run                   Print the exact plan without changing the cluster
   -h, --help                  Show this help
@@ -61,8 +63,15 @@ die() { log ERROR "$*" >&2; exit 1; }
 cleanup() {
   local rc=$?
   if [[ "$DRILL_CREATED" == true && "$SKIP_CLEANUP" == false && "$DRILL_SUCCEEDED" == true ]]; then
-    log INFO "Deleting successful drill namespace ${DRILL_NAMESPACE}"
-    kubectl delete namespace "$DRILL_NAMESPACE" --wait=false >/dev/null 2>&1 || true
+    log INFO "Finalizing the disposable MongoDB cluster before deleting ${DRILL_NAMESPACE}"
+    kubectl delete perconaservermongodbrestore --all --namespace "$DRILL_NAMESPACE" \
+      --wait=true --timeout=5m >/dev/null 2>&1 || true
+    kubectl delete perconaservermongodb "$TARGET_CLUSTER" --namespace "$DRILL_NAMESPACE" \
+      --wait=true --timeout=10m >/dev/null 2>&1 || true
+    helm uninstall mongodb-restore-drill-operator --namespace "$DRILL_NAMESPACE" \
+      --wait --timeout 5m >/dev/null 2>&1 || true
+    kubectl delete namespace "$DRILL_NAMESPACE" --wait=true --timeout=10m \
+      >/dev/null 2>&1 || true
   elif [[ "$DRILL_CREATED" == true && "$rc" -ne 0 ]]; then
     log WARN "Drill failed; preserving ${DRILL_NAMESPACE} for diagnosis (expires-after=${TTL_HOURS}h)"
   fi
@@ -84,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --min-documents) MIN_DOCUMENTS="${2:?missing count}"; shift 2 ;;
     --timeout-seconds) TIMEOUT_SECONDS="${2:?missing timeout}"; shift 2 ;;
     --ttl-hours) TTL_HOURS="${2:?missing TTL}"; shift 2 ;;
+    --storage-size) STORAGE_SIZE="${2:?missing storage size}"; shift 2 ;;
     --skip-cleanup) SKIP_CLEANUP=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -95,6 +105,8 @@ done
 [[ "$MIN_DOCUMENTS" =~ ^[0-9]+$ ]] || die "--min-documents must be a non-negative integer"
 [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "--timeout-seconds must be positive"
 [[ "$TTL_HOURS" =~ ^[1-9][0-9]*$ ]] || die "--ttl-hours must be positive"
+[[ "$STORAGE_SIZE" =~ ^[1-9][0-9]*(Mi|Gi|Ti)$ ]] \
+  || die "--storage-size must be a positive Kubernetes binary quantity"
 [[ -z "$VERIFY_COLLECTION" || -n "$VERIFY_DATABASE" ]] || die "--verify-collection requires --verify-database"
 [[ "$VERIFY_DATABASE" =~ ^[A-Za-z0-9_.-]*$ ]] || die "Unsafe database name"
 [[ "$VERIFY_COLLECTION" =~ ^[A-Za-z0-9_.-]*$ ]] || die "Unsafe collection name"
@@ -196,8 +208,11 @@ else
     }')
 fi
 
-SOURCE_USERS_SECRET=$(jq -r --arg fallback "internal-${SOURCE_CLUSTER}-users" \
-  '.spec.secrets.users // $fallback' <<<"$SOURCE_JSON")
+SOURCE_USERS_SECRET="internal-${SOURCE_CLUSTER}-users"
+if ! kubectl get secret "$SOURCE_USERS_SECRET" --namespace "$SOURCE_NAMESPACE" >/dev/null 2>&1; then
+  SOURCE_USERS_SECRET=$(jq -r --arg fallback "$SOURCE_USERS_SECRET" \
+    '.spec.secrets.users // $fallback' <<<"$SOURCE_JSON")
+fi
 TARGET_USERS_SECRET="internal-${TARGET_CLUSTER}-users"
 kubectl get secret "$SOURCE_USERS_SECRET" --namespace "$SOURCE_NAMESPACE" >/dev/null 2>&1 \
   || die "Source users secret ${SOURCE_USERS_SECRET} was not found"
@@ -224,10 +239,6 @@ metadata:
   name: mongodb-drill-quota
 spec:
   hard:
-    requests.cpu: "4"
-    requests.memory: 8Gi
-    limits.cpu: "8"
-    limits.memory: 16Gi
     pods: "12"
     persistentvolumeclaims: "4"
     requests.storage: 100Gi
@@ -263,20 +274,26 @@ helm upgrade --install mongodb-restore-drill-operator percona/psmdb-operator \
   --wait --timeout 10m >/dev/null
 
 TARGET_JSON=$(jq --arg name "$TARGET_CLUSTER" --arg namespace "$DRILL_NAMESPACE" \
-  --arg users_secret "$TARGET_USERS_SECRET" '
+  --arg users_secret "$TARGET_USERS_SECRET" --arg storage_size "$STORAGE_SIZE" '
     del(.metadata.annotations,.metadata.creationTimestamp,.metadata.finalizers,
         .metadata.generateName,.metadata.generation,.metadata.labels,
         .metadata.managedFields,.metadata.ownerReferences,.metadata.resourceVersion,
         .metadata.selfLink,.metadata.uid,.status)
     | .metadata.name = $name
     | .metadata.namespace = $namespace
-    | .spec.replsets |= map(.size = 1)
+    | .spec.replsets |= map(
+        .size = 1
+        | .volumeSpec.persistentVolumeClaim.resources.requests.storage = $storage_size
+        | .tolerations = [])
     | .spec.sharding.enabled = false
-    | .spec.mongos.size = 0
+    | del(.spec.sharding.mongos, .spec.sharding.configsvrReplSet)
     | .spec.unsafeFlags.replsetSize = true
     | .spec.unsafeFlags.mongosSize = true
     | .spec.secrets.users = $users_secret
-    | .spec.backup.enabled = false
+    # The restore controller reads the target backup-agent version before it
+    # starts PBM. Keep the agent enabled, but remove schedules and PITR so the
+    # disposable cluster cannot create independent backups.
+    | .spec.backup.enabled = true
     | .spec.backup.tasks = []
     | .spec.backup.pitr.enabled = false
     | .spec.pmm.enabled = false' <<<"$SOURCE_JSON")

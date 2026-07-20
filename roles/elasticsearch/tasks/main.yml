@@ -16,8 +16,12 @@
       metadata:
         name: '{{ es_ns }}'
         labels:
-          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/enforce: baseline
+          pod-security.kubernetes.io/enforce-version: latest
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/audit-version: latest
           pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/warn-version: latest
   register: _r_es_ns
   retries: 3
   delay: 10
@@ -196,6 +200,69 @@
   set_fact:
     es_seed_hosts: '{% set hosts = [] %}{% for i in range(0, es_master_replicas | int) %}{% if hosts.append("es-master-" ~ i ~ ".es-master-headless." ~ es_ns ~ ".svc.cluster.local") %}{% endif %}{% endfor %}{{ hosts | join(",") }}'
     es_initial_master_nodes: '{% set nodes = [] %}{% for i in range(0, es_master_replicas | int) %}{% if nodes.append("es-master-" ~ i) %}{% endif %}{% endfor %}{{ nodes | join(",") }}'
+- name: Detect whether the Elasticsearch cluster has persistent master data
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ es_ns }}'
+    name: data-es-master-0
+  register: _es_master_data_pvc
+- name: Read the current Elasticsearch master StatefulSet storage contract
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ es_ns }}'
+    name: es-master
+  register: _es_existing_master_sts
+- name: Resolve the current Elasticsearch master claim-template size
+  ansible.builtin.set_fact:
+    _es_existing_master_storage: >-
+      {{
+        _es_existing_master_sts.resources[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage
+        if _es_existing_master_sts.resources | length > 0 else ''
+      }}
+- name: Reject Elasticsearch master storage shrink attempts
+  ansible.builtin.assert:
+    that:
+      - _es_existing_master_storage is match('^[1-9][0-9]*Gi$')
+      - es_master_storage is match('^[1-9][0-9]*Gi$')
+      - (es_master_storage | regex_replace('Gi$', '') | int) >= (_es_existing_master_storage | regex_replace('Gi$', '') | int)
+    fail_msg: >-
+      Refusing to shrink Elasticsearch master storage from
+      {{ _es_existing_master_storage }} to {{ es_master_storage }}.
+  when: _es_existing_master_storage | length > 0
+- name: Expand existing Elasticsearch master claims before template reconciliation
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: 'data-es-master-{{ item }}'
+        namespace: '{{ es_ns }}'
+      spec:
+        resources:
+          requests:
+            storage: '{{ es_master_storage }}'
+  loop: >-
+    {{ range(0, _es_existing_master_sts.resources[0].spec.replicas | int) | list
+       if _es_existing_master_sts.resources | length > 0 else [] }}
+  when:
+    - _es_existing_master_storage | length > 0
+    - (es_master_storage | regex_replace('Gi$', '') | int) > (_es_existing_master_storage | regex_replace('Gi$', '') | int)
+- name: Orphan Elasticsearch master pods and claims for immutable template growth
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ es_ns }}'
+    name: es-master
+    delete_options:
+      propagationPolicy: Orphan
+    wait: true
+  when:
+    - _es_existing_master_storage | length > 0
+    - _es_existing_master_storage != es_master_storage
 - name: Deploy ES master StatefulSet
   kubernetes.core.k8s:
     state: present
@@ -224,24 +291,27 @@
               app: elasticsearch
               role: master
           spec:
+            # Production keeps the control plane tainted for general workloads,
+            # but critical stateful replicas may use its reserved capacity when
+            # a worker is drained or exhausts the CSI attachment limit.
+            tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
             securityContext:
               fsGroup: 1000
               runAsUser: 1000
               runAsNonRoot: true
-            initContainers:
-            - name: sysctl
-              image: busybox:1.37
-              command:
-              - sh
-              - -c
-              - sysctl -w vm.max_map_count=262144 || true
-              securityContext:
-                privileged: true
-                runAsUser: 0
-                runAsNonRoot: false
+              seccompProfile:
+                type: RuntimeDefault
+            # Explicitly clear the legacy privileged sysctl init container;
+            # vm.max_map_count is persisted on every node by Kubespray.
+            initContainers: []
             containers:
             - name: elasticsearch
               image: '{{ es_img }}'
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
               ports:
               - containerPort: 9200
                 name: http
@@ -258,17 +328,11 @@
                 value: master
               - name: discovery.seed_hosts
                 value: '{{ es_seed_hosts }}'
-              - name: cluster.initial_master_nodes
-                value: '{{ es_initial_master_nodes }}'
               - name: ELASTIC_PASSWORD
                 valueFrom:
                   secretKeyRef:
                     name: es-credentials
                     key: ELASTIC_PASSWORD
-              - name: xpack.security.audit.enabled
-                value: 'true'
-              - name: xpack.security.audit.logfile.events.include
-                value: access_granted,access_denied,authentication_failed,connection_denied
               - name: xpack.security.enabled
                 value: 'true'
               - name: xpack.security.http.ssl.enabled
@@ -318,6 +382,16 @@
                 initialDelaySeconds: 30
                 periodSeconds: 10
                 timeoutSeconds: 5
+              startupProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - |
+                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
+                periodSeconds: 15
+                timeoutSeconds: 10
+                failureThreshold: 40
               livenessProbe:
                 exec:
                   command:
@@ -325,7 +399,6 @@
                   - -c
                   - |
                     curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-                initialDelaySeconds: 90
                 periodSeconds: 30
                 timeoutSeconds: 10
             volumes:
@@ -346,6 +419,75 @@
   retries: 3
   delay: 15
   until: _r_master_sts is not failed
+- name: Add the one-time Elasticsearch bootstrap node list for a new cluster
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - set
+      - env
+      - statefulset/es-master
+      - -n
+      - '{{ es_ns }}'
+      - cluster.initial_master_nodes={{ es_initial_master_nodes }}
+  when: _es_master_data_pvc.resources | length == 0
+  register: _r_add_es_bootstrap_nodes
+  changed_when: true
+- name: Read the current Elasticsearch data StatefulSet storage contract
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ es_ns }}'
+    name: es-data
+  register: _es_existing_data_sts
+- name: Resolve the current Elasticsearch data claim-template size
+  ansible.builtin.set_fact:
+    _es_existing_data_storage: >-
+      {{
+        _es_existing_data_sts.resources[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage
+        if _es_existing_data_sts.resources | length > 0 else ''
+      }}
+- name: Reject Elasticsearch data storage shrink attempts
+  ansible.builtin.assert:
+    that:
+      - _es_existing_data_storage is match('^[1-9][0-9]*Gi$')
+      - es_data_storage is match('^[1-9][0-9]*Gi$')
+      - (es_data_storage | regex_replace('Gi$', '') | int) >= (_es_existing_data_storage | regex_replace('Gi$', '') | int)
+    fail_msg: >-
+      Refusing to shrink Elasticsearch data storage from
+      {{ _es_existing_data_storage }} to {{ es_data_storage }}.
+  when: _es_existing_data_storage | length > 0
+- name: Expand existing Elasticsearch data claims before template reconciliation
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: 'data-es-data-{{ item }}'
+        namespace: '{{ es_ns }}'
+      spec:
+        resources:
+          requests:
+            storage: '{{ es_data_storage }}'
+  loop: >-
+    {{ range(0, _es_existing_data_sts.resources[0].spec.replicas | int) | list
+       if _es_existing_data_sts.resources | length > 0 else [] }}
+  when:
+    - _es_existing_data_storage | length > 0
+    - (es_data_storage | regex_replace('Gi$', '') | int) > (_es_existing_data_storage | regex_replace('Gi$', '') | int)
+- name: Orphan Elasticsearch data pods and claims for immutable template growth
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ es_ns }}'
+    name: es-data
+    delete_options:
+      propagationPolicy: Orphan
+    wait: true
+  when:
+    - _es_existing_data_storage | length > 0
+    - _es_existing_data_storage != es_data_storage
 - name: Deploy ES data StatefulSet
   kubernetes.core.k8s:
     state: present
@@ -374,24 +516,24 @@
               app: elasticsearch
               role: data
           spec:
+            tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
             securityContext:
               fsGroup: 1000
               runAsUser: 1000
               runAsNonRoot: true
-            initContainers:
-            - name: sysctl
-              image: busybox:1.37
-              command:
-              - sh
-              - -c
-              - sysctl -w vm.max_map_count=262144 || true
-              securityContext:
-                privileged: true
-                runAsUser: 0
-                runAsNonRoot: false
+              seccompProfile:
+                type: RuntimeDefault
+            # Explicitly clear the legacy privileged sysctl init container;
+            # vm.max_map_count is persisted on every node by Kubespray.
+            initContainers: []
             containers:
             - name: elasticsearch
               image: '{{ es_img }}'
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
               ports:
               - containerPort: 9200
                 name: http
@@ -413,10 +555,6 @@
                   secretKeyRef:
                     name: es-credentials
                     key: ELASTIC_PASSWORD
-              - name: xpack.security.audit.enabled
-                value: 'true'
-              - name: xpack.security.audit.logfile.events.include
-                value: access_granted,access_denied,authentication_failed,connection_denied
               - name: xpack.security.enabled
                 value: 'true'
               - name: xpack.security.http.ssl.enabled
@@ -466,6 +604,16 @@
                 initialDelaySeconds: 30
                 periodSeconds: 10
                 timeoutSeconds: 5
+              startupProbe:
+                exec:
+                  command:
+                  - bash
+                  - -c
+                  - |
+                    curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
+                periodSeconds: 15
+                timeoutSeconds: 10
+                failureThreshold: 40
               livenessProbe:
                 exec:
                   command:
@@ -473,7 +621,6 @@
                   - -c
                   - |
                     curl -fsSk -u "elastic:$ELASTIC_PASSWORD" https://localhost:9200/_cluster/health?local=true
-                initialDelaySeconds: 90
                 periodSeconds: 30
                 timeoutSeconds: 10
             volumes:
@@ -494,6 +641,24 @@
   retries: 3
   delay: 15
   until: _r_data_sts is not failed
+- name: Remove unsupported Basic-license audit settings from existing Elasticsearch pods
+  ansible.builtin.shell: |
+    set -euo pipefail
+    changed=false
+    for sts in es-master es-data; do
+      if kubectl get statefulset "$sts" -n {{ es_ns | quote }} -o json \
+        | jq -e '.spec.template.spec.containers[0].env // [] | any(.name == "xpack.security.audit.enabled" or .name == "xpack.security.audit.logfile.events.include")' \
+        >/dev/null; then
+        kubectl set env statefulset/"$sts" -n {{ es_ns | quote }} \
+          xpack.security.audit.enabled- xpack.security.audit.logfile.events.include- >/dev/null
+        changed=true
+      fi
+    done
+    echo "changed=$changed"
+  args:
+    executable: /bin/bash
+  register: es_audit_setting_cleanup
+  changed_when: "'changed=true' in es_audit_setting_cleanup.stdout"
 - name: Wait for ES master pods to be ready
   kubernetes.core.k8s_info:
     kind: StatefulSet
@@ -501,10 +666,43 @@
     name: es-master
   register: es_master_sts
   until: >-
-    es_master_sts.resources | length > 0 and (es_master_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int)
+    (es_master_sts.resources | default([])) | length > 0 and (es_master_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int)
   retries: 60
   delay: 15
-  failed_when: false
+- name: Detect the Elasticsearch bootstrap setting after cluster formation
+  ansible.builtin.set_fact:
+    _es_bootstrap_setting_present: >-
+      {{
+        es_master_sts.resources[0].spec.template.spec.containers[0].env
+        | selectattr('name', 'equalto', 'cluster.initial_master_nodes')
+        | list | length > 0
+      }}
+- name: Remove the one-time Elasticsearch bootstrap node list
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - set
+      - env
+      - statefulset/es-master
+      - -n
+      - '{{ es_ns }}'
+      - cluster.initial_master_nodes-
+  when: _es_bootstrap_setting_present | bool
+  register: _r_remove_es_bootstrap_nodes
+  changed_when: true
+- name: Wait for ES masters after removing the bootstrap setting
+  kubernetes.core.k8s_info:
+    kind: StatefulSet
+    namespace: '{{ es_ns }}'
+    name: es-master
+  register: _es_master_post_bootstrap_cleanup
+  until: >-
+    (_es_master_post_bootstrap_cleanup.resources | default([])) | length > 0 and
+    (_es_master_post_bootstrap_cleanup.resources[0].status.readyReplicas | default(0) | int) >= (es_master_replicas | int) and
+    (_es_master_post_bootstrap_cleanup.resources[0].status.updatedReplicas | default(0) | int) >= (es_master_replicas | int)
+  retries: 60
+  delay: 15
+  when: _es_bootstrap_setting_present | bool
 - name: Wait for ES data pods to be ready
   kubernetes.core.k8s_info:
     kind: StatefulSet
@@ -512,10 +710,142 @@
     name: es-data
   register: es_data_sts
   until: >-
-    es_data_sts.resources | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
+    (es_data_sts.resources | default([])) | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
   retries: 60
   delay: 15
-  failed_when: false
+- name: Read the Kibana service-account token secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ es_ns }}'
+    name: kibana-service-token
+  register: _kibana_service_token_secret
+
+- name: Remove an orphaned Kibana service-account token
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - '{{ es_ns }}'
+      - es-master-0
+      - -c
+      - elasticsearch
+      - --
+      - bash
+      - -ec
+      - >-
+        curl -sk -u "elastic:$ELASTIC_PASSWORD" -X DELETE
+        https://localhost:9200/_security/service/elastic/kibana/credential/token/platform
+        >/dev/null || true
+  no_log: true
+  register: _kibana_service_token_delete
+  retries: 6
+  delay: 10
+  until: _kibana_service_token_delete is not failed
+  when: _kibana_service_token_secret.resources | length == 0
+
+- name: Create the Kibana service-account token
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - '{{ es_ns }}'
+      - es-master-0
+      - -c
+      - elasticsearch
+      - --
+      - bash
+      - -ec
+      - >-
+        curl -fsk -u "elastic:$ELASTIC_PASSWORD" -X POST
+        https://localhost:9200/_security/service/elastic/kibana/credential/token/platform
+  register: _kibana_service_token_create
+  no_log: true
+  retries: 6
+  delay: 10
+  until: _kibana_service_token_create is not failed
+  when: _kibana_service_token_secret.resources | length == 0
+
+- name: Persist the Kibana service-account token
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: kibana-service-token
+        namespace: '{{ es_ns }}'
+      type: Opaque
+      stringData:
+        token: '{{ (_kibana_service_token_create.stdout | from_json).token.value }}'
+  no_log: true
+  when: _kibana_service_token_secret.resources | length == 0
+
+- name: Read the Kibana encryption-key secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ es_ns }}'
+    name: kibana-encryption-keys
+  register: _kibana_encryption_keys
+
+- name: Create stable Kibana encryption keys
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: kibana-encryption-keys
+        namespace: '{{ es_ns }}'
+      type: Opaque
+      stringData:
+        security: '{{ lookup("password", "/dev/null length=64 chars=ascii_letters,digits") }}'
+        saved-objects: '{{ lookup("password", "/dev/null length=64 chars=ascii_letters,digits") }}'
+        reporting: '{{ lookup("password", "/dev/null length=64 chars=ascii_letters,digits") }}'
+  no_log: true
+  when: _kibana_encryption_keys.resources | length == 0
+
+- name: Read the existing Kibana Deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ es_ns }}'
+    name: kibana
+  register: _existing_kibana_deployment
+
+- name: Remove legacy Kibana superuser environment variables
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - set
+      - env
+      - deployment/kibana
+      - -n
+      - '{{ es_ns }}'
+      - ELASTICSEARCH_USERNAME-
+      - ELASTICSEARCH_PASSWORD-
+  register: _remove_kibana_superuser_env
+  changed_when: "'env updated' in _remove_kibana_superuser_env.stdout"
+  when: _existing_kibana_deployment.resources | length > 0
+
+- name: Atomically switch Kibana from RollingUpdate to Recreate
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - patch
+      - deployment/kibana
+      - -n
+      - '{{ es_ns }}'
+      - --type=json
+      - -p
+      - '[{"op":"remove","path":"/spec/strategy/rollingUpdate"},{"op":"replace","path":"/spec/strategy/type","value":"Recreate"}]'
+  when:
+    - _existing_kibana_deployment.resources | length > 0
+    - _existing_kibana_deployment.resources[0].spec.strategy.rollingUpdate is defined
+
 - name: Deploy Kibana
   kubernetes.core.k8s:
     state: present
@@ -529,6 +859,9 @@
           app: kibana
       spec:
         replicas: '{{ kibana_replicas | int }}'
+        strategy:
+          type: Recreate
+        progressDeadlineSeconds: 1800
         selector:
           matchLabels:
             app: kibana
@@ -537,6 +870,13 @@
             labels:
               app: kibana
           spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+              seccompProfile:
+                type: RuntimeDefault
             containers:
             - name: kibana
               image: '{{ kb_img }}'
@@ -546,13 +886,28 @@
               env:
               - name: ELASTICSEARCH_HOSTS
                 value: https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200
-              - name: ELASTICSEARCH_USERNAME
-                value: elastic
-              - name: ELASTICSEARCH_PASSWORD
+              - name: ELASTICSEARCH_SERVICEACCOUNTTOKEN
                 valueFrom:
                   secretKeyRef:
-                    name: es-credentials
-                    key: ELASTIC_PASSWORD
+                    name: kibana-service-token
+                    key: token
+              - name: XPACK_SECURITY_ENCRYPTIONKEY
+                valueFrom:
+                  secretKeyRef:
+                    name: kibana-encryption-keys
+                    key: security
+              - name: XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY
+                valueFrom:
+                  secretKeyRef:
+                    name: kibana-encryption-keys
+                    key: saved-objects
+              - name: XPACK_REPORTING_ENCRYPTIONKEY
+                valueFrom:
+                  secretKeyRef:
+                    name: kibana-encryption-keys
+                    key: reporting
+              - name: XPACK_SECURITY_SECURECOOKIES
+                value: 'true'
               - name: ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES
                 value: /usr/share/kibana/config/certs/ca.crt
               - name: SERVER_HOST
@@ -566,6 +921,10 @@
                 limits:
                   cpu: '{{ kibana_cpu_lim }}'
                   memory: '{{ kibana_memory_lim }}'
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
               volumeMounts:
               - name: certs
                 mountPath: /usr/share/kibana/config/certs
@@ -576,11 +935,17 @@
                   port: 5601
                 initialDelaySeconds: 30
                 periodSeconds: 10
+              startupProbe:
+                httpGet:
+                  path: /api/status
+                  port: 5601
+                periodSeconds: 15
+                timeoutSeconds: 10
+                failureThreshold: 80
               livenessProbe:
                 httpGet:
                   path: /api/status
                   port: 5601
-                initialDelaySeconds: 60
                 periodSeconds: 30
             volumes:
             - name: certs
@@ -731,7 +1096,8 @@
     - "  License: {{ es_license_type }}"
     - "  Endpoint: https://elasticsearch.{{ es_ns }}.svc.cluster.local:9200"
     - "  Kibana: https://{{ es_kibana_domain }}"
-    - "  User: elastic / (from es-credentials secret)"
+    - "  Kibana auth: elastic/kibana service account token"
+    - "  Elasticsearch admin: elastic / (from es-credentials secret)"
     - "=========================================="
 - name: Create CiliumNetworkPolicy for Filebeat to Elasticsearch
   kubernetes.core.k8s:
@@ -750,7 +1116,7 @@
         ingress:
         - fromEndpoints:
           - matchLabels:
-              app: filebeat
+              k8s:io.kubernetes.pod.namespace: logging-agents
           toPorts:
           - ports:
             - port: '9200'
@@ -760,24 +1126,3 @@
   retries: 3
   delay: 10
   until: _r_create_filebeat_cnp is not failed
-- name: Create Elasticsearch ServiceMonitor
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
-        name: elasticsearch
-        namespace: '{{ es_ns | default("elasticsearch") }}'
-        labels:
-          release: prometheus
-      spec:
-        selector:
-          matchLabels:
-            app: elasticsearch
-        endpoints:
-        - port: https
-          scheme: https
-          interval: 30s
-          tlsConfig:
-            insecureSkipVerify: true

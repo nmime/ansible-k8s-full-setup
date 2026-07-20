@@ -100,6 +100,7 @@ def test_all_operational_entrypoints_load_project_env():
                 "cycle-test.sh",
                 "gitlab-restore-test.sh",
                 "gitlab-upgrade-check.sh",
+                "live-tier-smoke.sh",
                 "migrate-profile.sh",
                 "mongodb-restore-drill.sh",
                 "pg-restore-drill.sh",

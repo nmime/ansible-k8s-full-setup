@@ -24,7 +24,7 @@
       small: {tier: small, resource_tier: small}
       medium: {tier: medium, resource_tier: medium}
       medium-optimized: {tier: medium, resource_tier: small}
-      production: {tier: production, resource_tier: production}
+      production: {tier: production, resource_tier: small}
   when: platform_profile != 'custom'
 
 - name: Normalize component enablement from the platform profile
@@ -33,6 +33,7 @@
     platform_secrets_enabled: '{{ (secrets.enabled | default(true)) | bool }}'
     platform_eso_enabled: '{{ (secrets.eso.enabled | default(eso_enabled)) | bool }}'
     platform_observability_enabled: '{{ (observability.enabled | default(deploy_observability)) | bool }}'
+    platform_pmm_enabled: '{{ (observability.pmm.enabled | default(pmm_enabled)) | bool }}'
     platform_coroot_enabled: '{{ (coroot.enabled | default(coroot_enabled)) | bool }}'
     platform_tracing_enabled: '{{ (tracing.enabled | default(tracing_enabled)) | bool }}'
     platform_elasticsearch_enabled: '{{ (elasticsearch.enabled | default(deploy_elasticsearch)) | bool }}'
@@ -71,6 +72,8 @@
       {{ storage.volume_replicas | default(object_storage_volume_replicas | default(object_storage_replicas | default(1))) }}
     object_storage_filer_replicas: >-
       {{ storage.filer_replicas | default(object_storage_filer_replicas | default(1)) }}
+    object_storage_replication_placement: >-
+      {{ storage.replication_placement | default(object_storage_replication_placement | default('000')) }}
     object_storage_master_size: '{{ storage.master_size | default(object_storage_master_size) }}'
     object_storage_volume_size: >-
       {{ storage.size_per_replica | default(storage.size | default(object_storage_volume_size)) }}
@@ -94,6 +97,7 @@
     metrics_retention: '{{ observability.metrics.retention | default(metrics_retention) }}'
     metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
     pmm_storage_size: '{{ observability.pmm.storage_size | default(pmm_storage_size) }}'
+    pmm_enabled: '{{ platform_pmm_enabled }}'
     log_stack: '{{ observability.logging.stack | default(log_stack) }}'
     logging_retention: '{{ observability.logging.retention | default(logging_retention) }}'
     coroot_enabled: '{{ platform_coroot_enabled }}'
@@ -197,6 +201,7 @@
       - not platform_postgresql_enabled | bool or platform_databases_enabled | bool
       - not platform_mongodb_enabled | bool or platform_databases_enabled | bool
       - not platform_gitlab_runner_enabled | bool or platform_gitlab_enabled | bool
+      - not platform_pmm_enabled | bool or platform_observability_enabled | bool
       - not platform_tracing_enabled | bool or platform_observability_enabled | bool
       - not platform_blackbox_enabled | bool or platform_observability_enabled | bool
       - not platform_coroot_enabled | bool or platform_observability_enabled | bool
@@ -205,8 +210,8 @@
       - not platform_observability_enabled | bool or observability.grafana.enabled | default(true) | bool
     fail_msg: >-
       Invalid parent/child selection. ESO requires secrets; PostgreSQL and
-      MongoDB require databases; the GitLab Runner requires GitLab; tracing,
-      Blackbox, and Coroot require observability. The core observability role is one
+      MongoDB require databases; the GitLab Runner requires GitLab; PMM,
+      tracing, Blackbox, and Coroot require observability. The core observability role is one
       production bundle, so metrics, logging, and Grafana must stay enabled
       whenever observability.enabled=true.
 
@@ -256,9 +261,8 @@
   ansible.builtin.assert:
     that:
       - platform_postgresql_enabled | bool
-      - platform_elasticsearch_enabled | bool
     fail_msg: >-
-      Temporal requires PostgreSQL and Elasticsearch. Enable both in the
+      Temporal requires PostgreSQL. Enable databases.postgresql in the
       selected platform profile.
   when: platform_temporal_enabled | bool
 

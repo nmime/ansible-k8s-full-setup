@@ -20,6 +20,7 @@ BACKUP_TIMEOUT="${CLUSTER_BACKUP_TIMEOUT_SECONDS:-28800}"
 SSH_USER="${CLUSTER_BACKUP_SSH_USER:-root}"
 SSH_BASTION="${CLUSTER_BACKUP_BASTION_HOST:-}"
 CONTROL_PLANE_HOST="${CLUSTER_BACKUP_CONTROL_PLANE_HOST:-}"
+SSH_IDENTITY="${CLUSTER_BACKUP_SSH_IDENTITY:-}"
 
 log() { printf '[cluster-backup] %s\n' "$*"; }
 fail() { printf '[cluster-backup] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -42,6 +43,7 @@ Options:
   --ssh-bastion HOST         Bastion address (otherwise read infra facts)
   --control-plane-host HOST  First control-plane private address
   --ssh-user USER            SSH user (default: root)
+  --ssh-identity FILE        SSH private key (profile/defaults fallback)
   --skip-app-backups         Do not trigger application-native backups
   --skip-velero              Do not trigger Velero resource/PVC backup
   --skip-cloud               Do not capture Hetzner state
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-bastion) SSH_BASTION="$2"; shift 2 ;;
     --control-plane-host) CONTROL_PLANE_HOST="$2"; shift 2 ;;
     --ssh-user) SSH_USER="$2"; shift 2 ;;
+    --ssh-identity) SSH_IDENTITY="$2"; shift 2 ;;
     --skip-app-backups) RUN_APP_BACKUPS=false; shift ;;
     --skip-velero) RUN_VELERO_BACKUP=false; shift ;;
     --skip-cloud) SKIP_CLOUD=true; shift ;;
@@ -88,6 +91,15 @@ fi
 PROJECT=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
 DOMAIN=$(yq -r '.global.domain // ""' "$CONFIG_FILE")
 PROFILE=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
+if [[ -z "$SSH_IDENTITY" ]]; then
+  SSH_IDENTITY=$(yq -r '.infrastructure.ssh_key_path // ""' "$CONFIG_FILE")
+fi
+if [[ -z "$SSH_IDENTITY" && -f "$PROJECT_ROOT/defaults/main.yml" ]]; then
+  SSH_IDENTITY=$(yq -r '.ssh_key_path // ""' "$PROJECT_ROOT/defaults/main.yml")
+fi
+if [[ "${SSH_IDENTITY#\~/}" != "$SSH_IDENTITY" ]]; then
+  SSH_IDENTITY="${HOME:?HOME is required to resolve the SSH identity}/${SSH_IDENTITY:2}"
+fi
 VELERO_TTL_HOURS=$(yq -r '.backup.disaster_recovery.retention_hours // 720' "$CONFIG_FILE")
 [[ "$VELERO_TTL_HOURS" =~ ^[1-9][0-9]*$ ]] || fail "backup DR retention_hours must be a positive integer"
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -106,6 +118,18 @@ fi
 for tool in kubectl helm jq yq tar git comm; do
   command -v "$tool" >/dev/null || fail "required tool is missing: $tool"
 done
+
+run_with_retry() {
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if "$@"; then
+      return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  return 1
+}
+
 if [[ -n "$RECIPIENT" ]]; then
   command -v age >/dev/null || fail "age is required for --recipient encryption"
 elif [[ -z "${CLUSTER_BACKUP_PASSPHRASE:-}" ]]; then
@@ -114,8 +138,10 @@ else
   command -v openssl >/dev/null || fail "openssl is required for passphrase encryption"
 fi
 
-kubectl cluster-info >/dev/null
-helm list --all-namespaces >/dev/null
+run_with_retry kubectl cluster-info >/dev/null \
+  || fail "Kubernetes API preflight failed after retries"
+run_with_retry helm list --all-namespaces >/dev/null \
+  || fail "Helm API preflight failed after retries"
 CONTEXT=$(kubectl config current-context)
 [[ -n "$CONTEXT" ]] || fail "kubectl has no current context"
 
@@ -132,7 +158,23 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cluster-backup.XXXXXX")
 STAGE_DIR="${WORK_DIR}/${BACKUP_ID}"
 PLAIN_ARCHIVE="${WORK_DIR}/${BACKUP_ID}.tar.gz"
 mkdir -p "$STAGE_DIR"/{config,cluster/resources/namespaced,cluster/resources/cluster,etcd,control-plane,helm,cloud,application-backups}
-cleanup() { rm -rf "$WORK_DIR"; }
+POD_ANNOTATIONS_FILE="${WORK_DIR}/velero-pvc-annotations.tsv"
+restore_backup_annotations() {
+  local namespace pod previous _volumes
+  [[ -f "$POD_ANNOTATIONS_FILE" && -s "$POD_ANNOTATIONS_FILE" ]] || return 0
+  while IFS=$'\t' read -r namespace pod previous _volumes; do
+    if [[ "$previous" == __ABSENT__ ]]; then
+      kubectl annotate pod -n "$namespace" "$pod" backup.velero.io/backup-volumes- --overwrite >/dev/null 2>&1 || true
+    else
+      kubectl annotate pod -n "$namespace" "$pod" "backup.velero.io/backup-volumes=${previous}" --overwrite >/dev/null 2>&1 || true
+    fi
+  done < "$POD_ANNOTATIONS_FILE"
+  [[ -e "$POD_ANNOTATIONS_FILE" ]] && : > "$POD_ANNOTATIONS_FILE"
+}
+cleanup() {
+  restore_backup_annotations
+  rm -rf "$WORK_DIR"
+}
 trap cleanup EXIT INT TERM
 
 sha256_file() {
@@ -145,10 +187,24 @@ copy_required() {
   cp "$source" "$destination"
 }
 
+hcloud_safe() {
+  local error_file status
+  error_file=$(mktemp "${TMPDIR:-/tmp}/hcloud-error.XXXXXX")
+  if hcloud "$@" 2>"$error_file"; then
+    rm -f "$error_file"
+    return 0
+  else
+    status=$?
+  fi
+  sed -E "s/token '[^']+'/token '[REDACTED]'/g" "$error_file" >&2
+  rm -f "$error_file"
+  return "$status"
+}
+
 log "capturing local desired state"
 copy_required "$CONFIG_FILE" "$STAGE_DIR/config/platform.yaml"
-copy_required "$PROJECT_ROOT/.platform-secrets.yml" "$STAGE_DIR/config/platform-secrets.yml"
-INFRA_FACTS="${PROJECT_ROOT}/${PROJECT}-infra-facts.yml"
+copy_required "$PROJECT_ROOT/playbooks/.platform-secrets.yml" "$STAGE_DIR/config/platform-secrets.yml"
+INFRA_FACTS="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml"
 copy_required "$INFRA_FACTS" "$STAGE_DIR/config/infra-facts.yml"
 KUBESPRAY_INVENTORY="${PROJECT_ROOT}/playbooks/kubespray/inventory/${PROJECT}/hosts.yml"
 [[ -f "$KUBESPRAY_INVENTORY" ]] || KUBESPRAY_INVENTORY="${PROJECT_ROOT}/kubespray/inventory/${PROJECT}/hosts.yml"
@@ -163,27 +219,64 @@ git -C "$PROJECT_ROOT" diff --binary > "$STAGE_DIR/config/worktree.patch"
 git -C "$PROJECT_ROOT" rev-parse HEAD > "$STAGE_DIR/config/git-revision.txt"
 
 log "capturing Helm release state"
-helm list --all-namespaces --output json > "$STAGE_DIR/helm/releases.json"
+capture_with_retry() {
+  local destination="$1" attempt temporary
+  shift
+  temporary="${destination}.tmp"
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if "$@" > "$temporary"; then
+      mv "$temporary" "$destination"
+      return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  rm -f "$temporary"
+  return 1
+}
+capture_with_retry "$STAGE_DIR/helm/releases.json" helm list --all-namespaces --output json \
+  || fail "Helm release inventory failed after retries"
 while IFS=$'\t' read -r namespace release revision; do
   [[ -n "$release" ]] || continue
   safe_name="${namespace}-${release}"
-  helm get values "$release" -n "$namespace" --all > "$STAGE_DIR/helm/${safe_name}-values.yaml"
-  helm get manifest "$release" -n "$namespace" > "$STAGE_DIR/helm/${safe_name}-manifest.yaml"
-  helm get hooks "$release" -n "$namespace" > "$STAGE_DIR/helm/${safe_name}-hooks.yaml"
+  capture_with_retry "$STAGE_DIR/helm/${safe_name}-values.yaml" helm get values "$release" -n "$namespace" --all \
+    || fail "Helm values capture failed after retries: ${namespace}/${release}"
+  capture_with_retry "$STAGE_DIR/helm/${safe_name}-manifest.yaml" helm get manifest "$release" -n "$namespace" \
+    || fail "Helm manifest capture failed after retries: ${namespace}/${release}"
+  capture_with_retry "$STAGE_DIR/helm/${safe_name}-hooks.yaml" helm get hooks "$release" -n "$namespace" \
+    || fail "Helm hooks capture failed after retries: ${namespace}/${release}"
   printf '%s\t%s\t%s\n' "$namespace" "$release" "$revision" >> "$STAGE_DIR/helm/revisions.tsv"
 done < <(jq -r '.[] | [.namespace,.name,(.revision|tostring)] | @tsv' "$STAGE_DIR/helm/releases.json")
 
 log "capturing Kubernetes API resources"
-kubectl api-resources --verbs=list --namespaced=true -o name | sort -u > "$STAGE_DIR/cluster/namespaced-api-resources.txt"
-kubectl api-resources --verbs=list --namespaced=false -o name | sort -u > "$STAGE_DIR/cluster/cluster-api-resources.txt"
+run_with_retry kubectl api-resources --verbs=list --namespaced=true -o name \
+  | sort -u > "$STAGE_DIR/cluster/namespaced-api-resources.txt" \
+  || fail "namespaced Kubernetes API discovery failed after retries"
+run_with_retry kubectl api-resources --verbs=list --namespaced=false -o name \
+  | sort -u > "$STAGE_DIR/cluster/cluster-api-resources.txt" \
+  || fail "cluster-scoped Kubernetes API discovery failed after retries"
+kubectl_export() {
+  local destination="$1" attempt temporary
+  shift
+  temporary="${destination}.tmp"
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if kubectl --request-timeout=90s get "$@" -o yaml > "$temporary" 2>> "$STAGE_DIR/cluster/export-errors.log"; then
+      mv "$temporary" "$destination"
+      return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  rm -f "$temporary"
+  return 1
+}
 RESOURCE_FAILURES=0
 while IFS= read -r resource; do
   case "$resource" in
     events|events.events.k8s.io|bindings|tokenreviews.authentication.k8s.io|subjectaccessreviews.authorization.k8s.io|selfsubjectaccessreviews.authorization.k8s.io|selfsubjectrulesreviews.authorization.k8s.io|localsubjectaccessreviews.authorization.k8s.io) continue ;;
   esac
   filename=${resource//\//_}
-  if ! kubectl get "$resource" --all-namespaces -o yaml > "$STAGE_DIR/cluster/resources/namespaced/${filename}.yaml" 2>> "$STAGE_DIR/cluster/export-errors.log"; then
+  if ! kubectl_export "$STAGE_DIR/cluster/resources/namespaced/${filename}.yaml" "$resource" --all-namespaces; then
     RESOURCE_FAILURES=$((RESOURCE_FAILURES + 1))
+    printf 'namespaced/%s\n' "$resource" >> "$STAGE_DIR/cluster/export-failures.txt"
   fi
 done < "$STAGE_DIR/cluster/namespaced-api-resources.txt"
 while IFS= read -r resource; do
@@ -191,19 +284,58 @@ while IFS= read -r resource; do
     componentstatuses|tokenreviews.authentication.k8s.io|subjectaccessreviews.authorization.k8s.io|selfsubjectaccessreviews.authorization.k8s.io|selfsubjectrulesreviews.authorization.k8s.io) continue ;;
   esac
   filename=${resource//\//_}
-  if ! kubectl get "$resource" -o yaml > "$STAGE_DIR/cluster/resources/cluster/${filename}.yaml" 2>> "$STAGE_DIR/cluster/export-errors.log"; then
+  if ! kubectl_export "$STAGE_DIR/cluster/resources/cluster/${filename}.yaml" "$resource"; then
     RESOURCE_FAILURES=$((RESOURCE_FAILURES + 1))
+    printf 'cluster/%s\n' "$resource" >> "$STAGE_DIR/cluster/export-failures.txt"
   fi
 done < "$STAGE_DIR/cluster/cluster-api-resources.txt"
-kubectl version -o yaml > "$STAGE_DIR/cluster/version.yaml"
-kubectl get --raw='/readyz?verbose' > "$STAGE_DIR/cluster/readyz.txt"
+capture_with_retry "$STAGE_DIR/cluster/version.yaml" kubectl --request-timeout=90s version -o yaml \
+  || fail "Kubernetes version capture failed after retries"
+capture_with_retry "$STAGE_DIR/cluster/readyz.txt" kubectl --request-timeout=90s get --raw='/readyz?verbose' \
+  || fail "Kubernetes readiness capture failed after retries"
 if (( RESOURCE_FAILURES > 0 )) && [[ "$ALLOW_INCOMPLETE" != true ]]; then
+  printf '[cluster-backup] failed API resources:\n' >&2
+  sed 's/^/[cluster-backup]   /' "$STAGE_DIR/cluster/export-failures.txt" >&2
   fail "$RESOURCE_FAILURES Kubernetes API resource exports failed; see export-errors.log"
 fi
 
 build_ssh_args() {
-  SSH_ARGS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
-  [[ -n "$SSH_BASTION" ]] && SSH_ARGS+=(-J "${SSH_USER}@${SSH_BASTION}")
+  local quoted_identity proxy_command
+  [[ -n "$SSH_IDENTITY" && -f "$SSH_IDENTITY" ]] || fail "SSH identity is missing: ${SSH_IDENTITY:-not configured}"
+  SSH_ARGS=(-i "$SSH_IDENTITY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+    -o ConnectTimeout=30 -o ConnectionAttempts=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+  if [[ -n "$SSH_BASTION" ]]; then
+    printf -v quoted_identity '%q' "$SSH_IDENTITY"
+    proxy_command="ssh -i ${quoted_identity} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -W %h:%p ${SSH_USER}@${SSH_BASTION}"
+    SSH_ARGS+=(-o "ProxyCommand=${proxy_command}")
+  fi
+}
+
+ssh_capture_with_retry() {
+  local destination="$1" host="$2" remote_command="$3" attempt temporary
+  temporary="${destination}.tmp"
+  for attempt in 1 2 3; do
+    rm -f "$temporary"
+    if ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${host}" "$remote_command" > "$temporary" \
+      && [[ -s "$temporary" ]]; then
+      mv "$temporary" "$destination"
+      return 0
+    fi
+    sleep $((attempt * 3))
+  done
+  rm -f "$temporary"
+  return 1
+}
+
+ssh_run_with_retry() {
+  local host="$1" remote_command="$2" attempt
+  for attempt in 1 2 3; do
+    if ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${host}" "$remote_command"; then
+      return 0
+    fi
+    sleep $((attempt * 3))
+  done
+  return 1
 }
 
 if [[ "$SKIP_CONTROL_PLANE" != true ]]; then
@@ -212,27 +344,30 @@ if [[ "$SKIP_CONTROL_PLANE" != true ]]; then
   [[ -n "$CONTROL_PLANE_HOST" ]] || fail "first control-plane host is absent from infra facts"
   build_ssh_args
   log "capturing verified etcd snapshot from $CONTROL_PLANE_HOST"
-  ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${CONTROL_PLANE_HOST}" \
-    'set -eu; . /etc/etcd.env; export ETCDCTL_API=3 ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl endpoint health --cluster' \
-    > "$STAGE_DIR/etcd/endpoint-health.txt"
+  ssh_capture_with_retry "$STAGE_DIR/etcd/endpoint-health.txt" "$CONTROL_PLANE_HOST" \
+    'set -eu; . /etc/etcd.env; export ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl endpoint health --cluster' \
+    || fail "etcd endpoint health capture failed after retries"
   # shellcheck disable=SC2029
-  ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${CONTROL_PLANE_HOST}" \
-    "set -eu; . /etc/etcd.env; export ETCDCTL_API=3 ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl snapshot save /tmp/${BACKUP_ID}.db >/dev/null; if command -v etcdutl >/dev/null; then etcdutl --write-out=json snapshot status /tmp/${BACKUP_ID}.db; else etcdctl --write-out=json snapshot status /tmp/${BACKUP_ID}.db; fi" \
-    > "$STAGE_DIR/etcd/snapshot-status.json"
+  ssh_capture_with_retry "$STAGE_DIR/etcd/snapshot-status.json" "$CONTROL_PLANE_HOST" \
+    "set -eu; rm -f /tmp/${BACKUP_ID}.db /tmp/${BACKUP_ID}.db.part; . /etc/etcd.env; export ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl snapshot save /tmp/${BACKUP_ID}.db >/dev/null; if command -v etcdutl >/dev/null; then etcdutl --write-out=json snapshot status /tmp/${BACKUP_ID}.db; else etcdctl --write-out=json snapshot status /tmp/${BACKUP_ID}.db; fi" \
+    || fail "etcd snapshot creation or verification failed after retries"
   # shellcheck disable=SC2029
-  ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${CONTROL_PLANE_HOST}" \
-    "cat /tmp/${BACKUP_ID}.db && rm -f /tmp/${BACKUP_ID}.db" > "$STAGE_DIR/etcd/snapshot.db"
+  ssh_capture_with_retry "$STAGE_DIR/etcd/snapshot.db" "$CONTROL_PLANE_HOST" \
+    "cat /tmp/${BACKUP_ID}.db" \
+    || fail "etcd snapshot transfer failed after retries"
   [[ -s "$STAGE_DIR/etcd/snapshot.db" ]] || fail "etcd snapshot is empty"
-  ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${CONTROL_PLANE_HOST}" \
-    'set -eu; . /etc/etcd.env; export ETCDCTL_API=3 ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl --write-out=json member list' \
-    > "$STAGE_DIR/etcd/members.json"
+  ssh_run_with_retry "$CONTROL_PLANE_HOST" "rm -f /tmp/${BACKUP_ID}.db /tmp/${BACKUP_ID}.db.part" \
+    || fail "transferred etcd snapshot could not be removed from the control plane"
+  ssh_capture_with_retry "$STAGE_DIR/etcd/members.json" "$CONTROL_PLANE_HOST" \
+    'set -eu; . /etc/etcd.env; export ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl --write-out=json member list' \
+    || fail "etcd membership capture failed after retries"
 
   log "capturing control-plane PKI and static configuration"
   while IFS=$'\t' read -r node host; do
     [[ -n "$host" ]] || continue
-    ssh -n "${SSH_ARGS[@]}" "${SSH_USER}@${host}" \
+    ssh_capture_with_retry "$STAGE_DIR/control-plane/${node}.tar.gz" "$host" \
       'tar --numeric-owner -C / -czf - etc/kubernetes etc/ssl/etcd etc/etcd.env' \
-      > "$STAGE_DIR/control-plane/${node}.tar.gz"
+      || fail "control-plane archive transfer failed after retries: $node"
     [[ -s "$STAGE_DIR/control-plane/${node}.tar.gz" ]] || fail "empty control-plane archive for $node"
   done < <(yq -r '.master_ips | to_entries | .[] | [.key,.value] | @tsv' "$INFRA_FACTS")
 fi
@@ -241,32 +376,51 @@ if [[ "$SKIP_CLOUD" != true ]]; then
   command -v hcloud >/dev/null || fail "hcloud is required for cloud-state capture"
   [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required for cloud-state capture"
   log "capturing Hetzner infrastructure state"
-  hcloud version > "$STAGE_DIR/cloud/hcloud-version.txt"
-  hcloud server list --selector "project=${PROJECT}" -o json > "$STAGE_DIR/cloud/servers.json"
+  hcloud_safe version > "$STAGE_DIR/cloud/hcloud-version.txt"
+  hcloud_safe server list --selector "project=${PROJECT}" -o json > "$STAGE_DIR/cloud/servers.json"
   for spec in "network:${PROJECT}-network" "firewall:${PROJECT}-fw-bastion" "firewall:${PROJECT}-fw-nodes" \
     "load-balancer:${PROJECT}-lb" "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DOMAIN}"; do
     kind=${spec%%:*}; name=${spec#*:}; safe_name=${name//[^[:alnum:]._-]/_}
     file="${kind//-/_}-${safe_name}"
-    describe_args=()
-    [[ "$kind" != load-balancer ]] || describe_args+=(--expand-targets)
-    if ! hcloud "$kind" describe "$name" "${describe_args[@]}" -o json > "$STAGE_DIR/cloud/${file}.json" 2> "$STAGE_DIR/cloud/${file}.error"; then
+    # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
+    # raises an unbound-variable error. Keep the optional argument branch
+    # explicit so cloud capture is portable and cannot silently truncate a
+    # recovery bundle before application-consistent backups run.
+    if [[ "$kind" == load-balancer ]]; then
+      if hcloud_safe "$kind" describe "$name" --expand-targets -o json \
+        > "$STAGE_DIR/cloud/${file}.json" 2> "$STAGE_DIR/cloud/${file}.error"; then
+        describe_rc=0
+      else
+        describe_rc=$?
+      fi
+    else
+      if hcloud_safe "$kind" describe "$name" -o json \
+        > "$STAGE_DIR/cloud/${file}.json" 2> "$STAGE_DIR/cloud/${file}.error"; then
+        describe_rc=0
+      else
+        describe_rc=$?
+      fi
+    fi
+    if (( describe_rc != 0 )); then
       printf '{"state":"absent","name":"%s"}\n' "$name" > "$STAGE_DIR/cloud/${file}.json"
     fi
   done
-  if hcloud zone describe "$DOMAIN" >/dev/null 2>&1; then
-    hcloud zone rrset list "$DOMAIN" -o json > "$STAGE_DIR/cloud/zone-rrsets.json"
+  if hcloud_safe zone describe "$DOMAIN" >/dev/null 2>&1; then
+    hcloud_safe zone rrset list "$DOMAIN" -o json > "$STAGE_DIR/cloud/zone-rrsets.json"
   fi
-  : > "$STAGE_DIR/cloud/volumes.jsonl"
-  while IFS= read -r volume_id; do
-    [[ -n "$volume_id" ]] || continue
-    hcloud volume describe "$volume_id" -o json >> "$STAGE_DIR/cloud/volumes.jsonl"
-  done < <(kubectl get pv -o json | jq -r '.items[] | select(.spec.csi.driver=="csi.hetzner.cloud") | .spec.csi.volumeHandle')
+  volume_ids=$(kubectl get pv -o json | jq '[.items[]
+    | select(.spec.csi.driver=="csi.hetzner.cloud")
+    | .spec.csi.volumeHandle | tonumber]')
+  hcloud_safe volume list -o json \
+    | jq --argjson ids "$volume_ids" -c '.[] | select(.id as $id | $ids | index($id))' \
+    > "$STAGE_DIR/cloud/volumes.jsonl"
 fi
 
 APP_BACKUP_RESULT=skipped
 if [[ "$RUN_APP_BACKUPS" == true ]]; then
   log "triggering application-consistent backups"
-  PROJECT_NAME="$PROJECT" "$SCRIPT_DIR/backup-all.sh" --config "$CONFIG_FILE" --force \
+  PROJECT_NAME="$PROJECT" BACKUP_ALLOW_VELERO_VAULT_FALLBACK=true \
+    "$SCRIPT_DIR/backup-all.sh" --config "$CONFIG_FILE" --force \
     | tee "$STAGE_DIR/application-backups/backup-all.log"
   APP_BACKUP_RESULT=completed
 fi
@@ -276,13 +430,29 @@ VELERO_BACKUP_RESULT=skipped
 if [[ "$RUN_VELERO_BACKUP" == true ]]; then
   log "triggering external Velero resource and PVC backup"
   kubectl wait backupstoragelocation/default -n velero --for=jsonpath='{.status.phase}'=Available --timeout=300s
-  kubectl get pods --all-namespaces -o json | jq -r '
+  PODS_SNAPSHOT="${WORK_DIR}/pods.json"
+  kubectl get pods --all-namespaces -o json > "$PODS_SNAPSHOT"
+  jq -r '
     .items[] as $pod
+    | select($pod.status.phase == "Running")
     | $pod.spec.volumes[]?
     | select(.persistentVolumeClaim != null)
     | [$pod.metadata.namespace, $pod.metadata.name, .name]
-    | @tsv' | sort -u > "$STAGE_DIR/application-backups/mounted-pod-volumes.expected.tsv"
-  VELERO_BACKUP_NAME="${BACKUP_ID,,}"
+    | @tsv' "$PODS_SNAPSHOT" | sort -u > "$STAGE_DIR/application-backups/mounted-pod-volumes.expected.tsv"
+  jq -r '
+    .items[] as $pod
+    | select($pod.status.phase == "Running")
+    | [$pod.spec.volumes[]? | select(.persistentVolumeClaim != null) | .name] as $volumes
+    | select($volumes | length > 0)
+    | [$pod.metadata.namespace, $pod.metadata.name,
+       ($pod.metadata.annotations["backup.velero.io/backup-volumes"] // "__ABSENT__"),
+       ($volumes | unique | sort | join(","))]
+    | @tsv' "$PODS_SNAPSHOT" | sort -u > "$POD_ANNOTATIONS_FILE"
+  while IFS=$'\t' read -r namespace pod _previous volumes; do
+    kubectl annotate pod -n "$namespace" "$pod" \
+      "backup.velero.io/backup-volumes=${volumes}" --overwrite >/dev/null
+  done < "$POD_ANNOTATIONS_FILE"
+  VELERO_BACKUP_NAME=$(printf '%s' "$BACKUP_ID" | tr '[:upper:]' '[:lower:]')
   VELERO_BACKUP_NAME=${VELERO_BACKUP_NAME//_/-}
   kubectl apply -f - <<EOF
 apiVersion: velero.io/v1
@@ -296,7 +466,7 @@ spec:
   includedNamespaces:
     - '*'
   includeClusterResources: true
-  defaultVolumesToFsBackup: true
+  defaultVolumesToFsBackup: false
   storageLocation: default
   ttl: ${VELERO_TTL_HOURS}h
 EOF
@@ -307,6 +477,16 @@ EOF
       Completed) VELERO_BACKUP_RESULT=completed; break ;;
       Failed|PartiallyFailed|FailedValidation) kubectl get backup "$VELERO_BACKUP_NAME" -n velero -o yaml > "$STAGE_DIR/application-backups/velero-backup.yaml"; fail "Velero backup ended in phase $phase" ;;
     esac
+    failed_volume_backups=$(kubectl get podvolumebackups -n velero \
+      -l "velero.io/backup-name=${VELERO_BACKUP_NAME}" -o json 2>/dev/null \
+      | jq '[.items[] | select((.status.phase // "") == "Failed")] | length' \
+      || echo 0)
+    if (( failed_volume_backups > 0 )); then
+      kubectl get podvolumebackups -n velero \
+        -l "velero.io/backup-name=${VELERO_BACKUP_NAME}" -o json \
+        > "$STAGE_DIR/application-backups/pod-volume-backups.json"
+      fail "$failed_volume_backups Velero filesystem backup(s) failed before the backup completed"
+    fi
     sleep 15
   done
   [[ "$VELERO_BACKUP_RESULT" == completed ]] || fail "Velero backup timed out"
@@ -325,6 +505,7 @@ EOF
     > "$STAGE_DIR/application-backups/mounted-pod-volumes.missing.tsv"
   [[ ! -s "$STAGE_DIR/application-backups/mounted-pod-volumes.missing.tsv" ]] \
     || fail "Velero did not create a completed filesystem backup for every mounted PVC volume"
+  restore_backup_annotations
 fi
 
 COMPLETENESS=complete

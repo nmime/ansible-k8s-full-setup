@@ -19,7 +19,7 @@
   register: _mongodb_backup_cluster
   retries: 12
   delay: 10
-  until: _mongodb_backup_cluster.resources | length == 1
+  until: (_mongodb_backup_cluster.resources | default([])) | length == 1
 
 - name: "Backup-MongoDB | Verify operator backup policy"
   ansible.builtin.assert:

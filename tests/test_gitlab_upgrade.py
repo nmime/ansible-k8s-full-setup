@@ -307,6 +307,25 @@ class TestRestoreDrillScriptUnit:
     def test_has_s3_bucket_flag(self):
         assert "--s3-bucket" in self.content
 
+    def test_has_in_cluster_s3_restore_contract(self):
+        assert "--s3-credentials-secret" in self.content
+        assert "--storage-size" in self.content
+        assert "gitlab-backup-downloader" in self.content
+        assert "s3api head-object" in self.content
+        assert "kubectl cp" not in self.content
+        assert "DOWNLOAD_DIR" not in self.content
+
+    def test_restore_is_fail_closed_and_network_isolated(self):
+        assert "gitlab-restore-network-isolation" in self.content
+        assert "policyTypes: [Ingress, Egress]" in self.content
+        assert "ResourceQuota" in self.content
+        assert "Unsafe absolute or parent-relative archive member" in self.content
+        assert "--no-same-owner --no-same-permissions" in self.content
+
+    def test_restore_metadata_uses_annotation_not_invalid_timestamp_label(self):
+        assert 'kubectl annotate namespace "$RESTORE_NS" restore-drill/created=' in self.content
+        assert 'kubectl label namespace "$RESTORE_NS" restore-drill/created=' not in self.content
+
     def test_has_set_euo_pipefail(self):
         assert "set -euo pipefail" in self.content
 
@@ -326,6 +345,13 @@ class TestRestoreDrillScriptUnit:
 
     def test_has_restore_job_deployment(self):
         assert "Job" in self.content and "restore" in self.content.lower()
+
+    def test_external_postgresql_is_verified_by_paired_native_drill(self):
+        assert "Percona pgBackRest backup" in self.content
+        assert "restore-postgresql" not in self.content
+
+    def test_archive_drill_rejects_an_embedded_database_dump(self):
+        assert "Unexpected database dump" in self.content
 
     def test_has_smoke_tests(self):
         assert "Smoke Test" in self.content or "smoke test" in self.content.lower()
@@ -489,16 +515,16 @@ class TestRestoreDrillStepOrdering:
 
     def test_namespace_created_before_restore(self):
         ns_pos = self.content.find("Create Isolated Namespace")
-        restore_pos = self.content.find("Deploy GitLab Restore Job")
+        restore_pos = self.content.find("Deploy GitLab Toolbox Archive Verification Job")
         assert ns_pos < restore_pos, "Namespace must be created before restore job"
 
     def test_backup_downloaded_before_restore(self):
         download_pos = self.content.find("Download Backup")
-        restore_pos = self.content.find("Deploy GitLab Restore Job")
+        restore_pos = self.content.find("Deploy GitLab Toolbox Archive Verification Job")
         assert download_pos < restore_pos, "Backup must be downloaded before restore"
 
     def test_smoke_tests_after_restore(self):
-        restore_pos = self.content.find("Deploy GitLab Restore Job")
+        restore_pos = self.content.find("Deploy GitLab Toolbox Archive Verification Job")
         smoke_pos = self.content.find("Smoke Test")
         assert smoke_pos > restore_pos, "Smoke tests must run after restore"
 
@@ -510,7 +536,7 @@ class TestRestoreDrillStepOrdering:
 
     def test_validation_before_restore(self):
         validation_pos = self.content.find("Validation")
-        restore_pos = self.content.find("Deploy GitLab Restore Job")
+        restore_pos = self.content.find("Deploy GitLab Toolbox Archive Verification Job")
         # Validation section should come before the actual restore deployment
         assert validation_pos < restore_pos, "Validation should precede restore"
 

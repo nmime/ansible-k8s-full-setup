@@ -7,6 +7,7 @@ SCRIPTS = os.path.join(REPO, "scripts")
 SCRIPT_FILES = [
     "upgrade-platform.sh", "rollback.sh",
     "snapshot-helm-baseline.sh", "health-gates.sh",
+    "live-tier-smoke.sh",
 ]
 
 def test_all_scripts_exist():
@@ -48,7 +49,45 @@ def test_health_gates_has_all():
     with open(os.path.join(SCRIPTS, "health-gates.sh")) as f:
         content = f.read()
     for kw in ["check_health_gates", "_hg_check_nodes", "_hg_check_cilium",
-               "_hg_check_cert_manager", "_hg_check_argocd", "_hg_check_databases"]:
+               "_hg_check_cert_manager", "_hg_check_argocd", "_hg_check_databases",
+               "_hg_check_workload_controllers", "_hg_check_storage_and_routes",
+               "_hg_check_security_baseline", "_hg_check_helm_releases"]:
         assert kw in content, f"Missing: {kw}"
     assert "containerStatuses" in content
+    argocd_gate = content.split("_hg_check_argocd()", 1)[1].split(
+        "_hg_check_databases()", 1
+    )[0]
+    assert 'select(.status.phase != "Succeeded")' in argocd_gate
     assert '.type == "Ready" and .status == "True"' in content
+    assert "HEALTH_EXPECTED_NODES" in content
+    assert "--config FILE|active" in content
+    assert "HEALTH_CONFIG_FILE" in content
+    assert ".databases.mongodb.enabled" in content
+    assert ".infrastructure.control_plane.count" in content
+    assert ".infrastructure.workers.count" in content
+    assert 'Unknown argument: $1' in content
+    assert 'health-gate-anonymous-probe' in content
+    assert '--dry-run=server' in content
+    assert '--as=system:anonymous' in content
+
+
+def test_platform_health_check_derives_exact_profile_node_count():
+    with open(os.path.join(REPO, "platform-orchestrator", "platform.sh")) as f:
+        content = f.read()
+    assert ".infrastructure.control_plane.count" in content
+    assert ".infrastructure.workers.count" in content
+    assert 'HEALTH_EXPECTED_NODES="$expected_nodes"' in content
+
+
+def test_live_tier_smoke_covers_foundation_data_paths():
+    with open(os.path.join(SCRIPTS, "live-tier-smoke.sh")) as f:
+        content = f.read()
+    for contract in ["smoke_s3", "smoke_postgresql", "smoke_vault",
+                     "smoke_keda_aggregated_api", "external.metrics.k8s.io",
+                     "vmsingle-vmsingle", "smoke_logs", "loki-gateway",
+                     "ELASTIC_PASSWORD", "_cluster/health", "grafana.monitoring",
+                     "argocd-server", "smoke_gateway_routes"]:
+        assert contract in content
+    assert "--dry-run" in content
+    assert "kubectl delete pod" in content
+    assert 'kubectl run "$pod" -n default --rm --attach=true --restart=Never' in content

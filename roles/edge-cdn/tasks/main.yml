@@ -399,12 +399,12 @@
             targetPort: 9100
   loop: "{{ edge_server_ips | dict2items }}"
 
-- name: Create ServiceMonitor for all edge servers
+- name: Create VMServiceScrape for all edge servers
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
       metadata:
         name: edge-proxies
         namespace: "{{ monitoring_namespace | default('monitoring') }}"
@@ -422,8 +422,8 @@
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: PrometheusRule
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
       metadata:
         name: edge-proxy-alerts
         namespace: "{{ monitoring_namespace | default('monitoring') }}"
@@ -484,5 +484,5 @@
       Auto-failover: enabled (unhealthy servers removed)
       TLS: Let's Encrypt (auto-renew weekly)
       Cache: {{ edge_cache_size }} per edge
-      Monitoring: node-exporter + ServiceMonitor
+      Monitoring: node-exporter + VMServiceScrape
       ========================================

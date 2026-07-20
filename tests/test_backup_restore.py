@@ -11,6 +11,7 @@ PROJECT_DEFAULTS = REPO_ROOT / "defaults" / "main.yml"
 BACKUP_SCRIPT = REPO_ROOT / "scripts" / "backup-all.sh"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore-drill.sh"
 MONGODB_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "mongodb-restore-drill.sh"
+SEAWEEDFS_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "seaweedfs-restore-drill.sh"
 BACKUP_DOC = REPO_ROOT / "BACKUP_RESTORE.md"
 
 def load_yaml(path):
@@ -90,6 +91,18 @@ class TestMainInclusion:
         assert "kind: Namespace" in c and "state: present" in c
     def test_secret(self): assert "backup-storage-credentials" in self._c()
 
+
+def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
+    content = (TASKS_DIR / "velero.yml").read_text()
+    assert "Replace the controller-mutated Helm schedule safely" in content
+    assert "name: velero-full-cluster" in content
+    assert "node-role.kubernetes.io/control-plane" in content
+    assert "node-role.kubernetes.io/master" in content
+    assert "Prove node-agent coverage on every schedulable node" in content
+    assert "backup_dr_velero_helm is succeeded" in content
+    assert "force_conflicts: true" in content
+    assert "retries: 3" in content
+
 CJ = [("vault_raft.yml","vault-raft-snapshot"),
       ("seaweedfs.yml","seaweedfs-backup-check"),("gitlab.yml","gitlab-rails-secrets-backup"),
       ("verification.yml","backup-verification")]
@@ -120,6 +133,55 @@ class TestCronJob:
     @pytest.mark.parametrize("f,n", CJ)
     def test_limits(self, f, n): assert "limits:" in (TASKS_DIR / f).read_text()
 
+
+def test_vault_backup_containers_use_restricted_security_contexts():
+    content = (TASKS_DIR / "vault_raft.yml").read_text()
+    assert content.count("allowPrivilegeEscalation: false") >= 2
+    assert content.count('drop: ["ALL"]') >= 2
+    assert "runAsNonRoot: true" in content
+
+
+def test_vault_snapshot_failure_stops_the_uploader_without_hanging():
+    content = (TASKS_DIR / "vault_raft.yml").read_text()
+
+    assert "/backup/failed" in content
+    assert "Vault snapshot container failed with exit code" in content
+    assert "type: RuntimeDefault" in content
+    assert 'chmod 0640 "${SF}"' in content
+    assert '] && aws --endpoint-url=' not in content
+
+
+def test_vault_snapshot_targets_the_active_raft_service():
+    defaults = (ROLE_DIR / "defaults" / "main.yml").read_text()
+    tasks = (TASKS_DIR / "vault_raft.yml").read_text()
+
+    assert "vault-active.{{ backup_vault_namespace }}.svc.cluster.local:8200" in defaults
+    assert "vault-active.vault.svc.cluster.local:8200" in tasks
+
+
+def test_backup_component_detection_is_pipefail_safe_for_multiple_pods():
+    content = (REPO_ROOT / "scripts" / "backup-all.sh").read_text()
+
+    assert "jq -e '.items | length > 0'" in content
+    assert "-o name 2>/dev/null | grep -q" not in content
+
+
+def test_vault_raft_schedule_is_suspended_for_legacy_file_storage():
+    content = (TASKS_DIR / "vault_raft.yml").read_text()
+    assert "Detect active Vault storage backend" in content
+    assert "vault status -format=json" in content
+    assert "backup_vault_raft_snapshot_suspended" in content
+    assert 'suspend: "{{ backup_vault_raft_snapshot_suspended }}"' in content
+
+
+def test_seaweedfs_backup_namespace_is_rendered_by_ansible():
+    content = (TASKS_DIR / "seaweedfs.yml").read_text()
+    assert "seaweedfs-master.{{ backup_seaweedfs_namespace }}.svc.cluster.local" in content
+    assert "${backup_seaweedfs_namespace}" not in content
+    assert ":9333/dir/status" in content
+    assert "/volume/topology" not in content
+    assert '] && aws --endpoint-url=' not in content
+
 class TestSecrets:
     def test_main_creds(self):
         c = (TASKS_DIR / "main.yml").read_text()
@@ -131,6 +193,13 @@ class TestSecrets:
     def test_alert(self):
         c = (TASKS_DIR / "alerts.yml").read_text()
         assert "backup-alert-config" in c and "WEBHOOK_URL" in c
+        assert "serviceAccountName: backup-alert-check" in c
+        assert "resources: [\"pods\"]" in c
+        assert 'verbs: ["get", "list"]' in c
+        assert "KUBERNETES_SERVICE_HOST" in c
+        assert "apk add" not in c
+        assert "allowPrivilegeEscalation: false" in c
+        assert 'drop: ["ALL"]' in c
 
 class TestBackupScript:
     def test_exists(self): assert BACKUP_SCRIPT.is_file()
@@ -142,12 +211,40 @@ class TestBackupScript:
         c = BACKUP_SCRIPT.read_text()
         for f in ("--help","--dry-run","--force","--component"): assert f in c
     def test_kubectl_gate(self): assert "kubectl cluster-info" in BACKUP_SCRIPT.read_text()
+    def test_storage_probe_is_restricted(self):
+        c = BACKUP_SCRIPT.read_text()
+        assert "probe_overrides=" in c
+        assert "allowPrivilegeEscalation:false" in c
+    def test_postgresql_gate_defaults_to_object_storage_repo(self):
+        c = BACKUP_SCRIPT.read_text()
+        assert "PROJECT_NAME=$(yq -r '.global.project" in c
+        assert 'global.project is required in $CONFIG_FILE' in c
+        assert 'BACKUP_POSTGRESQL_REPO:-repo2' in c
+        assert 'repoName: ${repo}' in c
+        assert "FAIL-missing-${repo}" in c
+        assert 'drop:["ALL"]' in c
+        assert "seccompProfile" in c
+        assert "runAsUser:100" in c
+        assert 'BACKUP_POSTGRESQL_TIMEOUT_SECONDS:-1800' in c
+        assert "-o jsonpath='{.status.jobName}'" in c
+        assert '.type == "Failed" and .status == "True"' in c
+        assert 'kubectl logs "job/${job_name}"' in c
+    def test_gitlab_gate_rejects_silently_skipped_buckets(self):
+        c = BACKUP_SCRIPT.read_text()
+        assert "GitLab Toolbox completed after skipping" in c
+        assert "FAIL-incomplete" in c
+        assert "Unable to check existence of bucket" in c
     def test_confirm_gate(self):
         c = BACKUP_SCRIPT.read_text()
         assert "read" in c and "yes" in c.lower()
     def test_components(self):
         c = BACKUP_SCRIPT.read_text()
-        for x in ("mongodb","vault","seaweedfs","gitlab"): assert x in c
+        for x in ("postgresql","mongodb","vault","seaweedfs","gitlab"): assert x in c
+    def test_file_backed_vault_fallback_is_explicit_and_opt_in(self):
+        c = BACKUP_SCRIPT.read_text()
+        assert "BACKUP_ALLOW_VELERO_VAULT_FALLBACK" in c
+        assert "vault: VELERO-FALLBACK" in c
+        assert "native backup requires integrated Raft" in c
     def test_summary(self): assert "SUMMARY" in BACKUP_SCRIPT.read_text()
 
 class TestRestoreScript:
@@ -168,6 +265,7 @@ class TestRestoreScript:
         assert "ResourceQuota" in (REPO_ROOT / "scripts" / "vault-restore-drill.sh").read_text()
         assert "ResourceQuota" in (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text()
         assert "ResourceQuota" in MONGODB_RESTORE_SCRIPT.read_text()
+        assert "ResourceQuota" in SEAWEEDFS_RESTORE_SCRIPT.read_text()
     def test_cleanup(self): assert "cleanup" in RESTORE_SCRIPT.read_text().lower()
     def test_components(self):
         c = RESTORE_SCRIPT.read_text()
@@ -177,6 +275,42 @@ class TestRestoreScript:
         c = RESTORE_SCRIPT.read_text()
         assert "mongodb-restore-drill.sh" in c
         assert MONGODB_RESTORE_SCRIPT.is_file()
+    def test_postgresql_dispatch(self):
+        c = RESTORE_SCRIPT.read_text()
+        assert "pg-restore-drill.sh" in c
+        assert "--backup-set" in c
+    def test_seaweedfs_dispatch(self):
+        c = RESTORE_SCRIPT.read_text()
+        assert "seaweedfs-restore-drill.sh" in c
+        assert SEAWEEDFS_RESTORE_SCRIPT.is_file()
+    def test_seaweedfs_syntax(self):
+        r = subprocess.run(["bash", "-n", str(SEAWEEDFS_RESTORE_SCRIPT)], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+    def test_seaweedfs_restore_contract(self):
+        c = SEAWEEDFS_RESTORE_SCRIPT.read_text()
+        for required in (
+            "PodVolumeBackup",
+            "PodVolumeRestore",
+            "snapshotID",
+            "restore-wait",
+            "existingResourcePolicy: none",
+            "restorePVs: false",
+            "kind: NetworkPolicy",
+            "automountServiceAccountToken: false",
+            "readOnly: true",
+            "allowPrivilegeEscalation: false",
+            'capabilities:',
+            'drop: ["ALL"]',
+            "readOnlyRootFilesystem: true",
+            "requests.storage",
+            "allowed_warning_count",
+        ):
+            assert required in c
+        assert "pvr_count=$(jq '.items | length'" in c
+        assert '[[ "$pvr_count" -eq 1 ]]' in c
+        assert '[[ "$restore_errors" -eq 0 ]]' in c
+        assert '"$pvr_bytes" -eq "$backup_bytes"' in c
+        assert "--skip-cleanup" in c
     def test_mongodb_syntax(self):
         r = subprocess.run(["bash", "-n", str(MONGODB_RESTORE_SCRIPT)], capture_output=True, text=True, timeout=10)
         assert r.returncode == 0, r.stderr
@@ -186,6 +320,25 @@ class TestRestoreScript:
         assert "backupSource" in c
         assert "mongosh" in c
         assert "ResourceQuota" in c
+        assert "--storage-size" in c
+        assert "requests.storage = $storage_size" in c
+        assert ".tolerations = []" in c
+        assert ".spec.backup.enabled = true" in c
+        assert ".spec.backup.tasks = []" in c
+        assert ".spec.backup.pitr.enabled = false" in c
+        assert 'SOURCE_USERS_SECRET="internal-${SOURCE_CLUSTER}-users"' in c
+        assert ".spec.secrets.users // $fallback" in c
+        assert "del(.spec.sharding.mongos, .spec.sharding.configsvrReplSet)" in c
+        assert ".spec.mongos" not in c
+        quota = c.split("kind: ResourceQuota", 1)[1].split("EOF", 1)[0]
+        assert "requests.cpu" not in quota
+        cleanup = c.split("cleanup()", 1)[1].split("trap cleanup EXIT", 1)[0]
+        assert cleanup.index("kubectl delete perconaservermongodbrestore") < cleanup.index(
+            "helm uninstall"
+        )
+        assert cleanup.index("kubectl delete perconaservermongodb") < cleanup.index(
+            "helm uninstall"
+        )
 
 class TestDocumentation:
     def test_exists(self): assert BACKUP_DOC.is_file()
@@ -204,7 +357,7 @@ class TestIntegration:
     def test_defaults_valid(self): assert isinstance(load_yaml(DEFAULTS_FILE), dict)
     def test_current_version_matrix_is_preserved(self):
         d = load_yaml(PROJECT_DEFAULTS)
-        assert d.get("k8s_version") == "v1.35.6"
+        assert d.get("k8s_version") == "v1.35.4"
         assert d.get("cilium_version") == "v1.19.5"
         assert d.get("es_version") == "9.4.3"
         assert d.get("gitlab_chart_version") == "10.1.2"

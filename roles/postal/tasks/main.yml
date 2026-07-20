@@ -45,6 +45,14 @@
         MARIADB_DATABASE: postal
         MARIADB_USER: postal
 
+- name: Reconcile Postal MariaDB storage growth without replacing claims
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: '{{ p_ns }}'
+    storage_reconcile_statefulset: postal-mariadb
+    storage_reconcile_claim: data
+    storage_reconcile_desired: '{{ postal_mariadb_storage }}'
+
 - name: Deploy MariaDB StatefulSet
   kubernetes.core.k8s:
     state: present
@@ -154,7 +162,7 @@
             password: {{ p_db_password }}
             database_name_prefix: postal
           smtp_server:
-            default_port: 25
+            default_port: 2525
             default_bind_address: "::"
             max_message_size: {{ postal_max_message_size }}
             default_health_server_port: 9091
@@ -177,6 +185,104 @@
             password: {{ p_queue_password }}
           logging:
             enabled: true
+
+- name: Wait for Postal MariaDB before schema reconciliation
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - statefulset/postal-mariadb
+      - -n
+      - '{{ p_ns }}'
+      - --timeout=10m
+  changed_when: false
+
+- name: Detect whether the Postal baseline schema exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - '{{ p_ns }}'
+      - postal-mariadb-0
+      - --
+      - sh
+      - -ec
+      - >-
+        mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -Nse
+        "SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema='postal' AND table_name='authie_sessions';"
+  register: _postal_schema_exists
+  changed_when: false
+  # A StatefulSet rollout can become Ready just before MariaDB recreates its
+  # local socket during a resource-driven restart. Gate on the actual SQL data
+  # path so profile migrations do not fail on that narrow startup race.
+  retries: 30
+  delay: 2
+  until: _postal_schema_exists.rc == 0
+
+- name: Remove the previous Postal schema reconciliation job
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    name: postal-schema-reconcile
+    namespace: '{{ p_ns }}'
+    wait: true
+
+- name: Initialize or update the Postal database schema
+  kubernetes.core.k8s:
+    state: present
+    wait: true
+    wait_timeout: 900
+    wait_condition:
+      type: Complete
+      status: 'True'
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-schema-reconcile
+        namespace: '{{ p_ns }}'
+      spec:
+        backoffLimit: 2
+        ttlSecondsAfterFinished: 3600
+        template:
+          metadata:
+            labels:
+              app: postal-schema-reconcile
+          spec:
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 999
+              runAsGroup: 999
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: schema
+                image: '{{ p_img }}'
+                command:
+                  - postal
+                  - "{{ 'update' if (_postal_schema_exists.stdout | int) > 0 else 'initialize' }}"
+                env:
+                  - name: POSTAL_CONFIG_FILE_PATH
+                    value: /config/postal.yml
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                    readOnly: true
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: [ALL]
+                    add: [NET_BIND_SERVICE]
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
 
 - name: Deploy Postal components
   kubernetes.core.k8s:
@@ -202,6 +308,12 @@
               app: postal
               component: "{{ item.name }}"
           spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 999
+              runAsGroup: 999
+              seccompProfile:
+                type: RuntimeDefault
             containers:
               - name: "{{ item.name }}"
                 image: "{{ p_img }}"
@@ -221,6 +333,11 @@
                   limits:
                     cpu: "{{ item.cpu_lim }}"
                     memory: "{{ item.mem_lim }}"
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: [ALL]
+                    add: [NET_BIND_SERVICE]
             volumes:
               - name: config
                 secret:
@@ -240,7 +357,7 @@
       command: [postal, smtp-server]
       replicas: "{{ postal_smtp_replicas }}"
       ports:
-        - containerPort: 25
+        - containerPort: 2525
           name: smtp
         - containerPort: 9091
           name: health
@@ -299,11 +416,11 @@
         ports:
           - name: smtp
             port: 25
-            targetPort: 25
+            targetPort: 2525
             protocol: TCP
           - name: submission
             port: 587
-            targetPort: 25
+            targetPort: 2525
             protocol: TCP
 
 - name: Create Postal web HTTPRoute

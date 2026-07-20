@@ -11,6 +11,7 @@
 #   --backup-set         pgBackRest backup set label (default: latest)
 #   --operator-version   PG Operator Helm chart version (default: 3.0.0)
 #   --namespace          Drill namespace (default: pg-upgrade-drill)
+#   --storage-size       Size of each disposable data/repository PVC (default: 20Gi)
 #   --ttl-hours          Auto-cleanup TTL (default: 24)
 #   --skip-cleanup       Do not clean up after drill
 #   --dry-run            Plan review only
@@ -41,15 +42,63 @@ S3_BUCKET="${PGBACKREST_BUCKET:-pgbackrest-backups}"
 BACKUP_SET="latest"
 OPERATOR_VERSION="${PG_OPERATOR_VERSION:-3.0.0}"
 DRILL_NS="pg-upgrade-drill"
+STORAGE_SIZE="20Gi"
 TTL_HOURS=24
 SKIP_CLEANUP=false
 DRY_RUN=false
+POSTGRES_IMAGE="${PG_RESTORE_POSTGRES_IMAGE:-percona/percona-distribution-postgresql:18.4-1}"
+PGBACKREST_IMAGE="${PG_RESTORE_PGBACKREST_IMAGE:-percona/percona-pgbackrest:2.58.0-2}"
+DRILL_CREATED=false
 
 DRILL_PASS=0
 DRILL_FAIL=0
 
 drill_pass() { DRILL_PASS=$((DRILL_PASS + 1)); pass "$*"; }
 drill_fail() { DRILL_FAIL=$((DRILL_FAIL + 1)); fail "$*"; }
+
+cleanup_drill() {
+  [[ "$DRILL_CREATED" == true ]] || return 0
+  if kubectl get namespace "$DRILL_NS" >/dev/null 2>&1; then
+    # Keep the namespace-scoped operator alive until it removes both the
+    # Percona and upstream PostgreSQL finalizers. Deleting the namespace first
+    # strands it in Terminating with no controller left to finalize the CRs.
+    if kubectl get perconapgcluster pg-drill-cluster -n "$DRILL_NS" >/dev/null 2>&1; then
+      kubectl delete perconapgcluster pg-drill-cluster -n "$DRILL_NS" \
+        --wait=true --timeout=10m || warn "Timed out finalizing the disposable PostgreSQL cluster"
+    fi
+    kubectl wait --for=delete postgrescluster/pg-drill-cluster -n "$DRILL_NS" \
+      --timeout=10m >/dev/null 2>&1 \
+      || warn "Timed out finalizing the operator's upstream PostgreSQL cluster"
+    while IFS= read -r backup; do
+      [[ -n "$backup" ]] || continue
+      kubectl delete "$backup" -n "$DRILL_NS" --wait=false >/dev/null 2>&1 || true
+      if ! kubectl wait --for=delete "$backup" -n "$DRILL_NS" --timeout=2m \
+        >/dev/null 2>&1; then
+        # The operator may create a final repo1 backup while deleting the
+        # disposable cluster. If that best-effort backup fails, it has no DR
+        # value and must not strand the drill namespace after its controller is
+        # removed. This force-finalization is scoped only to the drill namespace.
+        kubectl patch "$backup" -n "$DRILL_NS" --type=merge \
+          -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+        kubectl delete "$backup" -n "$DRILL_NS" --wait=false >/dev/null 2>&1 || true
+      fi
+    done < <(kubectl get perconapgbackup -n "$DRILL_NS" -o name 2>/dev/null || true)
+    helm uninstall percona-pg-operator -n "$DRILL_NS" --wait --timeout 5m \
+      >/dev/null 2>&1 || true
+    kubectl delete namespace "$DRILL_NS" --wait=true --timeout=10m >/dev/null 2>&1 \
+      || warn "Timed out deleting namespace $DRILL_NS"
+  fi
+  DRILL_CREATED=false
+}
+
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2329
+cleanup_on_exit() {
+  local rc=$?
+  if [[ "$SKIP_CLEANUP" == false ]]; then cleanup_drill; fi
+  return "$rc"
+}
+trap cleanup_on_exit EXIT
 
 # ── Parse arguments ─────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -61,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --backup-set)       BACKUP_SET="$2"; shift 2 ;;
     --operator-version) OPERATOR_VERSION="$2"; shift 2 ;;
     --namespace)        DRILL_NS="$2"; shift 2 ;;
+    --storage-size)     STORAGE_SIZE="$2"; shift 2 ;;
     --ttl-hours)        TTL_HOURS="$2"; shift 2 ;;
     --skip-cleanup)     SKIP_CLEANUP=true; shift ;;
     --dry-run)          DRY_RUN=true; shift ;;
@@ -71,8 +121,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "$STORAGE_SIZE" =~ ^[1-9][0-9]*(Mi|Gi|Ti)$ ]] \
+  || { fail "--storage-size must be a positive Kubernetes binary quantity (for example 10Gi)"; exit 2; }
+
 # ─────────────────────────────────────────────────────────────────
-section "PG Operator 2 → 3 Restore Drill"
+section "PostgreSQL Isolated Restore Drill"
 info "Source: $PG_NS/$PG_CLUSTER | Drill NS: $DRILL_NS | Operator: $OPERATOR_VERSION"
 
 if [ "$DRY_RUN" = "true" ]; then
@@ -122,17 +175,26 @@ drill_pass "cluster reachable"
 [ -n "$S3_ENDPOINT" ] || { drill_fail "S3_ENDPOINT not set"; exit 1; }
 drill_pass "S3_ENDPOINT configured"
 
+SOURCE_JSON=$(kubectl get perconapgcluster "$PG_CLUSTER" -n "$PG_NS" -o json) \
+  || { drill_fail "Source PostgreSQL cluster $PG_NS/$PG_CLUSTER was not found"; exit 1; }
+POSTGRES_IMAGE=$(jq -r --arg fallback "$POSTGRES_IMAGE" '.spec.image // $fallback' <<<"$SOURCE_JSON")
+PGBACKREST_IMAGE=$(jq -r --arg fallback "$PGBACKREST_IMAGE" \
+  '.spec.backups.pgbackrest.image // $fallback' <<<"$SOURCE_JSON")
+drill_pass "Source images pinned from the live cluster"
+
 # ── Step 1: Isolated namespace ────────────────────────────────
 section "Step 1: Isolated Namespace"
 
 # Clean up if namespace exists
 if kubectl get ns "$DRILL_NS" &>/dev/null; then
   warn "Namespace '$DRILL_NS' exists — cleaning up"
-  kubectl delete ns "$DRILL_NS" --wait --timeout=5m
+  DRILL_CREATED=true
+  cleanup_drill
   sleep 5
 fi
 
 kubectl create ns "$DRILL_NS"
+DRILL_CREATED=true
 kubectl label ns "$DRILL_NS" app.kubernetes.io/part-of=pg-restore-drill \
   backup-restore.io/drill=true --overwrite
 
@@ -144,12 +206,9 @@ metadata:
   name: pg-drill-quota
 spec:
   hard:
-    requests.cpu: "4"
-    requests.memory: 8Gi
-    limits.cpu: "8"
-    limits.memory: 16Gi
     pods: "10"
     persistentvolumeclaims: "5"
+    requests.storage: 100Gi
 EOF
 
 # Auto-cleanup CronJob
@@ -173,7 +232,7 @@ spec:
           serviceAccountName: default
           containers:
             - name: cleanup
-              image: registry.k8s.io/kubectl:v1.35.6
+              image: registry.k8s.io/kubectl:v1.35.4
               command: ["/bin/sh","-c","kubectl delete ns ${DRILL_NS} --ignore-not-found"]
 EOF
   info "Auto-cleanup CronJob installed (TTL ${TTL_HOURS}h)"
@@ -245,7 +304,7 @@ metadata:
     app.kubernetes.io/part-of: pg-restore-drill
 spec:
   crVersion: ${OPERATOR_VERSION}
-  image: percona/percona-distribution-postgresql:18.3-1
+  image: ${POSTGRES_IMAGE}
   postgresVersion: 18
   dataSource:
     pgbackrest:
@@ -269,10 +328,10 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 20Gi
+            storage: ${STORAGE_SIZE}
   backups:
     pgbackrest:
-      image: percona/pgbackrest:2.58.0-2
+      image: ${PGBACKREST_IMAGE}
       configuration:
         - secret:
             name: ${S3_SECRET}
@@ -286,7 +345,7 @@ spec:
               accessModes: ["ReadWriteOnce"]
               resources:
                 requests:
-                  storage: 20Gi
+                  storage: ${STORAGE_SIZE}
         - name: repo2
           s3:
             bucket: ${S3_BUCKET}
@@ -315,7 +374,7 @@ fi
 section "Step 5: Data Integrity"
 
 DRILL_PRIMARY=$(kubectl get pod -n "$DRILL_NS" \
-  -l "postgres-operator.crunchydata.com/cluster=pg-drill-cluster,postgres-operator.crunchydata.com/role=master" \
+  -l "postgres-operator.crunchydata.com/cluster=pg-drill-cluster,postgres-operator.crunchydata.com/role=primary" \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 if [ -z "$DRILL_PRIMARY" ]; then
   drill_fail "Restored primary pod was not found"
@@ -364,23 +423,33 @@ fi
 # ── Step 6: Replication ───────────────────────────────────────
 section "Step 6: Replication"
 
-REPL=$(kubectl exec -n "$DRILL_NS" "$DRILL_PRIMARY" -- psql -U postgres -t -A \
-  -c "SELECT count(*) FROM pg_stat_replication;" 2>/dev/null || echo "0")
+REPL=0
+for _ in $(seq 1 60); do
+  REPL=$(kubectl exec -n "$DRILL_NS" "$DRILL_PRIMARY" -- psql -U postgres -t -A \
+    -c "SELECT count(*) FROM pg_stat_replication;" 2>/dev/null || echo "0")
+  [ "$REPL" -gt 0 ] 2>/dev/null && break
+  sleep 10
+done
 if [ "$REPL" -gt 0 ] 2>/dev/null; then
   drill_pass "$REPL replica(s) streaming"
 else
-  info "No replicas (single-instance drill?)"
+  drill_fail "No streaming replica became available within 10m"
 fi
 
 # ── Step 7: Connectivity ──────────────────────────────────────
 section "Step 7: Connectivity"
 
-PG_PASSWORD=$(kubectl get secret pg-drill-cluster-pguser-postgres -n "$DRILL_NS" \
-  -o jsonpath='{.data.password}' | base64 -d)
+PG_USER_SECRET=$(kubectl get secret -n "$DRILL_NS" \
+  -l "postgres-operator.crunchydata.com/cluster=pg-drill-cluster,postgres-operator.crunchydata.com/role=pguser" \
+  -o jsonpath='{.items[0].metadata.name}')
+PG_USER=$(kubectl get secret "$PG_USER_SECRET" -n "$DRILL_NS" -o jsonpath='{.data.user}' | base64 -d)
+PG_PASSWORD=$(kubectl get secret "$PG_USER_SECRET" -n "$DRILL_NS" -o jsonpath='{.data.password}' | base64 -d)
+PG_DATABASE=$(kubectl get secret "$PG_USER_SECRET" -n "$DRILL_NS" -o jsonpath='{.data.dbname}' | base64 -d)
+PG_HOST=$(kubectl get secret "$PG_USER_SECRET" -n "$DRILL_NS" -o jsonpath='{.data.host}' | base64 -d)
 CONN=$(kubectl run -n "$DRILL_NS" pg-drill-test --rm -i --restart=Never \
   --env="PGPASSWORD=$PG_PASSWORD" \
   --image=postgres:18.2-alpine3.23 --command -- psql \
-  "host=pg-drill-cluster-primary port=5432 dbname=postgres user=postgres" \
+  "host=$PG_HOST port=5432 dbname=$PG_DATABASE user=$PG_USER" \
   -t -A -c "SELECT 'ok' AS conn;" 2>/dev/null || echo "")
 if grep -q "ok" <<<"$CONN"; then
   drill_pass "Connectivity OK"
@@ -402,9 +471,9 @@ fi
 # ── Cleanup ────────────────────────────────────────────────────
 if [ "$SKIP_CLEANUP" = "false" ]; then
   section "Step 8: Cleanup"
-  info "Deleting namespace $DRILL_NS..."
-  kubectl delete ns "$DRILL_NS" --wait=false
-  drill_pass "Cleanup initiated"
+  info "Finalizing the disposable cluster before deleting namespace $DRILL_NS..."
+  cleanup_drill
+  drill_pass "Cleanup completed"
 fi
 
 rm -f /tmp/pg-drill-spec.yaml

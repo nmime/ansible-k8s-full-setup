@@ -15,6 +15,18 @@
     project_name: "{{ project_name | default('k8s') }}"
 
   pre_tasks:
+    - name: Check for persisted infrastructure facts
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
+      register: persisted_infra_facts
+      tags: [always]
+
+    - name: Load persisted infrastructure facts for component-only runs
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
+      when: persisted_infra_facts.stat.exists
+      tags: [always]
+
     - name: Display deployment banner
       debug:
         msg:

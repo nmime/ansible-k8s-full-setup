@@ -24,6 +24,7 @@
     values:
       replicas: "{{ blackbox_replicas | int }}"
       image:
+        registry: "{{ blackbox_image_registry }}"
         repository: "{{ blackbox_image }}"
       resources:
         requests:

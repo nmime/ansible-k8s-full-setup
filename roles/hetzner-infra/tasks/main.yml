@@ -604,16 +604,26 @@
 
 - name: Create bastion server
   ansible.builtin.command:
-    cmd: >
-      hcloud server create
-      --name {{ project }}-bastion
-      --type {{ bastion_type }}
-      --image {{ hetzner_image | default('ubuntu-24.04') }}
-      --location {{ region }}
-      --ssh-key {{ hcloud_ssh_key }}
-      --network {{ project }}-network
-      --firewall {{ project }}-fw-bastion
-      --label project={{ project }},role=bastion
+    argv:
+      - hcloud
+      - server
+      - create
+      - --name
+      - "{{ project }}-bastion"
+      - --type
+      - "{{ bastion_type }}"
+      - --image
+      - "{{ hetzner_image | default('ubuntu-24.04') }}"
+      - --location
+      - "{{ region }}"
+      - --ssh-key
+      - "{{ hcloud_ssh_key }}"
+      - --network
+      - "{{ project }}-network"
+      - --firewall
+      - "{{ project }}-fw-bastion"
+      - --label
+      - "project={{ project }},role=bastion"
   when: bastion_check.rc != 0
 
 - name: Get bastion public IP
@@ -659,19 +669,23 @@
 
 - name: Create control plane servers
   ansible.builtin.command:
-    cmd: >
-      hcloud server create
-      --name {{ project }}-master-{{ item }}
-      --type {{ cp_type }}
-      --image {{ hetzner_image | default('ubuntu-24.04') }}
-      --location {{ region }}
-      --ssh-key {{ hcloud_ssh_key }}
-      --network {{ project }}-network
-      --firewall {{ project }}-fw-nodes
-      --without-ipv4
-      --without-ipv6
-      --label project={{ project }},role=master,index={{ item }}
-      {{ '--placement-group ' + project + '-spread' if infra_tier in ['medium', 'production'] else '' }}
+    argv: >-
+      {{
+        [
+          'hcloud', 'server', 'create',
+          '--name', project + '-master-' + (item | string),
+          '--type', cp_type,
+          '--image', hetzner_image | default('ubuntu-24.04'),
+          '--location', region,
+          '--ssh-key', hcloud_ssh_key,
+          '--network', project + '-network',
+          '--firewall', project + '-fw-nodes',
+          '--without-ipv4', '--without-ipv6',
+          '--label', 'project=' + project + ',role=master,index=' + (item | string)
+        ]
+        + (['--placement-group', project + '-spread']
+           if infra_tier in ['medium', 'production'] else [])
+      }}
   loop: "{{ range(1, (cp_count | int) + 1) | list }}"
   when: master_check.results[item - 1].rc != 0
 
@@ -689,19 +703,23 @@
 
 - name: Create worker servers
   ansible.builtin.command:
-    cmd: >
-      hcloud server create
-      --name {{ project }}-worker-{{ item }}
-      --type {{ worker_type }}
-      --image {{ hetzner_image | default('ubuntu-24.04') }}
-      --location {{ region }}
-      --ssh-key {{ hcloud_ssh_key }}
-      --network {{ project }}-network
-      --firewall {{ project }}-fw-nodes
-      --without-ipv4
-      --without-ipv6
-      --label project={{ project }},role=worker,index={{ item }}
-      {{ '--placement-group ' + project + '-spread' if infra_tier in ['medium', 'production'] else '' }}
+    argv: >-
+      {{
+        [
+          'hcloud', 'server', 'create',
+          '--name', project + '-worker-' + (item | string),
+          '--type', worker_type,
+          '--image', hetzner_image | default('ubuntu-24.04'),
+          '--location', region,
+          '--ssh-key', hcloud_ssh_key,
+          '--network', project + '-network',
+          '--firewall', project + '-fw-nodes',
+          '--without-ipv4', '--without-ipv6',
+          '--label', 'project=' + project + ',role=worker,index=' + (item | string)
+        ]
+        + (['--placement-group', project + '-spread']
+           if infra_tier in ['medium', 'production'] else [])
+      }}
   loop: "{{ range(1, (worker_count | int) + 1) | list }}"
   when: worker_check.results[item - 1].rc != 0
 
@@ -741,40 +759,17 @@
       {%- endfor -%}
       {{ ns.items }}
 
-- name: Require explicit approval for destructive infrastructure convergence
+- name: Refuse unsafe server deletion or bulk type convergence
   ansible.builtin.assert:
     that:
       - extra_server_names | length == 0
       - mismatched_servers | length == 0
     fail_msg: >-
       Infrastructure drift detected. Extra servers={{ extra_server_names }};
-      type changes={{ mismatched_servers }}. Drain affected Kubernetes nodes,
-      then rerun with -e hetzner_allow_destructive_reconcile=true.
-  when: not (hetzner_allow_destructive_reconcile | bool)
-
-- name: Delete explicitly approved extra servers
-  ansible.builtin.command:
-    cmd: hcloud server delete {{ item }}
-  loop: '{{ extra_server_names }}'
-  when: hetzner_allow_destructive_reconcile | bool
-
-- name: Stop servers requiring an explicitly approved type change
-  ansible.builtin.command:
-    cmd: hcloud server poweroff {{ item.name }}
-  loop: '{{ mismatched_servers }}'
-  when: hetzner_allow_destructive_reconcile | bool
-
-- name: Reconcile explicitly approved server types
-  ansible.builtin.command:
-    cmd: hcloud server change-type --keep-disk {{ item.name }} {{ item.desired }}
-  loop: '{{ mismatched_servers }}'
-  when: hetzner_allow_destructive_reconcile | bool
-
-- name: Start reconciled servers
-  ansible.builtin.command:
-    cmd: hcloud server poweron {{ item.name }}
-  loop: '{{ mismatched_servers }}'
-  when: hetzner_allow_destructive_reconcile | bool
+      type changes={{ mismatched_servers }}. The infrastructure role never
+      deletes Kubernetes nodes or resizes multiple members because doing so can
+      bypass drain, PDB, CSI, and etcd quorum gates. Use migrate-profile.sh for
+      profile changes; it removes and resizes nodes one at a time.
 
 # ============================================
 # Discover actual private IPs from Hetzner API
@@ -794,6 +789,11 @@
   register: worker_ip_results
   changed_when: false
 
+- name: Reset discovered node IP maps before rebuilding them
+  set_fact:
+    master_ips: {}
+    worker_ips: {}
+
 - name: Build master IP map
   set_fact:
     master_ips: "{{ master_ips | default({}) | combine({ project + '-master-' + (item.item | string): item.stdout | trim }) }}"
@@ -807,6 +807,22 @@
   loop: "{{ worker_ip_results.results }}"
   loop_control:
     label: "{{ project }}-worker-{{ item.item }}"
+
+- name: Record private IPs allocated to servers created in this run
+  ansible.builtin.set_fact:
+    newly_created_node_ips: >-
+      {%- set ns = namespace(ips=[]) -%}
+      {%- for check in master_check.results | default([]) -%}
+      {%- if (check.rc | default(0)) != 0 -%}
+      {%- set _ = ns.ips.append(master_ips[project + '-master-' + (check.item | string)]) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for check in worker_check.results | default([]) -%}
+      {%- if (check.rc | default(0)) != 0 -%}
+      {%- set _ = ns.ips.append(worker_ips[project + '-worker-' + (check.item | string)]) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.ips }}
 
 - name: Set first master IP for kubeconfig
   set_fact:

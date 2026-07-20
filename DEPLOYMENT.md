@@ -52,12 +52,18 @@ For the budget production-oriented deployment:
 ./platform.sh init medium-optimized
 ```
 
-This profile uses three schedulable `cx23` control planes, four `cx33` workers,
+This profile uses three schedulable `cx33` control planes, four `cx33` workers,
 a `cx23` bastion, and `lb11`. Stateful quorum/data services remain replicated;
 stateless services default to one replica with bounded autoscaling. Choose the
 `production` profile when stateless workload continuity during node maintenance
 is required. Production backups must also be copied to storage outside this
 cluster.
+
+Its three SeaweedFS volume servers use placement `001`, not SeaweedFS's unsafe
+single-copy `000` default. Reconciliation upgrades old volumes in bounded
+batches, verifies that no volume is under-replicated, and refreshes the filer
+after Raft/chart topology changes. Loki PVC auto-deletion is disabled for every
+deployment mode, so an operator scale-to-zero cannot silently delete log data.
 
 GitLab chart 10 cannot be enabled without PostgreSQL, Dragonfly, and object
 storage. The normalizer rejects that invalid profile before infrastructure is
@@ -86,6 +92,10 @@ selector, profile matrix, and removal classes are in the
 Alert delivery channels remain settings under `alerting.telegram.enabled` and
 `alerting.email.enabled`; email requires Postal, while Telegram also requires
 `ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID` at deployment time.
+Postal deployment is schema-gated: a fresh MariaDB runs `postal initialize`,
+an existing database runs `postal update`, and web/worker/SMTP processes are
+not reconciled until that Job completes. SMTP stays public on ports 25/587 but
+uses unprivileged container port 2525.
 
 Validate the selected profile without contacting Hetzner or Kubernetes:
 
@@ -102,9 +112,10 @@ ansible-playbook playbooks/validate_profile.yml \
 
 The full flow creates Hetzner resources, configures the bastion/network,
 installs Kubernetes, then deploys only enabled services. Firewall and load
-balancer policies converge on rerun. Server removal/type change is blocked
-unless `hetzner_allow_destructive_reconcile=true` is passed after affected
-nodes have been drained.
+balancer policies converge on rerun. Server removal and type changes always
+fail closed in the infrastructure role. Use the resumable profile migration
+workflow for those operations so drain, PDB, CSI, disk-pressure, and etcd
+quorum gates run one node at a time.
 
 Component runs are available when recovery or maintenance requires them:
 
@@ -126,6 +137,7 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy gitlab-runner
 ./platform.sh deploy gitops
 ./platform.sh deploy observability
+./platform.sh deploy pmm
 ./platform.sh deploy coroot
 ./platform.sh deploy tracing
 ./platform.sh deploy autoscaling
@@ -143,6 +155,9 @@ Every targeted deployment always runs profile normalization and dependency
 validation first. It fails if the component is disabled; enable it explicitly
 instead of overriding an Ansible variable on the command line.
 
+`deploy pmm` reconciles the optional Percona Monitoring and Management server;
+database operators enable their PMM clients only while this selector is on.
+It is disabled by default for the constrained `minimal` and `small` profiles.
 `deploy coroot` reconciles the observability bundle plus the pinned official
 Coroot operator/CE resources. Its eBPF node agent requires privileged Pod
 Security admission, scoped only to the `coroot` namespace. `deploy hipaa`
@@ -211,8 +226,13 @@ Do not replace one named profile with another and run `deploy all`. Use
 `resume|status|rollback|finalize`. All 20 distinct transitions among `minimal`,
 `small`, `medium`, `medium-optimized`, and `production` use the same external
 backup gate. The workflow expands to the larger source/target topology first,
-resizes retained nodes one at a time, checks etcd around every control-plane
-change, and keeps scale-in and source-data deletion behind `finalize`.
+resizes retained nodes one at a time, grows the provider disk and root
+filesystem, checks etcd around every control-plane change, unseals Vault after
+each restart, and requires the full profile-aware health gate before moving to
+the next node. Scale-in and source-data deletion remain behind `finalize`.
+Equivalent-compute server types with a larger existing root disk are retained
+and written into the active migration config; a disk-shrinking compute change
+fails before mutation instead of attempting an unsafe provider resize.
 
 Downgrades never request an in-place PVC shrink because Kubernetes storage
 cannot safely do that. The generated named target records larger existing
@@ -236,6 +256,10 @@ configured source, namespace, and resource allowlists.
 ```
 
 Type the exact confirmation when prompted. The script deletes and verifies
-project-prefixed load balancers, servers, volumes, firewalls, placement groups,
-SSH keys, subnets, and the network. It intentionally preserves DNS and the
-global kubeconfig.
+project-prefixed load balancers, servers, firewalls, placement groups, SSH
+keys, subnets, and the network. Before server deletion it captures every
+provider volume attached to those exact servers, including CSI-generated
+`pvc-*` names. When the active Kubernetes context contains only project-named
+nodes, it also captures detached/retained Hetzner CSI volume handles from PVs.
+It then detaches, deletes, and verifies those exact volume IDs. It
+intentionally preserves DNS and the global kubeconfig.

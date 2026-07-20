@@ -8,7 +8,7 @@ ship or deploy an application repository by default.
 
 - Hetzner network, firewalls, bastion, control-plane and worker servers, load
   balancer, and platform DNS records.
-- Kubernetes v1.35.6 with Cilium, Gateway API, cert-manager, Hetzner CCM/CSI,
+- Kubernetes v1.35.4 with Cilium, Gateway API, cert-manager, Hetzner CCM/CSI,
   and a private-node topology.
 - Profile-controlled services: SeaweedFS; Vault and External Secrets Operator;
   Percona PostgreSQL and MongoDB; Elasticsearch/Kibana; Dragonfly; GitLab and
@@ -27,14 +27,19 @@ The runtime has four capability tiers and five named profiles:
 |---|---|---|---|---|
 | `minimal` | minimal | minimal | 1 schedulable control plane + 1 worker | Core development platform; no GitLab or medium-only services |
 | `small` | small | small | 1 control plane + 2 workers | Compact GitLab platform with PostgreSQL, Dragonfly, storage, secrets, GitOps, and monitoring |
-| `medium` | medium | medium | 3 control planes + 2 workers | Full platform with standard medium sizing |
+| `medium` | medium | medium | 3 schedulable control planes + 2 workers | Full platform with standard medium sizing; control-plane capacity is part of the workload envelope |
 | `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
-| `production` | production | production | 3 control planes + 3 workers | Higher stateless workload redundancy and the largest retention/storage defaults |
+| `production` | production | small | 3 tainted control planes + 3 workers | Resource-efficient HA with explicit critical replicas, failover headroom, and grow-only storage defaults |
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
 what lets `medium-optimized` retain the full medium toolset without silently
-allocating the normal-medium footprint. GitLab chart 10 requires PostgreSQL,
+allocating the normal-medium footprint. Production uses the same conservative
+request envelope and pins critical HA replicas explicitly. Its control planes
+are tainted for general workloads, while the critical PostgreSQL, MongoDB, and
+Elasticsearch stateful replicas tolerate those taints so a single worker loss
+does not exhaust the remaining workers or their volume-attachment capacity.
+GitLab chart 10 requires PostgreSQL,
 Dragonfly, and object storage; profile validation rejects an invalid
 combination. The same fail-closed validation covers GlitchTip, APM, Temporal,
 Postal, Coroot, tracing, backup, HIPAA-oriented hardening, ESO, the GitLab
@@ -46,6 +51,14 @@ services run one replica by default and autoscaling is capped at four. It is a
 production-oriented budget profile, but it does not provide the same workload
 availability during maintenance as the `production` profile. Store production
 backups outside the cluster for disaster recovery.
+
+Every multi-volume SeaweedFS profile uses replica placement `001`: each object
+volume has a second copy on another volume server. Existing `000` volumes are
+migrated and verified during reconciliation, and the filer is refreshed after
+master/Raft topology changes so S3 reads cannot retain a stale volume map.
+Loki StatefulSet claims are always retained on scale-down and release deletion;
+profile finalization archives and removes them only behind migration backup
+gates.
 
 ## Safety model
 
@@ -122,7 +135,7 @@ Technology selection is available without hand-editing dotted YAML paths:
 
 ```bash
 ./platform.sh components
-./platform.sh enable temporal       # also enables PostgreSQL + Elasticsearch
+./platform.sh enable temporal       # also enables PostgreSQL
 ./platform.sh enable coroot         # also enables the observability core
 ./platform.sh enable hipaa          # adds required secrets + observability
 ./platform.sh disable postal        # refuses if an enabled service depends on it
@@ -151,10 +164,12 @@ $EDITOR inventory.yml
 ansible-playbook -i inventory.yml playbooks/deploy_platform.yml
 ```
 
-Component tags use the same normalized profile contract. ESO and GitLab Runner
-have real independent flags. Metrics, logging, Grafana, and PMM remain one
-production-tested observability core bundle; tracing and Blackbox are optional
-dependants of that bundle. Coroot is another optional dependant, installed by
+Component tags use the same normalized profile contract. ESO, GitLab Runner,
+and PMM have independent flags. Metrics, logging, and Grafana remain one
+production-tested observability core bundle; PMM, tracing, and Blackbox are
+optional dependants of that bundle. PMM is off in `minimal`/`small` to preserve
+the constrained node envelope and on in `medium`, `medium-optimized`, and
+`production`. Coroot is another optional dependant, installed by
 the pinned official operator and sized explicitly for `medium-optimized`.
 Alertmanager creates Telegram/email routes only for
 enabled channels; its email channel requires the selected Postal service.
@@ -172,6 +187,10 @@ ansible-playbook playbooks/validate_profile.yml \
 # Health/status
 ./platform-orchestrator/platform.sh status
 ./scripts/health-gates.sh
+
+# Disposable-cluster acceptance: component selection plus read/write data paths
+./scripts/live-tier-smoke.sh --dry-run
+./scripts/live-tier-smoke.sh
 
 # Explicitly remove a disabled, stateless component
 ./platform-orchestrator/platform.sh remove blackbox --confirm blackbox
@@ -194,8 +213,10 @@ ansible-playbook playbooks/validate_profile.yml \
 # Dry-run restore drills before executing against a test cluster
 ./scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
 ./scripts/pg-restore-drill.sh --dry-run
+./scripts/restore-drill.sh --component postgresql --backup PGBACKREST_SET --dry-run
 ./scripts/vault-restore-drill.sh --dry-run
 ./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
+./scripts/restore-drill.sh --component seaweedfs --backup VELERO_BACKUP --dry-run
 
 # Plan any named-profile transition; no cluster mutation
 export BACKUP_DR_ENDPOINT=https://s3.example-provider.com
@@ -208,6 +229,11 @@ export BACKUP_DR_BUCKET=company-platform-dr
 
 No command in the restore, upgrade, rollback, or teardown path should be run
 against production without a recorded maintenance window and verified backup.
+`live-tier-smoke.sh` writes uniquely named temporary S3, PostgreSQL, and Vault
+sentinels, verifies metrics/logging/GitOps HTTP paths and every selected
+Gateway API TLS route from inside the private cluster, then removes its test
+data. Run its mutating mode only against an
+explicitly authorized disposable or maintenance-window cluster.
 
 ## Documentation
 

@@ -4,6 +4,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# Prefer the repository-managed Ansible runtime when the caller has not
+# activated it explicitly (for example Codex desktop, CI subprocesses, or a
+# direct ./scripts/migrate-profile.sh invocation).
+if ! command -v ansible-playbook >/dev/null 2>&1 && [[ -x "${PROJECT_ROOT}/.venv/bin/ansible-playbook" ]]; then
+  export PATH="${PROJECT_ROOT}/.venv/bin:${PATH}"
+fi
 # shellcheck source=scripts/load-project-env.sh
 source "${SCRIPT_DIR}/load-project-env.sh"
 CONFIG_FILE="${PROJECT_ROOT}/platform-orchestrator/platform.yaml"
@@ -18,9 +24,16 @@ DR_REGION="${BACKUP_DR_REGION:-us-east-1}"
 DR_PREFIX="${BACKUP_DR_PREFIX:-}"
 BACKUP_RECIPIENT="${CLUSTER_BACKUP_AGE_RECIPIENT:-}"
 RESIZE_TIMEOUT="${PROFILE_MIGRATION_RESIZE_TIMEOUT:-900s}"
+HCLOUD_CLIENT_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_CLIENT_TIMEOUT_SECONDS:-900}"
+HCLOUD_STATE_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS:-7200}"
+ETCD_HEALTH_TIMEOUT="${PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS:-300}"
+API_READY_TIMEOUT="${PROFILE_MIGRATION_API_READY_TIMEOUT_SECONDS:-300}"
+VAULT_MEMBER_TIMEOUT="${PROFILE_MIGRATION_VAULT_MEMBER_TIMEOUT_SECONDS:-900}"
+ROOT_DISK_PRUNE_PERCENT="${PROFILE_MIGRATION_ROOT_DISK_PRUNE_PERCENT:-75}"
+ROOT_DISK_MAX_PERCENT="${PROFILE_MIGRATION_ROOT_DISK_MAX_PERCENT:-85}"
 VMCTL_IMAGE="docker.io/victoriametrics/vmctl:v1.147.0"
 NAMED_PROFILES=(minimal small medium medium-optimized production)
-STAGES=(preflight backup expand resize apply-target migrate-data validate post-backup)
+STAGES=(preflight backup expand resize migrate-vault-storage apply-target migrate-data validate post-backup)
 FINALIZE_STAGES=(retire-services retire-observability scale-in reconcile-target final-backup retire-backup cleanup-cloud validate-final)
 
 log() { printf '[profile-migration] %s\n' "$*"; }
@@ -82,6 +95,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$COMMAND" ]] || fail "a command is required"
 [[ -f "$CONFIG_FILE" ]] || fail "platform config not found: $CONFIG_FILE"
+CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
 for tool in yq jq ansible-playbook; do command -v "$tool" >/dev/null || fail "required tool is missing: $tool"; done
 
 is_named_profile() {
@@ -144,9 +158,31 @@ TARGET_CONFIG="${STATE_DIR}/target-platform.yaml"
 STEADY_CONFIG="${STATE_DIR}/target-transition-platform.yaml"
 EXPANSION_CONFIG="${STATE_DIR}/expansion-platform.yaml"
 BACKUP_CONFIG="${STATE_DIR}/backup-platform.yaml"
+POST_BACKUP_CONFIG="${STATE_DIR}/post-target-backup-platform.yaml"
+
+MIGRATION_LOCK="${STATE_BASE}/.${PROJECT}-profile-migration.lock"
+if [[ "$COMMAND" != plan && "$COMMAND" != status && "$DRY_RUN" != true ]]; then
+  mkdir -p "$STATE_BASE"
+  if ! mkdir "$MIGRATION_LOCK" 2>/dev/null; then
+    if [[ -f "$MIGRATION_LOCK/pid" ]]; then
+      lock_pid=$(<"$MIGRATION_LOCK/pid")
+    else
+      lock_pid=""
+    fi
+    if [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      fail "another migration process is active for $PROJECT (PID $lock_pid)"
+    fi
+    warn "removing stale migration lock for $PROJECT"
+    rm -rf "$MIGRATION_LOCK"
+    mkdir "$MIGRATION_LOCK" || fail "could not acquire migration lock for $PROJECT"
+  fi
+  printf '%s\n' "$$" > "$MIGRATION_LOCK/pid"
+  trap 'rm -rf "$MIGRATION_LOCK"' EXIT INT TERM
+fi
 ROLLBACK_CONFIG="${STATE_DIR}/rollback-platform.yaml"
 STORAGE_RETENTION_FILE="${STATE_DIR}/storage-retention.tsv"
 STATEFUL_RETENTION_FILE="${STATE_DIR}/stateful-retention.tsv"
+NODE_TYPE_RETENTION_FILE="${STATE_DIR}/node-type-retention.tsv"
 
 state_status() {
   jq . "$STATE_FILE"
@@ -272,7 +308,9 @@ preserve_non_shrinking_storage() {
   : > "$STATEFUL_RETENTION_FILE"
   retain_larger_quantity seaweedfs-volume '.storage.size_per_replica // .storage.size' '.storage.size_per_replica // .storage.size' '.storage.size_per_replica' 50Gi 50Gi
   retain_larger_quantity seaweedfs-master '.storage.master_size' '.storage.master_size' '.storage.master_size' 4Gi 4Gi
-  retain_larger_quantity seaweedfs-index '.storage.index_size' '.storage.index_size' '.storage.index_size' 2Gi 2Gi
+  # The live role default is 4Gi. Using the profile's requested 2Gi as the
+  # source fallback hides an immutable PVC shrink during compact -> HA moves.
+  retain_larger_quantity seaweedfs-index '.storage.index_size' '.storage.index_size' '.storage.index_size' 4Gi 4Gi
   retain_larger_quantity seaweedfs-filer '.storage.filer_size' '.storage.filer_size' '.storage.filer_size' 10Gi 10Gi
   retain_larger_quantity vault '.secrets.vault.storage_size' '.secrets.vault.storage_size' '.secrets.vault.storage_size' 20Gi 20Gi
   retain_larger_quantity postgresql '.databases.postgresql.storage_size' '.databases.postgresql.storage_size' '.databases.postgresql.storage_size' 20Gi 20Gi
@@ -336,6 +374,14 @@ generate_configs() {
 
   cp "$SOURCE_CONFIG" "$BACKUP_CONFIG"
   yq -i '.platform_profile = "custom" | .backup.enabled = true | .backup.disaster_recovery.enabled = true' "$BACKUP_CONFIG"
+  if [[ $(yq -r '.resource_tier // .tier // "custom"' "$SOURCE_CONFIG") =~ ^(minimal|small)$ ]]; then
+    yq -i '
+      .backup.job_resources.cpu_request = (.backup.job_resources.cpu_request // "10m") |
+      .backup.job_resources.cpu_limit = (.backup.job_resources.cpu_limit // "250m") |
+      .backup.job_resources.memory_request = (.backup.job_resources.memory_request // "64Mi") |
+      .backup.job_resources.memory_limit = (.backup.job_resources.memory_limit // "256Mi")
+    ' "$BACKUP_CONFIG"
+  fi
   set_yaml_string "$BACKUP_CONFIG" '.backup.disaster_recovery.endpoint' "$DR_ENDPOINT"
   set_yaml_string "$BACKUP_CONFIG" '.backup.disaster_recovery.region' "$DR_REGION"
   set_yaml_string "$BACKUP_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
@@ -439,11 +485,13 @@ if [[ "$COMMAND" == execute ]]; then
     read -r confirmation; [[ "$confirmation" == MIGRATE ]] || fail "confirmation did not match MIGRATE"
   fi
   jq -n --arg project "$PROJECT" --arg source "$SOURCE_PROFILE" --arg target "$TARGET_PROFILE" \
+    --arg activeConfig "$CONFIG_FILE" \
     --argjson sourceCp "$(yq -r '.infrastructure.control_plane.count' "$SOURCE_CONFIG")" \
     --argjson sourceWorkers "$(yq -r '.infrastructure.workers.count' "$SOURCE_CONFIG")" \
     --argjson targetCp "$(yq -r '.infrastructure.control_plane.count' "$TARGET_CONFIG")" \
     --argjson targetWorkers "$(yq -r '.infrastructure.workers.count' "$TARGET_CONFIG")" \
-    '{schema_version:2,project:$project,source_profile:$source,target_profile:$target,status:"in_progress",
+    '{schema_version:2,project:$project,source_profile:$source,target_profile:$target,
+      active_config:$activeConfig,status:"in_progress",
       created_at:(now | todateiso8601),last_completed_stage:null,
       topology:{source:{control_planes:$sourceCp,workers:$sourceWorkers},target:{control_planes:$targetCp,workers:$targetWorkers}}}' > "$STATE_FILE"
   printf '%s\n' "$STATE_DIR" > "$POINTER_FILE"
@@ -463,12 +511,28 @@ run_playbook() {
     -e "project_name=$PROJECT" -e "domain=$DOMAIN" -e "email=$EMAIL" "$@"
 }
 
+persist_active_config() {
+  local source="$1" destination
+  local recorded=""
+  [[ -f "$STATE_FILE" ]] && recorded=$(jq -r '.active_config // ""' "$STATE_FILE")
+  [[ -n "$recorded" ]] || recorded="$PROJECT_ROOT/platform-orchestrator/platform.yaml"
+  for destination in "$CONFIG_FILE" "$recorded"; do
+    [[ "$destination" != "$source" ]] || continue
+    cmp -s "$source" "$destination" || cp "$source" "$destination"
+  done
+}
+
 check_platform_health() {
-  local config="$1" require_argocd require_postgresql require_mongodb workload_failures helm_failures cert_json not_ready_certificates pg_state mongo_state not_bound
+  local config="$1" require_argocd require_postgresql require_mongodb workload_failures helm_failures cert_json not_ready_certificates pg_state mongo_state state_lower not_bound
   require_argocd=$(yq -r '.gitops.enabled // false' "$config")
   require_postgresql=$(yq -r '(.databases.enabled and .databases.postgresql.enabled) // false' "$config")
   require_mongodb=$(yq -r '(.databases.enabled and .databases.mongodb.enabled) // false' "$config")
-  HEALTH_REQUIRE_ARGOCD="$require_argocd" HEALTH_REQUIRE_POSTGRESQL="$require_postgresql" HEALTH_REQUIRE_MONGODB="$require_mongodb" "$SCRIPT_DIR/health-gates.sh"
+  if ! HEALTH_REQUIRE_ARGOCD="$require_argocd" \
+    HEALTH_REQUIRE_POSTGRESQL="$require_postgresql" \
+    HEALTH_REQUIRE_MONGODB="$require_mongodb" \
+    "$SCRIPT_DIR/health-gates.sh"; then
+    return 1
+  fi
   workload_failures=$(kubectl get deployments,statefulsets,daemonsets -A -o json | jq '[.items[] | select(
     (.kind == "Deployment" and ((.status.readyReplicas // 0) < (.spec.replicas // 1) or (.status.updatedReplicas // 0) < (.spec.replicas // 1))) or
     (.kind == "StatefulSet" and ((.status.readyReplicas // 0) < (.spec.replicas // 1) or (((.spec.updateStrategy.type // "RollingUpdate") != "OnDelete") and (.status.updatedReplicas // 0) < (.spec.replicas // 1)))) or
@@ -482,25 +546,34 @@ check_platform_health() {
   fi
   if [[ "$require_postgresql" == true ]]; then
     pg_state=$(kubectl get perconapgcluster "${PROJECT}-pg" -n databases -o jsonpath='{.status.state}')
-    [[ "${pg_state,,}" == ready ]] || fail "PostgreSQL operator state is ${pg_state:-missing}"
+    state_lower=$(printf '%s' "$pg_state" | tr '[:upper:]' '[:lower:]')
+    [[ "$state_lower" == ready ]] || fail "PostgreSQL operator state is ${pg_state:-missing}"
   fi
   if [[ "$require_mongodb" == true ]]; then
     mongo_state=$(kubectl get perconaservermongodb "${PROJECT}-mongo" -n databases -o jsonpath='{.status.state}')
-    [[ "${mongo_state,,}" == ready ]] || fail "MongoDB operator state is ${mongo_state:-missing}"
+    state_lower=$(printf '%s' "$mongo_state" | tr '[:upper:]' '[:lower:]')
+    [[ "$state_lower" == ready ]] || fail "MongoDB operator state is ${mongo_state:-missing}"
   fi
   not_bound=$(kubectl get pvc -A -o json | jq '[.items[] | select(.status.phase != "Bound")] | length')
   [[ "$not_bound" == 0 ]] || fail "$not_bound PVCs are not Bound"
 }
 
 ssh_args_for_facts() {
-  local facts="${PROJECT_ROOT}/${PROJECT}-infra-facts.yml"
+  local facts="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml" identity quoted_identity proxy_command
   [[ -f "$facts" ]] || fail "infrastructure facts are missing: $facts"
   BASTION=$(yq -r '.bastion_public_ip' "$facts")
-  SSH_ARGS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -J "root@${BASTION}")
+  identity=$(yq -r '.infrastructure.ssh_key_path // ""' "$CONFIG_FILE")
+  [[ -n "$identity" ]] || identity=$(yq -r '.ssh_key_path // ""' "$PROJECT_ROOT/defaults/main.yml")
+  [[ "${identity#\~/}" == "$identity" ]] || identity="${HOME:?HOME is required to resolve the SSH identity}/${identity:2}"
+  [[ -f "$identity" ]] || fail "SSH identity is missing: ${identity:-not configured}"
+  printf -v quoted_identity '%q' "$identity"
+  proxy_command="ssh -i ${quoted_identity} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -W %h:%p root@${BASTION}"
+  SSH_ARGS=(-i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o "ProxyCommand=${proxy_command}")
 }
 
 check_etcd_health() {
-  local excluded_node="${1:-}" facts="${PROJECT_ROOT}/${PROJECT}-infra-facts.yml" host
+  local excluded_node="${1:-}" facts="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml" host output
+  local deadline=$((SECONDS + ETCD_HEALTH_TIMEOUT)) attempt=0
   ssh_args_for_facts
   if [[ -n "$excluded_node" ]]; then
     host=$(EXCLUDED_NODE="$excluded_node" yq -r '.master_ips | to_entries | map(select(.key != strenv(EXCLUDED_NODE))) | .[0].value' "$facts")
@@ -508,28 +581,137 @@ check_etcd_health() {
     host=$(yq -r '.master_ips | to_entries | .[0].value' "$facts")
   fi
   [[ -n "$host" && "$host" != null ]] || fail "no healthy etcd peer is available for verification"
-  ssh "${SSH_ARGS[@]}" "root@${host}" 'set -eu; . /etc/etcd.env; export ETCDCTL_API=3 ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl endpoint health --cluster'
+  while (( SECONDS < deadline )); do
+    # Never let ssh consume the stdin that may be feeding an enclosing
+    # process-substitution loop (for example the control-plane node list).
+    if output=$(ssh "${SSH_ARGS[@]}" "root@${host}" 'set -eu; . /etc/etcd.env; export ETCDCTL_ENDPOINTS ETCDCTL_CACERT ETCDCTL_CERT ETCDCTL_KEY; etcdctl endpoint health --cluster' </dev/null 2>&1); then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    warn "etcd quorum is not fully ready yet (attempt $attempt); retrying"
+    sleep 10
+  done
+  printf '%s\n' "$output" >&2
+  fail "etcd cluster did not become healthy within ${ETCD_HEALTH_TIMEOUT}s"
+}
+
+run_with_timeout() {
+  local timeout_seconds="$1" command_pid timer_pid status
+  shift
+  "$@" &
+  command_pid=$!
+  (
+    sleep "$timeout_seconds"
+    kill -TERM "$command_pid" >/dev/null 2>&1 || exit 0
+    sleep 5
+    kill -KILL "$command_pid" >/dev/null 2>&1 || true
+  ) &
+  timer_pid=$!
+  if wait "$command_pid"; then status=0; else status=$?; fi
+  kill "$timer_pid" >/dev/null 2>&1 || true
+  wait "$timer_pid" 2>/dev/null || true
+  return "$status"
+}
+
+retry_gate() {
+  local label="$1" attempt
+  shift
+  for attempt in 1 2 3 4 5 6; do
+    if ( "$@" ); then
+      return 0
+    fi
+    warn "$label failed on attempt $attempt; retrying"
+    sleep $((attempt * 2))
+  done
+  fail "$label failed after retries"
+}
+
+server_status() {
+  hcloud server describe "$1" -o json | jq -r '.status'
+}
+
+wait_for_server_settled() {
+  local node="$1" status deadline=$((SECONDS + HCLOUD_STATE_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    status=$(server_status "$node" 2>/dev/null || echo unknown)
+    case "$status" in
+      running|off) printf '%s\n' "$status"; return 0 ;;
+    esac
+    sleep 15
+  done
+  fail "Hetzner server $node did not reach a stable running/off state within ${HCLOUD_STATE_TIMEOUT}s"
+}
+
+ensure_server_running() {
+  local node="$1" status deadline
+  status=$(wait_for_server_settled "$node")
+  if [[ "$status" == off ]]; then
+    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server poweron "$node"; then
+      status=$(server_status "$node" 2>/dev/null || echo unknown)
+      [[ "$status" == starting || "$status" == running ]] \
+        || fail "failed to power on $node (provider status: $status)"
+      warn "Hetzner accepted the power-on for $node but the local CLI did not finish cleanly; continuing from provider state"
+    fi
+  fi
+  deadline=$((SECONDS + HCLOUD_STATE_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    [[ $(server_status "$node" 2>/dev/null || echo unknown) == running ]] && return 0
+    sleep 15
+  done
+  fail "Hetzner server $node did not become running within ${HCLOUD_STATE_TIMEOUT}s"
 }
 
 mark_stage() {
-  local stage="$1"
+  local stage="$1" tmp="${STATE_FILE}.tmp.$$"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/stage-${stage}.done"
-  jq --arg stage "$stage" '.last_completed_stage=$stage | .updated_at=(now | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp"
-  mv "$STATE_FILE.tmp" "$STATE_FILE"
+  jq --arg stage "$stage" '.last_completed_stage=$stage | .updated_at=(now | todateiso8601)' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
 }
 
 mark_finalize_stage() {
-  local stage="$1"
+  local stage="$1" tmp="${STATE_FILE}.tmp.$$"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/finalize-${stage}.done"
-  jq --arg stage "$stage" '.last_completed_finalize_stage=$stage | .updated_at=(now | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp"
-  mv "$STATE_FILE.tmp" "$STATE_FILE"
+  jq --arg stage "$stage" '.last_completed_finalize_stage=$stage | .updated_at=(now | todateiso8601)' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
 }
 
 cluster_backup() {
   local config="$1"
   local args=(--config "$config" --output-dir "$STATE_DIR/backups" --force)
   [[ -z "$BACKUP_RECIPIENT" ]] || args+=(--recipient "$BACKUP_RECIPIENT")
-  "$SCRIPT_DIR/cluster-backup.sh" "${args[@]}"
+  "$SCRIPT_DIR/cluster-backup.sh" "${args[@]}" \
+    || fail "encrypted cluster backup gate failed; migration checkpoint was not advanced"
+}
+
+preserve_non_shrinking_node_types() {
+  local role path node server_json target_type_json current_type target_type current_disk target_disk
+  local current_cores target_cores current_memory target_memory
+  : > "$NODE_TYPE_RETENTION_FILE"
+  for role in control_plane workers; do
+    path=".infrastructure.${role}.type"
+    if [[ "$role" == control_plane ]]; then node="${PROJECT}-master-1"; else node="${PROJECT}-worker-1"; fi
+    server_json=$(hcloud server describe "$node" -o json)
+    current_type=$(jq -r '.server_type.name' <<<"$server_json")
+    current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
+    current_cores=$(jq -r '.server_type.cores' <<<"$server_json")
+    current_memory=$(jq -r '.server_type.memory' <<<"$server_json")
+    target_type=$(yq -r "$path" "$TARGET_CONFIG")
+    [[ "$current_type" != "$target_type" ]] || continue
+    target_type_json=$(hcloud server-type describe "$target_type" -o json)
+    target_disk=$(jq -r '.disk' <<<"$target_type_json")
+    target_cores=$(jq -r '.cores' <<<"$target_type_json")
+    target_memory=$(jq -r '.memory' <<<"$target_type_json")
+    (( current_disk > target_disk )) || continue
+    if [[ "$current_cores" != "$target_cores" || "$current_memory" != "$target_memory" ]]; then
+      fail "$node cannot change from $current_type (${current_disk}GB root) to $target_type (${target_disk}GB root) without safe node replacement"
+    fi
+    for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$ROLLBACK_CONFIG"; do
+      set_yaml_string "$config" "$path" "$current_type"
+    done
+    printf '%s\t%s\t%s\t%sGB\t%sGB\n' "$role" "$current_type" "$target_type" "$current_disk" "$target_disk" >> "$NODE_TYPE_RETENTION_FILE"
+    warn "retaining $current_type for $role: it has the same compute as $target_type and its ${current_disk}GB root disk cannot shrink to ${target_disk}GB"
+  done
 }
 
 stage_preflight() {
@@ -541,6 +723,7 @@ stage_preflight() {
   [[ -n "${BACKUP_DR_ACCESS_KEY:-}" && -n "${BACKUP_DR_SECRET_KEY:-}" ]] || fail "BACKUP_DR_ACCESS_KEY and BACKUP_DR_SECRET_KEY are required"
   [[ -n "$BACKUP_RECIPIENT" || -n "${CLUSTER_BACKUP_PASSPHRASE:-}" ]] || fail "set --backup-recipient or CLUSTER_BACKUP_PASSPHRASE"
   [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required"
+  preserve_non_shrinking_node_types
   validate_generated_configs
   kubectl cluster-info >/dev/null
   expected=$(( $(yq -r '.infrastructure.control_plane.count' "$SOURCE_CONFIG") + $(yq -r '.infrastructure.workers.count' "$SOURCE_CONFIG") ))
@@ -552,25 +735,39 @@ stage_preflight() {
 }
 
 stage_backup() {
-  run_playbook "$BACKUP_CONFIG" --tags backup
+  # Scheduled backups may be disabled in the steady source profile, which
+  # means GitLab's chart-managed Toolbox CronJob is absent. Reconcile GitLab
+  # with the temporary backup config before the backup role requires it.
+  run_playbook "$BACKUP_CONFIG" --tags gitlab,backup
   mkdir -p "$STATE_DIR/backups"
   cluster_backup "$BACKUP_CONFIG"
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/snapshot-helm-baseline.sh"
   export SNAPSHOT_DRY_RUN=false
   snapshot=$(capture_snapshot | tail -1)
-  jq --arg snapshot "$snapshot" '.helm_snapshot=$snapshot' "$STATE_FILE" > "$STATE_FILE.tmp"
-  mv "$STATE_FILE.tmp" "$STATE_FILE"
+  jq --arg snapshot "$snapshot" '.helm_snapshot=$snapshot' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"
+  mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
 }
 
 requires_spread() { case $(profile_tier "$1") in medium|production) return 0 ;; *) return 1 ;; esac; }
 
 stage_expand() {
-  local expected actual
+  local expected actual kubespray_checkpoint="${STATE_DIR}/expand-kubespray.done"
   if requires_spread "$SOURCE_CONFIG" || requires_spread "$TARGET_CONFIG"; then
     hcloud placement-group describe "${PROJECT}-spread" >/dev/null 2>&1 || hcloud placement-group create --name "${PROJECT}-spread" --type spread
   fi
-  run_playbook "$EXPANSION_CONFIG" --tags infrastructure,cluster
+  # Newly created private-only nodes require the bastion NAT, network route,
+  # node default route, and DNS configuration before Kubespray can install
+  # packages. This remains idempotent for the retained nodes.
+  if [[ -f "$kubespray_checkpoint" ]]; then
+    # A failure in kubeconfig/tunnel or post-cluster reconciliation must not
+    # replay a successful full Kubespray run on every resume.
+    run_playbook "$EXPANSION_CONFIG" --tags infrastructure,network,security,cluster \
+      -e skip_kubespray=true
+  else
+    run_playbook "$EXPANSION_CONFIG" --tags infrastructure,network,security,cluster \
+      -e "profile_migration_kubespray_checkpoint=$kubespray_checkpoint"
+  fi
   expected=$(( $(yq -r '.infrastructure.control_plane.count' "$EXPANSION_CONFIG") + $(yq -r '.infrastructure.workers.count' "$EXPANSION_CONFIG") ))
   kubectl wait nodes --all --for=condition=Ready --timeout=900s
   actual=$(kubectl get nodes -o json | jq '.items | length')
@@ -578,21 +775,171 @@ stage_expand() {
   check_etcd_health
 }
 
+wait_for_node_runtime() {
+  local node="$1" attempt
+  kubectl wait "node/${node}" --for=condition=DiskPressure=False --timeout="$RESIZE_TIMEOUT"
+  kubectl wait pod -n kube-system -l k8s-app=cilium \
+    --field-selector "spec.nodeName=${node}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+  kubectl wait pod -n kube-system -l app=hcloud-csi \
+    --field-selector "spec.nodeName=${node}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+  for attempt in {1..60}; do
+    if kubectl get csinode "$node" -o json 2>/dev/null \
+      | jq -e 'any(.spec.drivers[]?; .name == "csi.hetzner.cloud")' >/dev/null; then
+      return 0
+    fi
+    sleep 5
+  done
+  fail "Hetzner CSI did not register on $node after it became Ready"
+}
+
+maintain_node_root_disk() {
+  local node="$1" host usage
+  ssh_args_for_facts
+  host=$(NODE="$node" yq -r \
+    '.master_ips[strenv(NODE)] // .worker_ips[strenv(NODE)] // ""' \
+    "${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml")
+  [[ -n "$host" ]] || fail "private IP is missing from infrastructure facts for $node"
+  usage=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+    "df -P / | awk 'NR == 2 {gsub(/%/, \"\", \$5); print \$5}'")
+  [[ "$usage" =~ ^[0-9]+$ ]] || fail "could not determine root-disk usage for $node"
+  if (( usage >= ROOT_DISK_PRUNE_PERCENT )); then
+    warn "$node root disk is ${usage}% used; pruning unused container images and bounded journals"
+    ssh "${SSH_ARGS[@]}" "root@${host}" \
+      'set -eu; command -v crictl >/dev/null && crictl rmi --prune >/dev/null || true; journalctl --vacuum-size=500M >/dev/null; sync'
+    usage=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+      "df -P / | awk 'NR == 2 {gsub(/%/, \"\", \$5); print \$5}'")
+  fi
+  [[ "$usage" =~ ^[0-9]+$ ]] || fail "could not verify root-disk usage for $node"
+  (( usage <= ROOT_DISK_MAX_PERCENT )) \
+    || fail "$node root disk remains ${usage}% used after safe cleanup (maximum ${ROOT_DISK_MAX_PERCENT}%)"
+}
+
+expand_node_root_disk() {
+  local node="$1" host attempt ssh_ready=false
+  ssh_args_for_facts
+  host=$(NODE="$node" yq -r \
+    '.master_ips[strenv(NODE)] // .worker_ips[strenv(NODE)] // ""' \
+    "${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml")
+  [[ -n "$host" ]] || fail "private IP is missing from infrastructure facts for $node"
+  for attempt in {1..60}; do
+    if ssh "${SSH_ARGS[@]}" "root@${host}" true >/dev/null 2>&1; then
+      ssh_ready=true
+      break
+    fi
+    sleep 5
+  done
+  [[ "$ssh_ready" == true ]] || fail "SSH did not recover on $node after its resize"
+  ssh "${SSH_ARGS[@]}" "root@${host}" 'set -eu
+    root_source=$(findmnt -n -o SOURCE /)
+    root_fstype=$(findmnt -n -o FSTYPE /)
+    parent=$(lsblk -n -o PKNAME "$root_source" | head -n1)
+    partnum=$(lsblk -n -o PARTN "$root_source" | head -n1)
+    [ -n "$parent" ] && [ -n "$partnum" ] || {
+      echo "cannot resolve the root partition parent for $root_source" >&2
+      exit 1
+    }
+    command -v growpart >/dev/null 2>&1 || {
+      echo "growpart is required to adopt an expanded Hetzner root disk" >&2
+      exit 1
+    }
+    growpart "/dev/$parent" "$partnum" >/dev/null 2>&1 || true
+    case "$root_fstype" in
+      ext2|ext3|ext4) resize2fs "$root_source" >/dev/null ;;
+      xfs) xfs_growfs / >/dev/null ;;
+      *) echo "unsupported root filesystem for online growth: $root_fstype" >&2; exit 1 ;;
+    esac'
+}
+
+wait_for_api_ready() {
+  local deadline=$((SECONDS + API_READY_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if kubectl --request-timeout=8s get --raw=/readyz >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  fail "Kubernetes API did not become ready within ${API_READY_TIMEOUT}s"
+}
+
+# A Shamir-sealed Vault member is deliberately unready. If it was rescheduled
+# by a previous drain, its PDB will correctly block the next drain until an
+# operator supplies the protected keys. Reconcile every running member before
+# each node operation so one-at-a-time migrations remain unattended and safe.
+unseal_vault_members() {
+  local init_file password_file pod status key deadline
+  local -a unseal_keys=()
+
+  kubectl get statefulset vault -n vault >/dev/null 2>&1 || return 0
+  init_file="${VAULT_INIT_OUTPUT_FILE:-${PROJECT_ROOT}/playbooks/.vault-init-${PROJECT}.json}"
+  password_file="${ANSIBLE_VAULT_PASSWORD_FILE:-${VAULT_PASSWORD_FILE:-}}"
+  [[ -f "$init_file" ]] || fail "Vault is deployed but protected init material is missing: $init_file"
+  [[ -n "$password_file" && -f "$password_file" ]] \
+    || fail "Vault is deployed but ANSIBLE_VAULT_PASSWORD_FILE is missing or invalid"
+
+  while IFS= read -r key; do
+    unseal_keys+=("$key")
+  done < <(
+    ansible-vault view --vault-password-file "$password_file" "$init_file" \
+      | jq -er '.unseal_keys_b64[]'
+  )
+  ((${#unseal_keys[@]} > 0)) || fail "protected Vault init material contains no unseal keys"
+
+  while IFS= read -r pod; do
+    [[ -n "$pod" ]] || continue
+    # Draining a node can reschedule a Vault member. A replacement pod may be
+    # listed several minutes before its server container accepts exec calls.
+    # Wait for an authoritative initialized status before applying protected
+    # unseal keys; do not misclassify normal volume attachment/startup as data
+    # loss, and still fail closed when the member never becomes reachable.
+    deadline=$((SECONDS + VAULT_MEMBER_TIMEOUT))
+    status=""
+    while (( SECONDS < deadline )); do
+      status=$(kubectl exec -n vault "$pod" -- vault status -format=json 2>/dev/null || true)
+      jq -e '.initialized == true' <<<"$status" >/dev/null 2>&1 && break
+      sleep 5
+    done
+    jq -e '.initialized == true' <<<"$status" >/dev/null 2>&1 \
+      || fail "Vault member $pod did not report initialized within ${VAULT_MEMBER_TIMEOUT}s"
+    if jq -e '.sealed == true' <<<"$status" >/dev/null; then
+      for key in "${unseal_keys[@]}"; do
+        # shellcheck disable=SC2016 # $key expands inside the remote pod shell.
+        printf '%s\n' "$key" \
+          | kubectl exec -i -n vault "$pod" -- sh -c \
+            'IFS= read -r key; vault operator unseal "$key"' >/dev/null 2>&1 || true
+        status=$(kubectl exec -n vault "$pod" -- vault status -format=json 2>/dev/null || true)
+        jq -e '.sealed == false' <<<"$status" >/dev/null 2>&1 && break
+      done
+      jq -e '.sealed == false' <<<"$status" >/dev/null 2>&1 \
+        || fail "Vault member $pod remained sealed after applying protected operator keys"
+    fi
+    kubectl wait -n vault "pod/${pod}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+  done < <(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o name | sed 's#^pod/##')
+}
+
 resize_node() {
-  local node="$1" target_type="$2" role="$3" current_type placement server_status target_placement=""
+  local node="$1" target_type="$2" role="$3" current_type current_disk target_disk placement target_placement=""
   server_json=$(hcloud server describe "$node" -o json)
   current_type=$(jq -r '.server_type.name' <<<"$server_json")
+  current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
+  target_disk=$(hcloud server-type describe "$target_type" -o json | jq -r '.disk')
   placement=$(jq -r '.placement_group.name // ""' <<<"$server_json")
-  server_status=$(jq -r '.status' <<<"$server_json")
   requires_spread "$TARGET_CONFIG" && target_placement="${PROJECT}-spread"
-  if [[ "$current_type" == "$target_type" && "$placement" == "$target_placement" ]]; then
-    [[ "$server_status" != off ]] || hcloud server poweron "$node"
+  if [[ "$current_type" == "$target_type" && "$placement" == "$target_placement" ]] \
+    && (( current_disk >= target_disk )); then
+    ensure_server_running "$node"
     kubectl wait "node/${node}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+    expand_node_root_disk "$node"
+    maintain_node_root_disk "$node"
+    wait_for_node_runtime "$node"
     kubectl uncordon "$node" >/dev/null
+    unseal_vault_members
     [[ "$role" != master ]] || check_etcd_health
     log "$node already converged at type=$target_type"
     return 0
   fi
+  wait_for_api_ready
+  unseal_vault_members
+  maintain_node_root_disk "$node"
   [[ "$role" != master ]] || check_etcd_health "$node"
   kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
   hcloud server poweroff "$node"
@@ -602,11 +949,29 @@ resize_node() {
   elif [[ -z "$target_placement" && -n "$placement" ]]; then
     hcloud server remove-from-placement-group "$node"
   fi
-  [[ "$current_type" == "$target_type" ]] || hcloud server change-type --keep-disk "$node" "$target_type"
-  hcloud server poweron "$node"
+  if { [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); } && \
+    ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server change-type "$node" "$target_type"; then
+    server_json=$(hcloud server describe "$node" -o json)
+    current_type=$(jq -r '.server_type.name' <<<"$server_json")
+    current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
+    if [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); then
+      fail "failed to resize $node to type=$target_type disk>=${target_disk}GB"
+    fi
+    warn "Hetzner accepted the type change for $node but the local CLI did not finish cleanly; continuing from provider state"
+  fi
+  ensure_server_running "$node"
+  wait_for_api_ready
   kubectl wait "node/${node}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+  expand_node_root_disk "$node"
+  maintain_node_root_disk "$node"
+  wait_for_node_runtime "$node"
   kubectl uncordon "$node"
+  unseal_vault_members
   [[ "$role" != master ]] || check_etcd_health
+  # A drained node can become Ready before stateful volumes have reattached and
+  # application PDB capacity is restored. Never proceed to the next node until
+  # the complete target profile is healthy again.
+  check_platform_health "$TARGET_CONFIG"
 }
 
 stage_resize() {
@@ -620,17 +985,91 @@ stage_resize() {
   resize_node "${PROJECT}-master-1" "$cp_type" master
 }
 
+control_plane_nodes() {
+  kubectl get nodes -l node-role.kubernetes.io/control-plane -o json \
+    | jq -r '.items | sort_by(.metadata.name)[] | .metadata.name'
+}
+
+check_control_plane_schedulability_contract() {
+  local config="$1" desired expected actual violations
+  desired=$(yq -r '.infrastructure.control_plane.schedulable // false' "$config")
+  expected=$(yq -r '.infrastructure.control_plane.count' "$config")
+  actual=$(control_plane_nodes | wc -l | tr -d ' ')
+  [[ "$actual" == "$expected" ]] \
+    || fail "control-plane topology mismatch: expected=$expected actual=$actual"
+  violations=$(kubectl get nodes -l node-role.kubernetes.io/control-plane -o json \
+    | jq --arg desired "$desired" '[.items[] | select(
+        ([.spec.taints[]? | select(
+          (.key == "node-role.kubernetes.io/control-plane" or .key == "node-role.kubernetes.io/master")
+          and .effect == "NoSchedule"
+        )] | length > 0) != ($desired != "true")
+      )] | length')
+  [[ "$violations" == 0 ]] \
+    || fail "$violations control-plane node(s) violate schedulable=$desired"
+}
+
+reconcile_control_plane_schedulability() {
+  local config="$1" desired node checkpoint
+  desired=$(yq -r '.infrastructure.control_plane.schedulable // false' "$config")
+  if [[ "$desired" == true ]]; then
+    while IFS= read -r node; do
+      [[ -n "$node" ]] || continue
+      kubectl uncordon "$node" >/dev/null 2>&1 || true
+      kubectl taint node "$node" node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1 || true
+      kubectl taint node "$node" node-role.kubernetes.io/master:NoSchedule- >/dev/null 2>&1 || true
+    done < <(control_plane_nodes)
+  else
+    # Taint the complete control plane before the first eviction so ordinary
+    # workloads cannot hop from one master to the next during the transition.
+    while IFS= read -r node; do
+      [[ -n "$node" ]] || continue
+      kubectl taint node "$node" node-role.kubernetes.io/control-plane=:NoSchedule --overwrite >/dev/null
+    done < <(control_plane_nodes)
+    while IFS= read -r node; do
+      [[ -n "$node" ]] || continue
+      checkpoint="$STATE_DIR/schedulability-${node}.done"
+      [[ -f "$checkpoint" ]] && continue
+      if ! kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m; then
+        kubectl uncordon "$node" >/dev/null 2>&1 || true
+        fail "failed to evacuate ordinary workloads from dedicated control-plane node $node"
+      fi
+      kubectl uncordon "$node" >/dev/null
+      kubectl wait "node/$node" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+      unseal_vault_members
+      check_etcd_health "$node"
+      touch "$checkpoint"
+    done < <(control_plane_nodes)
+  fi
+  check_control_plane_schedulability_contract "$config"
+}
+
+stage_migrate_vault_storage() {
+  "$SCRIPT_DIR/vault-storage-migrate.sh" --config "$TARGET_CONFIG" --force
+}
+
 stage_apply_target() {
   [[ -f "$STATE_DIR/pre-target-platform.yaml" ]] || cp "$CONFIG_FILE" "$STATE_DIR/pre-target-platform.yaml"
   switched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq --arg switched "$switched_at" '.target_write_switch_started_at=$switched' "$STATE_FILE" > "$STATE_FILE.tmp"
-  mv "$STATE_FILE.tmp" "$STATE_FILE"
+  jq --arg switched "$switched_at" '.target_write_switch_started_at=$switched' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"
+  mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
   cp "$STEADY_CONFIG" "$CONFIG_FILE"
-  run_playbook "$CONFIG_FILE" --skip-tags infrastructure
+  # Expansion already reconciles the complete node/network/cluster foundation.
+  # Keep target retries focused on platform components so an application-layer
+  # failure does not repeat Kubespray or restart the bastion on every resume.
+  if [[ ! -f "$STATE_DIR/apply-target-platform.done" ]]; then
+    run_playbook "$CONFIG_FILE" --skip-tags infrastructure,network,security,cluster
+    touch "$STATE_DIR/apply-target-platform.done"
+  else
+    log "checkpoint already complete: apply-target-platform"
+  fi
+  # Apply the target's resource envelope before evacuating a newly dedicated
+  # control plane. This prevents a compact 3+3 promotion from deadlocking on
+  # source-sized pods that cannot all fit on the three workers during rollout.
+  reconcile_control_plane_schedulability "$TARGET_CONFIG"
 }
 
 run_vmctl_migration() {
-  local job="$1" source_addr="$2" target_addr="$3" time_start="${4:-}" phase
+  local job="$1" source_addr="$2" target_addr="$3" time_start="${4:-1970-01-01T00:00:00Z}" phase
   job=$(printf '%s' "$job" | tr '[:upper:]_' '[:lower:]-' | cut -c1-63)
   if kubectl get job "$job" -n monitoring >/dev/null 2>&1; then
     phase=$(kubectl get job "$job" -n monitoring -o json | jq -r '
@@ -640,8 +1079,7 @@ run_vmctl_migration() {
     [[ "$phase" != failed ]] || fail "VictoriaMetrics job $job failed; inspect it and restore the destination before retrying to avoid duplicate samples"
     if [[ "$phase" == complete ]]; then log "VictoriaMetrics job already complete: $job"; return 0; fi
   else
-    time_arg=""
-    [[ -z "$time_start" ]] || time_arg="            - --vm-native-filter-time-start=${time_start}"
+    time_arg="            - --vm-native-filter-time-start=${time_start}"
     kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: Job
@@ -654,10 +1092,22 @@ spec:
   ttlSecondsAfterFinished: 604800
   template:
     spec:
+      automountServiceAccountToken: false
       restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: vmctl
           image: ${VMCTL_IMAGE}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           args:
             - vm-native
             - -s
@@ -695,11 +1145,24 @@ stage_migrate_data() {
 stage_validate() {
   kubectl wait nodes --all --for=condition=Ready --timeout=900s
   check_etcd_health
+  check_control_plane_schedulability_contract "$STEADY_CONFIG"
   check_platform_health "$STEADY_CONFIG"
   kubectl get backupstoragelocation/default -n velero -o json | jq -e '.status.phase == "Available"' >/dev/null
 }
 
-stage_post_backup() { cluster_backup "$STEADY_CONFIG"; }
+stage_post_backup() {
+  # New target components (for example GitLab) do not exist when the source
+  # backup role is first reconciled. Rebuild the backup control plane from the
+  # target config before the mandatory post-migration bundle.
+  cp "$STEADY_CONFIG" "$POST_BACKUP_CONFIG"
+  yq -i '.platform_profile = "custom" | .backup.enabled = true | .backup.disaster_recovery.enabled = true' "$POST_BACKUP_CONFIG"
+  set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.endpoint' "$DR_ENDPOINT"
+  set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.region' "$DR_REGION"
+  set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
+  set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.prefix' "$DR_PREFIX"
+  run_playbook "$POST_BACKUP_CONFIG" --tags gitlab,backup
+  cluster_backup "$POST_BACKUP_CONFIG"
+}
 
 if [[ "$COMMAND" == rollback ]]; then
   rollback_status=$(jq -r '.status' "$STATE_FILE")
@@ -714,19 +1177,36 @@ if [[ "$COMMAND" == rollback ]]; then
     vm_addresses "$(profile_mode "$TARGET_CONFIG")" "$(profile_mode "$SOURCE_CONFIG")"
     run_vmctl_migration "${PROJECT}-vm-rollback-${TARGET_PROFILE}-to-${SOURCE_PROFILE}" "$VM_SOURCE_ADDR" "$VM_TARGET_ADDR" "$(jq -r '.target_write_switch_started_at' "$STATE_FILE")"
   fi
-  "$SCRIPT_DIR/rollback.sh" --snapshot "$snapshot" --force
-  cp "$ROLLBACK_CONFIG" "$CONFIG_FILE"
-  run_playbook "$ROLLBACK_CONFIG" --skip-tags infrastructure
-  jq '.status="rolled_back" | .rolled_back_at=(now | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
+  if [[ -f "$STATE_DIR/stage-migrate-vault-storage.done" ]]; then
+    warn "Vault storage is already Raft; skipping the file-backed Helm baseline and reconciling source capabilities directly"
+  else
+    "$SCRIPT_DIR/rollback.sh" --snapshot "$snapshot" --force
+  fi
+  persist_active_config "$ROLLBACK_CONFIG"
+  reconcile_control_plane_schedulability "$ROLLBACK_CONFIG"
+  run_playbook "$ROLLBACK_CONFIG" --skip-tags infrastructure,network,security,cluster
+  check_control_plane_schedulability_contract "$ROLLBACK_CONFIG"
+  check_platform_health "$ROLLBACK_CONFIG"
+  jq '.status="rolled_back" | .rolled_back_at=(now | todateiso8601)' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"; mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
   log "source capabilities restored; expanded or resized nodes were deliberately retained"
   exit 0
 fi
 
 remove_disabled_components() {
   local include_backup="$1" component
+  if [[ "$include_backup" == true ]]; then
+    # The migration deploys a temporary backup control plane even when both the
+    # source and target profiles have scheduled backups disabled. Retire that
+    # temporary surface based on the target contract, not only on a source to
+    # target capability delta.
+    if ! component_enabled "$TARGET_CONFIG" backup; then
+      ansible-playbook "$PROJECT_ROOT/playbooks/remove_component.yml" -e "@$TARGET_CONFIG" -e "project_name=$PROJECT" \
+        -e target_component=backup -e confirm_component_removal=backup -e delete_component_data=true
+    fi
+    return
+  fi
   while IFS= read -r component; do
-    [[ "$component" == backup ]] && [[ "$include_backup" != true ]] && continue
-    [[ "$component" != backup ]] && [[ "$include_backup" == true ]] && continue
+    [[ "$component" == backup ]] && continue
     ansible-playbook "$PROJECT_ROOT/playbooks/remove_component.yml" -e "@$TARGET_CONFIG" -e "project_name=$PROJECT" \
       -e "target_component=$component" -e "confirm_component_removal=$component" -e delete_component_data=true
   done < <(components_to_remove)
@@ -739,7 +1219,7 @@ capture_observability_pvcs() {
 }
 
 retire_observability_source() {
-  local source_mode target_mode pvc release pvc_file="${STATE_DIR}/retire-observability-pvcs.txt"
+  local source_mode target_mode pvc pvc_file="${STATE_DIR}/retire-observability-pvcs.txt"
   local -a pvcs=()
   source_mode=$(profile_mode "$SOURCE_CONFIG"); target_mode=$(profile_mode "$TARGET_CONFIG")
   [[ "$source_mode" != "$target_mode" ]] || return 0
@@ -753,7 +1233,12 @@ retire_observability_source() {
   while IFS= read -r pvc; do [[ -z "$pvc" ]] || pvcs+=("$pvc"); done < "$pvc_file"
   if [[ "$source_mode" == single ]]; then
     kubectl delete vmsingle vmsingle -n monitoring --ignore-not-found --wait --timeout=10m
-    for release in promtail loki; do helm status "$release" -n monitoring >/dev/null 2>&1 && helm uninstall "$release" -n monitoring --wait --timeout 10m0s; done
+    helm status promtail -n logging-agents >/dev/null 2>&1 \
+      && helm uninstall promtail -n logging-agents --wait --timeout 10m0s
+    helm status promtail -n monitoring >/dev/null 2>&1 \
+      && helm uninstall promtail -n monitoring --wait --timeout 10m0s
+    helm status loki -n monitoring >/dev/null 2>&1 \
+      && helm uninstall loki -n monitoring --wait --timeout 10m0s
     warn "external Loki object-store buckets are retained as a recovery archive"
   else
     kubectl delete vmcluster vmcluster -n monitoring --ignore-not-found --wait --timeout=10m
@@ -785,7 +1270,8 @@ remove_cluster_node() {
   kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
   unset ANSIBLE_CONFIG ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS
   ANSIBLE_CONFIG="$kubespray_dir/ansible.cfg" "$kubespray_dir/.venv/bin/ansible-playbook" \
-    -i "$inventory" --become --become-user=root "$kubespray_dir/remove-node.yml" -e "node=$node"
+    -i "$inventory" --become --become-user=root "$kubespray_dir/remove-node.yml" \
+    -e "node=$node" -e "skip_confirmation=true"
   hcloud server delete "$node"
   kubectl delete node "$node" --ignore-not-found
   remove_inventory_node "$inventory" "$node"
@@ -808,10 +1294,31 @@ finalize_stage() {
     retire-observability) retire_observability_source ;;
     scale-in) scale_in_nodes ;;
     reconcile-target)
-      cp "$TARGET_CONFIG" "$CONFIG_FILE"
-      run_playbook "$TARGET_CONFIG" -e hetzner_allow_destructive_reconcile=true
+      # The operator may pass the generated target file itself as --config on
+      # resume/finalize. GNU/BSD cp rejects a source copied onto itself; an
+      # identical active config already represents the desired durable state.
+      persist_active_config "$TARGET_CONFIG"
+      kubespray_checkpoint="$STATE_DIR/finalize-reconcile-kubespray.done"
+      if [[ -f "$kubespray_checkpoint" ]]; then
+        # Rebuild normal role facts and replay lightweight convergence while
+        # skipping only the expensive, already-proven Kubespray deployment.
+        # --start-at-task is deliberately avoided because it also skips the
+        # infrastructure facts required by the kubeconfig/tunnel tasks.
+        run_playbook "$TARGET_CONFIG" -e hetzner_allow_destructive_reconcile=true \
+          -e skip_kubespray=true
+      else
+        run_playbook "$TARGET_CONFIG" -e hetzner_allow_destructive_reconcile=true \
+          -e "profile_migration_kubespray_checkpoint=$kubespray_checkpoint"
+      fi
+      reconcile_control_plane_schedulability "$TARGET_CONFIG"
       ;;
-    final-backup) cluster_backup "$TARGET_CONFIG" ;;
+    final-backup)
+      # The steady target may intentionally disable scheduled backups. Restore
+      # the already-generated temporary backup control plane for this gate,
+      # then retire it in the following checkpoint.
+      run_playbook "$POST_BACKUP_CONFIG" --tags gitlab,backup
+      cluster_backup "$POST_BACKUP_CONFIG"
+      ;;
     retire-backup) remove_disabled_components true ;;
     cleanup-cloud)
       if ! requires_spread "$TARGET_CONFIG" && hcloud placement-group describe "${PROJECT}-spread" >/dev/null 2>&1; then
@@ -819,9 +1326,10 @@ finalize_stage() {
       fi
       ;;
     validate-final)
-      kubectl wait nodes --all --for=condition=Ready --timeout=900s
+      retry_gate "final node readiness" kubectl wait nodes --all --for=condition=Ready --timeout=900s
       check_etcd_health
-      check_platform_health "$TARGET_CONFIG"
+      check_control_plane_schedulability_contract "$TARGET_CONFIG"
+      retry_gate "final platform health" check_platform_health "$TARGET_CONFIG"
       ;;
   esac
 }
@@ -842,12 +1350,17 @@ if [[ "$COMMAND" == finalize ]]; then
     printf 'Type FINALIZE to retire source resources for %s -> %s: ' "$SOURCE_PROFILE" "$TARGET_PROFILE"
     read -r confirmation; [[ "$confirmation" == FINALIZE ]] || fail "confirmation did not match FINALIZE"
   fi
-  jq '.status="finalizing" | .finalization_started_at=(.finalization_started_at // (now | todateiso8601))' "$STATE_FILE" > "$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
+  jq '.status="finalizing" | .finalization_started_at=(.finalization_started_at // (now | todateiso8601))' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"; mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
   for stage in "${FINALIZE_STAGES[@]}"; do
     [[ -f "$STATE_DIR/finalize-${stage}.done" ]] && { log "finalize checkpoint already complete: $stage"; continue; }
     log "starting finalize stage: $stage"; finalize_stage "$stage"; mark_finalize_stage "$stage"
   done
-  jq '.status="finalized" | .finalized_at=(now | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
+  # A caller may resume with a generated state config as --config. Always
+  # restore the durable active selector recorded when execution began (or the
+  # canonical selector for legacy state) so the finalized target can be the
+  # source of the next all-to-all transition.
+  persist_active_config "$TARGET_CONFIG"
+  jq '.status="finalized" | .finalized_at=(now | todateiso8601)' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"; mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
   log "${SOURCE_PROFILE} -> ${TARGET_PROFILE} finalized; obsolete services, PVCs, nodes, and cloud placement resources are retired"
   exit 0
 fi
@@ -861,9 +1374,10 @@ for stage in "${STAGES[@]}"; do
   log "starting stage: $stage"
   case "$stage" in
     preflight) stage_preflight ;; backup) stage_backup ;; expand) stage_expand ;; resize) stage_resize ;;
+    migrate-vault-storage) stage_migrate_vault_storage ;;
     apply-target) stage_apply_target ;; migrate-data) stage_migrate_data ;; validate) stage_validate ;; post-backup) stage_post_backup ;;
   esac
   mark_stage "$stage"
 done
-jq '.status="completed" | .completed_at=(now | todateiso8601)' "$STATE_FILE" > "$STATE_FILE.tmp"; mv "$STATE_FILE.tmp" "$STATE_FILE"
+jq '.status="completed" | .completed_at=(now | todateiso8601)' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"; mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
 log "${SOURCE_PROFILE} -> ${TARGET_PROFILE} execution completed; run finalize after acceptance to retire source resources"

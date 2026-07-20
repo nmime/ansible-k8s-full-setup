@@ -43,7 +43,7 @@ Features **not** included in Basic (requires paid commercial licenses):
 - PDBs: `es-master-pdb`, `es-data-pdb`
 - NetworkPolicy: `es-allow-internal`
 - CiliumNetworkPolicy: `allow-filebeat-to-es`
-- ServiceMonitor: `elasticsearch`
+- VMServiceScrape: `elasticsearch`
 
 ## Security
 
@@ -52,3 +52,6 @@ Features **not** included in Basic (requires paid commercial licenses):
 - Pod disruption budgets for high availability
 - Network policies restrict ingress to internal services only
 - Credentials stored in Kubernetes secrets with `no_log: true`
+- Elasticsearch remains at the Pod Security baseline; host-log collectors run
+  separately in the explicitly privileged `logging-agents` namespace with only
+  the CA certificate and Elasticsearch password replicated there.

@@ -13,7 +13,7 @@
   register: _r_apm_wait_es
   retries: 30
   delay: 10
-  until: _r_apm_wait_es.resources | length > 0
+  until: (_r_apm_wait_es.resources | default([])) | length > 0
 
 - name: Create APM Server ILM policy
   kubernetes.core.k8s:
@@ -29,6 +29,13 @@
         ttlSecondsAfterFinished: 600
         template:
           spec:
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              seccompProfile:
+                type: RuntimeDefault
             restartPolicy: OnFailure
             containers:
               - name: setup
@@ -64,6 +71,10 @@
                   - name: es-ca
                     mountPath: /etc/elasticsearch
                     readOnly: true
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
             volumes:
               - name: es-ca
                 secret:
@@ -145,14 +156,16 @@
               app: apm-server
           spec:
             securityContext:
+              runAsNonRoot: true
               runAsUser: 1000
               runAsGroup: 1000
               fsGroup: 1000
+              seccompProfile:
+                type: RuntimeDefault
             containers:
               - name: apm-server
                 image: '{{ apm_img }}'
                 args:
-                  - apm-server
                   - -e
                   - -c
                   - /usr/share/apm-server/apm-server.yml
@@ -182,6 +195,10 @@
                   limits:
                     cpu: '{{ apm_cpu_lim }}'
                     memory: '{{ apm_memory_lim }}'
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
                 readinessProbe:
                   httpGet:
                     path: /
@@ -243,7 +260,14 @@
   delay: 10
   until:
     - _r_apm_pods.resources | length > 0
-    - _r_apm_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length >= (apm_replicas | int)
+    - >-
+      _r_apm_pods.resources
+      | selectattr('status.containerStatuses', 'defined')
+      | map(attribute='status.containerStatuses')
+      | flatten
+      | selectattr('ready', 'equalto', true)
+      | list
+      | length >= (apm_replicas | int)
 
 - name: Print APM Server info
   debug:

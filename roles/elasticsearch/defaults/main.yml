@@ -28,6 +28,6 @@ kibana_replicas: "{{ elasticsearch.kibana.replicas | default(1) }}"
 kibana_memory_req: "{{ elasticsearch.kibana.memory_request | default('768Mi' if resource_tier in ['medium', 'production'] else '384Mi') }}"
 kibana_memory_lim: "{{ elasticsearch.kibana.memory_limit | default('1536Mi' if resource_tier in ['medium', 'production'] else '768Mi') }}"
 kibana_cpu_req: "{{ elasticsearch.kibana.cpu_request | default('500m' if resource_tier in ['medium', 'production'] else '100m') }}"
-kibana_cpu_lim: "{{ elasticsearch.kibana.cpu_limit | default('500m' if resource_tier in ['medium', 'production'] else '250m') }}"
+kibana_cpu_lim: "{{ elasticsearch.kibana.cpu_limit | default('1000m') }}"
 
 es_kibana_domain: "kibana.{{ domain }}"

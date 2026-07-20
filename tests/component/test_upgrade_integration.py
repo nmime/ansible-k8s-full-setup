@@ -56,7 +56,8 @@ HEALTH_DRY_RUN=true
 check_health_gates 2>&1
 """])
         output = r.stdout + r.stderr
-        for comp in ["Nodes", "Cilium", "Cert-manager", "ArgoCD", "Databases"]:
+        for comp in ["Nodes", "Cilium", "Cert-manager", "ArgoCD", "Databases",
+                     "workload controllers", "Persistent storage", "Runtime security", "Helm releases"]:
             assert comp in output, f"Missing: {comp}"
 
 class TestUpgradeFlags:

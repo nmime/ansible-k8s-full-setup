@@ -9,8 +9,9 @@ hetzner_bastion_type: '{{ network.bastion.server_type | default("") }}'
 hetzner_cp_type: '{{ infrastructure.control_plane.type | default("") }}'
 hetzner_worker_type: '{{ infrastructure.workers.type | default("") }}'
 
-# Scaling down or changing a server type is disruptive. Drift is always
-# detected; set this explicitly for a controlled maintenance operation.
+# Deprecated compatibility input. The role now always fails closed on server
+# deletion and type drift; scripts/migrate-profile.sh owns safe, one-node-at-a-
+# time convergence with Kubernetes and etcd gates.
 hetzner_allow_destructive_reconcile: false
 
 # Minimum resource requirements per tier (used for auto-selection).

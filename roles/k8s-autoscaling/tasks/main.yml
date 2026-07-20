@@ -216,17 +216,31 @@
     - '  Create ScaledObject resources to enable'
     - '  autoscaling for your deployments.'
     - ==========================================
-- name: Create default-deny for KEDA namespace
+- name: Remove legacy invalid Cilium default-deny for KEDA namespace
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: default-deny
         namespace: keda
+- name: Create default-deny NetworkPolicy for KEDA namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: keda
       spec:
-        endpointSelector: {}
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
 - name: Allow KEDA egress to metrics sources and K8s API
   kubernetes.core.k8s:
     state: present
@@ -242,45 +256,3 @@
         - toEntities:
           - cluster
           - kube-apiserver
-- name: Create KEDA VMServiceScrape for VictoriaMetrics metrics collection
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: operator.victoriametrics.com/v1beta1
-      kind: VMServiceScrape
-      metadata:
-        name: keda
-        namespace: '{{ keda_namespace }}'
-      spec:
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: keda-operator
-        endpoints:
-          - port: metrics
-            interval: 30s
-  when: vmscrape_crd.resources | default([]) | length > 0
-  register: _r_create_vmservicescrape_for_keda
-  retries: 3
-  delay: 10
-  until: _r_create_vmservicescrape_for_keda is not failed
-
-- name: Create optional Prometheus ServiceMonitor for KEDA (when prometheus_enabled=true)
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
-        name: keda
-        namespace: '{{ keda_namespace }}'
-        labels:
-          release: prometheus
-      spec:
-        selector:
-          matchLabels:
-            app: keda-operator
-        endpoints:
-          - port: http
-            interval: 30s
-            path: /metrics
-  when: prometheus_enabled | default(false) | bool

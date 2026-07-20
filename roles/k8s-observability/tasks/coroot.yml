@@ -65,6 +65,24 @@
   delay: 15
   until: _r_install_coroot_operator is not failed
 
+- name: Reconcile Coroot application StatefulSet storage growth without replacing claims
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: coroot
+    storage_reconcile_statefulset: coroot-coroot
+    storage_reconcile_claim: data
+    storage_reconcile_desired: '{{ coroot_storage_size }}'
+    storage_reconcile_orphan: false
+
+- name: Reconcile Coroot ClickHouse StatefulSet storage growth without replacing claims
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: coroot
+    storage_reconcile_statefulset: coroot-clickhouse-shard-0
+    storage_reconcile_claim: data
+    storage_reconcile_desired: '{{ coroot_clickhouse_storage_size }}'
+    storage_reconcile_orphan: false
+
 - name: Install pinned Coroot CE with external VictoriaMetrics
   kubernetes.core.helm:
     name: coroot
@@ -73,6 +91,10 @@
     release_namespace: coroot
     create_namespace: false
     release_state: present
+    # Profile migrations may have to apply an emergency resource patch while a
+    # node is constrained. Helm 4 uses server-side apply, so explicitly reclaim
+    # fields from those temporary patch managers on the next declarative run.
+    force_conflicts: true
     wait: true
     timeout: 5m0s
     values:
@@ -156,6 +178,59 @@
   delay: 15
   until: _r_install_coroot is not failed
 
+- name: Recreate the Coroot application controller after its desired storage update
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: coroot
+    storage_reconcile_statefulset: coroot-coroot
+    storage_reconcile_claim: data
+    storage_reconcile_desired: '{{ coroot_storage_size }}'
+    storage_reconcile_wait: false
+
+- name: Recreate the Coroot ClickHouse controller after its desired storage update
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: coroot
+    storage_reconcile_statefulset: coroot-clickhouse-shard-0
+    storage_reconcile_claim: data
+    storage_reconcile_desired: '{{ coroot_clickhouse_storage_size }}'
+    storage_reconcile_wait: false
+
+- name: Wait for Coroot controllers to adopt the expanded claim templates
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: coroot
+    name: '{{ item.name }}'
+  loop:
+    - name: coroot-coroot
+      size: '{{ coroot_storage_size }}'
+    - name: coroot-clickhouse-shard-0
+      size: '{{ coroot_clickhouse_storage_size }}'
+  register: _coroot_expanded_statefulset
+  retries: 60
+  delay: 5
+  until:
+    - _coroot_expanded_statefulset.resources | length == 1
+    - _coroot_expanded_statefulset.resources[0].spec.volumeClaimTemplates[0].spec.resources.requests.storage == item.size
+    - _coroot_expanded_statefulset.resources[0].status.readyReplicas | default(0) | int >= 1
+
+- name: Reconcile bound Coroot claims after operator adoption
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: coroot
+    storage_reconcile_statefulset: '{{ coroot_claim.name }}'
+    storage_reconcile_claim: data
+    storage_reconcile_desired: '{{ coroot_claim.size }}'
+    storage_reconcile_orphan: false
+  loop:
+    - name: coroot-coroot
+      size: '{{ coroot_storage_size }}'
+    - name: coroot-clickhouse-shard-0
+      size: '{{ coroot_clickhouse_storage_size }}'
+  loop_control:
+    loop_var: coroot_claim
+
 - name: Create VPN-only Coroot HTTPRoute
   kubernetes.core.k8s:
     state: present
@@ -186,18 +261,18 @@
   delay: 10
   until: _r_create_coroot_httproute is not failed
 
-- name: Wait for the Coroot application deployment
+- name: Wait for the Coroot application StatefulSet
   kubernetes.core.k8s_info:
     api_version: apps/v1
-    kind: Deployment
-    name: coroot
+    kind: StatefulSet
+    name: coroot-coroot
     namespace: coroot
   register: _r_coroot_application
   retries: 60
   delay: 10
   until:
     - _r_coroot_application.resources | length == 1
-    - _r_coroot_application.resources[0].status.availableReplicas | default(0) | int >= 1
+    - _r_coroot_application.resources[0].status.readyReplicas | default(0) | int >= 1
 
 - name: Wait for the Coroot cluster agent deployment
   kubernetes.core.k8s_info:

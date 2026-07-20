@@ -53,7 +53,7 @@ network:
 # Kubernetes
 # ---------------------------------------------
 kubernetes:
-  version: v1.35.6
+  version: v1.35.4
   cni: cilium
   ha_control_plane: false
 
@@ -64,6 +64,7 @@ storage:
   enabled: true
   mode: standalone
   replicas: 1
+  replication_placement: "000"
   size: 100Gi
 
 # ---------------------------------------------
@@ -112,6 +113,8 @@ gitops:
 # ---------------------------------------------
 observability:
   enabled: true
+  pmm:
+    enabled: false
   metrics:
     enabled: true
     retention: 14d
@@ -153,6 +156,12 @@ postal:
 
 backup:
   enabled: false
+  # Used by mandatory migration/DR gates even though scheduled backups are off.
+  job_resources:
+    cpu_request: 10m
+    cpu_limit: 250m
+    memory_request: 64Mi
+    memory_limit: 256Mi
 
 # ---------------------------------------------
 # GlitchTip (Sentry-compatible error tracking)

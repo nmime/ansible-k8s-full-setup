@@ -47,7 +47,7 @@ infrastructure:
     public_ip: false
 
 kubernetes:
-  version: v1.35.6
+  version: v1.35.4
   cni: cilium
   cilium_version: v1.19.5
   pod_cidr: 10.233.64.0/18
@@ -102,6 +102,9 @@ gitops:
 observability:
   # Metrics, logging, and Grafana are one production-tested core bundle.
   enabled: true
+  # PMM is independently selectable; leave it off on constrained clusters.
+  pmm:
+    enabled: false
   metrics:
     enabled: true
     retention: 14d

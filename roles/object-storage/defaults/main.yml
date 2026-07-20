@@ -16,6 +16,9 @@ object_storage_filer_size: 10Gi
 object_storage_replicas: "{{ 3 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
 object_storage_volume_replicas: "{{ 3 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
 object_storage_filer_replicas: "{{ 2 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
+# Keep one additional copy on another volume server whenever the topology has
+# enough servers. SeaweedFS otherwise defaults to 000 even with three pods.
+object_storage_replication_placement: "{{ '001' if (object_storage_volume_replicas | int) > 1 else '000' }}"
 
 object_storage_endpoint_hostport: "seaweedfs-filer.{{ object_storage_namespace | default('storage') }}.svc.cluster.local:8333"
 object_storage_endpoint: "http://{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
@@ -54,6 +57,8 @@ object_storage_buckets:
   - gitlab-terraform-state
   - gitlab-ci-secure-files
   - gitlab-dependency-proxy
+  - gitlab-mr-diffs
+  - gitlab-agent-plan-content
   - gitlab-pages
   - gitlab-backups
   - gitlab-tmp

@@ -55,7 +55,7 @@ ansible_ssh_strict_host_key_checking: true
 
 # Kubernetes
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-k8s_version: v1.35.6
+k8s_version: v1.35.4
 k8s_cni: cilium
 # renovate: datasource=github-releases depName=cilium/cilium
 cilium_version: v1.19.5
@@ -80,8 +80,8 @@ kubectl_version: "{{ k8s_version }}"
 hcloud_cli_version: v1.65.0
 yq_version: v4.44.6
 helm_cli_version: v3.20.1
-kubectl_linux_amd64_sha256: 5d11e2ba01ea68ffd053f56e27738e2b4330013ee67f7e46c6da6c585d3c99260
-helm_linux_amd64_sha256: 165ee4a2db012cc657381001e593e981f42aa5707acdd50658326790c9d0dc3
+kubectl_linux_amd64_sha256: b529430df69a688fd61b64ad2299edb5fd71cb58be2a4779dba624c7d3510efd
+helm_linux_amd64_sha256: 0165ee4a2db012cc657381001e593e981f42aa5707acdd50658326790c9d0dc3
 hcloud_linux_amd64_sha256: f78d2db65b7ab58603d343739cb4397e13acef23182e41692a06e147a8d4c011
 yq_linux_amd64_sha256: 0c2b24e645b57d8e7c0566d18643a6d4f5580feeea3878127354a46f2a1e4598
 node_exporter_linux_amd64_sha256: a550cd5c05f760b7934a2d0afad66d2e92e681482f5f57a917465b1fba3b02a6
@@ -131,7 +131,7 @@ vault_tls_disabled: false
 vault_verify_tls: true
 vault_encrypt_secrets: true
 vault_password_file: ~/.vault_pass
-vault_init_output_file: "{{ playbook_dir }}/.vault-init.json"
+vault_init_output_file: "{{ playbook_dir }}/.vault-init-{{ project_name | default('k8s') }}.json"
 
 # Databases - tier-specific
 # renovate: datasource=github-releases depName=percona/percona-postgresql-operator
@@ -187,6 +187,7 @@ log_stack: "{{ 'loki' if tier in ['minimal', 'small'] else 'elk' }}"  # Options:
 metrics_retention: "{{ '7d' if resource_tier == 'minimal' else '14d' if resource_tier == 'small' else '30d' }}"
 metrics_storage: "{{ '20Gi' if resource_tier == 'minimal' else '40Gi' if resource_tier == 'small' else '100Gi' if resource_tier == 'medium' else '150Gi' }}"
 pmm_storage_size: "{{ '20Gi' if resource_tier in ['minimal', 'small'] else '50Gi' }}"
+pmm_enabled: "{{ tier in ['medium', 'production'] }}"
 logging_retention: "{{ '3d' if resource_tier == 'minimal' else '7d' if resource_tier == 'small' else '14d' }}"
 
 # Autoscaling
@@ -221,6 +222,8 @@ dragonfly_image_version: "v1.39.0"
 # VictoriaMetrics Operator
 vm_operator_version: "0.66.2"
 pmm_server_version: "3.8.1"
+# renovate: datasource=docker depName=promhippie/hcloud-exporter
+hcloud_exporter_version: "3.21.0"
 
 # Coroot application observability. The operator and every image are pinned so
 # an idempotent rerun cannot silently upgrade production workloads.
@@ -254,7 +257,7 @@ coroot_memory_request: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else
 coroot_memory_limit: "{{ '1Gi' if resource_tier in ['minimal', 'small'] else '2Gi' if resource_tier == 'medium' else '4Gi' }}"
 coroot_node_agent_cpu_request: 100m
 coroot_node_agent_cpu_limit: 500m
-coroot_node_agent_memory_request: 200Mi
+coroot_node_agent_memory_request: 512Mi
 coroot_node_agent_memory_limit: 1Gi
 coroot_cluster_agent_cpu_request: 100m
 coroot_cluster_agent_cpu_limit: 500m

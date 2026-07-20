@@ -96,6 +96,15 @@
   until: _r_ensure_tempo_bucket is not failed
   when: tracing_enabled | bool
 
+- name: Reconcile Tempo StatefulSet storage growth without replacing claims
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
+  vars:
+    storage_reconcile_namespace: '{{ tempo_namespace }}'
+    storage_reconcile_statefulset: tempo
+    storage_reconcile_claim: storage
+    storage_reconcile_desired: '{{ tempo_storage_size }}'
+  when: tracing_enabled | bool
+
 - name: Deploy Tempo with Helm
   kubernetes.core.helm:
     name: tempo
@@ -107,79 +116,59 @@
     wait: true
     timeout: 10m0s
     values:
-      image:
+      replicas: 1
+      tempo:
         tag: '{{ tempo_image_tag }}'
-      config:
-        auth_enabled: false
+        multitenancyEnabled: false
+        reportingEnabled: false
+        retention: '{{ tempo_retention | default("24h") }}'
+        extraArgs:
+          config.expand-env: 'true'
+        extraEnvFrom:
+          - secretRef:
+              name: tempo-s3-credentials
         server:
           http_listen_port: 3200
         ingester:
           trace_idle_period: 10s
           max_block_bytes: 1073741824
           max_block_duration: 5m
-        compiler:
-          inline_functions: 0
         storage:
           trace:
             backend: s3
             s3:
               bucket: tempo-traces
-              endpoint: '{{ object_storage_endpoint | default("http://seaweedfs-filer.storage.svc.cluster.local:8333") }}'
-              access_key: '{{ object_storage_access_key }}'
-              secret_key: '{{ object_storage_secret_key }}'
+              endpoint: '{{ object_storage_endpoint | default("http://seaweedfs-filer.storage.svc.cluster.local:8333") | regex_replace("^https?://", "") }}'
+              access_key: '${S3_ACCESS_KEY}'
+              secret_key: '${S3_SECRET_KEY}'
               insecure: true
             wal:
               path: /var/tempo/wal
-            stream_idle_timeout: 10s
-          backend: s3
-        distributor:
-          receivers:
-            zipkin: {}
-            jaeger:
-              protocols:
-                thrift_http: {}
-                grpc: {}
-            opencensus: {}
-            otlp:
-              protocols:
-                http:
-                  endpoint: '0.0.0.0:4318'
-                grpc:
-                  endpoint: '0.0.0.0:4317'
-        compactor:
-          compaction:
-            compaction_window: 1h
-            max_compaction_objects: 1000000
-            block_retention: '{{ tempo_retention | default("24h") }}'
-            global_compaction:
-              deletion_delay: 10s
-        metrics_generator:
-          registry:
-            external_labels:
-              source: tempo
-              cluster: k8s
-          storage:
-            path: /var/tempo/generator
-            remote_write:
-              - url: '{{ "http://vminsert-vmcluster." + monitoring_namespace + ".svc:8480/insert/0/prometheus/api/v1/write" if tier in ["medium", "production"] else "http://vmsingle-vmsingle." + monitoring_namespace + ".svc:8429/api/v1/write" }}'
-      storage:
-        size: '{{ tempo_storage_size | default("20Gi") }}'
-        storageClass: '{{ storage_class | default("hcloud-volumes") }}'
-      ingester:
-        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
-      queryFrontend:
-        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
-      querier:
-        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
-      distributor:
-        replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
-      compactor:
-        replicaCount: 1
-      metricsGenerator:
+        metricsGenerator:
+          enabled: true
+          remoteWriteUrl: '{{ "http://vminsert-vmcluster." + monitoring_namespace + ".svc:8480/insert/0/prometheus/api/v1/write" if tier in ["medium", "production"] else "http://vmsingle-vmsingle." + monitoring_namespace + ".svc:8429/api/v1/write" }}'
+        resources:
+          requests:
+            cpu: '{{ "100m" if resource_tier in ["minimal", "small"] else "200m" }}'
+            memory: '{{ "256Mi" if resource_tier in ["minimal", "small"] else "512Mi" }}'
+          limits:
+            cpu: '{{ "500m" if resource_tier in ["minimal", "small"] else "1000m" }}'
+            memory: '{{ "512Mi" if resource_tier in ["minimal", "small"] else "1Gi" }}'
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: [ALL]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      persistence:
         enabled: true
-        replicaCount: 1
-      gateway:
-        enabled: false
+        size: '{{ tempo_storage_size | default("20Gi") }}'
+        storageClassName: '{{ storage_class | default("hcloud-volumes") }}'
   register: _r_install_tempo_with_helm
   retries: 3
   delay: 10
@@ -198,6 +187,7 @@
     timeout: 10m0s
     values:
       image:
+        repository: otel/opentelemetry-collector-k8s
         tag: '{{ otel_collector_image_tag }}'
       mode: deployment
       config:
@@ -225,47 +215,26 @@
             limit_mib: 256
         exporters:
           otlp:
-            endpoint: 'tempo-distributor.{{ tempo_namespace }}.svc.cluster.local:4317'
+            endpoint: 'tempo.{{ tempo_namespace }}.svc.cluster.local:4317'
             tls:
               insecure: true
-          logging:
-            loglevel: debug
         service:
           pipelines:
             traces:
               receivers: [otlp, jaeger, zipkin]
               processors: [memory_limiter, batch]
               exporters: [otlp]
+            metrics: null
+            logs: null
+          telemetry:
             metrics:
-              receivers: [otlp]
-              processors: [memory_limiter, batch]
-              exporters: [otlp]
-        observability:
-          metrics:
-            address: '0.0.0.0:8888'
-      service:
-        - name: otlp
-          ports:
-            - name: otlp-grpc
-              port: 4317
-              targetPort: 4317
-            - name: otlp-http
-              port: 4318
-              targetPort: 4318
-            - name: zipkin
-              port: 9411
-              targetPort: 9411
-            - name: jaeger-grpc
-              port: 14250
-              targetPort: 14250
-            - name: jaeger-http
-              port: 14268
-              targetPort: 14268
-        - name: metrics
-          ports:
-            - name: http-metrics
-              port: 8888
-              targetPort: 8888
+              address: '0.0.0.0:8888'
+      ports:
+        metrics:
+          enabled: true
+          containerPort: 8888
+          servicePort: 8888
+          protocol: TCP
       resources:
         requests:
           cpu: 100m
@@ -273,7 +242,7 @@
         limits:
           cpu: 500m
           memory: 512Mi
-      replicaCount: '{{ (2 if resource_tier in ["medium", "production"] else 1) | int }}'
+      replicaCount: '{{ tracing.collector_replicas | default(2 if resource_tier in ["medium", "production"] else 1) | int }}'
       podSecurityContext:
         runAsNonRoot: true
       securityContext:
@@ -356,7 +325,7 @@
       spec:
         selector:
           matchLabels:
-            app.kubernetes.io/name: otel-collector
+            app.kubernetes.io/name: opentelemetry-collector
         endpoints:
           - port: metrics
             interval: 30s

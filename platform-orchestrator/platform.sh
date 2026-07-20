@@ -14,6 +14,13 @@ STATE_DIR="${SCRIPT_DIR}/.state"
 LOG_DIR="${SCRIPT_DIR}/logs"
 ANSIBLE_DIR="${SCRIPT_DIR}/.."
 
+# Prefer the repository-managed runtime so every documented command works from a
+# fresh shell without requiring callers to remember to activate the virtualenv.
+if [[ -x "${ANSIBLE_DIR}/.venv/bin/ansible-playbook" ]]; then
+  PATH="${ANSIBLE_DIR}/.venv/bin:${PATH}"
+  export PATH
+fi
+
 ENV_LOADER="${ANSIBLE_DIR}/scripts/load-project-env.sh"
 if [[ -f "$ENV_LOADER" ]]; then
   # shellcheck source=scripts/load-project-env.sh
@@ -117,6 +124,7 @@ component_path() {
     gitlab-runner) echo '.gitlab.runner.enabled' ;;
     gitops) echo '.gitops.enabled' ;;
     observability) echo '.observability.enabled' ;;
+    pmm) echo '.observability.pmm.enabled' ;;
     coroot) echo '.coroot.enabled' ;;
     tracing) echo '.tracing.enabled' ;;
     autoscaling) echo '.autoscaling.enabled' ;;
@@ -146,11 +154,12 @@ enable_paths() {
     gitlab-runner) echo '.storage.enabled .databases.enabled .databases.postgresql.enabled .dragonfly.enabled .gitlab.enabled .gitlab.runner.enabled' ;;
     gitops) echo '.gitops.enabled' ;;
     observability) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled' ;;
+    pmm) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .observability.pmm.enabled' ;;
     coroot) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .coroot.enabled' ;;
     tracing) echo '.storage.enabled .observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .tracing.enabled' ;;
     autoscaling) echo '.autoscaling.enabled' ;;
     dragonfly) echo '.dragonfly.enabled' ;;
-    temporal) echo '.databases.enabled .databases.postgresql.enabled .elasticsearch.enabled .temporal.enabled' ;;
+    temporal) echo '.databases.enabled .databases.postgresql.enabled .temporal.enabled' ;;
     postal) echo '.dragonfly.enabled .postal.enabled' ;;
     backup) echo '.storage.enabled .backup.enabled' ;;
     glitchtip) echo '.databases.enabled .databases.postgresql.enabled .dragonfly.enabled .glitchtip.enabled' ;;
@@ -186,7 +195,7 @@ show_components() {
   printf '%-18s %s\n' COMPONENT ENABLED
   printf '%-18s %s\n' '------------------' '-------'
   local component path value
-  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability coroot tracing autoscaling temporal postal backup glitchtip apm blackbox daytona hipaa; do
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing autoscaling temporal postal backup glitchtip apm blackbox daytona hipaa; do
     path=$(component_path "$component")
     value=$(flag_from_config "$path" false)
     printf '%-18s %s\n' "$component" "$value"
@@ -218,12 +227,12 @@ enabled_blockers() {
   case "$component" in
     object-storage) blockers='.gitlab.enabled:gitlab .tracing.enabled:tracing .backup.enabled:backup' ;;
     databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip' ;;
-    elasticsearch) blockers='.temporal.enabled:temporal .apm.enabled:apm' ;;
+    elasticsearch) blockers='.apm.enabled:apm' ;;
     dragonfly) blockers='.gitlab.enabled:gitlab .postal.enabled:postal .glitchtip.enabled:glitchtip' ;;
     gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
-    observability) blockers='.coroot.enabled:coroot .tracing.enabled:tracing .blackbox.enabled:blackbox .compliance.hipaa.enabled:hipaa' ;;
+    observability) blockers='.observability.pmm.enabled:pmm .coroot.enabled:coroot .tracing.enabled:tracing .blackbox.enabled:blackbox .compliance.hipaa.enabled:hipaa' ;;
     secrets) blockers='.secrets.eso.enabled:eso .compliance.hipaa.enabled:hipaa' ;;
-    eso|mongodb|gitlab-runner|gitops|coroot|tracing|autoscaling|temporal|postal|backup|glitchtip|apm|blackbox|daytona|hipaa) ;;
+    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tracing|autoscaling|temporal|postal|backup|glitchtip|apm|blackbox|daytona|hipaa) ;;
     *) return 1 ;;
   esac
   for label in $blockers; do
@@ -251,7 +260,7 @@ disable_component() {
     secrets) yq -i '.secrets.eso.enabled = false' "$CONFIG_FILE" ;;
     databases) yq -i '.databases.postgresql.enabled = false | .databases.mongodb.enabled = false' "$CONFIG_FILE" ;;
     gitlab) yq -i '.gitlab.runner.enabled = false' "$CONFIG_FILE" ;;
-    observability) yq -i '.observability.metrics.enabled = false | .observability.logging.enabled = false | .observability.grafana.enabled = false' "$CONFIG_FILE" ;;
+    observability) yq -i '.observability.metrics.enabled = false | .observability.logging.enabled = false | .observability.grafana.enabled = false | .observability.pmm.enabled = false' "$CONFIG_FILE" ;;
   esac
   if ! validate_config; then
     cp "$backup_file" "$CONFIG_FILE"
@@ -307,13 +316,15 @@ init_config() {
 
 heal_check() {
   log "Health check..."
-  local require_argocd require_postgresql require_mongodb
+  local require_argocd require_postgresql require_mongodb expected_nodes
   require_argocd=$(flag_from_config '.gitops.enabled' true)
   require_postgresql=$(flag_from_config '.databases.postgresql.enabled' true)
   require_mongodb=$(flag_from_config '.databases.mongodb.enabled' false)
+  expected_nodes=$(yq -r '(.infrastructure.control_plane.count // 1) + (.infrastructure.workers.count // 1)' "$CONFIG_FILE")
   HEALTH_REQUIRE_ARGOCD="$require_argocd" \
     HEALTH_REQUIRE_POSTGRESQL="$require_postgresql" \
     HEALTH_REQUIRE_MONGODB="$require_mongodb" \
+    HEALTH_EXPECTED_NODES="$expected_nodes" \
     "${ANSIBLE_DIR}/scripts/health-gates.sh"
 }
 
@@ -346,6 +357,7 @@ deploy_component() {
     gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
     gitops)        require_component_enabled "$component"; run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
     observability) require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
+    pmm)           require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/pmm.log" ;;
     coroot)        require_component_enabled "$component"; run_playbook --tags coroot 2>&1 | tee -a "${LOG_DIR}/coroot.log" ;;
     tracing)       require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/tracing.log" ;;
     autoscaling)   require_component_enabled "$component"; run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;

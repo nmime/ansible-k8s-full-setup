@@ -26,8 +26,9 @@
   delay: 10
   until: _r_create_databases_namespace is not failed
   when: >-
-    (platform_postgresql_enabled | default(true) | bool)
-    or (platform_mongodb_enabled | default(true) | bool)
+    (pmm_enabled | default(false) | bool)
+    and ((platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool))
 - name: Add Percona Helm repository
   kubernetes.core.helm_repository:
     name: percona
@@ -89,7 +90,7 @@
     - app.kubernetes.io/name=pg-operator
   register: pg_operator_deploy
   until: >-
-    pg_operator_deploy.resources | length > 0 and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+    (pg_operator_deploy.resources | default([])) | length > 0 and (pg_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
   when: platform_postgresql_enabled | default(true) | bool
@@ -114,6 +115,91 @@
   delay: 10
   until: _r_create_pgbackrest_s3_credentials_secret is not failed
   when: platform_postgresql_enabled | default(true) | bool
+- name: Read the persisted PMM 3 token for component-only reconciliations
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: monitoring
+    name: pmm-client-credentials
+  register: _persisted_pmm_credentials
+  no_log: true
+  when:
+  - pmm_enabled | default(false) | bool
+  - pmm_server_token | default('') | length == 0
+- name: Restore the persisted PMM 3 token fact
+  ansible.builtin.set_fact:
+    pmm_server_token: '{{ _persisted_pmm_credentials.resources[0].data.PMM_SERVER_TOKEN | b64decode }}'
+  no_log: true
+  when:
+  - pmm_enabled | default(false) | bool
+  - pmm_server_token | default('') | length == 0
+  - (_persisted_pmm_credentials.resources | default([])) | length == 1
+- name: Require PMM 3 credentials before enabling database clients
+  ansible.builtin.assert:
+    that:
+    - pmm_server_token | default('') | length > 0
+    fail_msg: >-
+      PMM is enabled, but monitoring/pmm-client-credentials does not contain
+      a PMM_SERVER_TOKEN. Reconcile the observability role first.
+  no_log: true
+  when: pmm_enabled | default(false) | bool
+- name: Allow database PMM clients to reach the monitoring namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-pmm-egress
+        namespace: '{{ db_ns }}'
+      spec:
+        endpointSelector: {}
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: monitoring
+              k8s:app: pmm-server
+          toPorts:
+          - ports:
+            - port: '443'
+              protocol: TCP
+            - port: '8443'
+              protocol: TCP
+  when: pmm_enabled | default(false) | bool
+- name: Allow PMM Server ingress from database clients
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-pmm-database-ingress
+        namespace: monitoring
+      spec:
+        endpointSelector:
+          matchLabels:
+            k8s:app: pmm-server
+        ingress:
+        - fromEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+          toPorts:
+          - ports:
+            - port: '8443'
+              protocol: TCP
+  when: pmm_enabled | default(false) | bool
+- name: Remove obsolete PMM 2 keys from database client credentials
+  kubernetes.core.k8s:
+    state: patched
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: pmm-secret
+    definition:
+      data:
+        PMM_SERVER_API_KEY: null
+        PMM_SERVER_USER: null
+        PMM_SERVER_PASSWORD: null
+  no_log: true
+  when: pmm_enabled | default(false) | bool
 - name: Create PMM credentials secret for databases namespace
   kubernetes.core.k8s:
     state: present
@@ -125,17 +211,16 @@
         namespace: '{{ db_ns }}'
       type: Opaque
       stringData:
-        PMM_SERVER_USER: admin
-        PMM_SERVER_PASSWORD: '{{ grafana_admin_password }}'
-        PMM_SERVER_API_KEY: '{{ pmm_api_key | default('''') }}'
+        PMM_SERVER_TOKEN: '{{ pmm_server_token }}'
   register: _r_create_pmm_credentials_secret_for_databa
   retries: 3
   delay: 10
   until: _r_create_pmm_credentials_secret_for_databa is not failed
   no_log: true
   when: >-
-    (platform_postgresql_enabled | default(true) | bool)
-    or (platform_mongodb_enabled | default(true) | bool)
+    (pmm_enabled | default(false) | bool)
+    and ((platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool))
 - name: Create PostgreSQL cluster (PG Operator 3.x — v2 API)
   kubernetes.core.k8s:
     state: present
@@ -150,12 +235,13 @@
           app.kubernetes.io/version: '{{ pg_operator_ver }}'
       spec:
         crVersion: '{{ pg_operator_ver }}'
-        image: percona/percona-distribution-postgresql:{{ pg_version }}.3-1
+        image: percona/percona-distribution-postgresql:18.4-1
         postgresVersion: '{{ pg_version }}'
         port: 5432
         instances:
         - name: instance1
           replicas: '{{ pg_replicas | int }}'
+          tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
           dataVolumeClaimSpec:
             accessModes:
             - ReadWriteOnce
@@ -172,21 +258,21 @@
               memory: '{{ ''1Gi'' if resource_tier in [''minimal'', ''small''] else ''2Gi'' }}'
           affinity:
             podAntiAffinity:
-              preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                podAffinityTerm:
-                  labelSelector:
-                    matchLabels:
-                      postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
-                  topologyKey: kubernetes.io/hostname
+              requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
+                    postgres-operator.crunchydata.com/data: postgres
+                topologyKey: kubernetes.io/hostname
         proxy:
           pgBouncer:
             replicas: '{{ pg_proxy_replicas | int }}'
-            image: percona/percona-pgbouncer:1.25.1-1
+            image: percona/percona-pgbouncer:1.25.2-1
             config:
-              poolMode: transaction
-              maxClientConn: 1000
-              defaultPoolSize: 25
+              global:
+                pool_mode: transaction
+                max_client_conn: '1000'
+                default_pool_size: '25'
             resources:
               requests:
                 cpu: 50m
@@ -196,16 +282,14 @@
                 memory: 512Mi
             affinity:
               podAntiAffinity:
-                preferredDuringSchedulingIgnoredDuringExecution:
-                - weight: 100
-                  podAffinityTerm:
-                    labelSelector:
-                      matchLabels:
-                        postgres-operator.crunchydata.com/role: pgbouncer
-                    topologyKey: kubernetes.io/hostname
+                requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      postgres-operator.crunchydata.com/role: pgbouncer
+                  topologyKey: kubernetes.io/hostname
         backups:
           pgbackrest:
-            image: percona/pgbackrest:2.58.0-2
+            image: percona/percona-pgbackrest:2.58.0-2
             configuration:
             - secret:
                 name: pgbackrest-s3-creds
@@ -237,8 +321,8 @@
                 endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
                 region: us-east-1
         pmm:
-          enabled: true
-          image: percona/pmm-client:2.44.0
+          enabled: '{{ pmm_enabled | default(false) | bool }}'
+          image: percona/pmm-client:3.8.1
           serverHost: pmm-server.monitoring.svc.cluster.local
           secret: pmm-secret
           resources:
@@ -251,7 +335,6 @@
         extensions:
           builtin:
             pg_stat_statements: true
-        customLibraries: {}
         patroni:
           dynamicConfiguration:
             postgresql:
@@ -264,7 +347,7 @@
                 log_lock_waits: 'on'
                 log_temp_files: '0'
               pg_hba:
-              - local all all md5
+              - local all all scram-sha-256
               - local all "postgres" peer
               - hostssl replication "_crunchyrepl" all cert
               - hostssl "postgres" "_crunchyrepl" all cert
@@ -274,13 +357,12 @@
               - host all "monitor" all reject
               - hostssl all "_crunchypgbouncer" all scram-sha-256
               - host all "_crunchypgbouncer" all reject
-              - hostssl all all all md5
-              - host all all all md5
+              - hostssl all all all scram-sha-256
+              - host all all all scram-sha-256
         users:
         - name: '{{ project_name | default(''k8s'') }}'
           databases:
           - '{{ project_name | default(''k8s'') }}'
-          options: SUPERUSER
         - name: gitlab
           databases:
           - gitlabhq_production
@@ -299,6 +381,28 @@
   delay: 10
   until: _r_create_postgresql_cluster is not failed
   when: platform_postgresql_enabled | default(true) | bool
+- name: Discover unscheduled PostgreSQL pods left from an obsolete template
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: '{{ db_ns }}'
+    label_selectors:
+    - postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg
+    - postgres-operator.crunchydata.com/data=postgres
+    field_selectors:
+    - status.phase=Pending
+  register: _pending_postgresql_pods
+  when: platform_postgresql_enabled | default(true) | bool
+- name: Recreate unscheduled PostgreSQL pods from the current operator template
+  kubernetes.core.k8s:
+    state: absent
+    kind: Pod
+    namespace: '{{ db_ns }}'
+    name: '{{ item.metadata.name }}'
+    wait: true
+  loop: '{{ _pending_postgresql_pods.resources | default([]) }}'
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - item.spec.nodeName | default('') | length == 0
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
     api_version: pgv2.percona.com/v2
@@ -307,7 +411,10 @@
     name: '{{ project_name | default(''k8s'') }}-pg'
   register: pg_cluster
   until: >-
-    pg_cluster.resources | length > 0 and (pg_cluster.resources[0].status.state | default('')) == 'ready'
+    (pg_cluster.resources | default([])) | length > 0 and
+    (pg_cluster.resources[0].status.state | default('')) == 'ready' and
+    (pg_cluster.resources[0].status.postgres.ready | default(0) | int) == (pg_replicas | int) and
+    (pg_cluster.resources[0].status.pgbouncer.ready | default(0) | int) == (pg_proxy_replicas | int)
   retries: 60
   delay: 15
   when: platform_postgresql_enabled | default(true) | bool
@@ -361,7 +468,7 @@
     - app.kubernetes.io/name=psmdb-operator
   register: mongo_operator_deploy
   until: >-
-    mongo_operator_deploy.resources | length > 0 and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+    (mongo_operator_deploy.resources | default([])) | length > 0 and (mongo_operator_deploy.resources[0].status.readyReplicas | default(0)) >= 1
   retries: 120
   delay: 15
   when: platform_mongodb_enabled | default(true) | bool
@@ -396,12 +503,15 @@
         crVersion: '{{ psmdb_operator_ver }}'
         image: percona/percona-server-mongodb:8.0.8-3
         imagePullPolicy: IfNotPresent
+        secrets:
+          users: percona-server-mongodb-users
         unsafeFlags:
           replsetSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
           mongosSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
         replsets:
         - name: rs0
           size: '{{ mongo_replicas }}'
+          tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
           volumeSpec:
             persistentVolumeClaim:
               storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
@@ -421,8 +531,6 @@
             antiAffinityTopologyKey: kubernetes.io/hostname
         sharding:
           enabled: false
-        mongos:
-          size: 0
         backup:
           enabled: true
           image: percona/percona-backup-mongodb:2.13.0
@@ -454,39 +562,56 @@
             compressionType: gzip
             type: physical
         pmm:
-          enabled: true
-          image: percona/pmm-client:2.44.0
+          enabled: '{{ pmm_enabled | default(false) | bool }}'
+          image: percona/pmm-client:3.8.1
           serverHost: pmm-server.monitoring.svc.cluster.local
   register: _r_create_mongodb_cluster
   retries: 3
   delay: 10
   until: _r_create_mongodb_cluster is not failed
   when: platform_mongodb_enabled | default(true) | bool
-- name: Wait for MongoDB users secret to be created by operator
+- name: Wait for the operator-managed MongoDB users source secret
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ db_ns }}'
-    name: internal-{{ project_name | default('k8s') }}-mongo-users
+    name: percona-server-mongodb-users
   register: mongo_users_secret
-  until: mongo_users_secret.resources | length > 0
+  until: (mongo_users_secret.resources | default([])) | length > 0
   retries: 30
   delay: 10
   when: platform_mongodb_enabled | default(true) | bool
-- name: Patch MongoDB users secret with PMM_SERVER_API_KEY
+- name: Remove obsolete PMM 2 keys from the MongoDB users source secret
+  kubernetes.core.k8s:
+    state: patched
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: percona-server-mongodb-users
+    definition:
+      data:
+        PMM_SERVER_API_KEY: null
+        PMM_SERVER_USER: null
+        PMM_SERVER_PASSWORD: null
+  no_log: true
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - pmm_enabled | default(false) | bool
+- name: Patch MongoDB users source secret with PMM_SERVER_TOKEN
   no_log: true
   kubernetes.core.k8s:
     state: patched
     kind: Secret
     namespace: '{{ db_ns }}'
-    name: internal-{{ project_name | default('k8s') }}-mongo-users
+    name: percona-server-mongodb-users
     definition:
       stringData:
-        PMM_SERVER_API_KEY: '{{ pmm_api_key | default('''') }}'
+        PMM_SERVER_TOKEN: '{{ pmm_server_token }}'
   register: _r_patch_mongo_pmm_secret
   retries: 3
   delay: 10
   until: _r_patch_mongo_pmm_secret is not failed
-  when: platform_mongodb_enabled | default(true) | bool
+  when:
+    - platform_mongodb_enabled | default(true) | bool
+    - pmm_enabled | default(false) | bool
 - name: Wait for MongoDB cluster to be ready
   kubernetes.core.k8s_info:
     api_version: psmdb.percona.com/v1
@@ -495,7 +620,7 @@
     name: '{{ project_name | default(''k8s'') }}-mongo'
   register: mongo_cluster
   until: >-
-    mongo_cluster.resources | length > 0 and (mongo_cluster.resources[0].status.state | default('')) == 'ready'
+    (mongo_cluster.resources | default([])) | length > 0 and (mongo_cluster.resources[0].status.state | default('')) == 'ready'
   retries: 60
   delay: 15
   when: platform_mongodb_enabled | default(true) | bool
@@ -505,7 +630,7 @@
     namespace: '{{ db_ns }}'
     name: '{{ project_name | default(''k8s'') }}-pg-pguser-gitlab'
   register: gitlab_pg_secret
-  until: gitlab_pg_secret.resources | length > 0
+  until: (gitlab_pg_secret.resources | default([])) | length > 0
   retries: 30
   delay: 10
   when: platform_postgresql_enabled | default(true) | bool
@@ -561,7 +686,7 @@
     namespace: '{{ db_ns }}'
     name: '{{ project_name | default(''k8s'') }}-pg-pguser-{{ app_name | default(''myapp'') }}'
   register: app_pg_secret
-  until: app_pg_secret.resources | length > 0
+  until: (app_pg_secret.resources | default([])) | length > 0
   retries: 30
   delay: 10
   when: platform_postgresql_enabled | default(true) | bool
@@ -595,40 +720,64 @@
   until: _r_create_postgresql_connection_secret_for_app is not failed
 - name: Display databases summary
   debug:
-    msg:
-    - ==========================================
-    - '  Databases Deployed'
-    - ==========================================
-    - '  PostgreSQL:'
-    - '    Percona PG Operator: v{{ pg_operator_ver }}'
-    - '    PostgreSQL: {{ pg_version }}'
-    - '    Replicas: {{ pg_replicas }}'
-    - '    PgBouncer: {{ pg_proxy_replicas }} replicas'
-    - '    Cluster: {{ project_name | default(''k8s'') }}-pg.{{ db_ns }}'
-    - '  MongoDB:'
-    - '    Percona PSMDB Operator: v{{ psmdb_operator_ver }}'
-    - '    MongoDB: 8.0.x'
-    - '    Replicas: {{ mongo_replicas }}'
-    - '    Cluster: {{ project_name | default(''k8s'') }}-mongo.{{ db_ns }}'
-    - '  Backups:'
-    - '    PostgreSQL: pgbackrest (daily full + 6h diff + S3 weekly)'
-    - '    MongoDB: PBM (daily logical + weekly physical + PITR/oplog)'
-    - '    Retention: PG 7 full / 4 diff, Mongo {{ backup_retention_days | default(30) }} days'
-    - ==========================================
+    msg: >-
+      {{
+        ['==========================================', '  Databases Deployed', '==========================================']
+        + (
+          ['  PostgreSQL:',
+           '    Percona PG Operator: v' ~ pg_operator_ver,
+           '    PostgreSQL: ' ~ pg_version,
+           '    Replicas: ' ~ pg_replicas,
+           '    PgBouncer: ' ~ pg_proxy_replicas ~ ' replicas',
+           '    Cluster: ' ~ (project_name | default('k8s')) ~ '-pg.' ~ db_ns,
+           '    Backup: pgBackRest (daily full + 6h differential + S3 weekly)']
+          if (platform_postgresql_enabled | default(true) | bool)
+          else ['  PostgreSQL: DISABLED']
+        )
+        + (
+          ['  MongoDB:',
+           '    Percona PSMDB Operator: v' ~ psmdb_operator_ver,
+           '    MongoDB: 8.0.x',
+           '    Replicas: ' ~ mongo_replicas,
+           '    Cluster: ' ~ (project_name | default('k8s')) ~ '-mongo.' ~ db_ns,
+           '    Backup: PBM (daily logical + weekly physical + PITR/oplog)',
+           '    Retention: ' ~ (backup_retention_days | default(30)) ~ ' days']
+          if (platform_mongodb_enabled | default(true) | bool)
+          else ['  MongoDB: DISABLED']
+        )
+        + ['==========================================']
+      }}
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
-- name: Create default-deny for databases namespace
+- name: Remove legacy invalid Cilium default-deny for databases namespace
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: default-deny
         namespace: databases
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
+- name: Create default-deny NetworkPolicy for databases namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: databases
       spec:
-        endpointSelector: {}
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
@@ -683,12 +832,12 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
-- name: Create PostgreSQL ServiceMonitor
+- name: Create PostgreSQL VMServiceScrape
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
       metadata:
         name: postgresql
         namespace: databases
@@ -701,4 +850,6 @@
         endpoints:
         - port: metrics
           interval: 30s
-  when: platform_postgresql_enabled | default(true) | bool
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - platform_observability_enabled | default(false) | bool

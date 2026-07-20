@@ -1,5 +1,9 @@
 ---
 # GitLab backups are created by the chart's Toolbox backup-utility CronJob.
+# The database component is intentionally excluded there: the external Percona
+# cluster is protected by its native, version-matched backup in the same gated
+# backup-all run. This avoids coupling GitLab's bundled pg_dump major version
+# to the independently managed PostgreSQL major version.
 # A separate job protects the Rails encryption secret, which GitLab explicitly
 # excludes from the application backup archive.
 
@@ -20,7 +24,7 @@
   register: _gitlab_toolbox_backup_cron
   retries: 12
   delay: 10
-  until: _gitlab_toolbox_backup_cron.resources | length == 1
+  until: (_gitlab_toolbox_backup_cron.resources | default([])) | length == 1
 
 - name: "Backup-GitLab | Create Rails secret backup credentials"
   no_log: true
@@ -68,9 +72,20 @@
             template:
               spec:
                 restartPolicy: Never
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
                 containers:
                   - name: backup-rails-secrets
                     image: "{{ backup_s3cli_image }}"
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
                     command: [/bin/sh, -c]
                     args:
                       - |
