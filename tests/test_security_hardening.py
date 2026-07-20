@@ -729,3 +729,16 @@ def test_elasticsearch_password_rotation_precedes_secret_update():
     )[0]
     assert "no_log: true" in rotation
     assert "_security/user/elastic/_password" in rotation
+
+
+def test_dragonfly_auth_secret_change_rolls_statefulset():
+    tasks = read("roles/dragonfly/tasks/main.yml")
+    assert tasks.index("Create Dragonfly instance") < tasks.index(
+        "Reconcile Dragonfly pods with the current auth secret"
+    )
+    rollout = tasks.split(
+        "- name: Reconcile Dragonfly pods with the current auth secret", 1
+    )[1].split("\n- name:", 1)[0]
+    assert "platform.example.com/dragonfly-credentials-hash" in rollout
+    assert "kubectl rollout status statefulset/dragonfly" in rollout
+    assert "no_log: true" in rollout
