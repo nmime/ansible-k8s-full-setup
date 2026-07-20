@@ -426,6 +426,11 @@
   register: fw_bastion_check
   changed_when: false
   failed_when: false
+  retries: 5
+  delay: 5
+  until: >-
+    fw_bastion_check.rc == 0 or
+    'not found' in (fw_bastion_check.stderr | default('') | lower)
 
 - name: Create bastion firewall
   ansible.builtin.command:
@@ -433,6 +438,10 @@
       hcloud firewall create
       --name {{ project }}-fw-bastion
       --label project={{ project }}
+  register: fw_bastion_create
+  retries: 5
+  delay: 5
+  until: fw_bastion_create.rc == 0
   when: fw_bastion_check.rc != 0
 
 - name: Define the complete bastion firewall policy
@@ -506,6 +515,11 @@
   register: fw_nodes_check
   changed_when: false
   failed_when: false
+  retries: 5
+  delay: 5
+  until: >-
+    fw_nodes_check.rc == 0 or
+    'not found' in (fw_nodes_check.stderr | default('') | lower)
 
 - name: Create node firewall (private network only)
   ansible.builtin.command:
@@ -513,6 +527,10 @@
       hcloud firewall create
       --name {{ project }}-fw-nodes
       --label project={{ project }}
+  register: fw_nodes_create
+  retries: 5
+  delay: 5
+  until: fw_nodes_create.rc == 0
   when: fw_nodes_check.rc != 0
 
 - name: Define the complete node firewall policy
