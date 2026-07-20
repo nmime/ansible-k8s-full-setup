@@ -1315,21 +1315,6 @@
     - not (lb_enabled | default(false) | bool)
     - k8s_create_external_tls | default(true) | bool
 
-- name: Require minimal-tier TLS ingress through the bastion edge
-  ansible.builtin.uri:
-    url: https://{{ domain }}/
-    validate_certs: "{{ cert_manager_cluster_issuer == 'letsencrypt-prod' }}"
-    status_code: [200, 301, 302, 308, 401, 403, 404]
-    timeout: 15
-  register: minimal_edge_https
-  retries: 12
-  delay: 5
-  until: minimal_edge_https is not failed
-  when:
-    - not (lb_enabled | default(false) | bool)
-    - k8s_create_external_tls | default(true) | bool
-
-
 - name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
   kubernetes.core.k8s:
     state: present
@@ -1583,6 +1568,39 @@
   retries: 3
   delay: 10
   until: _r_create_wildcard_tls_certificate is not failed
+
+- name: Wait for the selected wildcard certificate issuer to become ready
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: cilium-secrets
+    name: wildcard-tls
+  register: wildcard_tls_certificate
+  retries: 60
+  delay: 10
+  until:
+    - wildcard_tls_certificate.resources | default([]) | length == 1
+    - wildcard_tls_certificate.resources[0].spec.issuerRef.name == cert_manager_cluster_issuer
+    - >-
+      wildcard_tls_certificate.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list | length == 1
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Require minimal-tier TLS ingress through the bastion edge
+  ansible.builtin.uri:
+    url: https://{{ domain }}/
+    validate_certs: "{{ cert_manager_cluster_issuer == 'letsencrypt-prod' }}"
+    status_code: [200, 301, 302, 308, 401, 403, 404]
+    timeout: 15
+  register: minimal_edge_https
+  retries: 12
+  delay: 5
+  until: minimal_edge_https is not failed
+  when:
+    - not (lb_enabled | default(false) | bool)
+    - k8s_create_external_tls | default(true) | bool
 
 
 # ============================================

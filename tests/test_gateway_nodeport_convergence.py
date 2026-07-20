@@ -61,6 +61,10 @@ def test_minimal_tier_reuses_bastion_as_an_sni_aware_edge():
     assert "{{ first_master_ip }}:{{ gateway_https_node_port }}" in cluster
     assert "not (lb_enabled | default(false) | bool)" in cluster
     assert "cert_manager_cluster_issuer == 'letsencrypt-prod'" in cluster
+    certificate = cluster.index("Create wildcard TLS certificate")
+    ready = cluster.index("Wait for the selected wildcard certificate issuer to become ready")
+    strict_tls = cluster.index("Require minimal-tier TLS ingress through the bastion edge")
+    assert certificate < ready < strict_tls
 
     assert "127.0.0.1:8443:443" in network
     assert "127.0.0.1:8080:80" in network
