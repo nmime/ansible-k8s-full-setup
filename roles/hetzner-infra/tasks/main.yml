@@ -454,9 +454,14 @@
         description: SSH access
       - direction: in
         protocol: tcp
+        port: '80'
+        source_ips: [0.0.0.0/0, '::/0']
+        description: HTTP ACME and minimal-tier ingress
+      - direction: in
+        protocol: tcp
         port: '443'
         source_ips: [0.0.0.0/0, '::/0']
-        description: Headscale VPN
+        description: Headscale VPN and minimal-tier ingress
       - direction: in
         protocol: udp
         port: '3478'
@@ -925,7 +930,7 @@
   loop: '{{ lb_current_services | rejectattr("listen_port", "in", [80, 443]) | list }}'
   when: lb_enabled | bool
 
-- name: Add missing LB service for HTTPS (443 -> NodePort 30443)
+- name: Add missing bootstrap LB service for HTTPS
   ansible.builtin.command:
     cmd: >-
       hcloud load-balancer add-service {{ project }}-lb
@@ -935,22 +940,7 @@
     - lb_enabled | bool
     - lb_https_service | length == 0
 
-- name: Reconcile drifted LB service for HTTPS
-  ansible.builtin.command:
-    cmd: >-
-      hcloud load-balancer update-service {{ project }}-lb
-      --listen-port 443 --protocol tcp --destination-port 30443
-      --health-check-protocol tcp --health-check-port 30443
-  when:
-    - lb_enabled | bool
-    - lb_https_service | length > 0
-    - >-
-      lb_https_service.protocol != 'tcp'
-      or lb_https_service.destination_port != 30443
-      or lb_https_service.health_check.protocol != 'tcp'
-      or lb_https_service.health_check.port != 30443
-
-- name: Add missing LB service for HTTP (80 -> NodePort 30080)
+- name: Add missing bootstrap LB service for HTTP
   ansible.builtin.command:
     cmd: >-
       hcloud load-balancer add-service {{ project }}-lb
@@ -959,21 +949,6 @@
   when:
     - lb_enabled | bool
     - lb_http_service | length == 0
-
-- name: Reconcile drifted LB service for HTTP
-  ansible.builtin.command:
-    cmd: >-
-      hcloud load-balancer update-service {{ project }}-lb
-      --listen-port 80 --protocol tcp --destination-port 30080
-      --health-check-protocol tcp --health-check-port 30080
-  when:
-    - lb_enabled | bool
-    - lb_http_service | length > 0
-    - >-
-      lb_http_service.protocol != 'tcp'
-      or lb_http_service.destination_port != 30080
-      or lb_http_service.health_check.protocol != 'tcp'
-      or lb_http_service.health_check.port != 30080
 
 - name: Add worker servers as LB targets
   ansible.builtin.command:

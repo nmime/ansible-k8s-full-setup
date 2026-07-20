@@ -222,7 +222,9 @@ certbot certonly --nginx \
 2. User connects to 116.203.x.x:443 (HTTPS)
    └─→ Hetzner Load Balancer receives request
 
-3. LB forwards to NodePort :30443 on worker nodes (TCP passthrough)
+3. LB forwards to the live Cilium Gateway HTTPS NodePort on worker nodes
+   └─→ The cluster role discovers the controller-owned port, updates the LB,
+       and requires every TCP health check to become healthy
    └─→ Request enters K8s cluster
 
 4. Cilium Gateway (envoy) terminates TLS, reads Host header
@@ -274,15 +276,14 @@ certbot certonly --nginx \
    └─→ tailscale up --login-server=https://vpn.example.com
    └─→ Gets VPN IP: 100.64.x.x
 
-2. Admin browser: DNS lookup gitlab.example.com
-   └─→ Hetzner DNS returns: 116.203.x.x (Hetzner LB)
+2. Admin resolves the private admin endpoint to a cluster node or private VIP
+   └─→ Do not publish the admin Gateway through the public application LB
 
-3. Admin connects to 116.203.x.x:443
-   └─→ Wait! GitLab is on admin-gateway (port 31443), not main LB
+3. The operator discovers the admin Gateway Service HTTPS NodePort
+   └─→ Cilium owns this allocation; do not hard-code or patch it
 
-4. Actually, admin-gateway uses MetalLB VIP or direct NodePort:
-   └─→ VPN traffic can reach NodePort :31443 directly
-   └─→ Because VPN overlay (100.64.0.0/10) has access to 10.0.0.0/16
+4. Admin connects through the VPN to that private endpoint and discovered port
+   └─→ The VPN overlay (100.64.0.0/10) has access to 10.0.0.0/16
 
 5. Cilium admin-gateway terminates TLS
    └─→ HTTPRoute matches Host: gitlab.example.com
@@ -293,6 +294,12 @@ certbot certonly --nginx \
 
 7. Request reaches GitLab webservice pod
 ```
+
+For the load-balancer-free `minimal` tier, root and wildcard DNS point to the
+bastion. HAProxy listens on public ports 80/443, routes `vpn.<domain>` to the
+loopback-only Caddy/Headscale listener, and forwards every other HTTP host or
+TLS SNI to the live Cilium Gateway NodePorts on the first cluster node. The
+Hetzner firewall permits TCP/80 for ACME and HTTP ingress as well as TCP/443.
 
 ---
 
