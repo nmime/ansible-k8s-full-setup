@@ -147,6 +147,30 @@
   delay: 15
   until: _r_create_dragonfly_instance is not failed
 
+- name: Reconcile Dragonfly pods with the current auth secret
+  ansible.builtin.shell: |
+    set -euo pipefail
+    desired_hash={{ df_password | hash('sha256') | quote }}
+    current_hash=$(kubectl get statefulset dragonfly -n {{ df_ns | quote }} \
+      -o jsonpath='{.spec.template.metadata.annotations.platform\.example\.com/dragonfly-credentials-hash}' 2>/dev/null || true)
+    if [ "$current_hash" = "$desired_hash" ]; then
+      echo 'changed=false'
+      exit 0
+    fi
+    patch=$(jq -cn --arg hash "$desired_hash" \
+      '{spec:{template:{metadata:{annotations:{"platform.example.com/dragonfly-credentials-hash":$hash}}}}}')
+    kubectl patch statefulset dragonfly -n {{ df_ns | quote }} --type=merge -p "$patch" >/dev/null
+    kubectl rollout status statefulset/dragonfly -n {{ df_ns | quote }} --timeout=10m
+    echo 'changed=true'
+  args:
+    executable: /bin/bash
+  register: _dragonfly_credentials_rollout
+  changed_when: "'changed=true' in _dragonfly_credentials_rollout.stdout"
+  retries: 3
+  delay: 15
+  until: _dragonfly_credentials_rollout.rc == 0
+  no_log: true
+
 - name: Recreate Dragonfly controller after its desired storage update
   ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
   vars:
