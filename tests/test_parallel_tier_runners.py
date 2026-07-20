@@ -84,6 +84,7 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
     assert (run_root / "status.json").is_file()
     assert "k8s_api_local_port=17446" in result.stdout
     assert f"ssh_key_path={Path.home() / '.ssh' / 'id_ed25519'}" in result.stdout
+    assert "ANSIBLE_COLLECTIONS_PATH" in RUN_TIER.read_text(encoding="utf-8")
 
 
 def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
