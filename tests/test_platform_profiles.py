@@ -524,6 +524,12 @@ class TestResourceTierConsumers:
             "/tmp/gateway-api-experimental.yaml",
         ):
             assert fixed_manifest not in cluster
+        assert cluster.index("Install Hetzner Cloud Controller Manager") < cluster.index(
+            "Verify DNS resolution after CCM removes cloud-provider taints"
+        )
+        assert cluster.index("Verify CCM removed the external cloud-provider taint") < cluster.index(
+            "Verify DNS resolution after CCM removes cloud-provider taints"
+        )
 
     def test_teardown_selects_exact_project_labels_not_name_prefixes(self):
         teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")

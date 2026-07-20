@@ -24,6 +24,7 @@ Options:
   --capacity-family NAME Use capacity-equivalent server family (supported: cpx)
   --manage-dns           Permit each profile deployment to manage DNS
   --minimum-storage      Use 10Gi profile-controlled PVC requests
+  --skip-kubespray       Resume all five after verified successful Kubespray
   --dry-run              Generate five runtime configs, but do not use Git/cloud
   -h, --help             Show this help
 
@@ -46,6 +47,7 @@ DR_ENDPOINT="${BACKUP_DR_ENDPOINT:-}"
 DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 MANAGE_DNS=false
 MINIMUM_STORAGE=false
+SKIP_KUBESPRAY=false
 CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-letsencrypt-staging}"
 CAPACITY_FAMILY=""
 DRY_RUN=false
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --capacity-family) require_value "$1" "${2:-}"; CAPACITY_FAMILY="$2"; shift 2 ;;
     --manage-dns) MANAGE_DNS=true; shift ;;
     --minimum-storage) MINIMUM_STORAGE=true; shift ;;
+    --skip-kubespray) SKIP_KUBESPRAY=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option '$1'" ;;
@@ -225,6 +228,7 @@ for profile in $PROFILES; do
   [[ -z "$DR_BUCKET" ]] || args+=(--dr-bucket "$DR_BUCKET")
   $MANAGE_DNS && args+=(--manage-dns)
   $MINIMUM_STORAGE && args+=(--minimum-storage)
+  $SKIP_KUBESPRAY && args+=(--skip-kubespray)
   $DRY_RUN && args+=(--dry-run)
 
   (

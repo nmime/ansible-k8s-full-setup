@@ -101,6 +101,13 @@ After evidence capture, parallel teardown is safe because resource selection
 uses the exact `project` label; always verify that no campaign-labeled resources
 or campaign DNS records remain.
 
+If all five Kubespray recaps are successful but a later role fails, resume with
+`--skip-kubespray` and a fresh isolated campaign root. Keep the same projects,
+domains, API ports, capacity overrides, DR endpoint, and immutable source
+commit. The Hetzner CCM must become ready and remove the external-cloud-provider
+taints before the DNS smoke pod is scheduled; DNS verification intentionally
+runs after that gate.
+
 For Postal, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:
 

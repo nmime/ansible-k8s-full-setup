@@ -162,3 +162,6 @@ def test_runner_source_declares_all_profiles_and_parallel_waits():
     assert ") >\"$console_log\" 2>&1 &" in all_source
     assert "No automatic teardown was attempted" in all_source
     assert "worktree remove" in all_source
+    assert "--skip-kubespray" in tier_source
+    assert 'DEPLOY_ARGS+=(-e "skip_kubespray=true")' in tier_source
+    assert "--skip-kubespray" in all_source

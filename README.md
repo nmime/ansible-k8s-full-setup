@@ -151,6 +151,13 @@ HA, replicas, or enabled technologies. Explicit per-controller
 and are rejected by the infrastructure role if they fall below a profile's
 capacity floor.
 
+After logs prove Kubespray completed with zero failed or unreachable hosts, a
+campaign interrupted in later platform roles can resume with
+`--skip-kubespray`. The resume still reconciles infrastructure, networking,
+CCM/CSI, every selected platform component, and readiness gates; it only omits
+the already-successful Kubespray `cluster.yml` run. Never use the flag when the
+Kubespray recap is missing or failed.
+
 ```bash
 # Plan all five controllers without Git worktrees or cloud mutations.
 ./run_all.sh --campaign-id lab01 --minimum-storage --dry-run
