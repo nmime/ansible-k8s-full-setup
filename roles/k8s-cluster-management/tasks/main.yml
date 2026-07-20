@@ -1032,34 +1032,311 @@
   delay: 10
   failed_when: false
 
-- name: Patch Gateway service to use fixed NodePorts (30080/30443)
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: "{{ gw_svc.resources[0].metadata.name }}"
-        namespace: cilium-system
-      spec:
-        ports:
-          - name: http
-            port: 80
-            targetPort: 80
-            nodePort: 30080
-            protocol: TCP
-          - name: https
-            port: 443
-            targetPort: 443
-            nodePort: 30443
-            protocol: TCP
+- name: Record the controller-owned main Gateway NodePorts
+  ansible.builtin.set_fact:
+    gateway_http_node_port: >-
+      {{ (gw_svc.resources[0].spec.ports
+          | selectattr('port', 'equalto', 80)
+          | map(attribute='nodePort') | first) | int }}
+    gateway_https_node_port: >-
+      {{ (gw_svc.resources[0].spec.ports
+          | selectattr('port', 'equalto', 443)
+          | map(attribute='nodePort') | first) | int }}
   when:
-    - gw_svc.resources | length > 0
+    - gw_svc.resources | default([]) | length > 0
     - k8s_create_external_tls | default(true) | bool
-  register: _r_patch_gateway_service_to_use_fixed_nodep
+
+- name: Allow the Cilium operator reconciliation loop to settle
+  ansible.builtin.pause:
+    seconds: 10
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Re-read the controller-owned main Gateway service
+  kubernetes.core.k8s_info:
+    kind: Service
+    namespace: cilium-system
+    name: "{{ gw_svc.resources[0].metadata.name }}"
+  register: stable_gw_svc
+  when:
+    - gw_svc.resources | default([]) | length > 0
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Require stable valid main Gateway NodePorts
+  ansible.builtin.assert:
+    that:
+      - stable_gw_svc.resources | default([]) | length == 1
+      - gateway_http_node_port >= 30000
+      - gateway_http_node_port <= 32767
+      - gateway_https_node_port >= 30000
+      - gateway_https_node_port <= 32767
+      - >-
+        gateway_http_node_port ==
+        ((stable_gw_svc.resources[0].spec.ports
+          | selectattr('port', 'equalto', 80)
+          | map(attribute='nodePort') | first) | int)
+      - >-
+        gateway_https_node_port ==
+        ((stable_gw_svc.resources[0].spec.ports
+          | selectattr('port', 'equalto', 443)
+          | map(attribute='nodePort') | first) | int)
+    fail_msg: >-
+      Cilium changed the main Gateway NodePorts during reconciliation; refusing
+      to publish stale ports to the external load balancer.
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Read the Hetzner load balancer before Gateway convergence
+  ansible.builtin.command:
+    argv: [hcloud, load-balancer, describe, '{{ project }}-lb', -o, json]
+  register: gateway_lb_config
+  changed_when: false
+  retries: 5
+  delay: 5
+  until: gateway_lb_config.rc == 0
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Index the current Hetzner Gateway services
+  ansible.builtin.set_fact:
+    gateway_lb_http_service: >-
+      {{ ((gateway_lb_config.stdout | from_json).services
+          | selectattr('listen_port', 'equalto', 80) | list | first)
+          | default({}) }}
+    gateway_lb_https_service: >-
+      {{ ((gateway_lb_config.stdout | from_json).services
+          | selectattr('listen_port', 'equalto', 443) | list | first)
+          | default({}) }}
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Require the infrastructure role to create both Gateway LB services
+  ansible.builtin.assert:
+    that:
+      - gateway_lb_http_service | length > 0
+      - gateway_lb_https_service | length > 0
+    fail_msg: >-
+      The Hetzner load balancer is missing its HTTP or HTTPS service; refusing
+      to continue with an incomplete public ingress path.
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Converge Hetzner HTTP service to the live Cilium NodePort
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - load-balancer
+      - update-service
+      - '{{ project }}-lb'
+      - --listen-port
+      - '80'
+      - --protocol
+      - tcp
+      - --destination-port
+      - '{{ gateway_http_node_port | string }}'
+      - --health-check-protocol
+      - tcp
+      - --health-check-port
+      - '{{ gateway_http_node_port | string }}'
+  register: gateway_lb_http_update
+  retries: 5
+  delay: 5
+  until: gateway_lb_http_update.rc == 0
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+    - >-
+      gateway_lb_http_service.destination_port != gateway_http_node_port
+      or gateway_lb_http_service.health_check.protocol != 'tcp'
+      or gateway_lb_http_service.health_check.port != gateway_http_node_port
+
+- name: Converge Hetzner HTTPS service to the live Cilium NodePort
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - load-balancer
+      - update-service
+      - '{{ project }}-lb'
+      - --listen-port
+      - '443'
+      - --protocol
+      - tcp
+      - --destination-port
+      - '{{ gateway_https_node_port | string }}'
+      - --health-check-protocol
+      - tcp
+      - --health-check-port
+      - '{{ gateway_https_node_port | string }}'
+  register: gateway_lb_https_update
+  retries: 5
+  delay: 5
+  until: gateway_lb_https_update.rc == 0
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+    - >-
+      gateway_lb_https_service.destination_port != gateway_https_node_port
+      or gateway_lb_https_service.health_check.protocol != 'tcp'
+      or gateway_lb_https_service.health_check.port != gateway_https_node_port
+
+- name: Require Hetzner Gateway service port readback to match Cilium
+  ansible.builtin.shell: |
+    set -euo pipefail
+    hcloud load-balancer describe {{ (project ~ '-lb') | quote }} -o json |
+      jq -e \
+        --argjson http {{ gateway_http_node_port | quote }} \
+        --argjson https {{ gateway_https_node_port | quote }} '
+          ([.services[] | select(.listen_port == 80)][0]) as $http_service
+          | ([.services[] | select(.listen_port == 443)][0]) as $https_service
+          | $http_service.destination_port == $http
+          and $http_service.health_check.protocol == "tcp"
+          and $http_service.health_check.port == $http
+          and $https_service.destination_port == $https
+          and $https_service.health_check.protocol == "tcp"
+          and $https_service.health_check.port == $https
+        '
+  args:
+    executable: /bin/bash
+  register: gateway_lb_port_readback
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: gateway_lb_port_readback.rc == 0
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Wait for every Hetzner Gateway target to become healthy
+  ansible.builtin.shell: |
+    set -euo pipefail
+    hcloud load-balancer describe {{ (project ~ '-lb') | quote }} -o json |
+      jq -e --argjson expected {{ ((worker_count | int) * 2) | quote }} '
+        [ .targets[].health_status[]
+          | select(.listen_port == 80 or .listen_port == 443) ] as $checks
+        | ($checks | length) == $expected
+        and all($checks[]; .status == "healthy")
+      '
+  args:
+    executable: /bin/bash
+  register: gateway_lb_health
+  changed_when: false
+  retries: 40
+  delay: 5
+  until: gateway_lb_health.rc == 0
+  when:
+    - lb_enabled | default(false) | bool
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Converge the minimal-tier bastion edge to live Gateway NodePorts
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_public_ip }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    cat > /etc/haproxy/haproxy.cfg <<'HAPROXY'
+    # managed-by-ansible-k8s-minimal-edge
+    global
+      log /dev/log local0
+      maxconn 4096
+
+    defaults
+      log global
+      mode tcp
+      option tcplog
+      timeout connect 5s
+      timeout client 60s
+      timeout server 60s
+
+    frontend public-http
+      bind :80
+      mode http
+      option httplog
+      acl is-headscale hdr(host) -i vpn.{{ domain }}
+      use_backend headscale-http if is-headscale
+      default_backend kubernetes-http
+
+    frontend public-https
+      bind :443
+      mode tcp
+      tcp-request inspect-delay 5s
+      tcp-request content accept if { req.ssl_hello_type 1 }
+      acl is-headscale req.ssl_sni -i vpn.{{ domain }}
+      use_backend headscale-https if is-headscale
+      default_backend kubernetes-https
+
+    backend headscale-http
+      mode http
+      server caddy 127.0.0.1:8080 check
+
+    backend headscale-https
+      mode tcp
+      server caddy 127.0.0.1:8443 check
+
+    backend kubernetes-http
+      mode http
+      server gateway {{ first_master_ip }}:{{ gateway_http_node_port }} check
+
+    backend kubernetes-https
+      mode tcp
+      server gateway {{ first_master_ip }}:{{ gateway_https_node_port }} check
+    HAPROXY
+    haproxy -c -f /etc/haproxy/haproxy.cfg
+    systemctl enable haproxy
+    systemctl reload-or-restart haproxy
+    REMOTECMD
+  register: minimal_edge_convergence
   retries: 3
   delay: 10
-  until: _r_patch_gateway_service_to_use_fixed_nodep is not failed
+  until: minimal_edge_convergence.rc == 0
+  when:
+    - not (lb_enabled | default(false) | bool)
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Require minimal-tier HTTP ingress through the bastion edge
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --show-error
+      - --output
+      - /dev/null
+      - --connect-timeout
+      - '10'
+      - --resolve
+      - '{{ domain }}:80:{{ bastion_public_ip }}'
+      - http://{{ domain }}/
+  register: minimal_edge_http
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: minimal_edge_http.rc == 0
+  when:
+    - not (lb_enabled | default(false) | bool)
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Require minimal-tier TLS ingress through the bastion edge
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --show-error
+      - --insecure
+      - --output
+      - /dev/null
+      - --connect-timeout
+      - '10'
+      - --resolve
+      - '{{ domain }}:443:{{ bastion_public_ip }}'
+      - https://{{ domain }}/
+  register: minimal_edge_https
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: minimal_edge_https.rc == 0
+  when:
+    - not (lb_enabled | default(false) | bool)
+    - k8s_create_external_tls | default(true) | bool
 
 
 - name: Create admin Gateway (VPN-only for GitLab, ArgoCD, Grafana, Vault)
@@ -1109,33 +1386,23 @@
   retries: 30
   delay: 10
 
-- name: Patch admin Gateway service to use NodePort 31443
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: "{{ admin_gw_svc.resources[0].metadata.name }}"
-        namespace: cilium-system
-      spec:
-        ports:
-          - name: port-8080
-            port: 8080
-            targetPort: 8080
-            protocol: TCP
-          - name: port-8443
-            port: 8443
-            targetPort: 8443
-            nodePort: 31443
-            protocol: TCP
+- name: Record the controller-owned admin Gateway NodePort
+  ansible.builtin.set_fact:
+    admin_gateway_node_port: >-
+      {{ (admin_gw_svc.resources[0].spec.ports
+          | selectattr('port', 'equalto', 8443)
+          | map(attribute='nodePort') | first) | int }}
   when:
     - admin_gw_svc.resources | default([]) | length > 0
     - k8s_create_external_tls | default(true) | bool
-  register: _r_patch_admin_gateway_service_to_use_nodep
-  retries: 3
-  delay: 10
-  until: _r_patch_admin_gateway_service_to_use_nodep is not failed
+
+- name: Require a valid admin Gateway NodePort
+  ansible.builtin.assert:
+    that:
+      - admin_gateway_node_port >= 30000
+      - admin_gateway_node_port <= 32767
+    fail_msg: Cilium did not allocate a valid admin Gateway NodePort.
+  when: k8s_create_external_tls | default(true) | bool
 
 - name: Create NetworkPolicy to restrict admin-gateway to VPN and private network
   kubernetes.core.k8s:

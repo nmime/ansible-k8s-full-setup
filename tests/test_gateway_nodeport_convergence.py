@@ -1,0 +1,83 @@
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CLUSTER_TASKS = ROOT / "roles/k8s-cluster-management/tasks/main.yml"
+INFRA_TASKS = ROOT / "roles/hetzner-infra/tasks/main.yml"
+NETWORK_TASKS = ROOT / "roles/network-security/tasks/main.yml"
+EVIDENCE_SCRIPT = ROOT / "scripts/collect-live-evidence.sh"
+
+
+def test_cilium_gateway_nodeports_are_discovered_not_mutated():
+    tasks = CLUSTER_TASKS.read_text()
+
+    assert "Patch Gateway service to use fixed NodePorts" not in tasks
+    assert "Patch admin Gateway service to use NodePort" not in tasks
+    assert "Record the controller-owned main Gateway NodePorts" in tasks
+    assert "Record the controller-owned admin Gateway NodePort" in tasks
+    assert "gateway_http_node_port" in tasks
+    assert "gateway_https_node_port" in tasks
+    assert "admin_gateway_node_port" in tasks
+
+
+def test_hetzner_lb_tracks_live_gateway_ports_and_fails_closed():
+    tasks = CLUSTER_TASKS.read_text()
+
+    http = tasks.index("Converge Hetzner HTTP service to the live Cilium NodePort")
+    https = tasks.index("Converge Hetzner HTTPS service to the live Cilium NodePort")
+    readback = tasks.index("Require Hetzner Gateway service port readback to match Cilium")
+    health = tasks.index("Wait for every Hetzner Gateway target to become healthy")
+    assert http < https < readback < health
+
+    block = tasks[http:health]
+    assert "{{ gateway_http_node_port | string }}" in block
+    assert "{{ gateway_https_node_port | string }}" in block
+    assert "--health-check-port" in block
+    assert "gateway_lb_port_readback.rc == 0" in tasks[readback:health]
+
+    gate = tasks[health:]
+    assert "all($checks[]; .status == \"healthy\")" in gate
+    assert "retries: 40" in gate
+
+
+def test_infrastructure_bootstrap_does_not_overwrite_converged_ports():
+    tasks = INFRA_TASKS.read_text()
+
+    assert "Add missing bootstrap LB service for HTTP" in tasks
+    assert "Add missing bootstrap LB service for HTTPS" in tasks
+    assert "Reconcile drifted LB service for HTTP" not in tasks
+    assert "Reconcile drifted LB service for HTTPS" not in tasks
+
+
+def test_minimal_tier_reuses_bastion_as_an_sni_aware_edge():
+    cluster = CLUSTER_TASKS.read_text()
+    network = NETWORK_TASKS.read_text()
+    infra = INFRA_TASKS.read_text()
+
+    assert "Converge the minimal-tier bastion edge to live Gateway NodePorts" in cluster
+    assert "# managed-by-ansible-k8s-minimal-edge" in cluster
+    assert "acl is-headscale req.ssl_sni -i vpn.{{ domain }}" in cluster
+    assert "{{ first_master_ip }}:{{ gateway_http_node_port }}" in cluster
+    assert "{{ first_master_ip }}:{{ gateway_https_node_port }}" in cluster
+    assert "not (lb_enabled | default(false) | bool)" in cluster
+
+    assert "127.0.0.1:8443:443" in network
+    assert "127.0.0.1:8080:80" in network
+    assert "Install HAProxy edge multiplexer on bastion" in network
+    assert "Require the public Headscale edge to answer through HAProxy" in network
+
+    assert "HTTP ACME and minimal-tier ingress" in infra
+    assert "port: '80'" in infra
+
+
+def test_live_evidence_captures_gateway_provider_parity_without_secrets():
+    script = EVIDENCE_SCRIPT.read_text()
+
+    assert "io.cilium.gateway/owning-gateway=main-gateway" in script
+    assert 'hcloud load-balancer describe "${project}-lb" -o json' in script
+    assert "ports_match" in script
+    assert "healthy_checks" in script
+    assert "$gateway_edge.valid" in script
+    assert "HCLOUD_TOKEN" in script
+    assert "load-balancer.json" in script
+    assert "Secrets" in script

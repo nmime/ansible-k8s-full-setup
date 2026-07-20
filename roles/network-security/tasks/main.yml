@@ -274,7 +274,7 @@
     \    container_name: headscale\n    image: headscale/headscale:{{ headscale_version }}\n    restart: always\n    command: serve\n    ports:\n      - \"9090:9090\"\n      - \"3478:3478/udp\"\n    volumes:\n\
     \      - /var/lib/headscale:/var/lib/headscale\n      - /etc/headscale:/etc/headscale:ro\n    environment:\n      - TZ=UTC\n    security_opt:\n      - no-new-privileges:true\n    read_only: true\n \
     \   tmpfs:\n      - /tmp\n      - /run\n      - /var/run/headscale\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\n  caddy:\n    container_name: caddy\n    image: caddy:{{ caddy_image_tag }}\n\
-    \    restart: always\n    ports:\n      - \"443:443\"\n      - \"80:80\"\n    volumes:\n      - /opt/headscale/Caddyfile:/etc/caddy/Caddyfile:ro\n      - caddy_data:/data\n      - caddy_config:/config\n\
+    \    restart: always\n    ports:\n      - \"127.0.0.1:8443:443\"\n      - \"127.0.0.1:8080:80\"\n    volumes:\n      - /opt/headscale/Caddyfile:/etc/caddy/Caddyfile:ro\n      - caddy_data:/data\n      - caddy_config:/config\n\
     \    depends_on:\n      - headscale\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\nvolumes:\n  caddy_data:\n  caddy_config:\n\
     EOF\nREMOTECMD\n"
 - name: Start Headscale container
@@ -282,6 +282,73 @@
 - name: Wait for Headscale to be ready
   ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nfor i in $(seq 1 30); do\n  docker exec headscale headscale version\
     \ 2>/dev/null && break\n  sleep 2\ndone\nREMOTECMD\n"
+- name: Install HAProxy edge multiplexer on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o DPkg::Lock::Timeout=300 update
+    apt-get -o DPkg::Lock::Timeout=300 install -y haproxy
+    REMOTECMD
+  register: _r_install_haproxy_edge
+  retries: 3
+  delay: 10
+  until: _r_install_haproxy_edge is not failed
+
+- name: Configure Headscale-only HAProxy baseline on bastion
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    if [ '{{ lb_enabled | default(false) | bool | ternary("true", "false") }}' = true ] \
+      || ! grep -q '^# managed-by-ansible-k8s-minimal-edge$' /etc/haproxy/haproxy.cfg 2>/dev/null; then
+      cat > /etc/haproxy/haproxy.cfg <<'HAPROXY'
+    # managed-by-ansible-network-security
+    global
+      log /dev/log local0
+      maxconn 4096
+
+    defaults
+      log global
+      mode tcp
+      option tcplog
+      timeout connect 5s
+      timeout client 60s
+      timeout server 60s
+
+    frontend public-http
+      bind :80
+      default_backend headscale-http
+
+    frontend public-https
+      bind :443
+      default_backend headscale-https
+
+    backend headscale-http
+      server caddy 127.0.0.1:8080 check
+
+    backend headscale-https
+      server caddy 127.0.0.1:8443 check
+    HAPROXY
+    fi
+    haproxy -c -f /etc/haproxy/haproxy.cfg
+    systemctl enable haproxy
+    systemctl restart haproxy
+    REMOTECMD
+  register: _r_configure_haproxy_baseline
+  retries: 3
+  delay: 10
+  until: _r_configure_haproxy_baseline is not failed
+
+- name: Require the public Headscale edge to answer through HAProxy
+  ansible.builtin.uri:
+    url: https://{{ vpn_domain }}/health
+    validate_certs: true
+    status_code: [200, 404]
+    timeout: 15
+  register: _r_headscale_public_edge
+  retries: 12
+  delay: 5
+  until: _r_headscale_public_edge is not failed
 - name: Create Headscale admin user
   ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create admin 2>/dev/null || true'\n"
 - name: Create Headscale dev user

@@ -113,8 +113,39 @@ fi
 if "${K[@]}" api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null \
   | grep -qx 'httproutes.gateway.networking.k8s.io'; then
   "${K[@]}" get httproutes -A -o json >"$tmp_dir/httproutes.json"
+  "${K[@]}" get services -n cilium-system \
+    -l io.cilium.gateway/owning-gateway=main-gateway -o json \
+    >"$tmp_dir/gateway-services.json"
 else
   printf '{"items":[]}' >"$tmp_dir/httproutes.json"
+  printf '{"items":[]}' >"$tmp_dir/gateway-services.json"
+fi
+
+gateway_edge=$(jq -c '
+  (.items[0].spec.ports // []) as $ports
+  | {service:(.items[0].metadata.name // null),
+     http_node_port:([$ports[] | select(.port==80) | .nodePort][0] // null),
+     https_node_port:([$ports[] | select(.port==443) | .nodePort][0] // null)}
+  | .valid=((.http_node_port // 0) >= 30000 and (.http_node_port // 0) <= 32767
+    and (.https_node_port // 0) >= 30000 and (.https_node_port // 0) <= 32767)' \
+  "$tmp_dir/gateway-services.json")
+provider_edge='{"checked":false,"present":false,"healthy":null}'
+if command -v hcloud >/dev/null 2>&1 && [[ -n "${HCLOUD_TOKEN:-}" ]] \
+  && hcloud load-balancer describe "${project}-lb" -o json >"$tmp_dir/load-balancer.json" 2>/dev/null; then
+  provider_edge=$(jq -c --argjson gateway "$gateway_edge" '
+    [.services[] | select(.listen_port==80)][0] as $http
+    | [.services[] | select(.listen_port==443)][0] as $https
+    | [.targets[].health_status[]
+       | select(.listen_port==80 or .listen_port==443)] as $checks
+    | {checked:true,present:true,
+       http_destination_port:($http.destination_port // null),
+       https_destination_port:($https.destination_port // null),
+       checks:($checks|length),
+       healthy_checks:([$checks[] | select(.status=="healthy")]|length)}
+    | .ports_match=(.http_destination_port==$gateway.http_node_port
+      and .https_destination_port==$gateway.https_node_port)
+    | .healthy=(.ports_match and .checks>0 and .healthy_checks==.checks)' \
+    "$tmp_dir/load-balancer.json")
 fi
 
 jq -r '
@@ -188,17 +219,20 @@ jq -n \
   --argjson daemonsets "$daemonset_stats" --argjson failed_jobs "$failed_jobs" \
   --argjson unbound_pvcs "$unbound_pvcs" --argjson unavailable_apis "$bad_apis" \
   --argjson unready_certificates "$bad_certs" --argjson unready_routes "$bad_routes" \
+  --argjson gateway_edge "$gateway_edge" --argjson provider_edge "$provider_edge" \
   '{schema:$schema,collected_at:$collected_at,stage:$stage,project:$project,profile:$profile,
     context:$context,api_server:$server,expected_nodes:$expected_nodes,nodes:$nodes,pods:$pods,
     controllers:{deployments:$deployments,statefulsets:$statefulsets,daemonsets:$daemonsets,
       failed_jobs:$failed_jobs},storage:{unbound_pvcs:$unbound_pvcs},
     networking:{unavailable_apiservices:$unavailable_apis,unready_certificates:$unready_certificates,
-      unready_httproutes:$unready_routes},
+      unready_httproutes:$unready_routes,gateway:$gateway_edge,provider_edge:$provider_edge},
     healthy:(($nodes.total==$expected_nodes) and ($nodes.ready==$expected_nodes) and
       ($nodes.pressure==0) and ($pods.failed==0) and ($pods.unready==0) and
       ($deployments.unavailable==0) and ($statefulsets.unavailable==0) and
       ($daemonsets.unavailable==0) and ($failed_jobs==0) and ($unbound_pvcs==0) and
-      ($unavailable_apis==0) and ($unready_certificates==0) and ($unready_routes==0))}' \
+      ($unavailable_apis==0) and ($unready_certificates==0) and ($unready_routes==0) and
+      $gateway_edge.valid and
+      (($provider_edge.checked|not) or $provider_edge.healthy))}' \
   >"$OUTPUT_DIR/evidence.json"
 
 log "evidence collected: $OUTPUT_DIR/evidence.json"

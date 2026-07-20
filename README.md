@@ -147,6 +147,15 @@ deleting the obsolete index PVCs. Test certificates default to
 `letsencrypt-staging` so repeated campaigns do not consume the registered-domain
 production issuance limit.
 
+Public ingress follows the Cilium-owned Gateway Service instead of mutating
+that controller-owned object. After Cilium's reconciliation loop settles, the
+cluster role discovers its live HTTP/HTTPS NodePorts, converges the Hetzner
+load-balancer destination and health-check ports, and fails until every target
+is healthy. The load-balancer-free `minimal` tier reuses its bastion: HAProxy
+keeps `vpn.<domain>` on Caddy/Headscale and passes all other HTTP/TLS traffic to
+the same discovered Gateway ports. This preserves the small resource envelope
+without leaving the tier's public DNS disconnected from Kubernetes.
+
 If Hetzner reports `resource_unavailable` for the default `cx` pool, add
 `--capacity-family cpx`. The runner substitutes `cpx22`, `cpx32`, and `cpx42`
 at the same 2/4, 4/8, and 8/16 vCPU/GiB floors. It does not change node counts,
