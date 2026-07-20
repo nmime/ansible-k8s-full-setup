@@ -81,6 +81,9 @@
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
     vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
     vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
+    vault_audit_storage_size: >-
+      {{ secrets.vault.audit_storage_size |
+         default(secrets.vault.storage_size | default(vault_storage_size)) }}
     eso_enabled: '{{ platform_eso_enabled }}'
     postgresql_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas) }}'
     postgresql_proxy_replicas: >-
