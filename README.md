@@ -139,9 +139,13 @@ The disposable five-profile campaign runner prepares those boundaries and
 launches every named profile concurrently from one immutable commit. Use the
 minimum-storage switch only to stay inside a test account's CSI quota; it keeps
 the real topology, replicas, components, and compute node types while reducing
-profile-controlled PVC requests to Hetzner's 10Gi minimum. Test certificates
-default to `letsencrypt-staging` so repeated campaigns do not consume the
-registered-domain production issuance limit.
+profile-controlled durable PVC requests to Hetzner's 10Gi minimum. Vault audit
+claims follow the selected Vault size instead of a hidden 20Gi floor. SeaweedFS
+data remains on CSI volumes, while its rebuildable indexes use `emptyDir`; an
+upgrade verifies replacement volume pods no longer mount index claims before
+deleting the obsolete index PVCs. Test certificates default to
+`letsencrypt-staging` so repeated campaigns do not consume the registered-domain
+production issuance limit.
 
 If Hetzner reports `resource_unavailable` for the default `cx` pool, add
 `--capacity-family cpx`. The runner substitutes `cpx22`, `cpx32`, and `cpx42`
