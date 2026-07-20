@@ -78,6 +78,7 @@
     object_storage_volume_size: >-
       {{ storage.size_per_replica | default(storage.size | default(object_storage_volume_size)) }}
     object_storage_idx_size: '{{ storage.index_size | default(object_storage_idx_size) }}'
+    object_storage_index_persistent: '{{ storage.index_persistent | default(true) | bool }}'
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
     vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
     vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
