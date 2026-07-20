@@ -687,3 +687,45 @@ def test_dragonfly_storage_growth_preserves_snapshot_claims():
     assert "storage_reconcile_claim: df" in tasks
     assert "storage_reconcile_orphan: false" in tasks
     assert "storage_reconcile_wait: false" in tasks
+
+
+def test_secret_bearing_facts_and_secret_reads_are_censored():
+    sensitive_tasks = {
+        "roles/dragonfly/tasks/main.yml": ["Set Dragonfly variables"],
+        "roles/elasticsearch/tasks/main.yml": [
+            "Set Elasticsearch variables",
+            "Read the current Elasticsearch credentials before rotation",
+            "Read the Kibana service-account token secret",
+            "Read the Kibana encryption-key secret",
+        ],
+        "roles/k8s-databases/tasks/main.yml": [
+            "Retrieve Percona-generated GitLab PG password",
+            "Set GitLab PG password fact",
+            "Retrieve Percona-generated app PG password",
+            "Set app PG password fact",
+        ],
+        "roles/k8s-observability/tasks/main.yml": [
+            "Set PMM service-account token fact",
+        ],
+        "roles/object-storage/tasks/main.yml": ["Set object-storage resolved facts"],
+        "roles/postal/tasks/main.yml": ["Set Postal variables"],
+    }
+
+    for path, names in sensitive_tasks.items():
+        content = read(path)
+        for name in names:
+            block = content.split(f"- name: {name}", 1)[1].split("\n- name:", 1)[0]
+            assert "no_log: true" in block, f"{path}: {name} must be censored"
+
+
+def test_elasticsearch_password_rotation_precedes_secret_update():
+    tasks = read("roles/elasticsearch/tasks/main.yml")
+    assert tasks.index("Rotate the Elasticsearch elastic user") < tasks.index(
+        "Create ES credentials secret"
+    )
+    assert tasks.count("platform.example.com/elasticsearch-credentials-hash") == 2
+    rotation = tasks.split("- name: Rotate the Elasticsearch elastic user", 1)[1].split(
+        "\n- name:", 1
+    )[0]
+    assert "no_log: true" in rotation
+    assert "_security/user/elastic/_password" in rotation

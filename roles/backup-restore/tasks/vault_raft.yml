@@ -2,6 +2,7 @@
 # HashiCorp Vault Raft Snapshot Backup - idempotent
 
 - name: "Backup-Vault | Create Vault backup credentials secret"
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

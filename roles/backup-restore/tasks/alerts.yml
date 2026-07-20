@@ -2,6 +2,7 @@
 # Backup Alert Configuration - Slack-compatible webhook alerts
 
 - name: "Backup-Alerts | Create alert webhook secret"
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

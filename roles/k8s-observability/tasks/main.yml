@@ -993,6 +993,7 @@
 - name: Set PMM service-account token fact
   set_fact:
     pmm_server_token: '{{ pmm_server_token_result.stdout_lines | default([]) | last | default('''') }}'
+  no_log: true
   when:
     - pmm_enabled | bool
     - pmm_server_token_result.rc | default(1) == 0

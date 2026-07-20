@@ -571,6 +571,7 @@
   until: _r_create_mongodb_cluster is not failed
   when: platform_mongodb_enabled | default(true) | bool
 - name: Wait for the operator-managed MongoDB users source secret
+  no_log: true
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ db_ns }}'
@@ -625,6 +626,7 @@
   delay: 15
   when: platform_mongodb_enabled | default(true) | bool
 - name: Retrieve Percona-generated GitLab PG password
+  no_log: true
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ db_ns }}'
@@ -637,6 +639,7 @@
 - name: Set GitLab PG password fact
   set_fact:
     gitlab_pg_password: '{{ (gitlab_pg_secret.resources[0].data.password | b64decode) if gitlab_pg_secret.resources | length > 0 else '''' }}'
+  no_log: true
   when: platform_postgresql_enabled | default(true) | bool
 - name: Ensure GitLab namespace exists for cross-namespace secret
   kubernetes.core.k8s:
@@ -681,6 +684,7 @@
   - platform_postgresql_enabled | default(true) | bool
   - platform_gitlab_enabled | default(true) | bool
 - name: Retrieve Percona-generated app PG password
+  no_log: true
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ db_ns }}'
@@ -693,6 +697,7 @@
 - name: Set app PG password fact
   set_fact:
     app_pg_password: '{{ (app_pg_secret.resources[0].data.password | b64decode) if app_pg_secret.resources | length > 0 else '''' }}'
+  no_log: true
   when: platform_postgresql_enabled | default(true) | bool
 - name: Create PostgreSQL connection secret for application
   no_log: true

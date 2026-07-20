@@ -285,6 +285,7 @@ DEPLOY_ARGS=(
   -e "backup_dr_storage_endpoint=${DR_ENDPOINT}"
   -e "backup_dr_storage_bucket=${DR_BUCKET}"
   -e "backup_dr_storage_prefix=${DR_PREFIX}"
+  -e "secrets_file=${OPERATOR_STATE_ROOT}/.platform-secrets.yml"
   -e "vault_init_output_file=${OPERATOR_STATE_ROOT}/.vault-init-${PROJECT}.json"
 )
 [[ -z "$BASTION_TYPE" ]] || DEPLOY_ARGS+=(-e "hetzner_bastion_type=${BASTION_TYPE}")

@@ -7,6 +7,7 @@
     es_cluster: '{{ es_cluster_name }}'
     es_password: '{{ es_superuser_password }}'
     storage_class: '{{ storage_class | default("hcloud-volumes") }}'
+  no_log: true
 - name: Create Elasticsearch namespace
   kubernetes.core.k8s:
     state: present
@@ -27,6 +28,7 @@
   delay: 10
   until: _r_es_ns is not failed
 - name: Check if ES TLS secret exists
+  no_log: true
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ es_ns }}'
@@ -97,6 +99,72 @@
     state: absent
   delegate_to: localhost
   when: es_tls_check.resources | length == 0
+- name: Read the current Elasticsearch credentials before rotation
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ es_ns }}'
+    name: es-credentials
+  register: _es_current_credentials
+- name: Resolve the current Elasticsearch password before rotation
+  no_log: true
+  ansible.builtin.set_fact:
+    _es_current_password: >-
+      {{ (_es_current_credentials.resources[0].data.ELASTIC_PASSWORD | b64decode)
+         if _es_current_credentials.resources | length > 0 else '' }}
+- name: Detect an existing Elasticsearch master before password rotation
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ es_ns }}'
+    name: es-master
+  register: _es_master_before_password_rotation
+- name: Wait for the existing Elasticsearch master before password rotation
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: '{{ es_ns }}'
+    name: es-master-0
+  register: _es_master_pod_before_password_rotation
+  until: >-
+    (_es_master_pod_before_password_rotation.resources | default([])) | length > 0 and
+    (_es_master_pod_before_password_rotation.resources[0].status.phase | default('')) == 'Running' and
+    (_es_master_pod_before_password_rotation.resources[0].status.containerStatuses | default([])
+      | selectattr('ready', 'equalto', true) | list | length) > 0
+  retries: 60
+  delay: 10
+  when:
+    - _es_current_password | length > 0
+    - _es_current_password != es_password
+    - _es_master_before_password_rotation.resources | length > 0
+- name: Rotate the Elasticsearch elastic user before updating its Secret
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    payload=$(jq -cn --arg password "$ES_DESIRED_PASSWORD" '{password: $password}')
+    printf '%s' "$payload" | kubectl exec -i -n "{{ es_ns }}" es-master-0 -c elasticsearch -- \
+      sh -ec '
+        payload=$(cat)
+        if curl -fsk -u "elastic:${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" -X POST \
+          https://localhost:9200/_security/user/elastic/_password -d "$payload"; then
+          exit 0
+        fi
+        desired=$(printf "%s" "$payload" | sed -n "s/.*\"password\":\"\([^\"]*\)\".*/\1/p")
+        curl -fsk -u "elastic:${desired}" \
+          https://localhost:9200/_security/_authenticate >/dev/null
+      '
+  args:
+    executable: /bin/bash
+  environment:
+    ES_DESIRED_PASSWORD: '{{ es_password }}'
+  changed_when: true
+  when:
+    - _es_current_password | length > 0
+    - _es_current_password != es_password
+    - _es_master_before_password_rotation.resources | length > 0
 - name: Create ES credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -287,6 +355,8 @@
             role: master
         template:
           metadata:
+            annotations:
+              platform.example.com/elasticsearch-credentials-hash: '{{ es_password | hash("sha256") }}'
             labels:
               app: elasticsearch
               role: master
@@ -512,6 +582,8 @@
             role: data
         template:
           metadata:
+            annotations:
+              platform.example.com/elasticsearch-credentials-hash: '{{ es_password | hash("sha256") }}'
             labels:
               app: elasticsearch
               role: data
@@ -714,6 +786,7 @@
   retries: 60
   delay: 15
 - name: Read the Kibana service-account token secret
+  no_log: true
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
@@ -784,6 +857,7 @@
   when: _kibana_service_token_secret.resources | length == 0
 
 - name: Read the Kibana encryption-key secret
+  no_log: true
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret

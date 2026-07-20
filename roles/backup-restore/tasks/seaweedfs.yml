@@ -2,6 +2,7 @@
 # SeaweedFS Metadata Backup - idempotent
 
 - name: "Backup-SeaweedFS | Create SeaweedFS backup credentials"
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
