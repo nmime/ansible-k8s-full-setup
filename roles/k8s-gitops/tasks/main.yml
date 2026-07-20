@@ -165,7 +165,7 @@
       spec:
         secretName: argocd-tls
         issuerRef:
-          name: letsencrypt-prod
+          name: '{{ cert_manager_cluster_issuer }}'
           kind: ClusterIssuer
         dnsNames:
         - '{{ argocd_domain }}'

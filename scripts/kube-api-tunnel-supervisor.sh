@@ -6,6 +6,7 @@ TARGETS=()
 LOCAL_PORT=16443
 CHECK_INTERVAL=15
 KUBECONFIG_FILE=""
+KNOWN_HOSTS_FILE="${HOME}/.ssh/known_hosts"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -14,16 +15,25 @@ while (( $# > 0 )); do
     --local-port) LOCAL_PORT="$2"; shift 2 ;;
     --check-interval) CHECK_INTERVAL="$2"; shift 2 ;;
     --kubeconfig) KUBECONFIG_FILE="$2"; shift 2 ;;
+    --known-hosts-file) KNOWN_HOSTS_FILE="$2"; shift 2 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$BASTION" && ${#TARGETS[@]} -gt 0 ]] || {
-  printf 'Usage: %s --bastion HOST --target HOST [--target HOST ...] [--local-port PORT]\n' "$0" >&2
+  printf 'Usage: %s --bastion HOST --target HOST [--target HOST ...] [--local-port PORT] [--known-hosts-file FILE]\n' "$0" >&2
   exit 2
 }
 [[ "$LOCAL_PORT" =~ ^[0-9]+$ && "$CHECK_INTERVAL" =~ ^[0-9]+$ ]] || {
   printf 'Port and check interval must be positive integers\n' >&2
+  exit 2
+}
+(( 10#$LOCAL_PORT >= 1024 && 10#$LOCAL_PORT <= 65535 && 10#$CHECK_INTERVAL > 0 )) || {
+  printf 'Port must be 1024-65535 and check interval must be positive\n' >&2
+  exit 2
+}
+[[ -f "$KNOWN_HOSTS_FILE" ]] || {
+  printf 'Known-hosts file does not exist: %s\n' "$KNOWN_HOSTS_FILE" >&2
   exit 2
 }
 
@@ -44,7 +54,8 @@ while true; do
     -o ConnectTimeout=30 -o ConnectionAttempts=3 \
     -o IPQoS=none -o TCPKeepAlive=yes \
     -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-    -o StrictHostKeyChecking=accept-new -N \
+    -o StrictHostKeyChecking=accept-new \
+    -o "UserKnownHostsFile=${KNOWN_HOSTS_FILE}" -N \
     -L "127.0.0.1:${LOCAL_PORT}:${target}:6443" "root@${BASTION}" &
   child_pid=$!
 

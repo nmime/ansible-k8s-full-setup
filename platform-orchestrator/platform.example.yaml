@@ -46,6 +46,13 @@ infrastructure:
     type: cx33
     public_ip: false
 
+# Use a distinct port and HOME for every concurrently managed cluster.
+k8s_api_local_port: 16443
+
+# Optional parent Hetzner DNS zone. When omitted, global.domain is the zone.
+# Example: global.domain=small.lab.example.com, hetzner_dns_zone=example.com.
+hetzner_dns_zone: ""
+
 kubernetes:
   version: v1.35.4
   cni: cilium

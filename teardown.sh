@@ -5,16 +5,28 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/load-project-env.sh
 source "${ROOT_DIR}/scripts/load-project-env.sh"
 
-PROJECT="${1:-}"
-CONFIRM=""
-[[ "${2:-}" == "--confirm" ]] && CONFIRM="${3:-}"
-
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '  %s\n' "$*"; }
 
-[[ -n "$PROJECT" ]] || fail "usage: $0 <project> --confirm <project>"
+PROJECT="${1:-}"
+[[ $# -gt 0 ]] && shift
+CONFIRM=""
+API_LOCAL_PORT="${K8S_API_LOCAL_PORT:-16443}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm) CONFIRM="${2:-}"; shift 2 ;;
+    --api-port) API_LOCAL_PORT="${2:-}"; shift 2 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n "$PROJECT" ]] || fail "usage: $0 <project> --confirm <project> [--api-port PORT]"
 [[ "$PROJECT" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail "invalid project name"
 [[ "$CONFIRM" == "$PROJECT" ]] || fail "confirmation must exactly match project '$PROJECT'"
+[[ "$API_LOCAL_PORT" =~ ^[0-9]+$ ]] || fail "API tunnel port must be an integer"
+(( API_LOCAL_PORT >= 1024 && API_LOCAL_PORT <= 65535 )) \
+  || fail "API tunnel port must be between 1024 and 65535"
 [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required"
 command -v hcloud >/dev/null || fail "hcloud CLI is required"
 
@@ -141,7 +153,7 @@ if [[ -f "$TUNNEL_PID_FILE" ]]; then
   tunnel_pid=$(cat "$TUNNEL_PID_FILE")
   if [[ "$tunnel_pid" =~ ^[0-9]+$ ]] && kill -0 "$tunnel_pid" 2>/dev/null; then
     tunnel_command=$(ps -p "$tunnel_pid" -o command=)
-    if [[ "$tunnel_command" != *"kube-api-tunnel-supervisor.sh"* || "$tunnel_command" != *"--local-port 16443"* ]]; then
+    if [[ "$tunnel_command" != *"kube-api-tunnel-supervisor.sh"* || "$tunnel_command" != *"--local-port ${API_LOCAL_PORT}"* ]]; then
       printf '  REFUSED to kill unmanaged PID %s: %s\n' "$tunnel_pid" "$tunnel_command" >&2
       FAILURES=$((FAILURES + 1))
       tunnel_pid=""
@@ -168,5 +180,7 @@ if [[ "$FAILURES" -ne 0 || -n "$REMAINING" ]]; then
 fi
 
 rm -f "${ROOT_DIR}/playbooks/${PROJECT}-infra-facts.yml"
+rm -f "${HOME}/.ssh/known_hosts-${PROJECT}"
+rm -rf "${HOME}/.ansible/cp/${PROJECT}" "${HOME}/.cache/ansible-k8s/${PROJECT}"
 printf '=== Teardown verified complete: %s ===\n' "$PROJECT"
 printf 'DNS zone and records were intentionally preserved.\n'

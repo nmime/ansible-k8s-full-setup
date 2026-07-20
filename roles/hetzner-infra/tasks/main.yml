@@ -1045,9 +1045,41 @@
 # Idempotent: checks existing before creating.
 # ============================================
 
+- name: Normalize the managed Hetzner DNS zone
+  ansible.builtin.set_fact:
+    dns_managed_domain: "{{ domain | lower | regex_replace('\\.$', '') }}"
+    dns_managed_zone: >-
+      {{ hetzner_dns_zone | default(domain, true) | lower | regex_replace('\\.$', '') }}
+  when: hetzner_manage_dns | default(true) | bool
+
+- name: Validate that the domain belongs to the managed DNS zone
+  ansible.builtin.assert:
+    that:
+      - dns_managed_zone | length > 0
+      - >-
+        dns_managed_domain == dns_managed_zone
+        or dns_managed_domain.endswith('.' + dns_managed_zone)
+    fail_msg: >-
+      domain={{ domain }} must equal or be a subdomain of
+      hetzner_dns_zone={{ dns_managed_zone }}.
+  when: hetzner_manage_dns | default(true) | bool
+
+- name: Calculate parent-zone-relative DNS record names
+  ansible.builtin.set_fact:
+    dns_root_record: >-
+      {{ '@' if dns_managed_domain == dns_managed_zone
+         else dns_managed_domain[0:-(dns_managed_zone | length + 1)] }}
+    dns_wildcard_record: >-
+      {{ '*' if dns_managed_domain == dns_managed_zone
+         else '*.' + dns_managed_domain[0:-(dns_managed_zone | length + 1)] }}
+    dns_vpn_record: >-
+      {{ 'vpn' if dns_managed_domain == dns_managed_zone
+         else 'vpn.' + dns_managed_domain[0:-(dns_managed_zone | length + 1)] }}
+  when: hetzner_manage_dns | default(true) | bool
+
 - name: Check if DNS zone already exists
   ansible.builtin.command:
-    cmd: hcloud zone describe {{ domain }} -o json
+    argv: [hcloud, zone, describe, "{{ dns_managed_zone }}", -o, json]
   register: dns_zone_check
   when: hetzner_manage_dns | default(true) | bool
   changed_when: false
@@ -1057,7 +1089,7 @@
   ansible.builtin.command:
     cmd: >
       hcloud zone create
-      --name {{ domain }}
+      --name {{ dns_managed_zone }}
       --mode primary
   register: dns_zone_create
   when:
@@ -1071,17 +1103,23 @@
 
 - name: Warn if DNS zone creation failed
   debug:
-    msg: "WARNING: Could not create Hetzner DNS zone for {{ domain }} ({{ dns_zone_create.stderr | default('skipped') | regex_replace('\n', ' ') }}). Configure DNS manually."
+    msg: "WARNING: Could not create Hetzner DNS zone for {{ dns_managed_zone }} ({{ dns_zone_create.stderr | default('skipped') | regex_replace('\n', ' ') }}). Configure DNS manually."
   when:
     - hetzner_manage_dns | default(true) | bool
     - not dns_zone_available | bool
 
 - name: Create DNS wildcard A record (*.domain -> LB)
   ansible.builtin.command:
-    cmd: >
-      hcloud zone rrset set-records
-      --record {{ lb_public_ip }}
-      {{ domain }} '*' A
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ lb_public_ip }}"
+      - "{{ dns_managed_zone }}"
+      - "{{ dns_wildcard_record }}"
+      - A
   register: dns_wildcard
   changed_when: dns_wildcard.rc == 0
   failed_when: dns_wildcard.rc != 0
@@ -1091,10 +1129,16 @@
 
 - name: Create DNS root A record (domain -> LB)
   ansible.builtin.command:
-    cmd: >
-      hcloud zone rrset set-records
-      --record {{ lb_public_ip }}
-      {{ domain }} @ A
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ lb_public_ip }}"
+      - "{{ dns_managed_zone }}"
+      - "{{ dns_root_record }}"
+      - A
   register: dns_root
   changed_when: dns_root.rc == 0
   failed_when: dns_root.rc != 0
@@ -1104,10 +1148,16 @@
 
 - name: Create DNS VPN A record (vpn.domain -> bastion)
   ansible.builtin.command:
-    cmd: >
-      hcloud zone rrset set-records
-      --record {{ bastion_public_ip }}
-      {{ domain }} vpn A
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ bastion_public_ip }}"
+      - "{{ dns_managed_zone }}"
+      - "{{ dns_vpn_record }}"
+      - A
   register: dns_vpn
   changed_when: dns_vpn.rc == 0
   failed_when: dns_vpn.rc != 0
@@ -1126,6 +1176,7 @@
       ---
       project: "{{ project }}"
       domain: "{{ domain }}"
+      hetzner_dns_zone: "{{ hetzner_dns_zone | default(domain, true) }}"
       region: "{{ region }}"
       tier: "{{ infra_tier }}"
       bastion_public_ip: "{{ bastion_public_ip }}"

@@ -426,7 +426,7 @@
           spec:
             secretName: object-storage-console-tls
             issuerRef:
-              name: letsencrypt-prod
+              name: "{{ cert_manager_cluster_issuer }}"
               kind: ClusterIssuer
             dnsNames:
               - "{{ object_storage_console_domain_resolved }}"
@@ -450,7 +450,7 @@
           spec:
             secretName: object-storage-api-tls
             issuerRef:
-              name: letsencrypt-prod
+              name: "{{ cert_manager_cluster_issuer }}"
               kind: ClusterIssuer
             dnsNames:
               - "{{ object_storage_api_domain_resolved }}"

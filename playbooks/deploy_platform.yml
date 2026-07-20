@@ -55,6 +55,30 @@
           - email != 'admin@example.com'
         fail_msg: "email is required. Set via -e email=you@yourdomain.com or in inventory"
 
+    - name: Pre-flight check - controller API tunnel port is isolated and valid
+      ansible.builtin.assert:
+        that:
+          - (k8s_api_local_port | default(16443) | string) is match('^[0-9]+$')
+          - k8s_api_local_port | default(16443) | int >= 1024
+          - k8s_api_local_port | default(16443) | int <= 65535
+        fail_msg: k8s_api_local_port must be an integer between 1024 and 65535.
+
+    - name: Pre-flight check - platform domain belongs to managed DNS zone
+      ansible.builtin.assert:
+        that:
+          - dns_preflight_zone | length > 0
+          - >-
+            dns_preflight_domain == dns_preflight_zone
+            or dns_preflight_domain.endswith('.' + dns_preflight_zone)
+        fail_msg: >-
+          domain={{ domain }} must equal or be a subdomain of
+          hetzner_dns_zone={{ dns_preflight_zone }}.
+      vars:
+        dns_preflight_domain: "{{ domain | lower | regex_replace('\\.$', '') }}"
+        dns_preflight_zone: >-
+          {{ hetzner_dns_zone | default(domain, true) | lower | regex_replace('\\.$', '') }}
+      when: hetzner_manage_dns | default(true) | bool
+
     - name: Validate tier selection
       assert:
         that:

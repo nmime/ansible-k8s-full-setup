@@ -708,7 +708,7 @@
       spec:
         secretName: grafana-tls
         issuerRef:
-          name: letsencrypt-prod
+          name: '{{ cert_manager_cluster_issuer }}'
           kind: ClusterIssuer
         dnsNames:
         - '{{ grafana_domain }}'
@@ -1059,7 +1059,7 @@
       spec:
         secretName: pmm-tls
         issuerRef:
-          name: letsencrypt-prod
+          name: '{{ cert_manager_cluster_issuer }}'
           kind: ClusterIssuer
         dnsNames:
         - pmm.{{ domain }}

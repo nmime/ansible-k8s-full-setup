@@ -7,7 +7,8 @@ SCRIPTS = os.path.join(REPO, "scripts")
 SCRIPT_FILES = [
     "upgrade-platform.sh", "rollback.sh",
     "snapshot-helm-baseline.sh", "health-gates.sh",
-    "live-tier-smoke.sh",
+    "live-tier-smoke.sh", "test-dr-endpoint.sh",
+    "tier-load-test.sh", "collect-live-evidence.sh",
 ]
 
 def test_all_scripts_exist():

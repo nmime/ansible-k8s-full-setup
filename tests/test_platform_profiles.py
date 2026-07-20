@@ -66,6 +66,24 @@ def load_profile(name: str) -> dict:
         return yaml.safe_load(stream)
 
 
+def test_component_certificates_use_selectable_cluster_issuer():
+    defaults = yaml.safe_load((REPO_ROOT / "defaults" / "main.yml").read_text())
+    assert defaults["cert_manager_cluster_issuer"] == "letsencrypt-prod"
+    certificate_task_files = (
+        REPO_ROOT / "roles" / "k8s-observability" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "gitlab-selfhosted" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "glitchtip" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "temporal" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "k8s-gitops" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "object-storage" / "tasks" / "main.yml",
+    )
+    for task_file in certificate_task_files:
+        content = task_file.read_text()
+        assert "cert_manager_cluster_issuer" in content, task_file
+        assert "name: letsencrypt-prod" not in content, task_file
+
+
 def get_path(data: dict, dotted_path: str):
     value = data
     for key in dotted_path.split("."):
@@ -443,12 +461,16 @@ class TestResourceTierConsumers:
         supervisor = (
             REPO_ROOT / "scripts" / "kube-api-tunnel-supervisor.sh"
         ).read_text(encoding="utf-8")
-        assert "local_api_port=16443" in tasks
+        assert "local_api_port={{ local_api_port | int }}" in tasks
+        assert "k8s_api_local_port | default(16443)" in tasks
+        assert "local_api_port | int >= 1024" in tasks
         assert "ExitOnForwardFailure=yes" in supervisor
         assert 'TARGETS+=("$2")' in supervisor
         assert "target_index=$(((target_index + 1) % ${#TARGETS[@]}))" in supervisor
         assert "for target in (master_ips" in tasks
         assert 'KUBECONFIG="$KUBECONFIG_FILE" kubectl' in supervisor
+        assert "--known-hosts-file" in tasks
+        assert 'UserKnownHostsFile=${KNOWN_HOSTS_FILE}' in supervisor
         assert "get --raw=/readyz" in supervisor
         assert "config set-cluster cluster.local" in tasks
         assert "Refusing to kill PID" in tasks or "Refusing to kill PID" in supervisor
@@ -459,12 +481,72 @@ class TestResourceTierConsumers:
         assert "REFUSED to kill unmanaged PID" in teardown
         assert 'kill "$tunnel_pid"' in teardown
         assert '"kube-api-tunnel-supervisor.sh"' in teardown
+        assert '--api-port) API_LOCAL_PORT=' in teardown
+        assert '"--local-port ${API_LOCAL_PORT}"' in teardown
         continuation = (
             REPO_ROOT / "playbooks" / "continue_post_kubespray.yml"
         ).read_text(encoding="utf-8")
         assert "skip_kubespray: true" in continuation
         assert "ss -tlnp" not in continuation
         assert "sed -i" not in continuation
+
+    def test_parallel_controller_state_is_home_and_project_scoped(self):
+        defaults = (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
+        ansible_cfg = (REPO_ROOT / "ansible.cfg").read_text(encoding="utf-8")
+        cluster = (
+            REPO_ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        network = (
+            REPO_ROOT / "roles" / "network-security" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+
+        assert "k8s_api_local_port: 16443" in defaults
+        assert "fact_caching_connection = ~/.ansible/facts" in ansible_cfg
+        assert "control_path_dir = ~/.ansible/cp" in ansible_cfg
+        assert "known_hosts-{{ project_name | default('k8s') }}" in cluster
+        assert ".ansible/cp/{{ project_name | default('k8s') }}/kubespray" in cluster
+        assert ".cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests" in cluster
+        assert "control_path_dir = {{ kubespray_control_path_dir }}" in cluster
+        assert "UserKnownHostsFile=/dev/null" not in cluster
+        assert "find /tmp -maxdepth" not in cluster
+        assert "find /root/.ssh" not in cluster
+        assert "ssh-keygen" in network
+        assert '"{{ controller_known_hosts_file }}"' in network
+        for fixed_manifest in (
+            "/tmp/hcloud-ccm-networks.yaml",
+            "/tmp/hcloud-csi.yaml",
+            "/tmp/gateway-api-standard.yaml",
+            "/tmp/gateway-api-experimental.yaml",
+        ):
+            assert fixed_manifest not in cluster
+
+    def test_parent_hetzner_dns_zone_uses_relative_record_names(self):
+        defaults = (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
+        infra = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        backup = (REPO_ROOT / "scripts" / "cluster-backup.sh").read_text(
+            encoding="utf-8"
+        )
+
+        assert "hetzner_dns_zone:" in defaults
+        assert "dns_managed_domain.endswith('.' + dns_managed_zone)" in infra
+        assert "dns_root_record" in infra
+        assert "dns_wildcard_record" in infra
+        assert "dns_vpn_record" in infra
+        assert '"{{ dns_managed_zone }}"' in infra
+        assert "DNS_ZONE=$(yq" in backup
+        assert 'zone rrset list "$DNS_ZONE"' in backup
+        assert 'DNS_RECORD_ROOT="${DOMAIN%."$DNS_ZONE"}"' in backup
+        assert 'jq --arg root "$DNS_RECORD_ROOT"' in backup
+
+    def test_restore_drill_manifest_is_process_unique(self):
+        drill = (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text(
+            encoding="utf-8"
+        )
+        assert 'mktemp "${TMPDIR:-/tmp}/pg-drill-spec.${DRILL_NS}.XXXXXX"' in drill
+        assert 'kubectl apply -f "$PG_DRILL_SPEC"' in drill
+        assert "/tmp/pg-drill-spec.yaml" not in drill
 
     def test_teardown_captures_csi_volumes_by_project_server_id(self):
         teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")

@@ -83,6 +83,19 @@ hcloud zone rrset create example.com --name 'vpn' --type A --record {{ bastion_p
 
 **API used:** `hcloud` CLI (same HCLOUD_TOKEN as servers)
 
+The managed zone may be a parent of the platform domain:
+
+```yaml
+global:
+  domain: small.lab.example.com
+hetzner_dns_zone: example.com
+```
+
+In this case the role verifies the suffix relationship and writes the relative
+records `small.lab`, `*.small.lab`, and `vpn.small.lab` into `example.com`.
+It fails before record mutation if the domain does not belong to the selected
+zone. Omit `hetzner_dns_zone` when the platform domain itself is the zone.
+
 ---
 
 ### 2. Gcore DNS (roles/edge-cdn)
