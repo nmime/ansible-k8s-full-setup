@@ -118,6 +118,30 @@
   when:
   - _gitlab_helm_status.rc == 0
   - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
+- name: Discover failed GitLab database migration Jobs
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: '{{ gitlab_namespace }}'
+    label_selectors:
+      - app=migrations
+      - release=gitlab
+  register: _gitlab_migration_jobs
+- name: Remove failed GitLab database migration Jobs before Helm reconcile
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: '{{ gitlab_namespace }}'
+    name: '{{ item.metadata.name }}'
+    wait: true
+    wait_timeout: 120
+  loop: >-
+    {{ _gitlab_migration_jobs.resources |
+       selectattr('status.failed', 'defined') |
+       selectattr('status.failed', 'gt', 0) | list }}
+  loop_control:
+    label: '{{ item.metadata.name }}'
 - name: Install GitLab with Helm
   kubernetes.core.helm:
     name: gitlab
