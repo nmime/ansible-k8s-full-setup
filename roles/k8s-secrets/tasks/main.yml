@@ -144,7 +144,7 @@
         # Keep a single chart-created PDB across every tier. A value of one
         # permits one-node-at-a-time maintenance and preserves quorum for the
         # three-replica tiers. Chart 0.34.0 hard-codes zero for one replica, so
-        # the role reconciles that special case immediately after Helm below.
+        # the Helm post-renderer keeps that special case in Helm's ownership.
         image:
           repository: hashicorp/vault
           tag: '{{ vault_version }}'
@@ -892,26 +892,6 @@
   retries: 3
   delay: 10
   until: _r_remove_legacy_vault_pdb is not failed
-- name: Reconcile the chart-created Vault PodDisruptionBudget for maintenance
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: policy/v1
-      kind: PodDisruptionBudget
-      metadata:
-        name: vault
-        namespace: '{{ vault_ns }}'
-      spec:
-        maxUnavailable: 1
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: vault
-            app.kubernetes.io/instance: vault
-            component: server
-  register: _r_reconcile_vault_pdb
-  retries: 3
-  delay: 10
-  until: _r_reconcile_vault_pdb is not failed
 - name: Create PodDisruptionBudget for ESO
   kubernetes.core.k8s:
     state: present

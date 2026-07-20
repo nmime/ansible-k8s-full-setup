@@ -4,6 +4,9 @@ set -euo pipefail
 # Keep Vault's private-cluster DNS override in Helm's desired state. A
 # follow-up imperative patch would otherwise make every Helm reconciliation
 # restart sealed pods.
+# Chart 0.34 renders maxUnavailable=0 for a one-replica HA release even when
+# values request one. Keep the maintenance PDB in Helm's rendered ownership so
+# Helm 4 upgrades do not conflict with an imperative patch.
 # shellcheck disable=SC2016 # the pod-name substitution must remain literal YAML.
 yq eval '
   # The chart advertises the Pod IP as VAULT_API_ADDR. Standby redirects then
@@ -27,5 +30,7 @@ yq eval '
         "cluster.local"
       ],
       "options": [{"name": "ndots", "value": "5"}]
-    }
+    } |
+  (select(.kind == "PodDisruptionBudget" and .metadata.name == "vault") |
+    .spec.maxUnavailable) = 1
 ' -
