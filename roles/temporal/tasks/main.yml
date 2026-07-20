@@ -54,6 +54,7 @@
   delay: 10
   until: _r_create_temporal_namespace is not failed
 - name: Retrieve Percona-generated Temporal PG password
+  no_log: true
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ db_ns }}'

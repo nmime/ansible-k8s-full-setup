@@ -10,6 +10,7 @@
     df_replicas: "{{ dragonfly_replicas }}"
     df_password: "{{ dragonfly_password }}"
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
+  no_log: true
 
 - name: Create Dragonfly namespace
   kubernetes.core.k8s:

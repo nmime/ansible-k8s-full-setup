@@ -13,6 +13,7 @@
     alert_email_configured: '{{ alert_email_enabled | default(false) | bool }}'
 
 - name: Create alert secrets (Telegram + SMTP)
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -32,6 +33,7 @@
   until: _r_alert_secrets is not failed
 
 - name: Create VMAlertmanager config secret
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

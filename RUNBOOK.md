@@ -114,9 +114,11 @@ that bound on memory-constrained workstations and raise it only after checking
 RAM and swap headroom.
 
 Five-tier controllers keep encrypted Vault initialization material in
-`.campaign-state/PROJECT/`, outside disposable worktrees. Preserve that
-gitignored directory and the matching vault password in the operator backup;
-never initialize again merely because a resume controller cannot find it.
+`.campaign-state/PROJECT/`, alongside the encrypted `.platform-secrets.yml`
+credential source and outside disposable worktrees. Preserve that gitignored
+directory and the matching vault password in the operator backup; never
+initialize again or regenerate credentials merely because a resume controller
+cannot find it.
 
 For Postal, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:

@@ -11,6 +11,7 @@
     p_db_password: "{{ postal_db_password }}"
     p_rails_secret: "{{ postal_rails_secret }}"
     p_queue_password: "{{ dragonfly_password }}"
+  no_log: true
 
 - name: Create Postal namespace
   kubernetes.core.k8s:

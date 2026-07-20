@@ -593,6 +593,7 @@
     namespace: '{{ vault_ns }}'
   when: vault_init is changed
 - name: Remove legacy in-cluster Vault initialization keys
+  no_log: true
   kubernetes.core.k8s:
     state: absent
     api_version: v1
