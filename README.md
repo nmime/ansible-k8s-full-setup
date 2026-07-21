@@ -158,6 +158,12 @@ requires the explicit account GiB quota because Hetzner has no quota API, then
 persists the authoritative volume baseline and rechecks remaining capacity on
 resume with a configurable safety margin.
 
+The backup checkpoint captures its Helm rollback baseline with the migration's
+exact generated source config, not the repository default. Both the config and
+snapshot root are passed explicitly, and the baseline is retained under the
+durable per-migration state directory so `resume` and `rollback` use the same
+isolated controller state.
+
 Public ingress follows the Cilium-owned Gateway Service instead of mutating
 that controller-owned object. After Cilium's reconciliation loop settles, the
 cluster role discovers its live HTTP/HTTPS NodePorts, converges the Hetzner

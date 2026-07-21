@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=scripts/load-project-env.sh
 source "${SCRIPT_DIR}/load-project-env.sh"
-SNAPSHOT_DIR="${PROJECT_ROOT}/snapshot"
+PLATFORM_CONFIG_FILE="${PLATFORM_CONFIG_FILE:-${PROJECT_ROOT}/platform-orchestrator/platform.yaml}"
+SNAPSHOT_DIR="${SNAPSHOT_DIR:-${PROJECT_ROOT}/snapshot}"
 SNAPSHOT_DRY_RUN="${SNAPSHOT_DRY_RUN:-false}"
 
 log() { printf '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -16,34 +17,50 @@ parse_snapshot_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) SNAPSHOT_DRY_RUN=true ;;
+      --config)
+        [[ $# -ge 2 && -n "$2" ]] || { printf '%s\n' '--config requires a file' >&2; return 2; }
+        PLATFORM_CONFIG_FILE="$2"
+        shift
+        ;;
+      --snapshot-dir)
+        [[ $# -ge 2 && -n "$2" ]] || { printf '%s\n' '--snapshot-dir requires a directory' >&2; return 2; }
+        SNAPSHOT_DIR="$2"
+        shift
+        ;;
       *) printf 'Unknown option: %s\n' "$1" >&2; return 2 ;;
     esac
     shift
   done
 }
 
-capture_snapshot() {
-  local timestamp snap_dir releases_json namespace release revision
+capture_snapshot() (
+  local timestamp snap_dir releases_json namespace release revision config_file snapshot_root config_source_json
+  umask 077
+  mkdir -p "$SNAPSHOT_DIR"
+  snapshot_root="$(cd "$SNAPSHOT_DIR" && pwd)"
   timestamp=$(date +'%Y%m%d-%H%M%S')
-  snap_dir="${SNAPSHOT_DIR}/upgrade-${timestamp}"
-  log "Capturing rollback baseline to $snap_dir"
+  snap_dir="${snapshot_root}/upgrade-${timestamp}"
 
   if [[ "$SNAPSHOT_DRY_RUN" == "true" ]]; then
+    log "Capturing rollback baseline to $snap_dir"
     dry "Would capture platform config, exact Helm revisions/values/manifests, and cluster objects"
     printf '%s\n' "$snap_dir"
     return 0
   fi
 
+  [[ -f "$PLATFORM_CONFIG_FILE" ]] || {
+    printf 'platform config is required for a rollback baseline: %s\n' "$PLATFORM_CONFIG_FILE" >&2
+    return 1
+  }
+  config_file="$(cd "$(dirname "$PLATFORM_CONFIG_FILE")" && pwd)/$(basename "$PLATFORM_CONFIG_FILE")"
   command -v helm >/dev/null
   command -v kubectl >/dev/null
   kubectl cluster-info >/dev/null
-  [[ -f "${PROJECT_ROOT}/platform-orchestrator/platform.yaml" ]] || {
-    printf 'platform.yaml is required for a rollback baseline\n' >&2
-    return 1
-  }
-
+  snap_dir="$(mktemp -d "${snapshot_root}/upgrade-${timestamp}-XXXXXX")"
+  log "Capturing rollback baseline to $snap_dir"
   mkdir -p "$snap_dir"/{helm-values,helm-manifests,rbac}
-  cp "${PROJECT_ROOT}/platform-orchestrator/platform.yaml" "$snap_dir/platform.yaml"
+  cp "$config_file" "$snap_dir/platform.yaml"
+  config_source_json=$(jq -Rn --arg path "$config_file" '$path')
 
   releases_json=$(helm list --all-namespaces --output json)
   printf '%s\n' "$releases_json" > "$snap_dir/helm-releases.json"
@@ -67,14 +84,15 @@ capture_snapshot() {
 snapshot_time: "$timestamp"
 snapshot_kind: configuration-baseline
 platform_config: platform.yaml
+platform_config_source: $config_source_json
 helm_revisions: helm-revisions.tsv
 data_backup_required: true
 MANIFEST
 
-  ln -sfn "$snap_dir" "${SNAPSHOT_DIR}/latest"
+  ln -sfn "$snap_dir" "${snapshot_root}/latest"
   log "Snapshot saved to $snap_dir"
   printf '%s\n' "$snap_dir"
-}
+)
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   parse_snapshot_args "$@"

@@ -38,6 +38,40 @@ snap=$(capture_snapshot)
 echo "$snap"
 """], capture_output=True, text=True, timeout=10)
             assert r.returncode == 0
+            assert snap_dir in r.stdout
+
+    def test_snapshot_cli_copies_explicit_config_to_explicit_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = root / "generated-source.yaml"
+            config.write_text("global:\n  project: isolated-migration\n")
+            snapshot_root = root / "migration-state" / "rollback-snapshots"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            helm = fake_bin / "helm"
+            helm.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = list ]; then printf '[]\\n'; fi\n"
+            )
+            helm.chmod(0o755)
+            kubectl = fake_bin / "kubectl"
+            kubectl.write_text("#!/bin/sh\nexit 0\n")
+            kubectl.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            r = subprocess.run(
+                [
+                    "bash", os.path.join(SCRIPTS, "snapshot-helm-baseline.sh"),
+                    "--config", str(config),
+                    "--snapshot-dir", str(snapshot_root),
+                ],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            assert r.returncode == 0, r.stderr
+            snapshot = Path(r.stdout.strip().splitlines()[-1])
+            assert snapshot.parent == snapshot_root
+            assert (snapshot / "platform.yaml").read_text() == config.read_text()
+            assert str(config) in (snapshot / "MANIFEST.yaml").read_text()
 
     def test_rollback_locates_snapshot(self):
         with tempfile.TemporaryDirectory() as td:

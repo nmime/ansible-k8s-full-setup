@@ -1188,16 +1188,16 @@ stage_preflight() {
 }
 
 stage_backup() {
+  local snapshot snapshot_root
   # Scheduled backups may be disabled in the steady source profile, which
   # means GitLab's chart-managed Toolbox CronJob is absent. Reconcile GitLab
   # with the temporary backup config before the backup role requires it.
   run_playbook "$BACKUP_CONFIG" --tags databases,gitlab,backup
   mkdir -p "$STATE_DIR/backups"
   cluster_backup "$BACKUP_CONFIG"
-  # shellcheck disable=SC1091
-  source "$SCRIPT_DIR/snapshot-helm-baseline.sh"
-  export SNAPSHOT_DRY_RUN=false
-  snapshot=$(capture_snapshot | tail -1)
+  snapshot_root="$STATE_DIR/rollback-snapshots"
+  snapshot=$("$SCRIPT_DIR/snapshot-helm-baseline.sh" \
+    --config "$SOURCE_CONFIG" --snapshot-dir "$snapshot_root" | tail -1)
   jq --arg snapshot "$snapshot" '.helm_snapshot=$snapshot' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"
   mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
 }
