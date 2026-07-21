@@ -1585,8 +1585,8 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert 'for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$ROLLBACK_CONFIG"' in content
     assert 'current_cores" != "$target_cores' in content
     assert "ensure_server_stopped" in content
-    assert 'hcloud server change-type "$node" "$target_type"' in content
-    assert 'change-type --keep-disk "$node"' not in content
+    assert 'change_args=(server change-type "$node" "$target_type")' in content
+    assert 'change_args+=(--keep-disk)' in content
     assert 'growpart "/dev/$parent" "$partnum"' in content
     assert 'resize2fs "$root_source"' in content
     assert "SSH did not recover" in content
@@ -1708,7 +1708,7 @@ def test_migration_resize_rechecks_provider_off_after_placement_before_type_chan
     retry = content.split("change_server_type_with_retry()", 1)[1].split(
         "ensure_server_running()", 1
     )[0]
-    assert 'hcloud server change-type "$node" "$target_type"' in retry
+    assert 'hcloud "${change_args[@]}"' in retry
     assert 'hcloud server poweroff "$node"' not in resize
     assert 'kubectl uncordon "$node"' in resize
 
@@ -1845,13 +1845,35 @@ def test_migration_retries_transient_provider_capacity_before_failing():
     assert "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS" in content
     assert "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS" in content
     assert 'ensure_server_stopped "$node"' in helper
-    assert 'hcloud server change-type "$node" "$target_type"' in helper
+    assert 'change_args=(server change-type "$node" "$target_type")' in helper
+    assert 'hcloud "${change_args[@]}"' in helper
     assert helper.index('ensure_server_stopped "$node"') < helper.index(
-        'hcloud server change-type "$node" "$target_type"'
+        'hcloud "${change_args[@]}"'
     )
     assert "attempt<=HCLOUD_CAPACITY_RETRY_ATTEMPTS" in helper
     assert "delay > 60" in helper
-    assert 'change_server_type_with_retry "$node" "$target_type" "$target_disk"' in resize
+    assert 'change_server_type_with_retry "$node" "$target_type" "$target_disk" "$keep_disk"' in resize
+
+
+def test_migration_records_only_authorized_equivalent_capacity_fallbacks():
+    content = MIGRATE.read_text(encoding="utf-8")
+    selector = content.split("select_equivalent_fallback_type()", 1)[1].split(
+        "change_server_type_with_retry()", 1
+    )[0]
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+
+    assert "PROFILE_MIGRATION_HCLOUD_EQUIVALENT_FALLBACK_TYPES" in content
+    assert "server_type_available_for_node" in selector
+    assert "requested_cores" in selector
+    assert "requested_memory" in selector
+    assert "requested_arch" in selector
+    assert "requested_cpu" in selector
+    assert "node-type-overrides.tsv" in content
+    assert ".infrastructure.node_type_overrides[strenv(NODE)]" in content
+    assert "equivalent-capacity-fallback" in content
+    assert "no equivalent fallback was authorized" in resize
+    assert 'target_disk="$current_disk"' in resize
+    assert 'change_args+=(--keep-disk)' in content
 
 
 def test_resize_stage_recovers_exact_in_progress_node_before_ordered_loop():

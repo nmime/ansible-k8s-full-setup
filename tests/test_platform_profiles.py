@@ -447,6 +447,51 @@ class TestResourceTierConsumers:
         assert "Fetch available server types from Hetzner API" in content
         assert "until: hcloud_server_types_raw.rc == 0" in content
 
+    def test_server_type_auto_selection_filters_live_location_availability(self):
+        content = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert (
+            "available: locations[?name==`' + region + '`] | [0].available"
+            in content
+        )
+        assert content.count(
+            "available: locations[?name==`' + item + '`] | [0].available"
+        ) == 2
+        assert content.count("selectattr('available', 'equalto', true)") >= 6
+
+    def test_unavailable_explicit_types_only_block_missing_server_creation(self):
+        content = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "Resolve selected server type availability in the active region" in content
+        assert "Refuse an unavailable bastion type when creation is required" in content
+        assert (
+            "Refuse an unavailable control plane type when creation is required"
+            in content
+        )
+        assert "Refuse an unavailable worker type when creation is required" in content
+        assert "bastion_check.rc == 0 or" in content
+        assert 'loop: "{{ master_check.results }}"' in content
+        assert 'loop: "{{ worker_check.results }}"' in content
+        assert content.count("item.rc == 0 or") == 2
+        normalized = " ".join(content.split())
+        assert normalized.count("Existing retained servers may continue running") == 3
+
+    def test_per_node_type_overrides_drive_create_capacity_and_drift(self):
+        content = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "infrastructure.node_type_overrides | default({})" in content
+        assert "Validate per-node server type override capacity" in content
+        assert "item.key in valid_node_type_override_names" in content
+        assert "override_spec.architecture | default('') == 'x86'" in content
+        assert "override_spec.cores | default(0)" in content
+        assert "override_spec.memory | default(0)" in content
+        assert content.count("node_type_overrides.get(desired_node_name") == 2
+        assert content.count("'--type', node_type_overrides.get(") == 2
+        assert "node_type_overrides.get(server.name, role_type)" in content
+
     def test_minimal_nodes_retain_live_test_headroom(self):
         defaults = yaml.safe_load(
             (REPO_ROOT / "roles" / "hetzner-infra" / "defaults" / "main.yml").read_text(
