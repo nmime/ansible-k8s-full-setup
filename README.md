@@ -158,6 +158,13 @@ requires the explicit account GiB quota because Hetzner has no quota API, then
 persists the authoritative volume baseline and rechecks remaining capacity on
 resume with a configurable safety margin.
 
+Migration never changes the bastion type in place. It reads the authoritative
+live Hetzner type, retains it in every generated config, and records the
+declared, requested, and retained values in resumable state. This also repairs
+state created from a deployment whose bastion override existed only on the
+command line. Expansion creates or reconciles its spread placement group with
+the exact `project=<global.project>` ownership label.
+
 The backup checkpoint captures its Helm rollback baseline with the migration's
 exact generated source config, not the repository default. Both the config and
 snapshot root are passed explicitly, and the baseline is retained under the

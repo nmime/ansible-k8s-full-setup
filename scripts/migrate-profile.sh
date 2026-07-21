@@ -287,6 +287,7 @@ ROLLBACK_CONFIG="${STATE_DIR}/rollback-platform.yaml"
 STORAGE_RETENTION_FILE="${STATE_DIR}/storage-retention.tsv"
 STATEFUL_RETENTION_FILE="${STATE_DIR}/stateful-retention.tsv"
 NODE_TYPE_RETENTION_FILE="${STATE_DIR}/node-type-retention.tsv"
+BASTION_TYPE_RETENTION_FILE="${STATE_DIR}/bastion-type-retention.tsv"
 SELECTION_RETENTION_FILE="${STATE_DIR}/selection-retention.tsv"
 CAPACITY_PLAN_FILE="${STATE_DIR}/volume-capacity-plan.json"
 
@@ -657,6 +658,26 @@ preserve_non_shrinking_storage() {
   fi
 }
 
+preserve_declared_bastion_type() {
+  local source_enabled target_enabled source_type target_type
+  source_enabled=$(yq -r '.network.bastion.enabled // false' "$SOURCE_CONFIG")
+  target_enabled=$(yq -r '.network.bastion.enabled // false' "$TARGET_CONFIG")
+  source_type=$(yq -r '.network.bastion.server_type // ""' "$SOURCE_CONFIG")
+  target_type=$(yq -r '.network.bastion.server_type // ""' "$TARGET_CONFIG")
+  [[ "$source_enabled" == "$target_enabled" ]] \
+    || fail "profile migration has no safe bastion create/delete path; source enabled=${source_enabled}, target enabled=${target_enabled}"
+  if [[ "$source_enabled" == true ]]; then
+    [[ -n "$source_type" ]] \
+      || fail "source bastion type is not declared; set network.bastion.server_type before migration"
+    [[ -n "$target_type" ]] \
+      || fail "target bastion type is not declared"
+    set_yaml_string "$TARGET_CONFIG" '.network.bastion.server_type' "$source_type"
+  fi
+  printf 'source-declared\t%s\ttarget-requested\t%s\tretained\t%s\n' \
+    "${source_type:-disabled}" "${target_type:-disabled}" "${source_type:-disabled}" \
+    > "$BASTION_TYPE_RETENTION_FILE"
+}
+
 generate_configs() {
   cp "$CONFIG_FILE" "$SOURCE_CONFIG"
   set_yaml_string "$SOURCE_CONFIG" '.infrastructure.ssh_key_path' "$SSH_KEY_PATH"
@@ -675,6 +696,7 @@ generate_configs() {
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.region' "$DR_REGION"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.prefix' "$DR_PREFIX"
+  preserve_declared_bastion_type
   preserve_optional_selection_overrides
   enforce_target_dependency_closure
   refuse_automatic_hipaa_retirement
@@ -798,6 +820,7 @@ External backup bucket: ${DR_BUCKET:-MISSING}
 Non-shrinking PVC overrides: $(wc -l < "$STORAGE_RETENTION_FILE" | tr -d ' ')
 Data-bearing replica overrides: $(wc -l < "$STATEFUL_RETENTION_FILE" | tr -d ' ')
 Preserved component selection overrides: $(wc -l < "$SELECTION_RETENTION_FILE" | tr -d ' ')
+Retained bastion server type: $(yq -r '.network.bastion.server_type // "disabled"' "$TARGET_CONFIG")
 Estimated source persistent capacity: $(jq -r '.source.persistent_total_gib' "$CAPACITY_PLAN_FILE") GiB
 Estimated target persistent capacity: $(jq -r '.target.persistent_total_gib' "$CAPACITY_PLAN_FILE") GiB
 Estimated target-only/growth delta: $(jq -r '.target_delta_gib' "$CAPACITY_PLAN_FILE") GiB
@@ -1071,6 +1094,46 @@ cluster_backup() {
     || fail "encrypted cluster backup gate failed; migration checkpoint was not advanced"
 }
 
+capture_live_bastion_type() {
+  local server_json live_type source_declared target_requested config tmp
+  local -a generated_configs=(
+    "$SOURCE_CONFIG" "$TARGET_CONFIG" "$STEADY_CONFIG" "$EXPANSION_CONFIG"
+    "$BACKUP_CONFIG" "$ROLLBACK_CONFIG" "$POST_BACKUP_CONFIG"
+  )
+  [[ $(yq -r '.network.bastion.enabled // false' "$SOURCE_CONFIG") == true ]] || return 0
+  server_json=$(hcloud server describe "${PROJECT}-bastion" -o json) \
+    || fail "could not read the retained bastion before migration"
+  live_type=$(jq -r '.server_type.name // ""' <<<"$server_json")
+  [[ -n "$live_type" ]] || fail "Hetzner returned no server type for ${PROJECT}-bastion"
+  source_declared=$(yq -r '.network.bastion.server_type // ""' "$SOURCE_CONFIG")
+  target_requested=$(jq -r '.bastion.target_requested_type // ""' "$STATE_FILE")
+  if [[ -z "$target_requested" && -s "$BASTION_TYPE_RETENTION_FILE" ]]; then
+    target_requested=$(awk -F '\t' 'NR == 1 && $3 == "target-requested" {print $4}' \
+      "$BASTION_TYPE_RETENTION_FILE")
+  fi
+  [[ -n "$target_requested" ]] \
+    || target_requested=$(yq -r '.network.bastion.server_type // ""' "$TARGET_CONFIG")
+  for config in "${generated_configs[@]}"; do
+    [[ -f "$config" ]] || continue
+    set_yaml_string "$config" '.network.bastion.server_type' "$live_type"
+  done
+  printf 'source-declared\t%s\ttarget-requested\t%s\tlive-retained\t%s\n' \
+    "$source_declared" "$target_requested" "$live_type" > "$BASTION_TYPE_RETENTION_FILE"
+  tmp="${STATE_FILE}.tmp.$$"
+  jq --arg server "${PROJECT}-bastion" --arg sourceDeclared "$source_declared" \
+    --arg targetRequested "$target_requested" --arg retained "$live_type" '
+      .bastion={server:$server,source_declared_type:$sourceDeclared,
+        target_requested_type:$targetRequested,retained_type:$retained,
+        resize_supported:false,captured_at:(.bastion.captured_at // (now | todateiso8601)),
+        last_verified_at:(now | todateiso8601)} |
+      .updated_at=(now | todateiso8601)
+    ' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+  if ! [[ "$live_type" == "$source_declared" && "$live_type" == "$target_requested" ]]; then
+    warn "retaining live bastion type $live_type; profile migration has no bastion resize path (declared source=$source_declared, requested target=$target_requested)"
+  fi
+}
+
 preserve_non_shrinking_node_types() {
   local role path node server_json target_type_json current_type target_type current_disk target_disk
   local current_cores target_cores current_memory target_memory
@@ -1204,10 +1267,27 @@ stage_backup() {
 
 requires_spread() { case $(profile_tier "$1") in medium|production) return 0 ;; *) return 1 ;; esac; }
 
+ensure_spread_placement_group() {
+  local placement_group="${PROJECT}-spread" result owner
+  if result=$(hcloud placement-group describe "$placement_group" -o json 2>&1); then
+    owner=$(jq -r '.labels.project // ""' <<<"$result")
+    if [[ "$owner" != "$PROJECT" ]]; then
+      hcloud placement-group add-label --overwrite "$placement_group" "project=$PROJECT" \
+        || fail "could not reconcile project ownership on placement group $placement_group"
+    fi
+    return 0
+  fi
+  grep -qi 'not found' <<<"$result" \
+    || fail "could not inspect placement group $placement_group: $result"
+  hcloud placement-group create --name "$placement_group" --type spread \
+    --label "project=$PROJECT" \
+    || fail "could not create placement group $placement_group"
+}
+
 stage_expand() {
   local expected actual kubespray_checkpoint="${STATE_DIR}/expand-kubespray.done"
   if requires_spread "$SOURCE_CONFIG" || requires_spread "$TARGET_CONFIG"; then
-    hcloud placement-group describe "${PROJECT}-spread" >/dev/null 2>&1 || hcloud placement-group create --name "${PROJECT}-spread" --type spread
+    ensure_spread_placement_group
   fi
   # Newly created private-only nodes require the bastion NAT, network route,
   # node default route, and DNS configuration before Kubespray can install
@@ -1676,6 +1756,15 @@ restore_helm_baseline_without_vault() {
   done < "$baseline"
   [[ "$found" == true ]] || warn "the recorded Helm baseline contained no non-Vault releases"
 }
+
+# A controller can be provisioned with a CLI-only bastion override which is
+# absent from its YAML. Capture the actual retained server before any migration
+# playbook runs and replay this on resume to heal older active states locally.
+if [[ "$DRY_RUN" != true && ( "$COMMAND" == execute || "$COMMAND" == resume \
+  || "$COMMAND" == rollback || "$COMMAND" == finalize ) ]]; then
+  capture_live_bastion_type
+  validate_generated_configs
+fi
 
 if [[ "$COMMAND" == rollback ]]; then
   rollback_status=$(jq -r '.status' "$STATE_FILE")
