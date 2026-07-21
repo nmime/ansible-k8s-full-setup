@@ -240,6 +240,7 @@ execute_upgrade() {
     bash "${SCRIPT_DIR}/backup-all.sh" --force
   fi
   # shellcheck source=./scripts/snapshot-helm-baseline.sh
+  export PLATFORM_CONFIG_FILE="$CONFIG_FILE"
   source "${SCRIPT_DIR}/snapshot-helm-baseline.sh"
   export SNAPSHOT_DRY_RUN="$DRY_RUN"
   local snap; snap=$(capture_snapshot)
@@ -314,6 +315,7 @@ main() {
     snapshot)
       export SNAPSHOT_DRY_RUN="$DRY_RUN"
       # shellcheck source=./scripts/snapshot-helm-baseline.sh
+      export PLATFORM_CONFIG_FILE="$CONFIG_FILE"
       source "${SCRIPT_DIR}/snapshot-helm-baseline.sh"
       capture_snapshot
       ;;

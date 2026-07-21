@@ -565,6 +565,17 @@ def test_migration_prepares_private_network_before_kubespray_expansion():
     assert "Newly created private-only nodes require the bastion NAT" in content
 
 
+def test_migration_captures_rollback_baseline_from_isolated_source_config():
+    content = MIGRATE.read_text(encoding="utf-8")
+    backup_stage = content.split("stage_backup()", 1)[1].split(
+        "requires_spread()", 1
+    )[0]
+    assert 'snapshot_root="$STATE_DIR/rollback-snapshots"' in backup_stage
+    assert '"$SCRIPT_DIR/snapshot-helm-baseline.sh"' in backup_stage
+    assert '--config "$SOURCE_CONFIG" --snapshot-dir "$snapshot_root"' in backup_stage
+    assert 'source "$SCRIPT_DIR/snapshot-helm-baseline.sh"' not in backup_stage
+
+
 def test_migration_recovers_from_an_accepted_hcloud_action_after_client_failure():
     content = MIGRATE.read_text(encoding="utf-8")
     assert "PROFILE_MIGRATION_HCLOUD_CLIENT_TIMEOUT_SECONDS" in content
