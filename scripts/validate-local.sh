@@ -155,7 +155,14 @@ echo ""
 echo -e "${BLUE}[4/7] shellcheck${NC} — Shell script static analysis"
 if check_tool "shellcheck" "shellcheck"; then
   sh_files=""
-  sh_files=$(find . -name '*.sh' -not -path './.git/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './playbooks/kubespray/*' 2>/dev/null || true)
+  sh_files=$(find . -name '*.sh' \
+    -not -path './.git/*' \
+    -not -path './.venv/*' \
+    -not -path './.campaign-state/*' \
+    -not -path './.campaign-runtime/*' \
+    -not -path './.migration-state/*' \
+    -not -path './node_modules/*' \
+    -not -path './playbooks/kubespray/*' 2>/dev/null || true)
   if [ -n "$sh_files" ]; then
     run_check "shellcheck" sh -c "printf '%s\n' \"$sh_files\" | xargs shellcheck"
   else

@@ -177,8 +177,24 @@
     set -euo pipefail
     for ordinal in $(seq 0 $(({{ df_replicas | int }} - 1))); do
       pod="dragonfly-${ordinal}"
-      kubectl delete pod "$pod" -n {{ df_ns | quote }} --wait=true
-      kubectl wait --for=condition=Ready "pod/$pod" -n {{ df_ns | quote }} --timeout=5m
+      old_uid=$(kubectl get pod "$pod" -n {{ df_ns | quote }} -o jsonpath='{.metadata.uid}')
+      kubectl delete pod "$pod" -n {{ df_ns | quote }} --wait=false
+      replacement_ready=false
+      for attempt in $(seq 1 60); do
+        new_uid=$(kubectl get pod "$pod" -n {{ df_ns | quote }} \
+          -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+        ready=$(kubectl get pod "$pod" -n {{ df_ns | quote }} \
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+        if [[ -n "$new_uid" && "$new_uid" != "$old_uid" && "$ready" == True ]]; then
+          replacement_ready=true
+          break
+        fi
+        sleep 5
+      done
+      [[ "$replacement_ready" == true ]] || {
+        echo "replacement pod $pod did not become Ready within 5 minutes" >&2
+        exit 1
+      }
     done
   args:
     executable: /bin/bash

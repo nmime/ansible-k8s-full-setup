@@ -21,6 +21,7 @@ cluster-backups/
 snapshot/
 .backup-results-*.log
 .campaign-state/
+.campaign-runtime/
 
 # Ansible retry files
 *.retry

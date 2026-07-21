@@ -4,6 +4,10 @@ set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+if [[ -x "$ROOT_DIR/.venv/bin/ansible-vault" ]]; then
+  PATH="$ROOT_DIR/.venv/bin:$PATH"
+  export PATH
+fi
 ENV_LOADER="$SCRIPT_DIR/load-project-env.sh"
 # shellcheck source=scripts/load-project-env.sh
 # shellcheck disable=SC1091
@@ -135,6 +139,13 @@ integer_in_range max-restart-delta "$MAX_RESTART_DELTA" 0 10000
 [[ "$MAX_ERROR_PERCENT" =~ ^([0-9]+)(\.[0-9]{1,2})?$ ]] || fail "max-error-percent must be numeric"
 max_error_bps=$(awk -v value="$MAX_ERROR_PERCENT" 'BEGIN { printf "%d", value * 100 }')
 (( max_error_bps >= 0 && max_error_bps <= 2000 )) || fail "max-error-percent must be between 0 and 20"
+# The AWS CLI is comparatively memory-heavy. Size the synthetic S3 client pod
+# to the requested concurrency so higher-tier tests exercise the service rather
+# than OOM-killing the load generator itself.
+s3_memory_limit_mi=$((256 + CLIENTS * 96))
+(( s3_memory_limit_mi <= 8192 )) || s3_memory_limit_mi=8192
+s3_cpu_limit=$CLIENTS
+(( s3_cpu_limit <= 4 )) || s3_cpu_limit=4
 http_url_pattern='^https?://[-a-zA-Z0-9._~:/?#%=&+]+$'
 [[ "$HTTP_URL" =~ $http_url_pattern ]] || fail "unsafe HTTP URL"
 
@@ -232,12 +243,14 @@ cleanup_vault() {
   [[ -n "$vault_token" ]] || return 1
   local index output rc=0
   for ((index=1; index<=CLIENTS; index++)); do
-    output=$("${K[@]}" exec -n vault vault-0 -- env VAULT_TOKEN="$vault_token" \
-      vault kv metadata delete "secret/tier-load/${RUN_ID}/${index}" 2>&1) || {
+    output=$(printf '%s\n' "$vault_token" | "${K[@]}" exec -i -n vault vault-0 -- \
+      sh -ec 'IFS= read -r VAULT_TOKEN; export VAULT_TOKEN; exec vault "$@"' sh \
+      kv metadata delete "secret/tier-load/${RUN_ID}/${index}" 2>&1) || {
         grep -q 'No value found' <<<"$output" || rc=1
       }
-    output=$("${K[@]}" exec -n vault vault-0 -- env VAULT_TOKEN="$vault_token" \
-      vault kv metadata get "secret/tier-load/${RUN_ID}/${index}" 2>&1) && rc=1
+    output=$(printf '%s\n' "$vault_token" | "${K[@]}" exec -i -n vault vault-0 -- \
+      sh -ec 'IFS= read -r VAULT_TOKEN; export VAULT_TOKEN; exec vault "$@"' sh \
+      kv metadata get "secret/tier-load/${RUN_ID}/${index}" 2>&1) && rc=1
     if [[ "$rc" -eq 0 ]] && ! grep -q 'No value found' <<<"$output"; then
       rc=1
     fi
@@ -294,7 +307,7 @@ collect_evidence() {
 }
 
 assert_cluster_safe() {
-  local evidence="$1" baseline_restarts="$2" healthy restarts delta
+  local evidence="$1" baseline_restarts="$2" healthy restarts delta restart_changes
   $DRY_RUN && return 0
   healthy=$(jq -r '.healthy' "$evidence")
   [[ "$healthy" == true ]] || {
@@ -304,10 +317,37 @@ assert_cluster_safe() {
   }
   restarts=$(jq -r '.pods.restarts' "$evidence")
   delta=$((restarts - baseline_restarts))
-  (( delta <= MAX_RESTART_DELTA )) || {
-    log "hard stop: restart delta $delta exceeds $MAX_RESTART_DELTA"
+  restart_changes=$(jq -n --slurpfile before "$baseline" --slurpfile after "$evidence" '
+    def keyed: .pods.containers | map({key:.key,value:.}) | from_entries;
+    ($before[0] | keyed) as $b | ($after[0] | keyed) as $a
+    | ([ $a | to_entries[]
+         | if $b[.key] == null then 0
+           elif .value.pod_uid != $b[.key].pod_uid then 1
+           elif .value.restarts > $b[.key].restarts
+             then (.value.restarts - $b[.key].restarts)
+           else 0 end ] | add // 0)')
+  (( delta <= MAX_RESTART_DELTA && restart_changes <= MAX_RESTART_DELTA )) || {
+    log "hard stop: restart delta=$delta same-name identity/restart changes=$restart_changes exceeds $MAX_RESTART_DELTA"
     return 1
   }
+}
+
+# Autoscaler changes can briefly make a controller unavailable immediately
+# after a successful phase. Give the control plane one bounded minute to
+# converge while retaining the same health and restart-delta gates.
+collect_settled_evidence() {
+  local stage="$1" baseline_restarts="$2" evidence attempt
+  for attempt in 1 2 3 4 5 6 7; do
+    evidence=$(collect_evidence "$stage")
+    if assert_cluster_safe "$evidence" "$baseline_restarts" >/dev/null 2>&1; then
+      printf '%s\n' "$evidence"
+      return 0
+    fi
+    (( attempt == 7 )) || sleep 10
+  done
+  assert_cluster_safe "$evidence" "$baseline_restarts"
+  printf '%s\n' "$evidence"
+  return 1
 }
 
 execute_job() {
@@ -385,7 +425,7 @@ spec:
               worker() {
                 id="\$1"; count="\$2"; ok=0; errors=0; i=0
                 while [ "\$i" -lt "\$count" ]; do
-                  code=\$(curl -ksS --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' "\$URL" || printf 000)
+                  code=\$(curl -sS --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' "\$URL" || printf 000)
                   case "\$code" in 2??|3??) ok=\$((ok+1)) ;; *) errors=\$((errors+1)) ;; esac
                   i=\$((i+1))
                 done
@@ -437,7 +477,7 @@ spec:
             - {name: RUN_ID, value: "$RUN_ID"}
             - {name: MAX_ERROR_BPS, value: "$max_error_bps"}
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
-          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: "1", memory: 512Mi}}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: "$s3_cpu_limit", memory: "${s3_memory_limit_mi}Mi"}}
           command: ["/bin/sh", "-ec"]
           args:
             - |
@@ -512,10 +552,22 @@ spec:
               trap cleanup EXIT
               psql -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS \$TABLE_NAME; CREATE UNLOGGED TABLE \$TABLE_NAME(id bigserial PRIMARY KEY, value text NOT NULL)"
               printf 'INSERT INTO %s(value) VALUES (md5(random()::text));\nSELECT value FROM %s ORDER BY id DESC LIMIT 1;\n' "\$TABLE_NAME" "\$TABLE_NAME" >/tmp/load.sql
-              per_client=\$(((TRANSACTIONS+CLIENTS-1)/CLIENTS))
-              pgbench -n -c "\$CLIENTS" -j "\$CLIENTS" -t "\$per_client" -f /tmp/load.sql | tee /tmp/pgbench.out
-              processed=\$(sed -n 's/^number of transactions actually processed: \([0-9][0-9]*\).*/\1/p' /tmp/pgbench.out | tail -1)
-              [ -n "\$processed" ]
+              base=\$((TRANSACTIONS/CLIENTS)); remainder=\$((TRANSACTIONS%CLIENTS)); jobs=0
+              regular=\$((CLIENTS-remainder))
+              if [ "\$base" -gt 0 ] && [ "\$regular" -gt 0 ]; then
+                pgbench -n -c "\$regular" -j "\$regular" -t "\$base" -f /tmp/load.sql \
+                  >/tmp/pgbench.regular.out & jobs=\$((jobs+1)); regular_pid=\$!
+              fi
+              if [ "\$remainder" -gt 0 ]; then
+                pgbench -n -c "\$remainder" -j "\$remainder" -t "\$((base+1))" -f /tmp/load.sql \
+                  >/tmp/pgbench.remainder.out & jobs=\$((jobs+1)); remainder_pid=\$!
+              fi
+              [ "\$jobs" -gt 0 ]
+              [ -z "\${regular_pid:-}" ] || wait "\$regular_pid"
+              [ -z "\${remainder_pid:-}" ] || wait "\$remainder_pid"
+              processed=\$(sed -n 's/^number of transactions actually processed: \([0-9][0-9]*\).*/\1/p' \
+                /tmp/pgbench.*.out | awk '{total += \$1} END {print total+0}')
+              [ "\$processed" -eq "\$TRANSACTIONS" ]
               printf 'RESULT phase=postgresql operations=%s errors=0\n' "\$processed"
 EOF
   execute_job databases "$name" "$manifest" "$log_file"
@@ -534,8 +586,11 @@ phase_vault() {
   vault_token=$(ansible-vault view --vault-password-file "$ANSIBLE_VAULT_PASSWORD_FILE" "$VAULT_INIT_FILE" | jq -r .root_token)
   [[ -n "$vault_token" && "$vault_token" != null ]] || return 1
   # shellcheck disable=SC2016 # The program expands only inside the Vault pod.
-  "${K_VAULT[@]}" exec -n vault vault-0 -- env VAULT_TOKEN="$vault_token" RUN_ID="$RUN_ID" \
-    OPERATIONS="$VAULT_OPERATIONS" CLIENTS="$CLIENTS" MAX_ERROR_BPS="$max_error_bps" sh -ec '
+  printf '%s\n' "$vault_token" | "${K_VAULT[@]}" exec -i -n vault vault-0 -- \
+    env RUN_ID="$RUN_ID" OPERATIONS="$VAULT_OPERATIONS" CLIENTS="$CLIENTS" \
+    MAX_ERROR_BPS="$max_error_bps" sh -ec '
+      IFS= read -r VAULT_TOKEN
+      export VAULT_TOKEN
       worker() {
         id="$1"; count="$2"; errors=0; i=1; path="secret/tier-load/$RUN_ID/$id"
         while [ "$i" -le "$count" ]; do
@@ -595,15 +650,40 @@ spec:
           args:
             - |
               export REDISCLI_AUTH="\$PASSWORD"
-              redis-benchmark -h dragonfly -n "\$REQUESTS" -c "\$CLIENTS" -r "\$REQUESTS" -q SET "tier-load:\$RUN_ID:__rand_int__" value
-              redis-benchmark -h dragonfly -n "\$REQUESTS" -c "\$CLIENTS" -r "\$REQUESTS" -q GET "tier-load:\$RUN_ID:__rand_int__"
-              pattern="tier-load:\$RUN_ID:*"
-              redis-cli -h dragonfly --scan --pattern "\$pattern" >/tmp/keys
-              while IFS= read -r key; do
-                [ -z "\$key" ] || redis-cli -h dragonfly del "\$key" >/dev/null
-              done </tmp/keys
-              redis-cli -h dragonfly --scan --pattern "\$pattern" >/tmp/remaining
-              test ! -s /tmp/remaining
+              key="tier-load:\$RUN_ID:benchmark"; value="\$RUN_ID-round-trip"
+              test "\$(redis-cli -h dragonfly set "\$key" "\$value")" = OK
+              worker() {
+                id="\$1"; count="\$2"; worker_key="\$key:\$id"; i=0; errors=0
+                if [ "\$count" -gt 0 ]; then
+                  while [ "\$i" -lt "\$count" ]; do
+                    printf 'SET %s %s\nGET %s\n' "\$worker_key" "\$value" "\$worker_key"
+                    i=\$((i+1))
+                  done | redis-cli -h dragonfly --raw >"/tmp/redis.\$id" 2>"/tmp/redis.\$id.err" \
+                    || errors=1
+                  expected_lines=\$((count*2))
+                  actual_lines=\$(wc -l <"/tmp/redis.\$id" | tr -d ' ')
+                  [ "\$actual_lines" -eq "\$expected_lines" ] || errors=1
+                  awk -v value="\$value" \
+                    'NR % 2 == 1 && \$0 != "OK" { bad=1 }
+                     NR % 2 == 0 && \$0 != value { bad=1 }
+                     END { exit bad }' "/tmp/redis.\$id" || errors=1
+                  [ ! -s "/tmp/redis.\$id.err" ] || errors=1
+                fi
+                redis-cli -h dragonfly del "\$worker_key" >/dev/null || errors=1
+                printf '%s\n' "\$errors" >"/tmp/redis-result.\$id"
+              }
+              base=\$((REQUESTS/CLIENTS)); remainder=\$((REQUESTS%CLIENTS)); client=1
+              while [ "\$client" -le "\$CLIENTS" ]; do
+                count="\$base"; [ "\$client" -le "\$remainder" ] && count=\$((count+1))
+                worker "\$client" "\$count" & client=\$((client+1))
+              done
+              wait
+              errors=0
+              for result in /tmp/redis-result.*; do errors=\$((errors+\$(cat "\$result"))); done
+              [ "\$errors" -eq 0 ]
+              test "\$(redis-cli -h dragonfly get "\$key")" = "\$value"
+              test "\$(redis-cli -h dragonfly del "\$key")" -eq 1
+              test "\$(redis-cli -h dragonfly exists "\$key")" -eq 0
               printf 'RESULT phase=dragonfly operations=%s errors=0\n' "\$((REQUESTS*2))"
 EOF
   execute_job dragonfly "$name" "$manifest" "$log_file"
@@ -659,8 +739,7 @@ run_phase() {
   end=$(date +%s); duration=$((end-start))
   printf '%s\ttrue\tpassed\t%s\t%s\t%s\t%s\t%s\n' \
     "$phase" "$operations" "$errors" "$percent" "$duration" "$log_file" >>"$PHASES_TSV"
-  evidence=$(collect_evidence "$phase")
-  assert_cluster_safe "$evidence" "$baseline_restarts"
+  evidence=$(collect_settled_evidence "$phase" "$baseline_restarts")
 }
 
 write_summary() {
@@ -705,7 +784,11 @@ for phase_spec in 'http phase_http' 's3 phase_s3' 'postgresql phase_postgresql' 
   fi
 done
 
-final_evidence=$(collect_evidence final)
+if $DRY_RUN; then
+  final_evidence=$(collect_evidence final)
+else
+  final_evidence=$(collect_settled_evidence final "$baseline_restarts") || true
+fi
 if ! $DRY_RUN && ! assert_cluster_safe "$final_evidence" "$baseline_restarts"; then
   overall=failed
 fi

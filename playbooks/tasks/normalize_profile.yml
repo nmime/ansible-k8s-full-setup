@@ -58,6 +58,11 @@
 
 - name: Normalize component sizing from the platform profile
   ansible.builtin.set_fact:
+    cp_count: '{{ infrastructure.control_plane.count | default(cp_count | default(1)) }}'
+    worker_count: '{{ infrastructure.workers.count | default(worker_count | default(1)) }}'
+    cp_schedulable: >-
+      {{ infrastructure.control_plane.schedulable |
+         default(cp_schedulable | default(false)) | bool }}
     k8s_version: '{{ kubernetes.version | default(k8s_version) }}'
     k8s_cni: '{{ kubernetes.cni | default(k8s_cni) }}'
     cilium_version: '{{ kubernetes.cilium_version | default(cilium_version) }}'
@@ -151,11 +156,13 @@
     backup_dr_enabled: >-
       {{ (backup.disaster_recovery | default({})).enabled | default(backup_dr_enabled) | bool }}
     backup_dr_storage_endpoint: >-
-      {{ (backup.disaster_recovery | default({})).endpoint | default(backup_dr_storage_endpoint) }}
+      {{ (backup.disaster_recovery | default({})).endpoint |
+         default(backup_dr_storage_endpoint, true) }}
     backup_dr_storage_region: >-
       {{ (backup.disaster_recovery | default({})).region | default(backup_dr_storage_region) }}
     backup_dr_storage_bucket: >-
-      {{ (backup.disaster_recovery | default({})).bucket | default(backup_dr_storage_bucket) }}
+      {{ (backup.disaster_recovery | default({})).bucket |
+         default(backup_dr_storage_bucket, true) }}
     backup_dr_storage_prefix: >-
       {{ (backup.disaster_recovery | default({})).prefix | default(backup_dr_storage_prefix) }}
     backup_dr_schedule: >-
@@ -296,6 +303,17 @@
       Backup automation requires object storage. Enable storage in the
       selected platform profile.
   when: platform_backup_enabled | bool
+
+- name: Validate disaster-recovery backup dependency
+  ansible.builtin.assert:
+    that:
+      - platform_backup_enabled | bool
+      - platform_object_storage_enabled | bool
+    fail_msg: >-
+      External disaster recovery requires native backup automation and object
+      storage. Enable disaster-recovery through the platform selector so all
+      required backup layers are selected together.
+  when: backup_dr_enabled | bool
 
 - name: Validate email alerting dependency
   ansible.builtin.assert:

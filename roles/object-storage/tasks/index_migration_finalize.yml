@@ -1,0 +1,243 @@
+---
+- name: Recreate SeaweedFS volume pods one at a time on colocated durable indexes
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ns="{{ object_storage_namespace_resolved }}"
+    release="{{ object_storage_release_name | default('seaweedfs') }}"
+    selector="app.kubernetes.io/component=volume,app.kubernetes.io/instance=${release}"
+    pods=$(kubectl get pods --namespace "$ns" \
+      --selector "$selector" --output name | sort)
+    test "$(grep -c . <<<"$pods" || true)" -eq {{ object_storage_volume_replicas | int }}
+    while IFS= read -r pod_ref; do
+      [ -n "$pod_ref" ] || continue
+      pod="${pod_ref#pod/}"
+      old_uid=$(kubectl get pod --namespace "$ns" "$pod" \
+        -o jsonpath='{.metadata.uid}')
+      kubectl delete pod --namespace "$ns" "$pod" --wait=false
+      replacement_ready=false
+      for attempt in $(seq 1 120); do
+        new_uid=$(kubectl get pod --namespace "$ns" "$pod" \
+          -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+        ready=$(kubectl get pod --namespace "$ns" "$pod" \
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+        if [[ -n "$new_uid" && "$new_uid" != "$old_uid" && "$ready" == True ]]; then
+          replacement_ready=true
+          break
+        fi
+        sleep 5
+      done
+      [[ "$replacement_ready" == true ]] || {
+        echo "replacement SeaweedFS volume pod $pod did not become Ready within 10 minutes" >&2
+        exit 1
+      }
+      kubectl rollout status --namespace "$ns" \
+        "statefulset/${release}-volume" --timeout=10m
+      kubectl exec --namespace "$ns" "$pod" -- sh -ec '
+        for vif in /data/*.vif; do
+          [ -e "$vif" ] || continue
+          base="${vif##*/}"
+          base="${base%.vif}"
+          test -f "/data/${base}.idx"
+        done
+      '
+    done <<<"$pods"
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: _seaweedfs_index_migration_stage != 'verified'
+
+- name: Remove a prior post-migration S3 sentinel read Job
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration-sentinel-read
+  when: _seaweedfs_index_migration_stage != 'verified'
+
+- name: Read the pre-migration S3 sentinel through the migrated volume indexes
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: seaweedfs-index-migration-sentinel-read
+        namespace: "{{ object_storage_namespace_resolved }}"
+      spec:
+        backoffLimit: 6
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: aws-cli
+                image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
+                command: ["/bin/sh", "-ec"]
+                args:
+                  - |
+                    bucket="{{ (object_storage_buckets | default(['backups']) | first).name | default((object_storage_buckets | default(['backups']) | first), true) }}"
+                    aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 cp \
+                      "s3://${bucket}/migration/seaweedfs-index-sentinel" /tmp/sentinel
+                    value=''
+                    IFS= read -r value </tmp/sentinel || true
+                    test "${value}" = 'seaweedfs-index-migration-v1'
+                env:
+                  - name: OBJECT_STORAGE_ENDPOINT
+                    value: "{{ object_storage_endpoint_resolved }}"
+                  - name: AWS_ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_ACCESS_KEY_ID
+                  - name: AWS_SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_SECRET_ACCESS_KEY
+                  - name: AWS_DEFAULT_REGION
+                    value: "{{ object_storage_region | default('us-east-1') }}"
+                  - name: AWS_EC2_METADATA_DISABLED
+                    value: 'true'
+  when: _seaweedfs_index_migration_stage != 'verified'
+
+- name: Wait for the post-migration S3 sentinel read
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration-sentinel-read
+  register: _seaweedfs_index_sentinel_read
+  retries: 60
+  delay: 5
+  until:
+    - _seaweedfs_index_sentinel_read.resources | default([]) | length == 1
+    - _seaweedfs_index_sentinel_read.resources[0].status.succeeded | default(0) | int == 1
+  when: _seaweedfs_index_migration_stage != 'verified'
+
+- name: Checkpoint verified SeaweedFS index migration
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: seaweedfs-index-migration
+        namespace: "{{ object_storage_namespace_resolved }}"
+      data:
+        stage: verified
+  when: _seaweedfs_index_migration_stage != 'verified'
+
+- name: Remove SeaweedFS index copy Jobs
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: "seaweedfs-index-copy-{{ item | regex_replace('^.*-', '') }}"
+    delete_options:
+      propagationPolicy: Foreground
+  loop: "{{ _seaweedfs_legacy_idx_claims }}"
+
+- name: Remove orphaned SeaweedFS index copy Pods from interrupted migrations
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    namespace: "{{ object_storage_namespace_resolved }}"
+    delete_all: true
+    label_selectors:
+      - "job-name=seaweedfs-index-copy-{{ item | regex_replace('^.*-', '') }}"
+    wait: true
+  loop: "{{ _seaweedfs_legacy_idx_claims }}"
+
+- name: Delete exact obsolete standalone SeaweedFS index claims
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: "{{ item }}"
+    wait: true
+  loop: "{{ _seaweedfs_legacy_idx_claims }}"
+
+- name: Remove a prior S3 sentinel cleanup Job
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration-sentinel-delete
+
+- name: Delete the verified S3 migration sentinel
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: seaweedfs-index-migration-sentinel-delete
+        namespace: "{{ object_storage_namespace_resolved }}"
+      spec:
+        backoffLimit: 6
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: aws-cli
+                image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
+                command: ["/bin/sh", "-ec"]
+                args:
+                  - |
+                    bucket="{{ (object_storage_buckets | default(['backups']) | first).name | default((object_storage_buckets | default(['backups']) | first), true) }}"
+                    aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 rm \
+                      "s3://${bucket}/migration/seaweedfs-index-sentinel"
+                env:
+                  - name: OBJECT_STORAGE_ENDPOINT
+                    value: "{{ object_storage_endpoint_resolved }}"
+                  - name: AWS_ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_ACCESS_KEY_ID
+                  - name: AWS_SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_SECRET_ACCESS_KEY
+                  - name: AWS_DEFAULT_REGION
+                    value: "{{ object_storage_region | default('us-east-1') }}"
+                  - name: AWS_EC2_METADATA_DISABLED
+                    value: 'true'
+
+- name: Wait for S3 migration sentinel cleanup
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration-sentinel-delete
+  register: _seaweedfs_index_sentinel_delete
+  retries: 60
+  delay: 5
+  until:
+    - _seaweedfs_index_sentinel_delete.resources | default([]) | length == 1
+    - _seaweedfs_index_sentinel_delete.resources[0].status.succeeded | default(0) | int == 1
+
+- name: Remove SeaweedFS migration sentinel Jobs
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: "{{ item }}"
+  loop:
+    - seaweedfs-index-migration-sentinel-write
+    - seaweedfs-index-migration-sentinel-read
+    - seaweedfs-index-migration-sentinel-delete
+
+- name: Complete the SeaweedFS index migration checkpoint
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration

@@ -11,6 +11,8 @@ DRY_RUN=false
 FORCE=false
 RESTORE_NS=""
 CLEANUP_HOURS=""
+PROJECT="${PROJECT_NAME:-}"
+PG_CLUSTER=""
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,10 @@ Supported automated drills:
   vault   Dispatches to vault-restore-drill.sh with the snapshot name.
   seaweedfs Dispatches to seaweedfs-restore-drill.sh with a Velero backup name.
   gitlab  Dispatches to gitlab-restore-test.sh with the Toolbox backup ID.
+
+PostgreSQL source selection:
+  --project NAME       Source platform project; selects <NAME>-pg.
+  --pg-cluster NAME    Exact source PerconaPGCluster (overrides --project).
 EOF
 }
 
@@ -33,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=true; shift ;;
     --namespace) RESTORE_NS="${2:?missing namespace}"; shift 2 ;;
     --cleanup-hours) CLEANUP_HOURS="${2:?missing cleanup hours}"; shift 2 ;;
+    --project) PROJECT="${2:?missing project}"; shift 2 ;;
+    --pg-cluster) PG_CLUSTER="${2:?missing PostgreSQL cluster}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[ERROR] Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -40,15 +48,27 @@ done
 
 [[ -n "$COMPONENT" ]] || { echo "[ERROR] Missing --component" >&2; exit 2; }
 [[ -n "$BACKUP_REF" ]] || { echo "[ERROR] Missing --backup" >&2; exit 2; }
+if [[ -n "$PROJECT" && ! "$PROJECT" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+  echo "[ERROR] --project must be a valid lowercase Kubernetes name" >&2
+  exit 2
+fi
+if [[ -n "$PG_CLUSTER" && ! "$PG_CLUSTER" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+  echo "[ERROR] --pg-cluster must be a valid lowercase Kubernetes name" >&2
+  exit 2
+fi
+[[ -n "$PG_CLUSTER" || -z "$PROJECT" ]] || PG_CLUSTER="${PROJECT}-pg"
 if [[ "$DRY_RUN" != true && "$FORCE" != true ]]; then
   echo "[ERROR] Use --dry-run to review or --force to execute a restore drill" >&2
   exit 2
 fi
 
-common_args=()
-[[ -n "$RESTORE_NS" ]] && common_args+=(--namespace "$RESTORE_NS")
-[[ -n "$CLEANUP_HOURS" ]] && common_args+=(--ttl-hours "$CLEANUP_HOURS")
-[[ "$DRY_RUN" == true ]] && common_args+=(--dry-run)
+# Build the optional dispatcher arguments as positional parameters. macOS ships
+# Bash 3.2, where expanding a declared-but-empty array under `set -u` raises an
+# unbound-variable error before the component drill can start.
+set --
+[[ -n "$RESTORE_NS" ]] && set -- "$@" --namespace "$RESTORE_NS"
+[[ -n "$CLEANUP_HOURS" ]] && set -- "$@" --ttl-hours "$CLEANUP_HOURS"
+[[ "$DRY_RUN" == true ]] && set -- "$@" --dry-run
 
 echo "RESTORE DRILL SUMMARY"
 echo "Component: $COMPONENT"
@@ -56,24 +76,25 @@ echo "Backup: $BACKUP_REF"
 
 case "$COMPONENT" in
   postgresql)
+    [[ -z "$PG_CLUSTER" ]] || set -- "$@" --pg-cluster "$PG_CLUSTER"
     exec "${SCRIPT_DIR}/pg-restore-drill.sh" \
-      --backup-set "$BACKUP_REF" "${common_args[@]}"
+      --backup-set "$BACKUP_REF" "$@"
     ;;
   mongodb)
     exec "${SCRIPT_DIR}/mongodb-restore-drill.sh" \
-      --backup "$BACKUP_REF" "${common_args[@]}"
+      --backup "$BACKUP_REF" "$@"
     ;;
   vault)
     exec "${SCRIPT_DIR}/vault-restore-drill.sh" \
-      --snapshot-name "$BACKUP_REF" "${common_args[@]}"
+      --snapshot-name "$BACKUP_REF" "$@"
     ;;
   gitlab)
     exec "${SCRIPT_DIR}/gitlab-restore-test.sh" \
-      --restore --backup "$BACKUP_REF" "${common_args[@]}"
+      --restore --backup "$BACKUP_REF" "$@"
     ;;
   seaweedfs)
     exec "${SCRIPT_DIR}/seaweedfs-restore-drill.sh" \
-      --backup "$BACKUP_REF" "${common_args[@]}"
+      --backup "$BACKUP_REF" "$@"
     ;;
   *)
     echo "[ERROR] Invalid component: $COMPONENT" >&2

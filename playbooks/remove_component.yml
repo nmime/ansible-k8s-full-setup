@@ -107,10 +107,8 @@
         namespaces: [postal]
         requires_data_confirmation: true
       backup:
-        namespaces: [backups, velero]
+        namespaces: [backups]
         requires_data_confirmation: false
-        helm_releases:
-          - {name: velero, namespace: velero}
         resources:
           - {api_version: batch/v1, kind: CronJob, name: gitlab-rails-secrets-backup, namespace: gitlab}
           - {api_version: v1, kind: Secret, name: gitlab-rails-backup-credentials, namespace: gitlab}
@@ -119,6 +117,11 @@
           - {api_version: batch/v1, kind: CronJob, name: vault-raft-snapshot, namespace: vault}
           - {api_version: v1, kind: Secret, name: vault-backup-credentials, namespace: vault}
           - {api_version: v1, kind: ServiceAccount, name: vault-backup, namespace: vault}
+      disaster-recovery:
+        namespaces: [velero]
+        requires_data_confirmation: false
+        helm_releases:
+          - {name: velero, namespace: velero}
       glitchtip:
         namespaces: [glitchtip]
         requires_data_confirmation: true
@@ -182,6 +185,7 @@
           temporal: "{{ platform_temporal_enabled }}"
           postal: "{{ platform_postal_enabled }}"
           backup: "{{ platform_backup_enabled }}"
+          disaster-recovery: "{{ backup_dr_enabled }}"
           glitchtip: "{{ platform_glitchtip_enabled }}"
           apm: "{{ platform_apm_enabled }}"
           blackbox: "{{ platform_blackbox_enabled }}"
@@ -235,6 +239,60 @@
           explicitly pass delete_component_data=true.
 
   tasks:
+    - name: Read PostgreSQL cluster before backup automation removal
+      kubernetes.core.k8s_info:
+        api_version: pgv2.percona.com/v2
+        kind: PerconaPGCluster
+        namespace: databases
+        name: "{{ project_name | default('k8s') }}-pg"
+      register: backup_removal_pg_cluster
+      when: target_component == 'backup'
+
+    - name: Remove PostgreSQL operator backup schedules
+      kubernetes.core.k8s_json_patch:
+        api_version: pgv2.percona.com/v2
+        kind: PerconaPGCluster
+        namespace: databases
+        name: "{{ project_name | default('k8s') }}-pg"
+        patch:
+          - op: remove
+            path: "/spec/backups/pgbackrest/repos/{{ item }}/schedules"
+      loop: >-
+        {{ range(0, backup_removal_pg_cluster.resources[0].spec.backups.pgbackrest.repos | length) | list
+           if (backup_removal_pg_cluster.resources | default([]) | length == 1) else [] }}
+      when:
+        - target_component == 'backup'
+        - backup_removal_pg_cluster.resources[0].spec.backups.pgbackrest.repos[item].schedules is defined
+
+    - name: Read MongoDB cluster before backup automation removal
+      kubernetes.core.k8s_info:
+        api_version: psmdb.percona.com/v1
+        kind: PerconaServerMongoDB
+        namespace: databases
+        name: "{{ project_name | default('k8s') }}-mongo"
+      register: backup_removal_mongo_cluster
+      when: target_component == 'backup'
+
+    - name: Disable MongoDB operator backup and point-in-time recovery
+      kubernetes.core.k8s_json_patch:
+        api_version: psmdb.percona.com/v1
+        kind: PerconaServerMongoDB
+        namespace: databases
+        name: "{{ project_name | default('k8s') }}-mongo"
+        patch:
+          - op: replace
+            path: /spec/backup/enabled
+            value: false
+          - op: replace
+            path: /spec/backup/pitr/enabled
+            value: false
+          - op: replace
+            path: /spec/backup/tasks
+            value: []
+      when:
+        - target_component == 'backup'
+        - backup_removal_mongo_cluster.resources | default([]) | length == 1
+
     - name: Uninstall component Helm releases
       kubernetes.core.helm:
         name: "{{ item.name }}"
@@ -277,6 +335,43 @@
       loop: "{{ component_spec.namespaces }}"
 
   post_tasks:
+    - name: Re-read PostgreSQL cluster after backup automation removal
+      kubernetes.core.k8s_info:
+        api_version: pgv2.percona.com/v2
+        kind: PerconaPGCluster
+        namespace: databases
+        name: "{{ project_name | default('k8s') }}-pg"
+      register: backup_removal_pg_final
+      when: target_component == 'backup'
+
+    - name: Re-read MongoDB cluster after backup automation removal
+      kubernetes.core.k8s_info:
+        api_version: psmdb.percona.com/v1
+        kind: PerconaServerMongoDB
+        namespace: databases
+        name: "{{ project_name | default('k8s') }}-mongo"
+      register: backup_removal_mongo_final
+      when: target_component == 'backup'
+
+    - name: Verify database-native backup automation is disabled
+      ansible.builtin.assert:
+        that:
+          - >-
+            backup_removal_pg_final.resources | default([]) | length == 0 or
+            (backup_removal_pg_final.resources[0].spec.backups.pgbackrest.repos |
+             selectattr('schedules', 'defined') | list | length == 0)
+          - >-
+            backup_removal_mongo_final.resources | default([]) | length == 0 or
+            not backup_removal_mongo_final.resources[0].spec.backup.enabled | default(false) | bool
+          - >-
+            backup_removal_mongo_final.resources | default([]) | length == 0 or
+            not backup_removal_mongo_final.resources[0].spec.backup.pitr.enabled | default(false) | bool
+          - >-
+            backup_removal_mongo_final.resources | default([]) | length == 0 or
+            backup_removal_mongo_final.resources[0].spec.backup.tasks | default([]) | length == 0
+        fail_msg: Database-native backup automation was not fully removed.
+      when: target_component == 'backup'
+
     - name: Report component removal boundary
       ansible.builtin.debug:
         msg: >-

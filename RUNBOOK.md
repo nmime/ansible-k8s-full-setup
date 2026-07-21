@@ -68,6 +68,22 @@ timeout, node-pressure condition, unavailable controller, unbound PVC,
 unhealthy certificate/route, APIService failure, or excessive restart delta is
 a hard stop. Interrupt traps attempt the same cleanup; if the API was lost,
 inspect the failed phase log and verify its `tier-load/RUN_ID` prefix manually.
+Restart growth is checked both as a cluster total and by stable
+namespace/pod/container identity. A pod recreated with the same name and a new
+UID counts as one replacement event. Pods created under new names during a
+rollout or autoscaling are treated as new-name scale events, not inferred
+container restarts; their actual `restartCount` still contributes to the
+cluster-total gate while they remain present.
+
+`live-tier-smoke.sh` validates every selected public Gateway route with normal
+CA verification, TLS 1.2 or newer, and the route's declared path; it never uses
+an insecure TLS bypass. The load harness also keeps certificate verification
+enabled when `--http-url` selects HTTPS. For every profile whose configuration
+enables the provider load balancer, each evidence snapshot must read the exact
+Hetzner load balancer, match its HTTP/HTTPS destination ports to the live
+Gateway Service, and observe healthy target checks. Provider reads are retried
+for transient failures and then fail closed. The load-balancer-free `minimal`
+profile records that this provider edge is not required.
 
 The output contract is:
 
@@ -77,8 +93,12 @@ The output contract is:
 - `evidence/STAGE/evidence.json`: health and readiness counts;
 - `resources.tsv`, `top-nodes.tsv`, `top-pods.tsv`, `warning-events.tsv`.
 
-Evidence collection is read-only and never retrieves Secrets. It can also be
-run independently:
+Evidence collection is read-only and never retrieves Secrets. Warning-event
+messages are redacted for common token, password, secret, and access-key forms
+before they are written. Terminal retry pods owned by a Job are evaluated from
+the Job condition rather than counted as permanently unready workloads, while
+a terminally failed Job remains fatal. Evidence can also be collected
+independently:
 
 ```bash
 ./scripts/collect-live-evidence.sh \
@@ -161,6 +181,30 @@ drains, validates, and restores one node at a time:
 ./scripts/migrate-profile.sh finalize
 ```
 
+For clusters deployed with `run_tier.sh --operator-state-root`, pass the same
+root to the first migration command. The controller persists the exact secrets
+and encrypted Vault-init paths for every resume, rollback, backup gate, and
+finalize reconcile:
+
+```bash
+./scripts/migrate-profile.sh --target medium execute \
+  --operator-state-root /state/cluster-a \
+  --volume-quota-gib 1500 --volume-safety-margin-gib 100
+```
+
+Without that option, migration retains the ordinary single-checkout defaults
+in `playbooks/`. `--secrets-file` and `--vault-init-file` support layouts where
+the two files are not under one operator-state root.
+
+Use the exact account volume quota displayed by Hetzner; its API has no quota
+field, so live migration refuses to infer one. The offline plan records
+billable source/target claims, target growth, and backup scratch in
+`volume-capacity-plan.json`. Live preflight combines that estimate with the
+authoritative account-wide `hcloud volume list` total and a default 100 GiB
+reserve. Resume compares provider volume IDs/sizes with the recorded baseline,
+credits only growth mapped to this cluster's PVs, and fails on quota, margin, or
+plan drift.
+
 After any SeaweedFS topology change, verify both the configured placement and
 the live replica count. The role performs these checks automatically; the
 operator-level evidence commands are:
@@ -191,10 +235,11 @@ Targeted deploys run the same normalization contract as a full deployment.
 This is the normal way to add a technology after the initial cluster build.
 The accepted component names are `object-storage`, `secrets`, `eso`,
 `databases`, `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
-`gitlab-runner`, `gitops`, `observability`, `coroot`, `tracing`, `autoscaling`,
-`temporal`, `postal`, `backup`, `glitchtip`, `apm`, `blackbox`, `daytona`, and
-`hipaa`. See the [technology catalog](docs/TECHNOLOGY_CATALOG.md) for the exact
-dependency and profile matrix.
+`gitlab-runner`, `gitops`, `observability`, `pmm`, `coroot`, `tracing`,
+`autoscaling`, `temporal`, `postal`, `backup`, `glitchtip`, `apm`, `blackbox`,
+`disaster-recovery`, `daytona`, and `hipaa`. See the
+[technology catalog](docs/TECHNOLOGY_CATALOG.md) for the exact dependency and
+profile matrix.
 
 Disabling only changes desired selection; it does not stop or delete already
 installed workloads. That boundary is deliberate, so a temporary pause remains
@@ -266,16 +311,33 @@ kubectl get backupstoragelocation,backup -n velero
 ./scripts/restore-drill.sh --component gitlab --backup TOOLBOX_BACKUP_ID --dry-run
 
 export CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+export CLUSTER_BACKUP_AGE_IDENTITY=/secure/path/to/age-identity.txt
 ./platform-orchestrator/platform.sh backup-cluster \
+  --vault-init-file playbooks/.vault-init-k8s.json \
   --recipient "$CLUSTER_BACKUP_AGE_RECIPIENT" --force
 ./platform-orchestrator/platform.sh restore-cluster \
-  --archive /secure/k8s-cluster-....tar.gz.age --mode verify
+  --archive /secure/k8s-cluster-....tar.gz.age --mode verify \
+  --identity "$CLUSTER_BACKUP_AGE_IDENTITY"
+
+# On a multi-cluster controller, bind the backup to this cluster's exact
+# generated secret set and encrypted Vault initialization material.
+./scripts/cluster-backup.sh \
+  --config /state/cluster-a/platform.yaml \
+  --secrets-file /state/cluster-a/.platform-secrets.yml \
+  --vault-init-file /state/cluster-a/.vault-init-cluster-a.json \
+  --ssh-known-hosts /state/cluster-a/ssh/known_hosts \
+  --recipient "$CLUSTER_BACKUP_AGE_RECIPIENT" \
+  --output-dir /secure/cluster-a --force
+./scripts/cluster-restore.sh \
+  --archive /secure/cluster-a/k8s-cluster-....tar.gz.age \
+  --mode verify --identity "$CLUSTER_BACKUP_AGE_IDENTITY"
 ```
 
 GitLab recovery needs the Toolbox archive and the separately stored Rails
 encryption secret; its external PostgreSQL data comes from the independently
-gated pgBackRest set, not the Toolbox archive. Vault recovery needs the original
-snapshot token and enough unseal shares to reach its threshold. Production
+gated pgBackRest set, not the Toolbox archive. Vault recovery uses the
+Ansible-Vault-encrypted initialization file included in the cluster bundle;
+the Ansible Vault password remains a separately stored dependency. Production
 recovery also needs external Velero/Kopia data and the encrypted
 etcd/PKI/config bundle. Backup object existence is not restore proof; run all
 five isolated component drills and replacement-cluster drills on a schedule. See
@@ -325,13 +387,20 @@ The durable workflow backs up first, expands to the maximum source/target node
 counts, drains/resizes each retained node separately, grows both the provider
 disk and the node root filesystem, verifies etcd before and after control-plane
 changes, applies target capabilities, migrates
-VictoriaMetrics single-to-cluster or cluster-to-single, validates, and backs
-copies post-switch VictoriaMetrics samples back, restores the Helm/config
-baseline, and deliberately retains expanded nodes. Finalization is itself
-checkpointed: it removes disabled dependants first, retires old metrics/logging
-PVCs, removes excess workers then control planes through Kubespray, reconciles
-the exact target, takes a final backup, removes disabled backup resources last,
-and cleans unused cloud placement resources.
+VictoriaMetrics single-to-cluster or cluster-to-single, validates the target,
+and captures the second encrypted recovery point. Before finalization,
+`migrate rollback` copies post-switch VictoriaMetrics samples back, restores the
+recorded Helm/config baseline, removes target-only components in dependency
+order, and deliberately retains expanded/resized nodes. If Vault already uses
+the migrated Raft storage, rollback restores every non-Vault Helm revision and
+retains Raft. Target-only data removal is authorized only by the completed
+post-migration backup checkpoint; without it rollback fails closed rather than
+discarding target writes. HIPAA-oriented hardening is never generically
+reversed.
+Finalization is itself checkpointed: it removes disabled dependants first,
+retires old metrics/logging PVCs, removes excess workers then control planes
+through Kubespray, reconciles the exact target, takes a final backup, removes
+disabled backup resources last, and cleans unused cloud placement resources.
 
 Every completed node resize is followed by the full profile-aware platform
 health gate before the next node is touched. This includes expected node and

@@ -83,6 +83,7 @@ verify_external_checksum() {
   expected=$(awk '{print $1}' "$checksum_file")
   if command -v sha256sum >/dev/null; then actual=$(sha256sum "$ARCHIVE" | awk '{print $1}'); else actual=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}'); fi
   [[ "$expected" == "$actual" ]] || fail "encrypted archive checksum mismatch"
+  ARCHIVE_SHA256="$actual"
 }
 
 decrypt_archive() {
@@ -114,7 +115,62 @@ BUNDLE_DIR=$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d -name '*-cluster-*
   cd "$BUNDLE_DIR"
   if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
 ) >/dev/null
-jq -e '.schema_version == 1 and .backup_id and .project and .source_context' "$BUNDLE_DIR/MANIFEST.json" >/dev/null
+jq -e '
+  (.schema_version == 1 or .schema_version == 2) and
+  .backup_id and .project and .source_context and
+  (if .schema_version == 2 then
+     ((.recovery_dependencies.vault_init.required // false) == false or
+       .recovery_dependencies.vault_init.included == true) and
+     (.contains.vault_init_material ==
+       (.recovery_dependencies.vault_init.included // false)) and
+     (if (.recovery_dependencies.vault_init.included // false) then
+        .recovery_dependencies.vault_init.encryption == "ansible-vault" and
+        .recovery_dependencies.vault_init.bundle_path == "config/vault-init.json.vault"
+      else true end)
+   else true end)
+' "$BUNDLE_DIR/MANIFEST.json" >/dev/null \
+  || fail "bundle manifest recovery dependency contract is invalid"
+VAULT_INIT_INCLUDED=$(jq -r '.recovery_dependencies.vault_init.included // false' "$BUNDLE_DIR/MANIFEST.json")
+if [[ "$VAULT_INIT_INCLUDED" == true ]]; then
+  BUNDLED_VAULT_INIT="$BUNDLE_DIR/config/vault-init.json.vault"
+  [[ -f "$BUNDLED_VAULT_INIT" && -s "$BUNDLED_VAULT_INIT" ]] \
+    || fail "bundle is missing required encrypted Vault initialization material"
+  IFS= read -r vault_init_header < "$BUNDLED_VAULT_INIT" || true
+  [[ "$vault_init_header" == "\$ANSIBLE_VAULT;"* ]] \
+    || fail "bundled Vault initialization material is not Ansible Vault encrypted"
+fi
+BUNDLE_SCHEMA=$(jq -r '.schema_version' "$BUNDLE_DIR/MANIFEST.json")
+BACKUP_ID=$(jq -r '.backup_id' "$BUNDLE_DIR/MANIFEST.json")
+if [[ "$BUNDLE_SCHEMA" == 2 ]]; then
+  # Schema-v2 bundles are created by the atomic remote-publication workflow.
+  # Archive and checksum objects are uploaded before the verified completion
+  # receipt, so accepting those two objects alone would treat an interrupted
+  # publication as a usable recovery point.
+  RECEIPT_PATH="${ARCHIVE}.manifest.json"
+  [[ -f "$RECEIPT_PATH" && -s "$RECEIPT_PATH" ]] \
+    || fail "schema-v2 bundle completion receipt is missing: $RECEIPT_PATH"
+  jq -e --arg backupId "$BACKUP_ID" --arg archive "$(basename "$ARCHIVE")" \
+    --arg sha256 "$ARCHIVE_SHA256" '
+      .schema_version == 1 and
+      .receipt_type == "encrypted-cluster-backup" and
+      .backup_id == $backupId and
+      .archive == $archive and
+      .sha256 == $sha256 and
+      .completeness == "complete" and
+      .remote.published == true and
+      .remote.download_sha256_verified == true and
+      .remote.receipt_uploaded_last == true and
+      .remote.publication_state == "complete" and
+      (.remote.endpoint | type == "string" and length > 0) and
+      (.remote.bucket | type == "string" and length > 0) and
+      (.remote.archive_key | type == "string" and length > 0) and
+      (.remote.checksum_key | type == "string" and length > 0) and
+      (.remote.receipt_key | type == "string" and length > 0)
+    ' "$RECEIPT_PATH" >/dev/null \
+    || fail "schema-v2 bundle completion receipt is incomplete or does not match the archive"
+else
+  log "legacy schema-v1 bundle: no remote completion receipt contract is available"
+fi
 PROJECT=$(jq -r '.project' "$BUNDLE_DIR/MANIFEST.json")
 SOURCE_CONTEXT=$(jq -r '.source_context' "$BUNDLE_DIR/MANIFEST.json")
 COMPLETENESS=$(jq -r '.completeness' "$BUNDLE_DIR/MANIFEST.json")
@@ -122,7 +178,9 @@ COMPLETENESS=$(jq -r '.completeness' "$BUNDLE_DIR/MANIFEST.json")
 log "verified bundle $(jq -r '.backup_id' "$BUNDLE_DIR/MANIFEST.json") for project $PROJECT"
 
 if [[ "$MODE" == verify ]]; then
-  jq '{backup_id,created_at,project,domain,profile,source_context,completeness,velero_backup_name,contains,restore_order}' "$BUNDLE_DIR/MANIFEST.json"
+  jq '{backup_id,created_at,project,domain,profile,source_context,completeness,
+    velero_backup_name,contains,recovery_dependencies,restore_order}' \
+    "$BUNDLE_DIR/MANIFEST.json"
   exit 0
 fi
 

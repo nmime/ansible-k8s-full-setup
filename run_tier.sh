@@ -34,7 +34,7 @@ Options:
   --cp-type TYPE         Capacity-equivalent control-plane type override
   --worker-type TYPE     Capacity-equivalent worker server type override
   --manage-dns           Permit the infrastructure role to manage DNS
-  --minimum-storage      Set PVC requests to 10Gi; use rebuildable SeaweedFS indexes
+  --minimum-storage      Set PVC requests to 10Gi; colocate SeaweedFS indexes on data PVCs
   --skip-kubespray       Resume after a verified successful Kubespray run
   --controller-forks N   Ansible worker forks for this controller (default: 2)
   --operator-state-root  Persistent encrypted operator state directory
@@ -210,6 +210,20 @@ yq -i '
   .backup.disaster_recovery.prefix = strenv(DR_PREFIX)
 ' "$CONFIG_FILE"
 
+# Supplying an external DR target is an explicit request to protect this
+# campaign, including named profiles whose ordinary low-cost defaults leave
+# scheduled backups disabled. Keeping only endpoint metadata while the backup
+# control plane is disabled makes full-cluster acceptance and migration gates
+# fail later with retained-but-undesired Velero resources.
+if [[ -n "$DR_ENDPOINT" || -n "$DR_BUCKET" ]]; then
+  [[ -n "$DR_ENDPOINT" && -n "$DR_BUCKET" ]] \
+    || die "--dr-endpoint and --dr-bucket must be supplied together"
+  yq -i '
+    .backup.enabled = true |
+    .backup.disaster_recovery.enabled = true
+  ' "$CONFIG_FILE"
+fi
+
 if $MINIMUM_STORAGE; then
   yq -i '
     .storage.size = "10Gi" |
@@ -222,6 +236,7 @@ if $MINIMUM_STORAGE; then
     .databases.postgresql.storage_size = "10Gi" |
     .databases.mongodb.storage_size = "10Gi" |
     .gitlab.gitaly_storage_size = "10Gi" |
+    .gitlab.backup_persistence_enabled = false |
     .gitlab.backup_persistence_size = "10Gi" |
     .observability.metrics.storage_size = "10Gi" |
     .observability.pmm.storage_size = "10Gi" |

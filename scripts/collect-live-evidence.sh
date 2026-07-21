@@ -5,6 +5,8 @@ set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+# shellcheck source=scripts/load-project-env.sh
+source "${SCRIPT_DIR}/load-project-env.sh"
 CONFIG_FILE="$ROOT_DIR/platform-orchestrator/platform.yaml"
 KUBECONFIG_FILE="${KUBECONFIG:-}"
 OUTPUT_DIR=""
@@ -51,6 +53,8 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 project=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
 profile=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 expected_nodes=$(yq -r '(.infrastructure.control_plane.count // 0) + (.infrastructure.workers.count // 0)' "$CONFIG_FILE")
+lb_required=$(yq -r '.network.load_balancer.enabled' "$CONFIG_FILE")
+[[ "$lb_required" == null ]] && lb_required=true
 timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 if [[ -z "$OUTPUT_DIR" ]]; then
@@ -104,14 +108,16 @@ trap 'rm -rf "$tmp_dir"' EXIT
 "${K[@]}" get pvc -A -o json >"$tmp_dir/pvcs.json"
 "${K[@]}" get apiservices.apiregistration.k8s.io -o json >"$tmp_dir/apiservices.json"
 
+# Do not use grep -q here. With pipefail, grep's early exit can SIGPIPE
+# kubectl and incorrectly classify an installed API as absent (rc=141).
 if "${K[@]}" api-resources --api-group=cert-manager.io -o name 2>/dev/null \
-  | grep -qx 'certificates.cert-manager.io'; then
+  | grep -Fx 'certificates.cert-manager.io' >/dev/null; then
   "${K[@]}" get certificates -A -o json >"$tmp_dir/certificates.json"
 else
   printf '{"items":[]}' >"$tmp_dir/certificates.json"
 fi
 if "${K[@]}" api-resources --api-group=gateway.networking.k8s.io -o name 2>/dev/null \
-  | grep -qx 'httproutes.gateway.networking.k8s.io'; then
+  | grep -Fx 'httproutes.gateway.networking.k8s.io' >/dev/null; then
   "${K[@]}" get httproutes -A -o json >"$tmp_dir/httproutes.json"
   "${K[@]}" get services -n cilium-system \
     -l io.cilium.gateway/owning-gateway=main-gateway -o json \
@@ -129,15 +135,27 @@ gateway_edge=$(jq -c '
   | .valid=((.http_node_port // 0) >= 30000 and (.http_node_port // 0) <= 32767
     and (.https_node_port // 0) >= 30000 and (.https_node_port // 0) <= 32767)' \
   "$tmp_dir/gateway-services.json")
-provider_edge='{"checked":false,"present":false,"healthy":null}'
-if command -v hcloud >/dev/null 2>&1 && [[ -n "${HCLOUD_TOKEN:-}" ]] \
-  && hcloud load-balancer describe "${project}-lb" -o json >"$tmp_dir/load-balancer.json" 2>/dev/null; then
+provider_edge=$(jq -cn --argjson required "$lb_required" \
+  '{required:$required,checked:false,present:false,healthy:null}')
+lb_read=false
+if [[ "$lb_required" == true ]] && command -v hcloud >/dev/null 2>&1 \
+  && [[ -n "${HCLOUD_TOKEN:-}" ]]; then
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if hcloud load-balancer describe "${project}-lb" -o json \
+      >"$tmp_dir/load-balancer.json" 2>/dev/null; then
+      lb_read=true
+      break
+    fi
+    (( attempt == 10 )) || sleep $((attempt * 2))
+  done
+fi
+if [[ "$lb_read" == true ]]; then
   provider_edge=$(jq -c --argjson gateway "$gateway_edge" '
     [.services[] | select(.listen_port==80)][0] as $http
     | [.services[] | select(.listen_port==443)][0] as $https
     | [.targets[].health_status[]
        | select(.listen_port==80 or .listen_port==443)] as $checks
-    | {checked:true,present:true,
+    | {required:true,checked:true,present:true,
        http_destination_port:($http.destination_port // null),
        https_destination_port:($https.destination_port // null),
        checks:($checks|length),
@@ -176,10 +194,17 @@ printf 'namespace\tname\tcpu\tmemory\n' >"$OUTPUT_DIR/top-pods.tsv"
   | awk 'BEGIN{OFS="\t"} {print $1,$2 "/" $3,$4,$5}' >>"$OUTPUT_DIR/top-pods.tsv" || true
 printf 'namespace\tlast_seen\treason\tobject\tmessage\n' >"$OUTPUT_DIR/warning-events.tsv"
 "${K[@]}" get events -A --field-selector type=Warning -o json 2>/dev/null \
-  | jq -r '.items[] | [.metadata.namespace,
+  | jq -r 'def redact:
+      gsub("(?i)token \u0027[^\u0027]+\u0027";
+          "token \u0027[REDACTED]\u0027")
+      | gsub("(?i)(authorization|password|secret|access[_ -]?key)[=:][^ \\t,;]+";
+          "credential=[REDACTED]")
+      | gsub("(?i)port could not be cast to integer value as \u0027[^\u0027]+\u0027";
+          "Port could not be cast to integer value as \u0027[REDACTED]\u0027");
+    .items[] | [.metadata.namespace,
     (.eventTime // .lastTimestamp // .metadata.creationTimestamp // ""),
     (.reason // ""),((.involvedObject.kind // "") + "/" + (.involvedObject.name // "")),
-    ((.message // "") | gsub("[\\t\\r\\n]+";" "))] | @tsv' \
+    ((.message // "") | redact | gsub("[\\t\\r\\n]+";" "))] | @tsv' \
   >>"$OUTPUT_DIR/warning-events.tsv" || true
 
 node_stats=$(jq -c '{total:(.items|length),ready:([.items[] | select(
@@ -189,11 +214,21 @@ node_stats=$(jq -c '{total:(.items|length),ready:([.items[] | select(
   "$tmp_dir/nodes.json")
 pod_stats=$(jq -c '{total:(.items|length),running:([.items[]|select(.status.phase=="Running")]|length),
     pending:([.items[]|select(.status.phase=="Pending")]|length),
-    failed:([.items[]|select(.status.phase=="Failed")]|length),
-    unready:([.items[] | select(.status.phase!="Succeeded") | select(
+    failed:([.items[]|select(.status.phase=="Failed")
+      | select((.metadata.ownerReferences[0].kind // "") != "Job")]|length),
+    unready:([.items[]
+      | select(((.metadata.ownerReferences[0].kind // "") == "Job"
+          and (.status.phase=="Succeeded" or .status.phase=="Failed")) | not)
+      | select(.status.phase!="Succeeded") | select(
       .status.phase!="Running" or ((.status.containerStatuses // [])|length)==0 or
       any(.status.containerStatuses[]?;.ready!=true))] | length),
-    restarts:([.items[].status.containerStatuses[]?.restartCount] | add // 0)}' "$tmp_dir/pods.json")
+    restarts:([.items[].status.containerStatuses[]?.restartCount] | add // 0),
+    containers:[.items[]
+      | select(.status.phase=="Running")
+      | select((.metadata.ownerReferences[0].kind // "") != "Job") as $pod
+      | .status.containerStatuses[]?
+      | {key:($pod.metadata.namespace+"/"+$pod.metadata.name+"/"+.name),
+         pod_uid:$pod.metadata.uid,restarts:(.restartCount // 0)}]}' "$tmp_dir/pods.json")
 deployment_stats=$(jq -c '{total:(.items|length),unavailable:([.items[] | select(
     (.status.observedGeneration // 0)<(.metadata.generation // 0) or
     (.status.availableReplicas // 0)<(.spec.replicas // 0) or
@@ -232,7 +267,8 @@ jq -n \
       ($daemonsets.unavailable==0) and ($failed_jobs==0) and ($unbound_pvcs==0) and
       ($unavailable_apis==0) and ($unready_certificates==0) and ($unready_routes==0) and
       $gateway_edge.valid and
-      (($provider_edge.checked|not) or $provider_edge.healthy))}' \
+      (($provider_edge.required|not) or
+        ($provider_edge.checked and $provider_edge.present and $provider_edge.healthy)))}' \
   >"$OUTPUT_DIR/evidence.json"
 
 log "evidence collected: $OUTPUT_DIR/evidence.json"

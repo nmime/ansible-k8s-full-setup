@@ -137,7 +137,25 @@ The required `--target` accepts `minimal`, `small`, `medium`,
 profile. The plan generates and validates source, external-backup, expansion,
 target-transition, named-target, and rollback configs under the private state
 directory. It prints node, component, VictoriaMetrics, and non-shrinking PVC
-changes without contacting Hetzner or Kubernetes.
+changes without contacting Hetzner or Kubernetes. Component and alert-channel
+selections that differ from the active source profile's named defaults are
+carried into the target; the new named profile supplies defaults only for
+selections the operator has not customized. The plan records those carried
+choices in `selection-retention.tsv`.
+
+The same offline plan writes `volume-capacity-plan.json`. It expands the
+generated source and target configs into billable Hetzner volumes (whole GiB,
+10 GiB provider minimum), including SeaweedFS, Vault data and audit claims,
+database members and pgBackRest repo, GitLab Gitaly, both VictoriaMetrics
+topologies, Loki/Elasticsearch, Grafana, Alertmanager, PMM, Dragonfly, Coroot,
+Tempo, and Postal. Per-claim growth/target-only capacity and the largest GitLab
+backup scratch claim are reported separately. Unknown quantity formats fail the
+plan instead of being guessed.
+
+HIPAA-oriented hardening is always carried forward. Profile migration never
+schedules its generic removal because host and cluster controls require a
+separately reviewed, control-by-control reversal before the active selection can
+be changed safely.
 
 ### Execute and Resume
 
@@ -148,6 +166,8 @@ HCLOUD_TOKEN=...
 BACKUP_DR_ACCESS_KEY=...
 BACKUP_DR_SECRET_KEY=...
 CLUSTER_BACKUP_AGE_RECIPIENT=age1...
+PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB=1500
+PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB=100
 ```
 
 ```bash
@@ -155,34 +175,82 @@ CLUSTER_BACKUP_AGE_RECIPIENT=age1...
   --target production \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" \
   --dr-bucket "$BACKUP_DR_BUCKET" \
+  --volume-quota-gib "$PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB" \
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
 
 ./platform-orchestrator/platform.sh migrate status
 ./platform-orchestrator/platform.sh migrate resume
 ```
 
+On a multi-cluster controller, bind the migration to the exact generated state
+used when that cluster was deployed. The path is persisted in migration state,
+so later `resume`, `rollback`, and `finalize` commands reuse it and reject a
+conflicting explicit path:
+
+```bash
+./platform-orchestrator/platform.sh migrate execute \
+  --target production \
+  --operator-state-root /state/cluster-a \
+  --dr-endpoint "$BACKUP_DR_ENDPOINT" \
+  --dr-bucket "$BACKUP_DR_BUCKET" \
+  --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
+```
+
+`--operator-state-root` derives `.platform-secrets.yml` and
+`.vault-init-<project>.json`. Use `--secrets-file` and `--vault-init-file`
+instead when those files are stored separately. A mutating migration fails
+closed if either exact recovery input is missing or empty. If none of these
+options is supplied, the ordinary single-checkout files under `playbooks/`
+remain the default.
+
+Hetzner's API returns authoritative volume IDs and sizes but does not expose
+the account's GiB quota. Therefore live `execute` requires the exact account
+quota through `--volume-quota-gib` or
+`PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB`; do not enter a hoped-for value.
+The default 100 GiB reserve is configurable with
+`--volume-safety-margin-gib` or
+`PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB`. Preflight requires:
+
+```text
+account GiB currently used + estimated remaining migration GiB + safety margin
+  <= explicitly configured account quota GiB
+```
+
+The first successful check persists the complete provider volume ID/size
+baseline, estimator inputs, quota, margin, and result in migration state.
+`resume` rejects quota, margin, or generated-plan drift. For a partially
+applied target it maps new/grown provider volumes to PV names in this exact
+cluster, subtracts only that proven migration consumption, and rechecks the
+remaining peak against current account-wide usage. Unmapped or unrelated new
+volumes still consume current usage and are never credited to the migration.
+The final backup repeats the check before allocating backup scratch.
+
 The durable stages are:
 
 1. `preflight` — validate config, credentials, external endpoint, tools,
-   cluster health, and Hetzner access.
+   cluster health, Hetzner access, and the persisted fail-closed account volume
+   capacity calculation.
 2. `backup` — install/validate external Velero, take native backups, create an
    encrypted etcd/PKI/config/PVC bundle, and capture the Helm baseline.
 3. `expand` — add control planes/workers to the maximum source/target topology;
    create spread placement when either side requires it, then verify etcd.
 4. `resize` — drain, stop, place, resize, start, wait, and uncordon one node at
-   a time; verify etcd after every control-plane change.
-5. `apply-target` — reconcile target cluster policy and selected services while
+   a time; verify etcd after every control-plane change and validate the source
+   service set that remains authoritative until target reconciliation.
+5. `migrate-vault-storage` — complete the guarded offline conversion from any
+   legacy file-backed Vault storage to Raft before the target service reconcile.
+6. `apply-target` — reconcile target cluster policy and selected services while
    retaining the expanded topology until sign-off.
-6. `migrate-data` — copy VictoriaMetrics history between VMSingle and VMCluster
+7. `migrate-data` — copy VictoriaMetrics history between VMSingle and VMCluster
    in either direction when the topology changes. A deterministic Job is kept
    for resume; a failed partial import is never silently rerun. Loki objects
    remain an external archive when moving to Elasticsearch.
-7. `validate` — require Ready nodes, healthy etcd/platform, Bound PVCs, and an
+8. `validate` — require Ready nodes, healthy etcd/platform, Bound PVCs, and an
    available external Velero location. Every Deployment/StatefulSet/DaemonSet
    must be fully rolled out, every active Helm release deployed, selected
    PostgreSQL/MongoDB operator CRs Ready, and all cert-manager Certificates
    Ready.
-8. `post-backup` — create a second encrypted full-cluster recovery point.
+9. `post-backup` — create a second encrypted full-cluster recovery point.
 
 Completed stages have durable checkpoint files. `resume` skips only recorded
 successes. It does not infer success from partially created resources.
@@ -243,9 +311,22 @@ not a database restore.
 
 Before destructive finalization, migration rollback copies metrics written
 after the target switch back to the source topology, restores the recorded
-Helm baseline, and selects the source profile on the expanded/resized servers.
-It never deletes nodes. Once finalization starts, use the recorded recovery
-bundle instead of an in-place rollback.
+Helm baseline, removes target-only components in dependency order, and selects
+the source profile on the expanded/resized servers. If Vault has already moved
+from file storage to Raft, rollback retains that safer storage mode and restores
+every non-Vault Helm revision from the baseline. It never deletes nodes.
+
+Target-only data is deleted only after the `post-backup` checkpoint proves that
+the encrypted post-migration recovery bundle completed. Before that checkpoint,
+rollback removes stateless additions but fails closed on a data-bearing
+component instead of discarding writes or reporting a partial rollback as
+successful. Resume through `post-backup` or perform an explicitly reviewed
+application-native recovery before retrying. Temporary local backup and Velero
+resources are removed when the source profile did not select them; remote
+recovery objects remain retained. HIPAA-oriented hardening introduced by the
+target is also retained because it cannot be reversed generically. Once
+finalization starts, use the recorded recovery bundle instead of an in-place
+rollback.
 
 ## Dry-Run Behavior
 

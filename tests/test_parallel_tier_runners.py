@@ -81,6 +81,7 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
     )
     assert profile["storage"]["size_per_replica"] == "10Gi"
     assert profile["observability"]["pmm"]["storage_size"] == "10Gi"
+    assert profile["gitlab"]["backup_persistence_enabled"] is False
     assert (run_root / "status.json").is_file()
     assert "k8s_api_local_port=17446" in result.stdout
     assert f"ssh_key_path={Path.home() / '.ssh' / 'id_ed25519'}" in result.stdout
@@ -131,6 +132,8 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
         data = yaml.safe_load(config.read_text(encoding="utf-8"))
         assert data["platform_profile"] == profile
         assert data["global"]["domain"] == f"t5-pytest-{profile}.n0xeid.xyz"
+        assert data["backup"]["enabled"] is True
+        assert data["backup"]["disaster_recovery"]["enabled"] is True
         projects.add(data["global"]["project"])
         status = yaml.safe_load((controller / "state" / "status.json").read_text(encoding="utf-8"))
         assert status["state"] == "planned"
@@ -139,7 +142,7 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
             encoding="utf-8"
         )
         expected_size = {
-            "minimal": "22",
+            "minimal": "32",
             "small": "32",
             "medium": "42",
             "medium-optimized": "32",
@@ -147,6 +150,8 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
         }[profile]
         assert "hetzner_bastion_type=cpx22" in console
         assert f"hetzner_worker_type=cpx{expected_size}" in console
+        if profile == "minimal":
+            assert "hetzner_cp_type=cpx32" in console
 
     assert len(projects) == 5
     assert ports == set(range(18443, 18448))

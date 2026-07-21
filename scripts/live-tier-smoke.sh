@@ -35,6 +35,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+run_id_pattern='^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$'
+[[ "$RUN_ID" =~ $run_id_pattern ]] || {
+  echo "LIVE_SMOKE_RUN_ID must be a lowercase DNS label (maximum 32 characters)" >&2
+  exit 2
+}
 [[ -f "$CONFIG_FILE" ]] || { echo "Config not found: $CONFIG_FILE" >&2; exit 2; }
 command -v yq >/dev/null || { echo "yq is required" >&2; exit 2; }
 if [[ -z "$VAULT_INIT_FILE" ]]; then
@@ -98,12 +103,17 @@ spec:
       command: ["/bin/sh", "-ec"]
       args:
         - |
+          key="s3://backups/live-smoke/$RUN_ID"
+          cleanup() { aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 rm "\$key" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
           value="live-smoke-$RUN_ID"
           printf '%s' "\$value" >/tmp/value
-          aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 cp /tmp/value s3://backups/live-smoke/$RUN_ID
-          aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 cp s3://backups/live-smoke/$RUN_ID /tmp/read
+          aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 cp /tmp/value "\$key"
+          aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 cp "\$key" /tmp/read
           test "\$(cat /tmp/read)" = "\$value"
-          aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 rm s3://backups/live-smoke/$RUN_ID
+          cleanup
+          test -z "\$(aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 ls "\$key")"
+          trap - EXIT
       envFrom:
         - secretRef:
             name: seaweedfs-s3-config
@@ -135,21 +145,36 @@ smoke_postgresql() {
     -v ON_ERROR_STOP=1 -Atc "BEGIN; CREATE TEMP TABLE live_smoke(v text); INSERT INTO live_smoke VALUES ('${RUN_ID}'); SELECT v FROM live_smoke; ROLLBACK;"
 }
 
+vault_exec() {
+  local token="$1"
+  shift
+  printf '%s\n' "$token" | kubectl exec -i -n vault vault-0 -- \
+    sh -ec 'IFS= read -r VAULT_TOKEN; export VAULT_TOKEN; exec vault "$@"' sh "$@"
+}
+
 smoke_vault() {
-  local token value="live-smoke-${RUN_ID}"
+  local token value="live-smoke-${RUN_ID}" actual output rc=0
   if $DRY_RUN; then echo "[dry-run] Vault KV write/read/delete"; return; fi
   [[ -f "$VAULT_INIT_FILE" ]] || { echo "Encrypted Vault init material not found: $VAULT_INIT_FILE" >&2; return 1; }
   [[ -n "${ANSIBLE_VAULT_PASSWORD_FILE:-}" ]] || { echo "ANSIBLE_VAULT_PASSWORD_FILE is required" >&2; return 1; }
   token=$(ansible-vault view --vault-password-file "$ANSIBLE_VAULT_PASSWORD_FILE" "$VAULT_INIT_FILE" | jq -r .root_token)
   [[ -n "$token" && "$token" != null ]] || { echo "Vault root token is unavailable" >&2; return 1; }
   log "Vault KV write/read/delete"
-  run kubectl exec -n vault vault-0 -- env VAULT_TOKEN="$token" vault kv put "secret/live-smoke/${RUN_ID}" value="$value" >/dev/null
-  local actual
-  if $DRY_RUN; then echo "[dry-run] vault read/delete"; return; fi
-  actual=$(kubectl exec -n vault vault-0 -- env VAULT_TOKEN="$token" vault kv get -field=value "secret/live-smoke/${RUN_ID}")
-  [[ "$actual" == "$value" ]] || { echo "Vault read-after-write mismatch" >&2; return 1; }
-  kubectl exec -n vault vault-0 -- env VAULT_TOKEN="$token" vault kv delete "secret/live-smoke/${RUN_ID}" >/dev/null
+  if ! vault_exec "$token" kv put "secret/live-smoke/${RUN_ID}" value="$value" >/dev/null; then
+    rc=1
+  fi
+  actual=$(vault_exec "$token" kv get -field=value \
+    "secret/live-smoke/${RUN_ID}" 2>/dev/null || true)
+  [[ "$actual" == "$value" ]] || { echo "Vault read-after-write mismatch" >&2; rc=1; }
+  if ! vault_exec "$token" kv metadata delete \
+    "secret/live-smoke/${RUN_ID}" >/dev/null; then
+    rc=1
+  fi
+  output=$(vault_exec "$token" kv metadata get \
+    "secret/live-smoke/${RUN_ID}" 2>&1) && rc=1
+  grep -q 'No value found' <<<"$output" || rc=1
   unset token
+  return "$rc"
 }
 
 smoke_keda_aggregated_api() {
@@ -200,16 +225,17 @@ smoke_logs() {
 }
 
 smoke_gateway_routes() {
-  local routes route_ns gateway_ns gateway_name listener host address port pod
+  local routes route_ns gateway_ns gateway_name listener host path address port pod
   routes=$(kubectl get httproutes -A -o json | jq -r '
     .items[] as $route
     | $route.spec.parentRefs[]?
     | select((.kind // "Gateway") == "Gateway")
+    | ($route.spec.rules[0].matches[0].path.value // "/") as $path
     | [$route.metadata.namespace, (.namespace // $route.metadata.namespace), .name,
-       (.sectionName // ""), $route.spec.hostnames[]?]
+       (.sectionName // ""), $route.spec.hostnames[]?, $path]
     | @tsv')
   [[ -n "$routes" ]] || { echo "No Gateway API HTTPRoute hostnames found" >&2; return 1; }
-  while IFS=$'\t' read -r route_ns gateway_ns gateway_name listener host; do
+  while IFS=$'\t' read -r route_ns gateway_ns gateway_name listener host path; do
     [[ -n "$host" ]] || continue
     address=$(kubectl get gateway "$gateway_name" -n "$gateway_ns" -o jsonpath='{.status.addresses[0].value}')
     port=$(kubectl get gateway "$gateway_name" -n "$gateway_ns" -o json \
@@ -225,10 +251,14 @@ smoke_gateway_routes() {
     # shellcheck disable=SC2016
     kubectl run "$pod" -n default --rm --attach=true --restart=Never \
       --image=curlimages/curl:8.17.0 --command -- sh -ec '
-        status=$(curl -ksS -o /dev/null -w "%{http_code}" --retry 4 --retry-all-errors \
-          --retry-delay 3 --max-time 30 --resolve "$1:$3:$2" "https://$1:$3/")
-        case "$status" in 2??|3??|4??) printf "%s -> %s\n" "$1" "$status" ;; *) exit 1 ;; esac
-      ' sh "$host" "$address" "$port"
+        status=$(curl -sS --proto "=https" --tlsv1.2 -o /dev/null -w "%{http_code}" \
+          --retry 4 --retry-all-errors --retry-delay 3 --max-time 30 \
+          --resolve "$1:$3:$2" "https://$1:$3$4")
+        # 426 is a valid reachability proof for WebSocket-only endpoints such
+        # as GitLab KAS: plain HTTPS reached the backend, which correctly asks
+        # the client to upgrade the protocol.
+        case "$status" in 2??|3??|400|401|403|405|426) printf "%s%s -> %s\n" "$1" "$4" "$status" ;; *) exit 1 ;; esac
+      ' sh "$host" "$address" "$port" "$path"
   done <<<"$routes"
 }
 

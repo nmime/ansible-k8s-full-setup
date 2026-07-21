@@ -125,12 +125,17 @@ done
 
 [[ "$STORAGE_SIZE" =~ ^[1-9][0-9]*(Mi|Gi|Ti)$ ]] \
   || { fail "--storage-size must be a positive Kubernetes binary quantity (for example 10Gi)"; exit 2; }
+[[ "$BACKUP_SET" == latest || "$BACKUP_SET" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || { fail "--backup-set must be 'latest' or a safe pgBackRest backup label"; exit 2; }
 
 # ─────────────────────────────────────────────────────────────────
 section "PostgreSQL Isolated Restore Drill"
-info "Source: $PG_NS/$PG_CLUSTER | Drill NS: $DRILL_NS | Operator: $OPERATOR_VERSION"
+info "Source: $PG_NS/$PG_CLUSTER | Backup set: $BACKUP_SET | Drill NS: $DRILL_NS | Operator: $OPERATOR_VERSION"
 
 if [ "$DRY_RUN" = "true" ]; then
+  DRY_RUN_SET_OPTIONS=""
+  [[ "$BACKUP_SET" == latest ]] \
+    || DRY_RUN_SET_OPTIONS=$(printf '        options: [--set=%s]' "$BACKUP_SET")
   info "DRY-RUN — execution plan:"
   echo ""
   echo "  0. Prerequisites (kubectl, helm, cluster, S3_ENDPOINT)"
@@ -141,7 +146,7 @@ if [ "$DRY_RUN" = "true" ]; then
   echo "  5. Wait for restore (timeout 60m)"
   echo "  6. Verify data integrity (databases, tables, extensions, pg version)"
   echo "  7. Verify replication and connectivity"
-  echo "  8. ${SKIP_CLEANUP:+Skip}{Cleanup namespace $DRILL_NS}"
+  echo "  8. $([[ "$SKIP_CLEANUP" == true ]] && printf 'Skip cleanup of' || printf 'Cleanup') namespace $DRILL_NS"
   echo ""
   echo "  Restore cluster spec (v2):"
   echo "  apiVersion: pgv2.percona.com/v2"
@@ -157,6 +162,7 @@ if [ "$DRY_RUN" = "true" ]; then
   echo "    dataSource:"
   echo "      pgbackrest:"
   echo "        stanza: db"
+  [[ -z "$DRY_RUN_SET_OPTIONS" ]] || echo "$DRY_RUN_SET_OPTIONS"
   echo "        repo:"
   echo "          name: repo2"
   echo "          s3: {bucket: $S3_BUCKET, endpoint: $S3_ENDPOINT}"
@@ -183,6 +189,26 @@ POSTGRES_IMAGE=$(jq -r --arg fallback "$POSTGRES_IMAGE" '.spec.image // $fallbac
 PGBACKREST_IMAGE=$(jq -r --arg fallback "$PGBACKREST_IMAGE" \
   '.spec.backups.pgbackrest.image // $fallback' <<<"$SOURCE_JSON")
 drill_pass "Source images pinned from the live cluster"
+
+# A named set must be proven to belong to this cluster's external repository.
+# This prevents a typo or cross-cluster label from silently restoring whatever
+# happens to be newest under a shared object-storage endpoint.
+if [[ "$BACKUP_SET" != latest ]]; then
+  MATCHING_BACKUPS=$(kubectl get perconapgbackup -n "$PG_NS" -o json | jq \
+    --arg cluster "$PG_CLUSTER" --arg set "$BACKUP_SET" '
+      [.items[] | select(
+        .spec.pgCluster == $cluster and
+        .spec.repoName == "repo2" and
+        ((.status.state // "" | ascii_downcase) as $state |
+          ($state == "succeeded" or $state == "successful" or $state == "ready")) and
+        .status.backupName == $set
+      )] | length')
+  [[ "$MATCHING_BACKUPS" -eq 1 ]] || {
+    drill_fail "Expected exactly one successful repo2 backup with label $BACKUP_SET for $PG_NS/$PG_CLUSTER; found $MATCHING_BACKUPS"
+    exit 1
+  }
+  drill_pass "Exact pgBackRest backup label is owned by the source repo2 cluster"
+fi
 
 # ── Step 1: Isolated namespace ────────────────────────────────
 section "Step 1: Isolated Namespace"
@@ -289,11 +315,9 @@ fi
 # ── Step 4: PerconaPGCluster clone with restore ───────────────
 section "Step 4: Deploy PerconaPGCluster with pgBackRest Data Source"
 
-if [ "$BACKUP_SET" != "latest" ]; then
-  drill_fail "A specific --backup-set is not supported by the isolated S3 clone path"
-  drill_fail "Use latest or perform an operator PerconaPGRestore drill against a disposable cluster"
-  if [ "$SKIP_CLEANUP" = "false" ]; then kubectl delete ns "$DRILL_NS" --wait=false; fi
-  exit 2
+RESTORE_SET_OPTIONS=""
+if [[ "$BACKUP_SET" != latest ]]; then
+  RESTORE_SET_OPTIONS=$(printf '      options:\n        - --set=%s' "$BACKUP_SET")
 fi
 
 PG_DRILL_SPEC=$(mktemp "${TMPDIR:-/tmp}/pg-drill-spec.${DRILL_NS}.XXXXXX")
@@ -313,6 +337,7 @@ spec:
   dataSource:
     pgbackrest:
       stanza: db
+${RESTORE_SET_OPTIONS}
       configuration:
         - secret:
             name: ${S3_SECRET}

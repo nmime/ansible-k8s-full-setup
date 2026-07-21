@@ -293,7 +293,14 @@
     cmd: hcloud ssh-key describe {{ project }}-key -o json
   register: ssh_key_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    ssh_key_check.rc == 0 or
+    'not found' in (ssh_key_check.stderr | default('') | lower)
+  failed_when: >-
+    ssh_key_check.rc != 0 and
+    'not found' not in (ssh_key_check.stderr | default('') | lower)
 
 - name: Get local SSH public key fingerprint in MD5 hex format
   ansible.builtin.shell: |
@@ -303,10 +310,17 @@
   when: ssh_key_check.rc != 0
 
 - name: Find existing SSH key by fingerprint
-  ansible.builtin.shell: |
-    hcloud ssh-key list -o json | python3 -c "import sys,json; keys=json.load(sys.stdin); matches=[k['name'] for k in keys if k['fingerprint']=='{{ local_key_fingerprint.stdout | trim }}']; print(matches[0] if matches else '')"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      hcloud ssh-key list -o json |
+      python3 -c "import sys,json; keys=json.load(sys.stdin); matches=[k['name'] for k in keys if k['fingerprint']=='{{ local_key_fingerprint.stdout | trim }}']; print(matches[0] if matches else '')"
+    executable: /bin/bash
   register: existing_key_by_fp
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: existing_key_by_fp.rc == 0
   when: ssh_key_check.rc != 0
 
 - name: Upload SSH public key to Hetzner
@@ -317,12 +331,37 @@
       --public-key-from-file {{ ssh_key_path | default('~/.ssh/id_ed25519') }}.pub
   register: ssh_key_create
   changed_when: ssh_key_create.rc == 0
-  failed_when: ssh_key_create.rc != 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    ssh_key_create.rc == 0 or
+    'already' in (ssh_key_create.stderr | default('') | lower) or
+    'exists' in (ssh_key_create.stderr | default('') | lower) or
+    'fingerprint' in (ssh_key_create.stderr | default('') | lower)
+  failed_when: >-
+    ssh_key_create.rc != 0 and
+    'already' not in (ssh_key_create.stderr | default('') | lower) and
+    'exists' not in (ssh_key_create.stderr | default('') | lower) and
+    'fingerprint' not in (ssh_key_create.stderr | default('') | lower)
   when: ssh_key_check.rc != 0 and (existing_key_by_fp.stdout | default('') | trim | length == 0)
+
+- name: Resolve SSH key by fingerprint after concurrent convergence
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      hcloud ssh-key list -o json |
+      python3 -c "import sys,json; keys=json.load(sys.stdin); matches=[k['name'] for k in keys if k['fingerprint']=='{{ local_key_fingerprint.stdout | trim }}']; print(matches[0] if matches else '')"
+    executable: /bin/bash
+  register: converged_key_by_fp
+  changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: converged_key_by_fp.rc == 0 and (converged_key_by_fp.stdout | trim | length > 0)
+  when: ssh_key_check.rc != 0
 
 - name: Set SSH key name fact
   set_fact:
-    hcloud_ssh_key: "{{ (ssh_key_check.rc == 0) | ternary(project + '-key', (existing_key_by_fp.stdout | default('') | trim | length > 0) | ternary(existing_key_by_fp.stdout | default('') | trim, project + '-key')) }}"
+    hcloud_ssh_key: "{{ (ssh_key_check.rc == 0) | ternary(project + '-key', converged_key_by_fp.stdout | default('') | trim) }}"
 
 # ============================================
 # Network
@@ -333,7 +372,14 @@
     cmd: hcloud network describe {{ project }}-network -o json
   register: network_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    network_check.rc == 0 or
+    'not found' in (network_check.stderr | default('') | lower)
+  failed_when: >-
+    network_check.rc != 0 and
+    'not found' not in (network_check.stderr | default('') | lower)
 
 - name: Create private network
   ansible.builtin.command:
@@ -342,6 +388,18 @@
       --name {{ project }}-network
       --ip-range {{ network_cidr }}
       --label project={{ project }}
+  register: network_create
+  changed_when: network_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    network_create.rc == 0 or
+    'already' in (network_create.stderr | default('') | lower) or
+    'exists' in (network_create.stderr | default('') | lower)
+  failed_when: >-
+    network_create.rc != 0 and
+    'already' not in (network_create.stderr | default('') | lower) and
+    'exists' not in (network_create.stderr | default('') | lower)
   when: network_check.rc != 0
 
 - name: Create infrastructure subnet
@@ -353,6 +411,15 @@
       --ip-range {{ infra_subnet_cidr }}
   register: subnet_infra
   changed_when: subnet_infra.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    subnet_infra.rc == 0 or
+    'already' in (subnet_infra.stderr | default('') | lower) or
+    'exists' in (subnet_infra.stderr | default('') | lower) or
+    'overlaps' in (subnet_infra.stderr | default('') | lower) or
+    'duplicate' in (subnet_infra.stderr | default('') | lower) or
+    'uniqueness' in (subnet_infra.stderr | default('') | lower)
   failed_when: >-
     subnet_infra.rc != 0
     and 'already' not in (subnet_infra.stderr | default(''))
@@ -370,6 +437,15 @@
       --ip-range {{ control_plane_subnet_cidr }}
   register: subnet_cp
   changed_when: subnet_cp.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    subnet_cp.rc == 0 or
+    'already' in (subnet_cp.stderr | default('') | lower) or
+    'exists' in (subnet_cp.stderr | default('') | lower) or
+    'overlaps' in (subnet_cp.stderr | default('') | lower) or
+    'duplicate' in (subnet_cp.stderr | default('') | lower) or
+    'uniqueness' in (subnet_cp.stderr | default('') | lower)
   failed_when: >-
     subnet_cp.rc != 0
     and 'already' not in (subnet_cp.stderr | default(''))
@@ -387,6 +463,15 @@
       --ip-range {{ worker_subnet_cidr }}
   register: subnet_workers
   changed_when: subnet_workers.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    subnet_workers.rc == 0 or
+    'already' in (subnet_workers.stderr | default('') | lower) or
+    'exists' in (subnet_workers.stderr | default('') | lower) or
+    'overlaps' in (subnet_workers.stderr | default('') | lower) or
+    'duplicate' in (subnet_workers.stderr | default('') | lower) or
+    'uniqueness' in (subnet_workers.stderr | default('') | lower)
   failed_when: >-
     subnet_workers.rc != 0
     and 'already' not in (subnet_workers.stderr | default(''))
@@ -404,7 +489,14 @@
     cmd: hcloud placement-group describe {{ project }}-spread -o json
   register: pg_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    pg_check.rc == 0 or
+    'not found' in (pg_check.stderr | default('') | lower)
+  failed_when: >-
+    pg_check.rc != 0 and
+    'not found' not in (pg_check.stderr | default('') | lower)
   when: infra_tier in ['medium', 'production']
 
 - name: Create placement group for spread
@@ -414,6 +506,18 @@
       --name {{ project }}-spread
       --type spread
       --label project={{ project }}
+  register: placement_group_create
+  changed_when: placement_group_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    placement_group_create.rc == 0 or
+    'already' in (placement_group_create.stderr | default('') | lower) or
+    'exists' in (placement_group_create.stderr | default('') | lower)
+  failed_when: >-
+    placement_group_create.rc != 0 and
+    'already' not in (placement_group_create.stderr | default('') | lower) and
+    'exists' not in (placement_group_create.stderr | default('') | lower)
   when: infra_tier in ['medium', 'production'] and pg_check.rc != 0
 
 # ============================================
@@ -425,12 +529,14 @@
     cmd: hcloud firewall describe {{ project }}-fw-bastion -o json
   register: fw_bastion_check
   changed_when: false
-  failed_when: false
-  retries: 5
-  delay: 5
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
   until: >-
     fw_bastion_check.rc == 0 or
     'not found' in (fw_bastion_check.stderr | default('') | lower)
+  failed_when: >-
+    fw_bastion_check.rc != 0 and
+    'not found' not in (fw_bastion_check.stderr | default('') | lower)
 
 - name: Create bastion firewall
   ansible.builtin.command:
@@ -439,9 +545,16 @@
       --name {{ project }}-fw-bastion
       --label project={{ project }}
   register: fw_bastion_create
-  retries: 5
-  delay: 5
-  until: fw_bastion_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    fw_bastion_create.rc == 0 or
+    'already' in (fw_bastion_create.stderr | default('') | lower) or
+    'exists' in (fw_bastion_create.stderr | default('') | lower)
+  failed_when: >-
+    fw_bastion_create.rc != 0 and
+    'already' not in (fw_bastion_create.stderr | default('') | lower) and
+    'exists' not in (fw_bastion_create.stderr | default('') | lower)
   when: fw_bastion_check.rc != 0
 
 - name: Define the complete bastion firewall policy
@@ -478,6 +591,9 @@
     cmd: hcloud firewall describe {{ project }}-fw-bastion -o json
   register: fw_bastion_current
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: fw_bastion_current.rc == 0
 
 - name: Normalize current bastion firewall policy for comparison
   ansible.builtin.set_fact:
@@ -507,6 +623,10 @@
       hcloud firewall replace-rules
       --rules-file /tmp/{{ project }}-fw-bastion-rules.json
       {{ project }}-fw-bastion
+  register: fw_bastion_replace
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: fw_bastion_replace.rc == 0
   when: current_bastion_firewall_rules != desired_bastion_firewall_rules
 
 - name: Remove staged bastion firewall policy
@@ -519,12 +639,14 @@
     cmd: hcloud firewall describe {{ project }}-fw-nodes -o json
   register: fw_nodes_check
   changed_when: false
-  failed_when: false
-  retries: 5
-  delay: 5
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
   until: >-
     fw_nodes_check.rc == 0 or
     'not found' in (fw_nodes_check.stderr | default('') | lower)
+  failed_when: >-
+    fw_nodes_check.rc != 0 and
+    'not found' not in (fw_nodes_check.stderr | default('') | lower)
 
 - name: Create node firewall (private network only)
   ansible.builtin.command:
@@ -533,9 +655,16 @@
       --name {{ project }}-fw-nodes
       --label project={{ project }}
   register: fw_nodes_create
-  retries: 5
-  delay: 5
-  until: fw_nodes_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    fw_nodes_create.rc == 0 or
+    'already' in (fw_nodes_create.stderr | default('') | lower) or
+    'exists' in (fw_nodes_create.stderr | default('') | lower)
+  failed_when: >-
+    fw_nodes_create.rc != 0 and
+    'already' not in (fw_nodes_create.stderr | default('') | lower) and
+    'exists' not in (fw_nodes_create.stderr | default('') | lower)
   when: fw_nodes_check.rc != 0
 
 - name: Define the complete node firewall policy
@@ -582,6 +711,9 @@
     cmd: hcloud firewall describe {{ project }}-fw-nodes -o json
   register: fw_nodes_current
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: fw_nodes_current.rc == 0
 
 - name: Normalize current node firewall policy for comparison
   ansible.builtin.set_fact:
@@ -611,6 +743,10 @@
       hcloud firewall replace-rules
       --rules-file /tmp/{{ project }}-fw-nodes-rules.json
       {{ project }}-fw-nodes
+  register: fw_nodes_replace
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: fw_nodes_replace.rc == 0
   when: current_node_firewall_rules != desired_node_firewall_rules
 
 - name: Remove staged node firewall policy
@@ -627,7 +763,14 @@
     cmd: hcloud server describe {{ project }}-bastion -o json
   register: bastion_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    bastion_check.rc == 0 or
+    'not found' in (bastion_check.stderr | default('') | lower)
+  failed_when: >-
+    bastion_check.rc != 0 and
+    'not found' not in (bastion_check.stderr | default('') | lower)
 
 - name: Create bastion server
   ansible.builtin.command:
@@ -651,6 +794,18 @@
       - "{{ project }}-fw-bastion"
       - --label
       - "project={{ project }},role=bastion"
+  register: bastion_create
+  changed_when: bastion_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    bastion_create.rc == 0 or
+    'already' in (bastion_create.stderr | default('') | lower) or
+    'exists' in (bastion_create.stderr | default('') | lower)
+  failed_when: >-
+    bastion_create.rc != 0 and
+    'already' not in (bastion_create.stderr | default('') | lower) and
+    'exists' not in (bastion_create.stderr | default('') | lower)
   when: bastion_check.rc != 0
 
 - name: Get bastion public IP
@@ -658,6 +813,9 @@
     cmd: hcloud server ip {{ project }}-bastion
   register: bastion_ip_result
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: bastion_ip_result.rc == 0
 
 - name: Set bastion IP fact
   set_fact:
@@ -665,9 +823,16 @@
 
 - name: Get bastion private IP
   ansible.builtin.shell:
-    cmd: hcloud server describe {{ project }}-bastion -o json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['private_net'][0]['ip'])"
+    cmd: >-
+      set -o pipefail;
+      hcloud server describe {{ project }}-bastion -o json |
+      python3 -c "import sys,json; d=json.load(sys.stdin); print(d['private_net'][0]['ip'])"
+    executable: /bin/bash
   register: bastion_private_ip_result
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: bastion_private_ip_result.rc == 0
 
 - name: Set bastion private IP fact
   set_fact:
@@ -692,7 +857,14 @@
   loop: "{{ range(1, (cp_count | int) + 1) | list }}"
   register: master_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    master_check.rc == 0 or
+    'not found' in (master_check.stderr | default('') | lower)
+  failed_when: >-
+    master_check.rc != 0 and
+    'not found' not in (master_check.stderr | default('') | lower)
 
 - name: Create control plane servers
   ansible.builtin.command:
@@ -714,6 +886,18 @@
            if infra_tier in ['medium', 'production'] else [])
       }}
   loop: "{{ range(1, (cp_count | int) + 1) | list }}"
+  register: master_create
+  changed_when: master_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    master_create.rc == 0 or
+    'already' in (master_create.stderr | default('') | lower) or
+    'exists' in (master_create.stderr | default('') | lower)
+  failed_when: >-
+    master_create.rc != 0 and
+    'already' not in (master_create.stderr | default('') | lower) and
+    'exists' not in (master_create.stderr | default('') | lower)
   when: master_check.results[item - 1].rc != 0
 
 # ============================================
@@ -726,7 +910,14 @@
   loop: "{{ range(1, (worker_count | int) + 1) | list }}"
   register: worker_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    worker_check.rc == 0 or
+    'not found' in (worker_check.stderr | default('') | lower)
+  failed_when: >-
+    worker_check.rc != 0 and
+    'not found' not in (worker_check.stderr | default('') | lower)
 
 - name: Create worker servers
   ansible.builtin.command:
@@ -748,6 +939,18 @@
            if infra_tier in ['medium', 'production'] else [])
       }}
   loop: "{{ range(1, (worker_count | int) + 1) | list }}"
+  register: worker_create
+  changed_when: worker_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    worker_create.rc == 0 or
+    'already' in (worker_create.stderr | default('') | lower) or
+    'exists' in (worker_create.stderr | default('') | lower)
+  failed_when: >-
+    worker_create.rc != 0 and
+    'already' not in (worker_create.stderr | default('') | lower) and
+    'exists' not in (worker_create.stderr | default('') | lower)
   when: worker_check.results[item - 1].rc != 0
 
 - name: List project servers for convergence verification
@@ -755,6 +958,9 @@
     cmd: hcloud server list --selector project={{ project }} -o json
   register: project_servers_raw
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: project_servers_raw.rc == 0
 
 - name: Build desired server inventory
   ansible.builtin.set_fact:
@@ -804,17 +1010,31 @@
 
 - name: Get control plane server private IPs
   ansible.builtin.shell:
-    cmd: hcloud server describe {{ project }}-master-{{ item }} -o json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['private_net'][0]['ip'])"
+    cmd: >-
+      set -o pipefail;
+      hcloud server describe {{ project }}-master-{{ item }} -o json |
+      python3 -c "import sys,json; d=json.load(sys.stdin); print(d['private_net'][0]['ip'])"
+    executable: /bin/bash
   loop: "{{ range(1, (cp_count | int) + 1) | list }}"
   register: master_ip_results
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: master_ip_results.rc == 0
 
 - name: Get worker server private IPs
   ansible.builtin.shell:
-    cmd: hcloud server describe {{ project }}-worker-{{ item }} -o json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['private_net'][0]['ip'])"
+    cmd: >-
+      set -o pipefail;
+      hcloud server describe {{ project }}-worker-{{ item }} -o json |
+      python3 -c "import sys,json; d=json.load(sys.stdin); print(d['private_net'][0]['ip'])"
+    executable: /bin/bash
   loop: "{{ range(1, (worker_count | int) + 1) | list }}"
   register: worker_ip_results
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: worker_ip_results.rc == 0
 
 - name: Reset discovered node IP maps before rebuilding them
   set_fact:
@@ -871,7 +1091,14 @@
     cmd: hcloud load-balancer describe {{ project }}-lb -o json
   register: lb_check
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    lb_check.rc == 0 or
+    'not found' in (lb_check.stderr | default('') | lower)
+  failed_when: >-
+    lb_check.rc != 0 and
+    'not found' not in (lb_check.stderr | default('') | lower)
 
 - name: Remove load balancer when disabled by the profile
   ansible.builtin.command:
@@ -888,6 +1115,18 @@
       --type {{ load_balancer_type }}
       --location {{ region }}
       --label project={{ project }}
+  register: lb_create
+  changed_when: lb_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    lb_create.rc == 0 or
+    'already' in (lb_create.stderr | default('') | lower) or
+    'exists' in (lb_create.stderr | default('') | lower)
+  failed_when: >-
+    lb_create.rc != 0 and
+    'already' not in (lb_create.stderr | default('') | lower) and
+    'exists' not in (lb_create.stderr | default('') | lower)
   when: lb_enabled | bool and lb_check.rc != 0
 
 - name: Attach LB to private network
@@ -897,6 +1136,12 @@
       --network {{ project }}-network
   register: lb_network
   changed_when: lb_network.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    lb_network.rc == 0 or
+    'already' in (lb_network.stderr | default('') | lower) or
+    'attached' in (lb_network.stderr | default('') | lower)
   failed_when: lb_network.rc != 0 and 'already' not in (lb_network.stderr | default('')) and 'attached' not in (lb_network.stderr | default(''))
   when: lb_enabled | bool
 
@@ -905,6 +1150,9 @@
     cmd: hcloud load-balancer describe {{ project }}-lb -o json
   register: lb_config
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: lb_config.rc == 0
   when: lb_enabled | bool
 
 - name: Index current load balancer services
@@ -936,6 +1184,17 @@
       hcloud load-balancer add-service {{ project }}-lb
       --protocol tcp --listen-port 443 --destination-port 30443
       --health-check-protocol tcp --health-check-port 30443
+  register: lb_https_create
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    lb_https_create.rc == 0 or
+    'already' in (lb_https_create.stderr | default('') | lower) or
+    'exists' in (lb_https_create.stderr | default('') | lower)
+  failed_when: >-
+    lb_https_create.rc != 0 and
+    'already' not in (lb_https_create.stderr | default('') | lower) and
+    'exists' not in (lb_https_create.stderr | default('') | lower)
   when:
     - lb_enabled | bool
     - lb_https_service | length == 0
@@ -946,6 +1205,17 @@
       hcloud load-balancer add-service {{ project }}-lb
       --protocol tcp --listen-port 80 --destination-port 30080
       --health-check-protocol tcp --health-check-port 30080
+  register: lb_http_create
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    lb_http_create.rc == 0 or
+    'already' in (lb_http_create.stderr | default('') | lower) or
+    'exists' in (lb_http_create.stderr | default('') | lower)
+  failed_when: >-
+    lb_http_create.rc != 0 and
+    'already' not in (lb_http_create.stderr | default('') | lower) and
+    'exists' not in (lb_http_create.stderr | default('') | lower)
   when:
     - lb_enabled | bool
     - lb_http_service | length == 0
@@ -959,6 +1229,12 @@
   loop: "{{ range(1, (worker_count | int) + 1) | list }}"
   register: lb_target
   changed_when: lb_target.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    lb_target.rc == 0 or
+    'already' in (lb_target.stderr | default('') | lower) or
+    'target' in (lb_target.stderr | default('') | lower)
   failed_when: lb_target.rc != 0 and 'already' not in (lb_target.stderr | default('')) and 'target' not in (lb_target.stderr | default(''))
   when: lb_enabled | bool
 
@@ -968,6 +1244,9 @@
       hcloud load-balancer describe {{ project }}-lb -o json
   register: lb_info
   changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: lb_info.rc == 0
   when: lb_enabled | bool
 
 - name: Compute desired and current load balancer targets
@@ -1080,7 +1359,14 @@
   register: dns_zone_check
   when: hetzner_manage_dns | default(true) | bool
   changed_when: false
-  failed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: >-
+    dns_zone_check.rc == 0 or
+    'not found' in (dns_zone_check.stderr | default('') | lower)
+  failed_when: >-
+    dns_zone_check.rc != 0 and
+    'not found' not in (dns_zone_check.stderr | default('') | lower)
 
 - name: Create DNS zone
   ansible.builtin.command:
@@ -1092,18 +1378,31 @@
   when:
     - hetzner_manage_dns | default(true) | bool
     - dns_zone_check.rc != 0
-  failed_when: false
+  changed_when: dns_zone_create.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    dns_zone_create.rc == 0 or
+    'already' in (dns_zone_create.stderr | default('') | lower) or
+    'exists' in (dns_zone_create.stderr | default('') | lower)
+  failed_when: >-
+    dns_zone_create.rc != 0 and
+    'already' not in (dns_zone_create.stderr | default('') | lower) and
+    'exists' not in (dns_zone_create.stderr | default('') | lower)
+
+- name: Verify managed DNS zone exists after convergence
+  ansible.builtin.command:
+    argv: [hcloud, zone, describe, "{{ dns_managed_zone }}", -o, json]
+  register: dns_zone_converged
+  changed_when: false
+  retries: "{{ hcloud_read_retries }}"
+  delay: "{{ hcloud_read_delay }}"
+  until: dns_zone_converged.rc == 0
+  when: hetzner_manage_dns | default(true) | bool
 
 - name: Set DNS zone available flag
   set_fact:
-    dns_zone_available: "{{ hetzner_manage_dns | default(true) | bool and (dns_zone_check.rc | default(1) == 0 or (dns_zone_create.rc | default(1) == 0)) }}"
-
-- name: Warn if DNS zone creation failed
-  debug:
-    msg: "WARNING: Could not create Hetzner DNS zone for {{ dns_managed_zone }} ({{ dns_zone_create.stderr | default('skipped') | regex_replace('\n', ' ') }}). Configure DNS manually."
-  when:
-    - hetzner_manage_dns | default(true) | bool
-    - not dns_zone_available | bool
+    dns_zone_available: "{{ hetzner_manage_dns | default(true) | bool and (dns_zone_converged.rc | default(1) == 0) }}"
 
 - name: Create DNS wildcard A record (*.domain -> LB)
   ansible.builtin.command:
@@ -1119,6 +1418,9 @@
       - A
   register: dns_wildcard
   changed_when: dns_wildcard.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: dns_wildcard.rc == 0
   failed_when: dns_wildcard.rc != 0
   when:
     - hetzner_manage_dns | default(true) | bool
@@ -1138,6 +1440,9 @@
       - A
   register: dns_root
   changed_when: dns_root.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: dns_root.rc == 0
   failed_when: dns_root.rc != 0
   when:
     - hetzner_manage_dns | default(true) | bool
@@ -1157,6 +1462,9 @@
       - A
   register: dns_vpn
   changed_when: dns_vpn.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: dns_vpn.rc == 0
   failed_when: dns_vpn.rc != 0
   when:
     - hetzner_manage_dns | default(true) | bool
@@ -1181,6 +1489,7 @@
       lb_ip: "{{ lb_public_ip }}"
       lb_enabled: {{ lb_enabled | bool }}
       cp_count: {{ cp_count }}
+      cp_schedulable: {{ cp_schedulable | bool }}
       worker_count: {{ worker_count }}
       master_ips: {{ master_ips | to_json }}
       worker_ips: {{ worker_ips | to_json }}

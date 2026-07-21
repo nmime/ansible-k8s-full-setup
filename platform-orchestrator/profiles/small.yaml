@@ -156,6 +156,14 @@ postal:
 
 backup:
   enabled: false
+  disaster_recovery:
+    enabled: false
+    endpoint: ""
+    region: us-east-1
+    bucket: ""
+    prefix: k8s/velero
+    schedule: "30 2 * * *"
+    retention_hours: 720
   # Used by mandatory migration/DR gates even though scheduled backups are off.
   job_resources:
     cpu_request: 10m

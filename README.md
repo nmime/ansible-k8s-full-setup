@@ -25,7 +25,7 @@ The runtime has four capability tiers and five named profiles:
 
 | Profile | Capability tier | Resource tier | Default topology | Service scope |
 |---|---|---|---|---|
-| `minimal` | minimal | minimal | 1 schedulable control plane + 1 worker | Core development platform; no GitLab or medium-only services |
+| `minimal` | minimal | minimal | 1 schedulable 4 vCPU/8 GiB control plane + 1 4 vCPU/8 GiB worker | Core development platform; no GitLab or medium-only services |
 | `small` | small | small | 1 control plane + 2 workers | Compact GitLab platform with PostgreSQL, Dragonfly, storage, secrets, GitOps, and monitoring |
 | `medium` | medium | medium | 3 schedulable control planes + 2 workers | Full platform with standard medium sizing; control-plane capacity is part of the workload envelope |
 | `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
@@ -141,11 +141,22 @@ minimum-storage switch only to stay inside a test account's CSI quota; it keeps
 the real topology, replicas, components, and compute node types while reducing
 profile-controlled durable PVC requests to Hetzner's 10Gi minimum. Vault audit
 claims follow the selected Vault size instead of a hidden 20Gi floor. SeaweedFS
-data remains on CSI volumes, while its rebuildable indexes use `emptyDir`; an
-upgrade verifies replacement volume pods no longer mount index claims before
-deleting the obsolete index PVCs. Test certificates default to
+data and indexes remain durable on the same CSI data claim. GitLab backup
+staging uses pod-local scratch in this explicit campaign mode;
+the completed backup remains durable in S3 and normal deployments keep
+persistent staging enabled by default. During SeaweedFS conversion,
+the reconciler writes a pre-migration S3 sentinel, checkpoints its stage,
+quiesces filers and volume servers, atomically copies and compares each index,
+then restores service and proves both pod restarts and the pre-existing S3
+object before deleting exact obsolete index PVCs. Test certificates default to
 `letsencrypt-staging` so repeated campaigns do not consume the registered-domain
 production issuance limit.
+
+Live profile migration also fails closed on Hetzner volume capacity. The plan
+derives billable per-component source/target claims and backup scratch; execute
+requires the explicit account GiB quota because Hetzner has no quota API, then
+persists the authoritative volume baseline and rechecks remaining capacity on
+resume with a configurable safety margin.
 
 Public ingress follows the Cilium-owned Gateway Service instead of mutating
 that controller-owned object. After Cilium's reconciliation loop settles, the
@@ -158,7 +169,9 @@ without leaving the tier's public DNS disconnected from Kubernetes.
 
 If Hetzner reports `resource_unavailable` for the default `cx` pool, add
 `--capacity-family cpx`. The runner substitutes `cpx22`, `cpx32`, and `cpx42`
-at the same 2/4, 4/8, and 8/16 vCPU/GiB floors. It does not change node counts,
+at the same 2/4, 4/8, and 8/16 vCPU/GiB floors. Minimal uses `cpx32` for both
+Kubernetes nodes: live full-recovery testing proved that 2/4 nodes cannot keep
+the core stack and one Velero node agent per node schedulable. It does not change node counts,
 HA, replicas, or enabled technologies. Explicit per-controller
 `--bastion-type`, `--cp-type`, and `--worker-type` overrides are also available
 and are rejected by the infrastructure role if they fall below a profile's
@@ -222,6 +235,7 @@ Technology selection is available without hand-editing dotted YAML paths:
 ./platform.sh enable temporal       # also enables PostgreSQL
 ./platform.sh enable coroot         # also enables the observability core
 ./platform.sh enable hipaa          # adds required secrets + observability
+./platform.sh enable disaster-recovery # adds native backup + external Velero/Kopia
 ./platform.sh disable postal        # refuses if an enabled service depends on it
 ./platform.sh validate              # offline; no Hetzner/Kubernetes mutation
 ./platform.sh deploy temporal       # targeted, dependency-validated reconcile
@@ -233,6 +247,16 @@ state but intentionally leaves existing Kubernetes resources running. Explicit
 removal is a separate, confirmation-gated command, and PVC-backed components
 also require `--delete-data`. This prevents a selector edit from becoming an
 accidental data deletion.
+
+`backup` selects the application-native backup jobs. `disaster-recovery`
+selects the external whole-cluster layer and automatically enables `backup`
+and object storage; configure the independent S3 endpoint and credentials
+before deploying it. Disable and remove `disaster-recovery` before disabling
+native backup automation. Removing either controller surface retains every
+remote backup object. Removing `backup` also reconciles the database operators:
+PostgreSQL pgBackRest schedules are removed and MongoDB backup, PITR, and tasks
+are disabled, without deleting database data, repositories, PVCs, or existing
+backup objects.
 
 For the full platform on the small-resource envelope:
 
@@ -299,7 +323,9 @@ ansible-playbook playbooks/validate_profile.yml \
 ./scripts/backup-all.sh --force
 
 # Create and verify a complete encrypted cluster recovery bundle
-./platform-orchestrator/platform.sh backup-cluster --recipient age1... --force
+./platform-orchestrator/platform.sh backup-cluster \
+  --vault-init-file /secure/state/.vault-init-k8s.json \
+  --recipient age1... --force
 ./platform-orchestrator/platform.sh restore-cluster \
   --archive /secure/k8s-cluster-....tar.gz.age --mode verify
 
@@ -323,6 +349,17 @@ export BACKUP_DR_BUCKET=company-platform-dr
 # Destructive: exact confirmation is required
 ./platform-orchestrator/platform.sh destroy
 ```
+
+When Vault is selected, `backup-cluster` requires the exact
+Ansible-Vault-encrypted initialization file. The schema-v2 recovery bundle
+keeps that file encrypted, verifies its structure without logging contents,
+and records it as a required Vault recovery dependency. Store the Ansible Vault
+password separately from the bundle decryption identity.
+
+The platform CLI also loads the DR values from the mode-`0600`, gitignored
+`.env`. Blank named-profile endpoint/bucket fields fall back to that
+environment; DR access and secret keys stay environment-only and are never
+placed on the Ansible command line.
 
 No command in the restore, upgrade, rollback, or teardown path should be run
 against production without a recorded maintenance window and verified backup.
@@ -351,6 +388,7 @@ requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 - [Upgrade runbook](UPGRADE_RUNBOOK.md)
 - [GitLab 18.11 to 19.1 plan](docs/GITLAB_UPGRADE_PLAN.md)
 - [Validation and CI](docs/CI_AUTOMATION.md)
+- [Five-tier live test report (2026-07-21)](docs/FIVE_TIER_LIVE_TEST_2026-07-21.md)
 
 ## Validation scope
 

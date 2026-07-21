@@ -98,20 +98,12 @@ class TestGitLabTasksChart10:
         assert "enabled: true" in self.content
 
     @pytest.mark.unit
-    def test_gitaly_storages_array(self):
-        assert "storages:" in self.content
-
-    @pytest.mark.unit
-    def test_gitaly_default_storage(self):
-        assert "default:" in self.content
-
-    @pytest.mark.unit
-    def test_gitaly_persistentVolumeClaim(self):
-        assert "persistentVolumeClaim:" in self.content
-
-    @pytest.mark.unit
-    def test_gitaly_tags(self):
-        assert "tags:" in self.content
+    def test_gitaly_chart_10_persistence_values(self):
+        gitaly = self.content.split("        gitaly:", 1)[1].split("        kas:", 1)[0]
+        assert "persistence:" in gitaly
+        assert "size: '{{ gitlab_gitaly_storage_size }}'" in gitaly
+        assert "storageClass: '{{ storage_class" in gitaly
+        assert "persistentVolumeClaim:" not in gitaly
 
     @pytest.mark.unit
     def test_external_pg_host(self):

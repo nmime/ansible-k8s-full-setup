@@ -1,0 +1,256 @@
+---
+- name: Start the resumable SeaweedFS index migration checkpoint
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: seaweedfs-index-migration
+        namespace: "{{ object_storage_namespace_resolved }}"
+      data:
+        stage: preparing
+  when: _seaweedfs_index_migration_stage == 'new'
+
+- name: Record the initialized SeaweedFS index migration stage
+  ansible.builtin.set_fact:
+    _seaweedfs_index_migration_stage: preparing
+  when: _seaweedfs_index_migration_stage == 'new'
+
+- name: Remove a prior pre-migration S3 sentinel Job
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration-sentinel-write
+  when: _seaweedfs_index_migration_stage == 'preparing'
+
+- name: Write an S3 sentinel before quiescing SeaweedFS
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: seaweedfs-index-migration-sentinel-write
+        namespace: "{{ object_storage_namespace_resolved }}"
+      spec:
+        backoffLimit: 6
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: aws-cli
+                image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
+                command: ["/bin/sh", "-ec"]
+                args:
+                  - |
+                    bucket="{{ (object_storage_buckets | default(['backups']) | first).name | default((object_storage_buckets | default(['backups']) | first), true) }}"
+                    aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3api head-bucket --bucket "${bucket}" >/dev/null 2>&1 || \
+                      aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3api create-bucket --bucket "${bucket}"
+                    printf 'seaweedfs-index-migration-v1' >/tmp/sentinel
+                    aws --endpoint-url "${OBJECT_STORAGE_ENDPOINT}" s3 cp /tmp/sentinel \
+                      "s3://${bucket}/migration/seaweedfs-index-sentinel"
+                env:
+                  - name: OBJECT_STORAGE_ENDPOINT
+                    value: "{{ object_storage_endpoint_resolved }}"
+                  - name: AWS_ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_ACCESS_KEY_ID
+                  - name: AWS_SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: seaweedfs-s3-config
+                        key: AWS_SECRET_ACCESS_KEY
+                  - name: AWS_DEFAULT_REGION
+                    value: "{{ object_storage_region | default('us-east-1') }}"
+                  - name: AWS_EC2_METADATA_DISABLED
+                    value: 'true'
+  when: _seaweedfs_index_migration_stage == 'preparing'
+
+- name: Wait for the pre-migration S3 sentinel write
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: seaweedfs-index-migration-sentinel-write
+  register: _seaweedfs_index_sentinel_write
+  retries: 60
+  delay: 5
+  until:
+    - _seaweedfs_index_sentinel_write.resources | default([]) | length == 1
+    - _seaweedfs_index_sentinel_write.resources[0].status.succeeded | default(0) | int == 1
+  when: _seaweedfs_index_migration_stage == 'preparing'
+
+- name: Checkpoint the pre-migration S3 sentinel
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: seaweedfs-index-migration
+        namespace: "{{ object_storage_namespace_resolved }}"
+      data:
+        stage: sentinel-ready
+  when: _seaweedfs_index_migration_stage == 'preparing'
+
+- name: Record the pre-migration S3 sentinel stage
+  ansible.builtin.set_fact:
+    _seaweedfs_index_migration_stage: sentinel-ready
+  when: _seaweedfs_index_migration_stage == 'preparing'
+
+- name: Quiesce SeaweedFS writers and volume servers before copying indexes
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ns="{{ object_storage_namespace_resolved }}"
+    release="{{ object_storage_release_name | default('seaweedfs') }}"
+    for workload in "statefulset/${release}-filer" "deployment/${release}-filer"; do
+      if kubectl get --namespace "$ns" "$workload" >/dev/null 2>&1; then
+        kubectl scale --namespace "$ns" "$workload" --replicas=0
+      fi
+    done
+    if kubectl get --namespace "$ns" "statefulset/${release}-volume" >/dev/null 2>&1; then
+      kubectl scale --namespace "$ns" "statefulset/${release}-volume" --replicas=0
+    fi
+    selector="app.kubernetes.io/instance=${release},app.kubernetes.io/component in (filer,volume)"
+    remaining_pods=$(kubectl get pods --namespace "$ns" \
+      --selector "$selector" --output name)
+    if [[ -n "$remaining_pods" ]]; then
+      kubectl wait --namespace "$ns" --for=delete pod \
+        --selector "$selector" --timeout=10m
+    fi
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: _seaweedfs_index_migration_stage == 'sentinel-ready'
+
+- name: Remove prior SeaweedFS index copy Jobs before a resumable retry
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: "seaweedfs-index-copy-{{ item | regex_replace('^.*-', '') }}"
+  loop: "{{ _seaweedfs_legacy_idx_claims }}"
+  when: _seaweedfs_index_migration_stage == 'sentinel-ready'
+
+- name: Create quiesced SeaweedFS index copy Jobs
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "seaweedfs-index-copy-{{ item | regex_replace('^.*-', '') }}"
+        namespace: "{{ object_storage_namespace_resolved }}"
+      spec:
+        backoffLimit: 1
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: copy-index
+                image: "{{ object_storage_index_migration_image | default('chrislusf/seaweedfs:4.25') }}"
+                command: ["/bin/sh", "-ec"]
+                args:
+                  - |
+                    for vif in /data/*.vif; do
+                      [ -e "${vif}" ] || continue
+                      base="${vif##*/}"
+                      base="${base%.vif}"
+                      test -f "/idx/${base}.idx"
+                    done
+                    for idx in /idx/*.idx; do
+                      [ -e "${idx}" ] || continue
+                      target="/data/${idx##*/}"
+                      cp -p "${idx}" "${target}.migration"
+                      cmp "${idx}" "${target}.migration"
+                      mv "${target}.migration" "${target}"
+                    done
+                    sync
+                    for idx in /idx/*.idx; do
+                      [ -e "${idx}" ] || continue
+                      cmp "${idx}" "/data/${idx##*/}"
+                    done
+                volumeMounts:
+                  - name: data
+                    mountPath: /data
+                  - name: idx
+                    mountPath: /idx
+            volumes:
+              - name: data
+                persistentVolumeClaim:
+                  claimName: "{{ item | regex_replace('^idx-', 'data-') }}"
+              - name: idx
+                persistentVolumeClaim:
+                  claimName: "{{ item }}"
+  loop: "{{ _seaweedfs_legacy_idx_claims }}"
+  when: _seaweedfs_index_migration_stage == 'sentinel-ready'
+
+- name: Wait for every quiesced SeaweedFS index copy Job
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ object_storage_namespace_resolved }}"
+    name: "seaweedfs-index-copy-{{ item | regex_replace('^.*-', '') }}"
+  loop: "{{ _seaweedfs_legacy_idx_claims }}"
+  register: _seaweedfs_index_copy_job
+  retries: 60
+  delay: 5
+  until:
+    - _seaweedfs_index_copy_job.resources | default([]) | length == 1
+    - _seaweedfs_index_copy_job.resources[0].status.succeeded | default(0) | int == 1
+  when: _seaweedfs_index_migration_stage == 'sentinel-ready'
+
+- name: Checkpoint copied SeaweedFS indexes
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: seaweedfs-index-migration
+        namespace: "{{ object_storage_namespace_resolved }}"
+      data:
+        stage: copied
+  when: _seaweedfs_index_migration_stage == 'sentinel-ready'
+
+- name: Record the copied SeaweedFS index migration stage
+  ansible.builtin.set_fact:
+    _seaweedfs_index_migration_stage: copied
+  when: _seaweedfs_index_migration_stage == 'sentinel-ready'
+
+- name: Orphan the immutable SeaweedFS index claim template
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ns={{ object_storage_namespace_resolved | quote }}
+    statefulset={{ ((object_storage_release_name | default('seaweedfs')) ~ '-volume') | quote }}
+    old_uid=$(kubectl get statefulset "$statefulset" --namespace "$ns" \
+      -o jsonpath='{.metadata.uid}')
+    kubectl delete statefulset "$statefulset" --namespace "$ns" \
+      --cascade=orphan --wait=false
+    deleted=false
+    for attempt in $(seq 1 60); do
+      current_uid=$(kubectl get statefulset "$statefulset" --namespace "$ns" \
+        -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+      if [[ -z "$current_uid" || "$current_uid" != "$old_uid" ]]; then
+        deleted=true
+        break
+      fi
+      sleep 5
+    done
+    [[ "$deleted" == true ]] || {
+      echo "SeaweedFS volume StatefulSet was not deleted within 5 minutes" >&2
+      exit 1
+    }
+  args:
+    executable: /bin/bash
+  when:
+    - (_seaweedfs_volume_statefulset.resources | default([]) | length) == 1
+    - >-
+      (_seaweedfs_volume_statefulset.resources[0].spec.volumeClaimTemplates |
+        selectattr('metadata.name', 'equalto', 'idx') | list | length) > 0

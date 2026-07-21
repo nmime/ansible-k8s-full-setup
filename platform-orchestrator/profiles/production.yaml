@@ -156,6 +156,9 @@ observability:
   metrics:
     enabled: true
     replicas: 2
+    # vminsert writes every sample to both vmstorage replicas. This must remain
+    # explicit because production deliberately uses the small request envelope.
+    replication_factor: 2
     retention: 30d
     storage_size: 100Gi
 

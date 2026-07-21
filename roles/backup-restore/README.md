@@ -24,7 +24,8 @@ ansible-playbook -i inventory -t backup playbooks/deploy_platform.yml
 ./scripts/restore-drill.sh --component mongodb --backup BACKUP_CR --dry-run
 ./scripts/restore-drill.sh --component seaweedfs --backup VELERO_BACKUP --dry-run
 ./scripts/gitlab-restore-test.sh --dry-run --restore --backup BACKUP_ID
-./scripts/cluster-backup.sh --dry-run
+./scripts/cluster-backup.sh \
+  --vault-init-file playbooks/.vault-init-k8s.json --dry-run
 ```
 
 ## Configuration

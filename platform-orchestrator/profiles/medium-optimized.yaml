@@ -155,6 +155,8 @@ observability:
     retention: 14d
     storage_size: 40Gi
     replicas: 1
+    # A single vmstorage replica is intentional in this constrained profile.
+    replication_factor: 1
 
   logging:
     enabled: true

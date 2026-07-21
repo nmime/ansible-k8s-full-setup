@@ -107,8 +107,8 @@ def test_harness_has_bounded_hard_stops_and_cleanup_for_every_mutating_system():
         assert contract in content
     assert "errors*10000" in content
     assert "DROP TABLE IF EXISTS" in content
-    assert "vault kv metadata delete" in content
-    assert "vault kv metadata get" in content
+    assert "kv metadata delete" in content
+    assert "kv metadata get" in content
     assert "prefix=s3://backups/tier-load/" in content
     assert "job still exists" in content
     assert "--wait=true" in content
@@ -119,6 +119,30 @@ def test_harness_has_bounded_hard_stops_and_cleanup_for_every_mutating_system():
     assert content.count("automountServiceAccountToken") == 6
     assert '-a "\\$PASSWORD"' not in content
     assert "xargs -r" not in content
+    assert 'PATH="$ROOT_DIR/.venv/bin:$PATH"' in content
+    assert "restart_changes=$(jq" in content
+    assert "pod_uid" in EVIDENCE.read_text()
+    restart_gate = content.split("restart_changes=$(jq", 1)[1].split("')", 1)[0]
+    assert 'if $b[.key] == null then 0' in restart_gate
+    assert 'select($a[.key] == null)' not in restart_gate
+    assert "same-name identity/restart changes" in content
+    assert "curl -ksS" not in function_source(content, "phase_http", "phase_s3")
+
+
+def test_postgresql_and_dragonfly_load_verify_exact_operations_and_round_trip():
+    content = LOAD.read_text()
+    postgresql = function_source(content, "phase_postgresql", "phase_vault")
+    dragonfly = function_source(content, "phase_dragonfly", "run_phase")
+
+    assert r"base=\$((TRANSACTIONS/CLIENTS))" in postgresql
+    assert r'[ "\$processed" -eq "\$TRANSACTIONS" ]' in postgresql
+    assert "per_client=" not in postgresql
+    assert r'redis-cli -h dragonfly get "\$key"' in dragonfly
+    assert "redis-cli -h dragonfly --raw" in dragonfly
+    assert 'printf \'SET %s %s\\nGET %s\\n\'' in dragonfly
+    assert "/tmp/redis-result." in dragonfly
+    assert "actual_lines" in dragonfly
+    assert r'redis-cli -h dragonfly exists "\$key"' in dragonfly
 
 
 def test_failed_job_deletion_is_reported_and_ownership_is_preserved(tmp_path: Path):
@@ -176,6 +200,42 @@ def test_vault_cleanup_accepts_only_verified_absence(tmp_path: Path):
     assert result.returncode == 0
 
 
+def test_vault_token_is_streamed_over_stdin_and_never_put_in_kubectl_argv(tmp_path: Path):
+    content = LOAD.read_text()
+    cleanup = function_source(content, "cleanup_vault", "cleanup_dragonfly")
+    assert 'VAULT_TOKEN="$vault_token"' not in content
+    assert 'env VAULT_TOKEN=' not in content
+    assert content.count("printf '%s\\n' \"$vault_token\" |") >= 3
+    assert "IFS= read -r VAULT_TOKEN" in content
+    assert "export VAULT_TOKEN" in content
+
+    fake = tmp_path / "kubectl"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >>\"$CAPTURE_DIR/argv\"\n"
+        "IFS= read -r token\n"
+        "printf '%s\\n' \"$token\" >>\"$CAPTURE_DIR/stdin\"\n"
+        "echo 'No value found at secret/metadata/tier-load/test/1' >&2\n"
+        "exit 2\n"
+    )
+    fake.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            cleanup + '\nlog(){ :; }\nvault_started=true\nvault_token=stdin-only-secret\n'
+            'CLIENTS=1\nRUN_ID=test\nK=("$1")\ncleanup_vault',
+            "bash", str(fake),
+        ],
+        text=True, capture_output=True, check=False,
+        env={**os.environ, "CAPTURE_DIR": str(tmp_path)},
+    )
+    assert result.returncode == 0
+    assert "stdin-only-secret" not in (tmp_path / "argv").read_text()
+    assert (tmp_path / "stdin").read_text().splitlines() == [
+        "stdin-only-secret", "stdin-only-secret"
+    ]
+
+
 def test_signal_handler_runs_cleanup_before_returning_signal_status():
     content = LOAD.read_text()
     handler = function_source(content, "on_signal", "collect_evidence")
@@ -192,6 +252,7 @@ def test_signal_handler_runs_cleanup_before_returning_signal_status():
 
 def test_evidence_collector_is_read_only_and_secret_free_by_contract():
     content = EVIDENCE.read_text()
+    assert 'source "${SCRIPT_DIR}/load-project-env.sh"' in content
     for resource in (
         "get nodes", "get pods", "get deployments", "get statefulsets",
         "get daemonsets", "get jobs", "get pvc", "get certificates",
@@ -202,6 +263,68 @@ def test_evidence_collector_is_read_only_and_secret_free_by_contract():
     assert "get secrets" not in content
     assert "kubectl apply" not in content
     assert "kubectl delete" not in content
+    assert "token \\u0027[REDACTED]\\u0027" in content
+    assert "credential=[REDACTED]" in content
+    assert "Port could not be cast to integer value as \\u0027[REDACTED]\\u0027" in content
+    assert "lb_required=" in content
+    assert "for attempt in 1 2 3 4 5 6 7 8 9 10" in content
+    assert "$provider_edge.required|not" in content
+    assert "$provider_edge.checked and $provider_edge.present and $provider_edge.healthy" in content
+    assert '(.metadata.ownerReferences[0].kind // "") != "Job"' in content
+    assert '.status.phase=="Succeeded" or .status.phase=="Failed"' in content
+
+
+def test_evidence_api_discovery_consumes_pipelines_under_pipefail():
+    content = EVIDENCE.read_text()
+    assert "grep -qx 'certificates.cert-manager.io'" not in content
+    assert "grep -qx 'httproutes.gateway.networking.k8s.io'" not in content
+    assert "grep -Fx 'certificates.cert-manager.io' >/dev/null" in content
+    assert "grep -Fx 'httproutes.gateway.networking.k8s.io' >/dev/null" in content
+
+
+def test_evidence_preserves_explicit_false_load_balancer_setting():
+    content = EVIDENCE.read_text()
+    assert "lb_required=$(yq -r '.network.load_balancer.enabled'" in content
+    assert '[[ "$lb_required" == null ]] && lb_required=true' in content
+
+
+def test_load_generator_scales_s3_memory_and_waits_for_controller_convergence():
+    content = LOAD.read_text()
+    assert "s3_memory_limit_mi=$((256 + CLIENTS * 96))" in content
+    assert 'memory: "${s3_memory_limit_mi}Mi"' in content
+    assert "s3_cpu_limit=$CLIENTS" in content
+    assert "(( s3_cpu_limit <= 4 )) || s3_cpu_limit=4" in content
+    assert 'limits: {cpu: "$s3_cpu_limit"' in content
+    assert "collect_settled_evidence()" in content
+    assert "for attempt in 1 2 3 4 5 6 7" in content
+    settled = content.split("collect_settled_evidence()", 1)[1].split("execute_job()", 1)[0]
+    assert "printf '%s\\n' \"$evidence\"" in settled
+
+
+def test_dragonfly_load_uses_env_auth_and_verifies_every_worker():
+    content = LOAD.read_text()
+    assert 'export REDISCLI_AUTH="\\$PASSWORD"' in content
+    assert "redis-cli -h dragonfly --raw" in content
+    assert "for result in /tmp/redis-result.*" in content
+    assert '-a "\\$PASSWORD"' not in content
+
+
+def test_evidence_redacts_url_parser_credential_fragments():
+    content = EVIDENCE.read_text()
+    redact = "def redact:" + content.split("| jq -r 'def redact:", 1)[1].split(
+        "    .items[]", 1
+    )[0]
+    fragment = "generated@credential/fragment"
+    result = run(
+        "jq", "-nr", "--arg", "message",
+        f"ValueError: Port could not be cast to integer value as '{fragment}'",
+        redact + "\n$message | redact",
+    )
+    assert result.returncode == 0, result.stderr
+    assert fragment not in result.stdout
+    assert result.stdout.strip().endswith(
+        "Port could not be cast to integer value as '[REDACTED]'"
+    )
 
 
 @pytest.mark.parametrize(

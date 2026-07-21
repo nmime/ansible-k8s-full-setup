@@ -162,24 +162,55 @@
         name: "{{ object_storage_release_name | default('seaweedfs') }}-volume"
       register: _seaweedfs_volume_statefulset
 
-    - name: Detect persistent-to-rebuildable SeaweedFS index migration
+    - name: Read SeaweedFS persistent volume claims for resumable index migration
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: "{{ object_storage_namespace_resolved }}"
+      register: _seaweedfs_persistent_volume_claims
+
+    - name: Read the SeaweedFS index migration checkpoint
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        namespace: "{{ object_storage_namespace_resolved }}"
+        name: seaweedfs-index-migration
+      register: _seaweedfs_index_migration_checkpoint
+
+    - name: Resolve SeaweedFS index migration state
       ansible.builtin.set_fact:
-        _seaweedfs_migrate_index_to_emptydir: >-
+        _seaweedfs_legacy_idx_claims: >-
           {{
-            not (object_storage_index_persistent | default(true) | bool) and
-            (_seaweedfs_volume_statefulset.resources | default([]) | length) == 1 and
-            (_seaweedfs_volume_statefulset.resources[0].spec.volumeClaimTemplates |
-              selectattr('metadata.name', 'equalto', 'idx') | list | length) > 0
+            _seaweedfs_persistent_volume_claims.resources
+            | map(attribute='metadata.name')
+            | select(
+                'match',
+                '^idx-' ~ (object_storage_release_name | default('seaweedfs')) ~
+                '-volume-[0-9]+$'
+              )
+            | list
+          }}
+        _seaweedfs_index_migration_stage: >-
+          {{
+            _seaweedfs_index_migration_checkpoint.resources[0].data.stage
+            if (_seaweedfs_index_migration_checkpoint.resources | default([]) | length) == 1
+            else 'new'
           }}
 
-    - name: Orphan SeaweedFS volume pods before removing the immutable index claim template
-      ansible.builtin.command: >-
-        kubectl delete statefulset
-        {{ object_storage_release_name | default('seaweedfs') }}-volume
-        --namespace {{ object_storage_namespace_resolved }}
-        --cascade=orphan
-        --wait=true
-      when: _seaweedfs_migrate_index_to_emptydir | bool
+    - name: Detect persistent-to-colocated SeaweedFS index migration
+      ansible.builtin.set_fact:
+        _seaweedfs_migrate_index_to_data: >-
+          {{
+            not (object_storage_index_persistent | default(true) | bool) and
+            (
+              (_seaweedfs_legacy_idx_claims | length) > 0 or
+              _seaweedfs_index_migration_stage != 'new'
+            )
+          }}
+
+    - name: Prepare the resumable SeaweedFS index migration
+      ansible.builtin.include_tasks: index_migration_prepare.yml
+      when: _seaweedfs_migrate_index_to_data | bool
 
     - name: Install SeaweedFS via official Helm chart
       kubernetes.core.helm:
@@ -200,6 +231,7 @@
             enabled: true
             replicas: "{{ object_storage_replicas | int }}"
             defaultReplication: "{{ object_storage_replication_placement | default('000') }}"
+            volumeSizeLimitMB: "{{ object_storage_volume_size_limit_mb | int }}"
             # The upstream default allocates seven logical volumes whenever a
             # single-copy collection first writes. On resource-efficient 10Gi
             # claims that can consume every available volume slot with one
@@ -241,7 +273,7 @@
                   'size': object_storage_idx_size | default('2Gi')
                 }
                 if (object_storage_index_persistent | default(true) | bool)
-                else {'type': 'emptyDir'}
+                else {}
               }}
           filer:
             enabled: true
@@ -318,36 +350,22 @@
       delay: 10
       until: _r_wait_seaweedfs_core is not failed
 
-    - name: Verify rebuilt SeaweedFS volume pods no longer mount index claims
+    - name: Verify migrated SeaweedFS volume pods use durable colocated indexes
       ansible.builtin.shell: |
         set -euo pipefail
-        count=$(kubectl get pods --namespace "{{ object_storage_namespace_resolved }}" \
+        invalid=$(kubectl get pods --namespace "{{ object_storage_namespace_resolved }}" \
           --selector "app.kubernetes.io/component=volume,app.kubernetes.io/instance={{ object_storage_release_name | default('seaweedfs') }}" \
-          --output json | jq '[.items[].spec.volumes[]? | select(.persistentVolumeClaim.claimName? | startswith("idx-"))] | length')
-        test "$count" -eq 0
+          --output json | jq '[
+            .items[] |
+            select(.status.containerStatuses[0].ready != true),
+            select(any(.spec.volumes[]?; .name == "idx")),
+            select(any(.spec.containers[]?.command[]?; contains("-dir.idx=/idx")))
+          ] | length')
+        test "$invalid" -eq 0
       args:
         executable: /bin/bash
       changed_when: false
-      when: _seaweedfs_migrate_index_to_emptydir | bool
-
-    - name: Delete obsolete rebuildable SeaweedFS index claims
-      ansible.builtin.shell: |
-        set -euo pipefail
-        ns="{{ object_storage_namespace_resolved }}"
-        deleted=0
-        while IFS= read -r claim; do
-          [ -n "$claim" ] || continue
-          kubectl delete --namespace "$ns" "$claim" --wait=true
-          deleted=$((deleted+1))
-        done < <(kubectl get pvc --namespace "$ns" \
-          --selector "app.kubernetes.io/component=volume,app.kubernetes.io/instance={{ object_storage_release_name | default('seaweedfs') }}" \
-          --output name | grep '^persistentvolumeclaim/idx-' || true)
-        echo "deleted=${deleted}"
-      args:
-        executable: /bin/bash
-      register: _r_delete_obsolete_seaweedfs_index_claims
-      changed_when: "'deleted=0' not in _r_delete_obsolete_seaweedfs_index_claims.stdout"
-      when: _seaweedfs_migrate_index_to_emptydir | bool
+      when: _seaweedfs_migrate_index_to_data | bool
 
     - name: Remove prior object-storage bucket bootstrap Job
       kubernetes.core.k8s:
@@ -506,6 +524,25 @@
       retries: 3
       delay: 10
       until: _r_object_storage_bucket_bootstrap is not failed
+
+    - name: Require object storage bucket bootstrap and S3 smoke completion
+      kubernetes.core.k8s_info:
+        api_version: batch/v1
+        kind: Job
+        namespace: "{{ object_storage_namespace_resolved }}"
+        name: object-storage-bucket-bootstrap
+      register: _r_object_storage_bucket_bootstrap_status
+      retries: 60
+      delay: 5
+      until:
+        - _r_object_storage_bucket_bootstrap_status.resources | default([]) | length == 1
+        - >-
+          _r_object_storage_bucket_bootstrap_status.resources[0].status.succeeded |
+          default(0) | int == 1
+
+    - name: Finalize the verified resumable SeaweedFS index migration
+      ansible.builtin.include_tasks: index_migration_finalize.yml
+      when: _seaweedfs_migrate_index_to_data | bool
 
     - name: Create object storage Console TLS certificate
       kubernetes.core.k8s:

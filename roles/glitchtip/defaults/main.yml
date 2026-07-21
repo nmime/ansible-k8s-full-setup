@@ -8,6 +8,12 @@ glitchtip_chart_version: "8.2.0"
 glitchtip_app_version: "v6.1.4"
 glitchtip_domain: "glitchtip.{{ domain }}"
 
+# A Helm transaction is recovered only when its newest release revision has
+# remained pending for at least this long.  Keep this comfortably above the
+# chart install timeout so a live install/upgrade is never interrupted.
+glitchtip_helm_pending_stale_seconds: 3600
+glitchtip_helm_recovery_timeout: "5m0s"
+
 # Web replicas - resource-tier based (worker is embedded in web by default)
 glitchtip_web_replicas: "{{ glitchtip.web_replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"
 glitchtip_web_cpu_request: "{{ glitchtip.web_cpu_request | default('300m' if resource_tier in ['medium', 'production'] else '100m') }}"
