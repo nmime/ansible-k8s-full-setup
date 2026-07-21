@@ -50,6 +50,8 @@ K8S_API_LOCAL_PORT_EXPLICIT=false
 RESIZE_TIMEOUT="${PROFILE_MIGRATION_RESIZE_TIMEOUT:-900s}"
 HCLOUD_CLIENT_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_CLIENT_TIMEOUT_SECONDS:-900}"
 HCLOUD_STATE_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS:-7200}"
+HCLOUD_CAPACITY_RETRY_ATTEMPTS="${PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS:-12}"
+HCLOUD_CAPACITY_RETRY_INTERVAL="${PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS:-15}"
 ETCD_HEALTH_TIMEOUT="${PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS:-300}"
 API_READY_TIMEOUT="${PROFILE_MIGRATION_API_READY_TIMEOUT_SECONDS:-300}"
 VAULT_MEMBER_TIMEOUT="${PROFILE_MIGRATION_VAULT_MEMBER_TIMEOUT_SECONDS:-900}"
@@ -152,6 +154,10 @@ for tool in yq jq ansible-playbook; do command -v "$tool" >/dev/null || fail "re
   || fail "PROFILE_MIGRATION_PLATFORM_CONVERGENCE_TIMEOUT_SECONDS must be a positive integer"
 [[ "$PLATFORM_CONVERGENCE_INTERVAL" =~ ^[1-9][0-9]*$ ]] \
   || fail "PROFILE_MIGRATION_PLATFORM_CONVERGENCE_INTERVAL_SECONDS must be a positive integer"
+[[ "$HCLOUD_CAPACITY_RETRY_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] \
+  || fail "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS must be a positive integer"
+[[ "$HCLOUD_CAPACITY_RETRY_INTERVAL" =~ ^[1-9][0-9]*$ ]] \
+  || fail "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS must be a positive integer"
 
 is_named_profile() {
   local candidate="$1" profile
@@ -1174,6 +1180,31 @@ ensure_server_stopped() {
   fail "Hetzner server $node did not become off within ${HCLOUD_STATE_TIMEOUT}s (provider status: $status)"
 }
 
+change_server_type_with_retry() {
+  local node="$1" target_type="$2" target_disk="$3" attempt server_json current_type current_disk delay
+  for ((attempt=1; attempt<=HCLOUD_CAPACITY_RETRY_ATTEMPTS; attempt++)); do
+    # Capacity placement can fail transiently, and a failed action may leave the
+    # server in a different power state. Re-establish the provider-side off gate
+    # before every retry and trust only the authoritative post-action shape.
+    ensure_server_stopped "$node"
+    run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server change-type "$node" "$target_type" || true
+    server_json=$(hcloud server describe "$node" -o json)
+    current_type=$(jq -r '.server_type.name' <<<"$server_json")
+    current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
+    if [[ "$current_type" == "$target_type" ]] && (( current_disk >= target_disk )); then
+      (( attempt == 1 )) || log "$node type change converged after $attempt provider attempts"
+      return 0
+    fi
+    if (( attempt < HCLOUD_CAPACITY_RETRY_ATTEMPTS )); then
+      delay=$((HCLOUD_CAPACITY_RETRY_INTERVAL * attempt))
+      (( delay > 60 )) && delay=60
+      warn "Hetzner type change for $node is not converged (attempt $attempt/$HCLOUD_CAPACITY_RETRY_ATTEMPTS); retrying in ${delay}s"
+      sleep "$delay"
+    fi
+  done
+  fail "failed to resize $node to type=$target_type disk>=${target_disk}GB after $HCLOUD_CAPACITY_RETRY_ATTEMPTS provider attempts"
+}
+
 ensure_server_running() {
   local node="$1" status deadline
   status=$(wait_for_server_settled "$node")
@@ -1636,15 +1667,7 @@ resize_node() {
     # Recheck after placement mutations: Hetzner may return the server to a
     # running state, and change-type rejects anything except provider state off.
     ensure_server_stopped "$node"
-    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server change-type "$node" "$target_type"; then
-      server_json=$(hcloud server describe "$node" -o json)
-      current_type=$(jq -r '.server_type.name' <<<"$server_json")
-      current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
-      if [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); then
-        fail "failed to resize $node to type=$target_type disk>=${target_disk}GB"
-      fi
-      warn "Hetzner accepted the type change for $node but the local CLI did not finish cleanly; continuing from provider state"
-    fi
+    change_server_type_with_retry "$node" "$target_type" "$target_disk"
   fi
   ensure_server_running "$node"
   wait_for_api_ready
