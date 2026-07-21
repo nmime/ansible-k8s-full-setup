@@ -52,6 +52,7 @@ HCLOUD_CLIENT_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_CLIENT_TIMEOUT_SECONDS:-900}"
 HCLOUD_STATE_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS:-7200}"
 HCLOUD_CAPACITY_RETRY_ATTEMPTS="${PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS:-12}"
 HCLOUD_CAPACITY_RETRY_INTERVAL="${PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS:-15}"
+HCLOUD_EQUIVALENT_FALLBACK_TYPES="${PROFILE_MIGRATION_HCLOUD_EQUIVALENT_FALLBACK_TYPES:-}"
 ETCD_HEALTH_TIMEOUT="${PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS:-300}"
 API_READY_TIMEOUT="${PROFILE_MIGRATION_API_READY_TIMEOUT_SECONDS:-300}"
 CSI_DETACH_TIMEOUT="${PROFILE_MIGRATION_CSI_DETACH_TIMEOUT_SECONDS:-900}"
@@ -303,6 +304,7 @@ STORAGE_RETENTION_FILE="${STATE_DIR}/storage-retention.tsv"
 STATEFUL_RETENTION_FILE="${STATE_DIR}/stateful-retention.tsv"
 NODE_TYPE_RETENTION_FILE="${STATE_DIR}/node-type-retention.tsv"
 BASTION_TYPE_RETENTION_FILE="${STATE_DIR}/bastion-type-retention.tsv"
+NODE_TYPE_OVERRIDE_FILE="${STATE_DIR}/node-type-overrides.tsv"
 SELECTION_RETENTION_FILE="${STATE_DIR}/selection-retention.tsv"
 CAPACITY_PLAN_FILE="${STATE_DIR}/volume-capacity-plan.json"
 
@@ -1379,14 +1381,69 @@ ensure_server_stopped() {
   fail "Hetzner server $node did not become off within ${HCLOUD_STATE_TIMEOUT}s (provider status: $status)"
 }
 
+server_type_available_for_node() {
+  local node="$1" server_type="$2" location
+  location=$(hcloud server describe "$node" -o json | jq -r '.location.name // ""')
+  [[ -n "$location" ]] || return 1
+  hcloud server-type describe "$server_type" -o json \
+    | jq -e --arg location "$location" 'any(.locations[]?; .name == $location and .available == true)' >/dev/null
+}
+
+record_node_type_override() {
+  local node="$1" requested="$2" fallback="$3" tmp config
+  for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$POST_BACKUP_CONFIG"; do
+    [[ -f "$config" ]] || continue
+    NODE="$node" FALLBACK="$fallback" yq -i \
+      '.infrastructure.node_type_overrides[strenv(NODE)] = strenv(FALLBACK)' "$config"
+  done
+  mkdir -p "$(dirname "$NODE_TYPE_OVERRIDE_FILE")"
+  tmp="${NODE_TYPE_OVERRIDE_FILE}.tmp.$$"
+  { [[ ! -f "$NODE_TYPE_OVERRIDE_FILE" ]] || awk -F '\t' -v node="$node" '$1 != node' "$NODE_TYPE_OVERRIDE_FILE"; \
+    printf '%s\t%s\t%s\tequivalent-capacity-fallback\n' "$node" "$requested" "$fallback"; } > "$tmp"
+  mv "$tmp" "$NODE_TYPE_OVERRIDE_FILE"
+  tmp="${STATE_FILE}.tmp.$$"
+  jq --arg node "$node" --arg requested "$requested" --arg fallback "$fallback" '
+    .node_type_overrides[$node]={requested:$requested,active:$fallback,
+      reason:"equivalent-capacity-fallback",recorded_at:(now | todateiso8601)} |
+    .updated_at=(now | todateiso8601)
+  ' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+select_equivalent_fallback_type() {
+  local node="$1" requested="$2" candidate requested_json candidate_json
+  local requested_cores requested_memory requested_arch requested_cpu
+  requested_json=$(hcloud server-type describe "$requested" -o json)
+  requested_cores=$(jq -r '.cores' <<<"$requested_json")
+  requested_memory=$(jq -r '.memory' <<<"$requested_json")
+  requested_arch=$(jq -r '.architecture' <<<"$requested_json")
+  requested_cpu=$(jq -r '.cpu_type' <<<"$requested_json")
+  for candidate in ${HCLOUD_EQUIVALENT_FALLBACK_TYPES//,/ }; do
+    [[ -n "$candidate" && "$candidate" != "$requested" ]] || continue
+    candidate_json=$(hcloud server-type describe "$candidate" -o json 2>/dev/null || true)
+    [[ -n "$candidate_json" ]] || continue
+    [[ $(jq -r '.cores' <<<"$candidate_json") == "$requested_cores" ]] || continue
+    [[ $(jq -r '.memory' <<<"$candidate_json") == "$requested_memory" ]] || continue
+    [[ $(jq -r '.architecture' <<<"$candidate_json") == "$requested_arch" ]] || continue
+    [[ $(jq -r '.cpu_type' <<<"$candidate_json") == "$requested_cpu" ]] || continue
+    server_type_available_for_node "$node" "$candidate" || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
 change_server_type_with_retry() {
-  local node="$1" target_type="$2" target_disk="$3" attempt server_json current_type current_disk delay
+  local node="$1" target_type="$2" target_disk="$3" keep_disk="${4:-false}"
+  local attempt server_json current_type current_disk delay
+  local -a change_args=(server change-type "$node" "$target_type")
+  [[ "$keep_disk" != true ]] || change_args+=(--keep-disk)
   for ((attempt=1; attempt<=HCLOUD_CAPACITY_RETRY_ATTEMPTS; attempt++)); do
     # Capacity placement can fail transiently, and a failed action may leave the
     # server in a different power state. Re-establish the provider-side off gate
     # before every retry and trust only the authoritative post-action shape.
     ensure_server_stopped "$node"
-    run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server change-type "$node" "$target_type" || true
+    run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud "${change_args[@]}" || true
     server_json=$(hcloud server describe "$node" -o json)
     current_type=$(jq -r '.server_type.name' <<<"$server_json")
     current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
@@ -1810,6 +1867,7 @@ unseal_vault_members() {
 
 resize_node() {
   local node="$1" target_type="$2" role="$3" server_json current_type current_disk target_disk placement target_placement=""
+  local requested_type="$target_type" configured_override fallback_type="" keep_disk=false
   local node_state_dir="$STATE_DIR/resize-nodes" in_progress done_marker node_unschedulable interrupted=false
   local current_status provider_volumes
   mkdir -p "$node_state_dir"
@@ -1818,7 +1876,24 @@ resize_node() {
   server_json=$(hcloud server describe "$node" -o json)
   current_type=$(jq -r '.server_type.name' <<<"$server_json")
   current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
+  configured_override=$(NODE="$node" yq -r '.infrastructure.node_type_overrides[strenv(NODE)] // ""' "$TARGET_CONFIG")
+  if [[ -n "$configured_override" ]]; then
+    target_type="$configured_override"
+    keep_disk=true
+  fi
   target_disk=$(hcloud server-type describe "$target_type" -o json | jq -r '.disk')
+  if [[ "$current_type" != "$target_type" ]] && ! server_type_available_for_node "$node" "$target_type"; then
+    [[ -z "$configured_override" ]] \
+      || fail "recorded fallback type $target_type is no longer available for $node"
+    fallback_type=$(select_equivalent_fallback_type "$node" "$requested_type" || true)
+    [[ -n "$fallback_type" ]] \
+      || fail "target type $requested_type is unavailable for $node and no equivalent fallback was authorized"
+    target_type="$fallback_type"
+    keep_disk=true
+    record_node_type_override "$node" "$requested_type" "$target_type"
+    warn "using temporary equivalent type $target_type for $node because $requested_type is unavailable; retaining the existing ${current_disk}GB disk"
+  fi
+  [[ "$keep_disk" != true ]] || target_disk="$current_disk"
   placement=$(jq -r '.placement_group.name // ""' <<<"$server_json")
   node_unschedulable=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}' 2>/dev/null || true)
   requires_spread "$TARGET_CONFIG" && target_placement="${PROJECT}-spread"
@@ -1902,7 +1977,7 @@ resize_node() {
     # Recheck after placement mutations: Hetzner may return the server to a
     # running state, and change-type rejects anything except provider state off.
     ensure_server_stopped "$node"
-    change_server_type_with_retry "$node" "$target_type" "$target_disk"
+    change_server_type_with_retry "$node" "$target_type" "$target_disk" "$keep_disk"
   fi
   ensure_server_running "$node"
   wait_for_api_ready

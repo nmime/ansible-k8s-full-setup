@@ -45,8 +45,10 @@
                name: name,
                cores: cores,
                memory: memory,
+               available: locations[?name==`' + region + '`] | [0].available,
                price: prices[?location==`' + region + '`] | [0].price_monthly.gross
              }')
+           | selectattr('available', 'equalto', true)
            | selectattr('price', 'defined')
            | selectattr('price', 'ne', None)
            | list -%}
@@ -133,8 +135,10 @@
                    name: name,
                    cores: cores,
                    memory: memory,
+                   available: locations[?name==`' + item + '`] | [0].available,
                    price: prices[?location==`' + item + '`] | [0].price_monthly.gross
                  }')
+               | selectattr('available', 'equalto', true)
                | selectattr('price', 'defined')
                | selectattr('price', 'ne', None)
                | list -%}
@@ -153,8 +157,10 @@
                  name: name,
                  cores: cores,
                  memory: memory,
+                 available: locations[?name==`' + item + '`] | [0].available,
                  price: prices[?location==`' + item + '`] | [0].price_monthly.gross
                }')
+             | selectattr('available', 'equalto', true)
              | selectattr('price', 'defined')
              | selectattr('price', 'ne', None)
              | selectattr('cores', 'ge', current_tier_spec.worker_min_cores | int)
@@ -210,6 +216,28 @@
     worker_type: "{{ hetzner_worker_type | default(auto_worker_type, true) | trim }}"
     bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type, true) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
+    node_type_overrides: "{{ infrastructure.node_type_overrides | default({}) }}"
+
+- name: Validate per-node server type override structure
+  ansible.builtin.assert:
+    that:
+      - node_type_overrides is mapping
+    fail_msg: >-
+      infrastructure.node_type_overrides must be a mapping from a full
+      {{ project }}-master-N or {{ project }}-worker-N server name to a server
+      type.
+
+- name: Build valid per-node server type override names
+  ansible.builtin.set_fact:
+    valid_node_type_override_names: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- for index in range(1, (current_tier_spec.cp_count | int) + 1) -%}
+      {%- set _ = ns.names.append(project + '-master-' + (index | string)) -%}
+      {%- endfor -%}
+      {%- for index in range(1, (current_tier_spec.worker_count | int) + 1) -%}
+      {%- set _ = ns.names.append(project + '-worker-' + (index | string)) -%}
+      {%- endfor -%}
+      {{ ns.names }}
 
 - name: Validate all server types were found
   assert:
@@ -233,6 +261,54 @@
     selected_worker_spec: >-
       {{ hcloud_server_types_raw.stdout | from_json
          | selectattr('name', 'equalto', worker_type) | first | default({}) }}
+
+- name: Resolve selected server type availability in the active region
+  ansible.builtin.set_fact:
+    selected_bastion_available_in_region: >-
+      {{ selected_bastion_spec.locations | default([])
+         | selectattr('name', 'equalto', region)
+         | selectattr('available', 'equalto', true)
+         | list | length > 0 }}
+    selected_cp_available_in_region: >-
+      {{ selected_cp_spec.locations | default([])
+         | selectattr('name', 'equalto', region)
+         | selectattr('available', 'equalto', true)
+         | list | length > 0 }}
+    selected_worker_available_in_region: >-
+      {{ selected_worker_spec.locations | default([])
+         | selectattr('name', 'equalto', region)
+         | selectattr('available', 'equalto', true)
+         | list | length > 0 }}
+
+- name: Validate per-node server type override capacity
+  ansible.builtin.assert:
+    that:
+      - item.key in valid_node_type_override_names
+      - item.value is string
+      - item.value | trim | length > 0
+      - override_spec | length > 0
+      - override_spec.architecture | default('') == 'x86'
+      - override_spec.cores | default(0) | int >= override_min_cores | int
+      - override_spec.memory | default(0) | int >= override_min_memory | int
+    fail_msg: >-
+      Invalid infrastructure.node_type_overrides entry {{ item.key }}={{ item.value }}.
+      Overrides must name a desired control-plane or worker node, resolve to an
+      x86 server type, and satisfy that role's profile capacity floor of
+      {{ override_min_cores }} cores/{{ override_min_memory }} GiB.
+  vars:
+    override_spec: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('name', 'equalto', item.value) | first | default({}) }}
+    override_is_master: "{{ item.key is match('^' + project + '-master-') }}"
+    override_min_cores: >-
+      {{ current_tier_spec.cp_min_cores if (override_is_master | bool)
+         else current_tier_spec.worker_min_cores }}
+    override_min_memory: >-
+      {{ current_tier_spec.cp_min_memory if (override_is_master | bool)
+         else current_tier_spec.worker_min_memory }}
+  loop: "{{ node_type_overrides | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
 
 - name: Reject undersized explicit or auto-selected server types
   ansible.builtin.assert:
@@ -772,6 +848,16 @@
     bastion_check.rc != 0 and
     'not found' not in (bastion_check.stderr | default('') | lower)
 
+- name: Refuse an unavailable bastion type when creation is required
+  ansible.builtin.assert:
+    that:
+      - bastion_check.rc == 0 or (selected_bastion_available_in_region | bool)
+    fail_msg: >-
+      Bastion {{ project }}-bastion is missing, but selected type
+      {{ bastion_type }} is currently unavailable in {{ region }}. Existing
+      retained servers may continue running; refusing a creation attempt that
+      the provider catalog says cannot be placed.
+
 - name: Create bastion server
   ansible.builtin.command:
     argv:
@@ -866,6 +952,31 @@
     master_check.rc != 0 and
     'not found' not in (master_check.stderr | default('') | lower)
 
+- name: Refuse an unavailable control plane type when creation is required
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or
+        (desired_node_spec.locations | default([])
+         | selectattr('name', 'equalto', region)
+         | selectattr('available', 'equalto', true)
+         | list | length > 0)
+    fail_msg: >-
+      Control-plane server {{ desired_node_name }} is missing, but selected type
+      {{ desired_node_type }} is currently unavailable in {{ region }}.
+      Existing retained servers may continue running; refusing a partial
+      expansion that the provider catalog says cannot be placed.
+  vars:
+    desired_node_name: "{{ project }}-master-{{ item.item }}"
+    desired_node_type: >-
+      {{ node_type_overrides.get(desired_node_name, cp_type) }}
+    desired_node_spec: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('name', 'equalto', desired_node_type) | first | default({}) }}
+  loop: "{{ master_check.results }}"
+  loop_control:
+    label: "{{ desired_node_name }}"
+
 - name: Create control plane servers
   ansible.builtin.command:
     argv: >-
@@ -873,7 +984,8 @@
         [
           'hcloud', 'server', 'create',
           '--name', project + '-master-' + (item | string),
-          '--type', cp_type,
+          '--type', node_type_overrides.get(
+            project + '-master-' + (item | string), cp_type),
           '--image', hetzner_image | default('ubuntu-24.04'),
           '--location', region,
           '--ssh-key', hcloud_ssh_key,
@@ -919,6 +1031,31 @@
     worker_check.rc != 0 and
     'not found' not in (worker_check.stderr | default('') | lower)
 
+- name: Refuse an unavailable worker type when creation is required
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.rc == 0 or
+        (desired_node_spec.locations | default([])
+         | selectattr('name', 'equalto', region)
+         | selectattr('available', 'equalto', true)
+         | list | length > 0)
+    fail_msg: >-
+      Worker server {{ desired_node_name }} is missing, but selected type
+      {{ desired_node_type }} is currently unavailable in {{ region }}.
+      Existing retained servers may continue running; refusing a partial
+      expansion that the provider catalog says cannot be placed.
+  vars:
+    desired_node_name: "{{ project }}-worker-{{ item.item }}"
+    desired_node_type: >-
+      {{ node_type_overrides.get(desired_node_name, worker_type) }}
+    desired_node_spec: >-
+      {{ hcloud_server_types_raw.stdout | from_json
+         | selectattr('name', 'equalto', desired_node_type) | first | default({}) }}
+  loop: "{{ worker_check.results }}"
+  loop_control:
+    label: "{{ desired_node_name }}"
+
 - name: Create worker servers
   ansible.builtin.command:
     argv: >-
@@ -926,7 +1063,8 @@
         [
           'hcloud', 'server', 'create',
           '--name', project + '-worker-' + (item | string),
-          '--type', worker_type,
+          '--type', node_type_overrides.get(
+            project + '-worker-' + (item | string), worker_type),
           '--image', hetzner_image | default('ubuntu-24.04'),
           '--location', region,
           '--ssh-key', hcloud_ssh_key,
@@ -982,10 +1120,11 @@
     mismatched_servers: >-
       {%- set ns = namespace(items=[]) -%}
       {%- for server in project_servers_raw.stdout | from_json -%}
-      {%- set desired_type = bastion_type if server.name == project + '-bastion'
+      {%- set role_type = bastion_type if server.name == project + '-bastion'
           else cp_type if server.name is match('^' + project + '-master-')
           else worker_type if server.name is match('^' + project + '-worker-')
           else '' -%}
+      {%- set desired_type = node_type_overrides.get(server.name, role_type) -%}
       {%- if desired_type and server.server_type.name != desired_type -%}
       {%- set _ = ns.items.append({'name': server.name, 'current': server.server_type.name, 'desired': desired_type}) -%}
       {%- endif -%}
