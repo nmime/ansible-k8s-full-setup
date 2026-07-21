@@ -89,9 +89,10 @@ Inspect and change the selected technologies through the orchestrator:
 technology still depends on the target. The validated dependency graph also
 covers ESO -> secrets, database engines -> databases, Runner -> GitLab,
 GlitchTip -> PostgreSQL + Dragonfly, APM -> Elasticsearch, Temporal ->
-PostgreSQL + Elasticsearch, Postal -> Dragonfly, tracing -> observability +
-storage, Blackbox -> observability, and backup -> storage. Metrics, logging,
-Grafana, and PMM are intentionally deployed as one observability core bundle.
+PostgreSQL, Postal -> Dragonfly, tracing -> observability + storage, Blackbox ->
+observability, and backup -> storage. Metrics, logging, and Grafana are
+intentionally deployed as one observability core bundle. PMM is an independently
+selectable dependant of that bundle.
 Coroot -> observability is also enforced; HIPAA-oriented hardening requires
 secrets, observability, Cilium encryption, and active log redaction. The full
 selector, profile matrix, and removal classes are in the
@@ -151,6 +152,7 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy temporal
 ./platform.sh deploy postal
 ./platform.sh deploy backup
+./platform.sh deploy disaster-recovery
 ./platform.sh deploy glitchtip
 ./platform.sh deploy apm
 ./platform.sh deploy blackbox
@@ -170,6 +172,18 @@ Coroot operator/CE resources. Its eBPF node agent requires privileged Pod
 Security admission, scoped only to the `coroot` namespace. `deploy hipaa`
 reconciles network host controls and every selected log collector so redaction
 is active rather than an unused configuration object.
+
+`deploy backup` installs application-native backup automation.
+`deploy disaster-recovery` additionally reconciles external Velero/Kopia and
+requires the independent S3 endpoint, bucket, and credentials. Selecting
+`disaster-recovery` through the CLI enables native backup and object storage as
+dependencies; native backup cannot be disabled while the external layer is
+selected. Both targeted deploy commands also reconcile the Percona and GitLab
+owners of their schedules, so enabling backup later does not require a full
+platform deployment. After disabling `backup`, guarded removal deletes its
+CronJobs, removes PostgreSQL pgBackRest schedules, and disables MongoDB backup,
+PITR, and scheduled tasks. Database data, repositories, PVCs, buckets, and
+already-created backup objects remain intact.
 
 To stop selecting a component now but preserve the easiest return path, disable
 it and leave its resources in place. Re-enable and reconcile it later. To free
@@ -225,8 +239,13 @@ GitLab uses the chart-generated `gitlab-toolbox-backup` CronJob and a separate
 `medium`, `medium-optimized`, and `production` also require an independent
 external DR endpoint and credentials before the backup role can install
 Velero/Kopia. The deployment preflight rejects missing or in-cluster values
-before provisioning Hetzner resources. After deployment, create an encrypted full-cluster bundle with
-`platform.sh backup-cluster`; see [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+before provisioning Hetzner resources. The platform CLI loads the mode-`0600`,
+gitignored project `.env`; blank named-profile endpoint and bucket fields use
+`BACKUP_DR_ENDPOINT` and `BACKUP_DR_BUCKET`, while credentials remain
+environment-only and never appear in Ansible argv. After deployment, create an encrypted full-cluster bundle with
+`platform.sh backup-cluster`; when Vault is enabled, pass its exact encrypted
+initialization file with `--vault-init-file`. See
+[BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
 Do not replace one named profile with another and run `deploy all`. Use
 `platform.sh migrate --target PROFILE plan|execute`, followed by

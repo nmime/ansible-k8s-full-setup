@@ -665,7 +665,7 @@ class TestVaultUpgradeImplemented:
         assert defaults.is_file()
 
     def test_k8s_secrets_tasks_has_new_version(self):
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         # Should now reference 2.0.3 and 0.34.0
         assert "2.0.3" in content, "vault_version should be 2.0.3"
@@ -708,7 +708,7 @@ class TestVaultUpgradeImplemented:
 
     def test_vault_config_still_uses_raft_ha(self):
         """Raft HA config should remain intact for Vault 2.0."""
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         assert "server.ha.raft.enabled" in content
         assert "setNodeId: true" in content
@@ -716,7 +716,7 @@ class TestVaultUpgradeImplemented:
 
     def test_init_material_is_not_stored_for_in_cluster_auto_unseal(self):
         """Shamir keys must not be kept beside the encrypted Vault data."""
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         assert "state: absent" in content
         assert "name: vault-init-keys" in content
@@ -725,28 +725,28 @@ class TestVaultUpgradeImplemented:
 
     def test_eso_integration_unchanged(self):
         """ESO ClusterSecretStore should still reference Vault correctly."""
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         assert "ClusterSecretStore" in content
         assert "vault-backend" in content
 
     def test_vault_tls_certificate_creation(self):
         """TLS cert creation task should still exist."""
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         assert "vault-tls" in content
         assert "cert-manager.io" in content
 
     def test_vault_network_policies_intact(self):
         """Cilium network policies for Vault should be present."""
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         assert "default-deny" in content
         assert "allow-vault-ingress" in content
 
     def test_debug_summary_shows_new_version(self):
         """The debug summary should display the new version."""
-        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+        tasks = REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         content = tasks.read_text()
         assert "v2.0.3" in content
         assert "v1.21.2" not in content

@@ -1,5 +1,5 @@
 """Test suite for backup-restore Ansible role and scripts."""
-import subprocess, yaml
+import shutil, subprocess, yaml
 from pathlib import Path
 import pytest
 
@@ -10,6 +10,7 @@ DEFAULTS_FILE = ROLE_DIR / "defaults" / "main.yml"
 PROJECT_DEFAULTS = REPO_ROOT / "defaults" / "main.yml"
 BACKUP_SCRIPT = REPO_ROOT / "scripts" / "backup-all.sh"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore-drill.sh"
+VAULT_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "vault-restore-drill.sh"
 MONGODB_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "mongodb-restore-drill.sh"
 SEAWEEDFS_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "seaweedfs-restore-drill.sh"
 BACKUP_DOC = REPO_ROOT / "BACKUP_RESTORE.md"
@@ -95,6 +96,8 @@ class TestMainInclusion:
 def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
     content = (TASKS_DIR / "velero.yml").read_text()
     assert "Replace the controller-mutated Helm schedule safely" in content
+    assert "Detect whether the Velero Schedule CRD is installed" in content
+    assert "when: backup_dr_schedule_crd.rc == 0" in content
     assert "name: velero-full-cluster" in content
     assert "node-role.kubernetes.io/control-plane" in content
     assert "node-role.kubernetes.io/master" in content
@@ -102,6 +105,33 @@ def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
     assert "backup_dr_velero_helm is succeeded" in content
     assert "force_conflicts: true" in content
     assert "retries: 3" in content
+
+
+def test_deployment_rechecks_velero_coverage_after_every_component():
+    content = (REPO_ROOT / "playbooks" / "deploy_platform.yml").read_text()
+    assert "Detect a retained Velero node-agent" in content
+    assert "Prove final Velero node-agent coverage after all components" in content
+    assert "desiredNumberScheduled" in content
+    assert "numberUnavailable" in content
+    assert "difference(['always', 'infrastructure', 'network', 'security', 'dns'])" in content
+
+
+def test_database_native_schedules_follow_the_backup_selector_and_are_removable():
+    databases = (
+        REPO_ROOT / "roles" / "k8s-databases" / "tasks" / "main.yml"
+    ).read_text()
+    removal = (REPO_ROOT / "playbooks" / "remove_component.yml").read_text()
+    orchestrator = (
+        REPO_ROOT / "platform-orchestrator" / "platform.sh"
+    ).read_text()
+
+    assert databases.count("platform_backup_enabled | default(backup_enabled) | bool") >= 6
+    assert "Remove PostgreSQL operator backup schedules" in removal
+    assert 'path: "/spec/backups/pgbackrest/repos/{{ item }}/schedules"' in removal
+    assert "Disable MongoDB operator backup and point-in-time recovery" in removal
+    assert "path: /spec/backup/tasks" in removal
+    assert "Verify database-native backup automation is disabled" in removal
+    assert orchestrator.count("--tags databases,gitlab,backup") == 2
 
 CJ = [("vault_raft.yml","vault-raft-snapshot"),
       ("seaweedfs.yml","seaweedfs-backup-check"),("gitlab.yml","gitlab-rails-secrets-backup"),
@@ -246,6 +276,11 @@ class TestBackupScript:
         assert "vault: VELERO-FALLBACK" in c
         assert "native backup requires integrated Raft" in c
     def test_summary(self): assert "SUMMARY" in BACKUP_SCRIPT.read_text()
+    def test_parallel_result_logs_are_project_and_process_unique(self):
+        c = BACKUP_SCRIPT.read_text()
+        assert "RESULT_PROJECT=" in c
+        assert '.backup-results-${RESULT_PROJECT}-${TS}-$$.log' in c
+        assert '.backup-results-${TS}.log' not in c
 
 class TestRestoreScript:
     def test_exists(self): assert RESTORE_SCRIPT.is_file()
@@ -271,6 +306,33 @@ class TestRestoreScript:
         c = RESTORE_SCRIPT.read_text()
         for x in ("mongodb","vault","seaweedfs","gitlab"): assert x in c
     def test_summary(self): assert "SUMMARY" in RESTORE_SCRIPT.read_text()
+    def test_dispatcher_is_bash_32_nounset_safe(self):
+        c = RESTORE_SCRIPT.read_text()
+        assert "common_args=(" not in c
+        assert 'set -- "$@"' in c
+        assert '"${common_args[@]}"' not in c
+    def test_dispatcher_executes_with_no_optional_arguments(self, tmp_path):
+        dispatcher = tmp_path / "restore-drill.sh"
+        shutil.copy2(RESTORE_SCRIPT, dispatcher)
+        (tmp_path / "load-project-env.sh").write_text("#!/usr/bin/env bash\n")
+        for script in (
+            "pg-restore-drill.sh",
+            "mongodb-restore-drill.sh",
+            "vault-restore-drill.sh",
+            "gitlab-restore-test.sh",
+            "seaweedfs-restore-drill.sh",
+        ):
+            target = tmp_path / script
+            target.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+            target.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(dispatcher), "--component", "vault", "--backup", "snapshot.snap", "--force"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[-2:] == ["--snapshot-name", "snapshot.snap"]
     def test_mongodb_dispatch(self):
         c = RESTORE_SCRIPT.read_text()
         assert "mongodb-restore-drill.sh" in c
@@ -279,6 +341,37 @@ class TestRestoreScript:
         c = RESTORE_SCRIPT.read_text()
         assert "pg-restore-drill.sh" in c
         assert "--backup-set" in c
+        assert '--project' in c
+        assert 'PG_CLUSTER="${PROJECT}-pg"' in c
+        assert '--pg-cluster "$PG_CLUSTER"' in c
+    def test_postgresql_dispatch_passes_project_cluster(self, tmp_path):
+        dispatcher = tmp_path / "restore-drill.sh"
+        shutil.copy2(RESTORE_SCRIPT, dispatcher)
+        (tmp_path / "load-project-env.sh").write_text("#!/usr/bin/env bash\n")
+        target = tmp_path / "pg-restore-drill.sh"
+        target.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+        target.chmod(0o755)
+        result = subprocess.run(
+            [
+                "bash", str(dispatcher), "--component", "postgresql",
+                "--backup", "20260721-020042F", "--project", "load5-minimal",
+                "--force",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[-4:] == [
+            "--backup-set", "20260721-020042F",
+            "--pg-cluster", "load5-minimal-pg",
+        ]
+    def test_postgresql_exact_backup_set_contract(self):
+        c = (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text()
+        assert '.status.backupName == $set' in c
+        assert '.spec.repoName == "repo2"' in c
+        assert "--set=%s" in c
+        assert "specific --backup-set is not supported" not in c
     def test_seaweedfs_dispatch(self):
         c = RESTORE_SCRIPT.read_text()
         assert "seaweedfs-restore-drill.sh" in c
@@ -340,6 +433,38 @@ class TestRestoreScript:
             "helm uninstall"
         )
 
+
+def test_vault_restore_storage_defaults_to_validated_10_gib():
+    content = VAULT_RESTORE_SCRIPT.read_text()
+    assert 'VAULT_RESTORE_STORAGE_SIZE:-10Gi' in content
+    assert "--storage-size" in content
+    assert 'requests.storage: ${STORAGE_SIZE}' in content
+    assert 'storage: ${STORAGE_SIZE}' in content
+    assert "positive Kubernetes storage quantity" in content
+    assert "strategy:\n    type: Recreate" in content
+
+
+def test_vault_restore_rejects_invalid_storage_before_dry_run():
+    result = subprocess.run(
+        ["bash", str(VAULT_RESTORE_SCRIPT), "--storage-size", "$(bad)", "--dry-run"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert "positive Kubernetes storage quantity" in result.stderr
+
+
+def test_vault_restore_dry_run_reports_default_storage():
+    result = subprocess.run(
+        ["bash", str(VAULT_RESTORE_SCRIPT), "--dry-run"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Storage size: 10Gi" in result.stdout
+
 class TestDocumentation:
     def test_exists(self): assert BACKUP_DOC.is_file()
     def test_quick_start(self): assert "Quick Start" in BACKUP_DOC.read_text()
@@ -370,7 +495,7 @@ class TestIntegration:
             if "kubernetes.core.k8s:" in c:
                 assert "state: present" in c or "state: absent" in c
     def test_existing_roles_valid(self):
-        for f in ("roles/k8s-databases/tasks/main.yml","roles/k8s-secrets/tasks/main.yml",
+        for f in ("roles/k8s-databases/tasks/main.yml","roles/k8s-secrets/tasks/reconcile.yml",
                    "roles/object-storage/tasks/main.yml","roles/gitlab-selfhosted/tasks/main.yml"):
             p = REPO_ROOT / f
             if p.is_file(): assert load_yaml(p) is not None

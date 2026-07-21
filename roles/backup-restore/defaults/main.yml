@@ -68,10 +68,12 @@ backup_s3cli_image: amazon/aws-cli:2.34.48
 # independently supplied; they are never generated from in-cluster storage.
 backup_dr_enabled: false
 backup_dr_namespace: velero
-backup_dr_storage_endpoint: ""
-backup_dr_storage_region: us-east-1
-backup_dr_storage_bucket: ""
-backup_dr_storage_prefix: "{{ backup_project_name }}/velero"
+backup_dr_storage_endpoint: "{{ lookup('env', 'BACKUP_DR_ENDPOINT') | default('', true) }}"
+backup_dr_storage_region: "{{ lookup('env', 'BACKUP_DR_REGION') | default('us-east-1', true) }}"
+backup_dr_storage_bucket: "{{ lookup('env', 'BACKUP_DR_BUCKET') | default('', true) }}"
+backup_dr_storage_prefix: >-
+  {{ lookup('env', 'BACKUP_DR_PREFIX') |
+     default(backup_project_name ~ '/velero', true) }}
 backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}"
 backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
 backup_dr_schedule: "30 2 * * *"

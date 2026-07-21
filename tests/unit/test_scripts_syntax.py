@@ -92,3 +92,42 @@ def test_live_tier_smoke_covers_foundation_data_paths():
     assert "--dry-run" in content
     assert "kubectl delete pod" in content
     assert 'kubectl run "$pod" -n default --rm --attach=true --restart=Never' in content
+    assert "LIVE_SMOKE_RUN_ID must be a lowercase DNS label" in content
+    assert 'vault_exec "$token" kv metadata delete' in content
+    assert 'vault_exec "$token" kv metadata get' in content
+    gateway = content.split("smoke_gateway_routes()", 1)[1]
+    assert "curl -ksS" not in gateway
+    assert "2??|3??|400|401|403|405|426" in gateway
+    assert "WebSocket-only endpoints" in gateway
+    assert 'matches[0].path.value // "/"' in gateway
+
+
+def test_live_tier_smoke_streams_vault_token_instead_of_using_process_argv(tmp_path):
+    with open(os.path.join(SCRIPTS, "live-tier-smoke.sh")) as source:
+        content = source.read()
+    assert 'env VAULT_TOKEN="$token"' not in content
+    assert "IFS= read -r VAULT_TOKEN" in content
+    helper = "vault_exec()" + content.split("vault_exec()", 1)[1].split(
+        "smoke_vault()", 1
+    )[0]
+    fake = tmp_path / "kubectl"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >\"$CAPTURE/argv\"\n"
+        "IFS= read -r token\n"
+        "printf '%s\\n' \"$token\" >\"$CAPTURE/stdin\"\n"
+    )
+    fake.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", helper + '\nvault_exec stdin-only-secret kv get path'],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CAPTURE": str(tmp_path),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert "stdin-only-secret" not in (tmp_path / "argv").read_text()
+    assert (tmp_path / "stdin").read_text().strip() == "stdin-only-secret"

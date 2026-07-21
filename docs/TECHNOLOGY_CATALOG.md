@@ -37,12 +37,16 @@ explicitly retaining HA replicas for Vault, databases, storage, GitLab,
 Argo CD, metrics, autoscaling, Temporal, alerting, tracing, and error tracking.
 Its three control planes are dedicated and its three 16 GiB workers are sized
 with failover headroom rather than steady-state-only fit.
+Production explicitly pairs two VictoriaMetrics `vmstorage` replicas with
+replication factor `2`, even though its pod request envelope is `small`.
+`medium-optimized` intentionally keeps one `vmstorage` replica and replication
+factor `1`; resource sizing therefore cannot silently change metrics durability.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
 `gitlab-runner`, `gitops`, `observability`, `pmm`, `coroot`, `tracing`, `autoscaling`,
-`temporal`, `postal`, `backup`, `glitchtip`, `apm`, `blackbox`, `daytona`, and
-`hipaa`.
+`temporal`, `postal`, `backup`, `disaster-recovery`, `glitchtip`, `apm`,
+`blackbox`, `daytona`, and `hipaa`.
 
 | Component | YAML selector | Main technologies | Required selections | minimal | small | medium | medium-optimized | production |
 |---|---|---|---|---:|---:|---:|---:|---:|
@@ -64,7 +68,8 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Autoscaling | `autoscaling.enabled` | KEDA | none | on | on | on | on | on |
 | Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL | off | off | on | on | on |
 | Postal | `postal.enabled` | Postal mail server, schema initialize/update gate, and MariaDB; public SMTP 25/587 targets unprivileged container port 2525 | Dragonfly | off | off | on | on | on |
-| Backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, SeaweedFS jobs; external Velero/Kopia resource and PVC protection; encrypted etcd/PKI/config bundles; restore drills | Object storage; external DR endpoint for medium/production profiles | off | off | on | on | on |
+| Native backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, and SeaweedFS backup jobs plus application-aware restore drills | Object storage | off | off | on | on | on |
+| External disaster recovery | `backup.disaster_recovery.enabled` | Velero/Kopia resource and mounted-PVC protection; complete encrypted etcd/PKI/config/cloud-state bundles; replacement-cluster restore | Native backup automation, object storage, and an independent external S3 endpoint | off | off | on | on | on |
 | GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | on | on | on |
 | APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | on | on |
 | Blackbox | `blackbox.enabled` | Prometheus Blackbox Exporter and VMProbe resources | Observability | off | off | on | on | on |
@@ -77,11 +82,13 @@ under-replicated, and restart the filer after master/Raft topology changes.
 Minimal and small use `000` because they intentionally have only one volume
 server. Normal profiles persist both SeaweedFS data and indexes. Disposable
 `--minimum-storage` campaigns keep data durable but set
-`storage.index_persistent: false` because indexes are rebuilt from the data
-files. The reconcile orphans the immutable StatefulSet, rolls verified volume
-pods onto `emptyDir` indexes, and only then deletes obsolete index claims. Loki
-claims are retained independently of StatefulSet scale/delete and are retired
-only by the checkpointed migration finalizer.
+`storage.index_persistent: false` to colocate indexes on each durable data
+claim instead of allocating a second CSI volume. The reconcile copies and
+verifies every index inside a checkpointed write-quiesced maintenance window,
+orphans the immutable StatefulSet, proves restart-safe pods plus a pre-existing
+S3 sentinel read, and only then deletes exact obsolete standalone index claims.
+Loki claims are retained independently of StatefulSet scale/delete and are
+retired only by the checkpointed migration finalizer.
 
 Alert transports are settings rather than removable workloads:
 `alerting.telegram.enabled` requires `ALERT_TELEGRAM_BOT_TOKEN` and
@@ -100,6 +107,10 @@ cd platform-orchestrator
 ./platform.sh disable coroot      # desired state only; workload is retained
 ./platform.sh enable coroot       # return later without data deletion
 ./platform.sh deploy coroot
+
+# Native application backups and external whole-cluster DR are distinct.
+./platform.sh enable disaster-recovery  # also enables backup + object storage
+./platform.sh deploy disaster-recovery
 ```
 
 `disable` never deletes a running workload. To reclaim capacity, first disable
@@ -114,22 +125,29 @@ not inferred from live cluster state.
 | Removal class | Components | Boundary |
 |---|---|---|
 | Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, PMM, Coroot, Temporal, Postal, GlitchTip, Daytona | exact confirmation plus `--delete-data` |
-| Stateless/shared | ESO, GitLab Runner, tracing, KEDA, backup jobs, APM, Blackbox | exact confirmation; remote trace/backup objects are retained |
+| Stateless/shared | ESO, GitLab Runner, tracing, KEDA, native backup jobs, external disaster-recovery controllers, APM, Blackbox | exact confirmation; remote trace/backup objects are retained |
 | No generic rollback | HIPAA-oriented hardening | disable only; manual reviewed reversal |
 
 Removal never deletes Hetzner infrastructure, platform DNS, external backup
 copies, or remote object-storage buckets outside the listed Kubernetes scope.
+Native-backup removal also clears PostgreSQL pgBackRest schedules and disables
+MongoDB backup/PITR/tasks while retaining database data, repositories, PVCs,
+and all previously created backup objects.
 
 ## Move between named profiles
 
 Use `platform.sh migrate --target PROFILE plan`; never copy a different profile
 over the active config and run `deploy all`. The migration engine covers every
 distinct pair among the five named profiles, including `medium` ↔
-`medium-optimized`, upgrades, and downgrades. It enables target technologies
-during execution but defers disabled-technology deletion to the separately
-confirmed, checkpointed `finalize` phase. A removed technology can be selected
-again later and restored from its retained external backup; external backup
-and Loki archive objects are never deleted by profile finalization.
+`medium-optimized`, upgrades, and downgrades. The target named profile supplies
+defaults only for selections the operator has not customized; component and
+alert-channel choices that differ from the source profile's named defaults are
+carried into the target and recorded in `selection-retention.tsv`.
+Target reconciliation applies that merged selection, while technology deletion
+is deferred to the separately confirmed, checkpointed `finalize` phase. A
+removed technology can be selected again later and restored from its retained
+external backup; external backup and Loki archive objects are never deleted by
+profile finalization.
 
 The transition expands to the larger node topology, resizes retained nodes one
 at a time, grows both the provider disk and root filesystem, and requires full

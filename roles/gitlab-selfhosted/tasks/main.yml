@@ -17,9 +17,11 @@
     gitlab_sidekiq_max_replicas: '{{ gitlab.sidekiq_max_replicas | default(10) }}'
     gitlab_registry_max_replicas: '{{ gitlab.registry_max_replicas | default(5) }}'
     gitlab_gitaly_storage_size: '{{ gitlab.gitaly_storage_size | default(''10Gi'' if resource_tier == ''minimal'' else ''20Gi'' if resource_tier == ''small'' else ''50Gi'') }}'
+    gitlab_backup_persistence_enabled: '{{ gitlab.backup_persistence_enabled | default(true) | bool }}'
     gitlab_backup_persistence_size: '{{ gitlab.backup_persistence_size | default(''50Gi'') }}'
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
+    gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
 - name: Create GitLab namespace
   kubernetes.core.k8s:
     state: present
@@ -109,15 +111,235 @@
   register: _gitlab_helm_status
   failed_when: false
   changed_when: false
-- name: Remove failed GitLab Helm release before reinstall
-  kubernetes.core.helm:
-    name: gitlab
-    release_namespace: '{{ gitlab_namespace }}'
-    release_state: absent
-    wait: true
+- name: Recover a failed GitLab Helm revision without deleting release workloads
   when:
-  - _gitlab_helm_status.rc == 0
-  - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
+    - _gitlab_helm_status.rc == 0
+    - (_gitlab_helm_status.stdout | from_json).info.status | default('') == 'failed'
+  block:
+    # Helm stores release history in exact sh.helm.release.v1 Secrets. If a
+    # previous deployed revision exists, removing only newer failed history
+    # records exposes that deployed revision again without uninstalling any
+    # controller, Service, Secret, or PVC.
+    - name: Discover GitLab Helm release history Secrets
+      no_log: true
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - owner=helm
+          - name=gitlab
+      register: _gitlab_helm_release_secrets
+
+    - name: Classify deployed and failed GitLab Helm revisions
+      no_log: true
+      ansible.builtin.set_fact:
+        _gitlab_deployed_release_secrets: >-
+          {{ _gitlab_helm_release_secrets.resources |
+             selectattr('metadata.labels.status', 'defined') |
+             selectattr('metadata.labels.status', 'equalto', 'deployed') | list }}
+        _gitlab_failed_release_secrets: >-
+          {{ _gitlab_helm_release_secrets.resources |
+             selectattr('metadata.labels.status', 'defined') |
+             selectattr('metadata.labels.status', 'equalto', 'failed') | list }}
+
+    - name: Select the prior deployed GitLab Helm revision
+      no_log: true
+      ansible.builtin.set_fact:
+        _gitlab_deployed_release_revision: >-
+          {{ (_gitlab_deployed_release_secrets | first).metadata.labels.version | int }}
+      when: _gitlab_deployed_release_secrets | length == 1
+
+    - name: Require an unambiguous prior deployed GitLab Helm revision
+      ansible.builtin.assert:
+        that:
+          - (_gitlab_deployed_release_secrets | length) in [0, 1]
+        fail_msg: >-
+          Refusing failed GitLab release recovery because Helm history has
+          {{ _gitlab_deployed_release_secrets | length }} deployed revisions;
+          expected at most one exact deployed predecessor.
+
+    - name: Prove every revision newer than the deployed predecessor is failed
+      no_log: true
+      ansible.builtin.assert:
+        that:
+          - item.metadata.labels.status == 'failed'
+          - item.type == 'helm.sh/release.v1'
+          - item.metadata.name == ('sh.helm.release.v1.gitlab.v' ~ item.metadata.labels.version)
+          - item.metadata.labels.owner == 'helm'
+          - item.metadata.labels.name == 'gitlab'
+          - (item.metadata.ownerReferences | default([]) | length) == 0
+          - (item.data.release | default('') | length) > 0
+        fail_msg: >-
+          Refusing failed GitLab release recovery because a post-deployed Helm
+          history Secret has an unexpected status, type, identity, or owner.
+      loop: '{{ _gitlab_helm_release_secrets.resources }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+      when:
+        - _gitlab_deployed_release_secrets | length == 1
+        - (item.metadata.labels.version | default('0') | int) > (_gitlab_deployed_release_revision | int)
+
+    - name: Require at least one exact failed revision after the deployed predecessor
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_gitlab_failed_release_secrets |
+             map(attribute='metadata.labels.version') |
+             map('int') |
+             select('gt', _gitlab_deployed_release_revision | int) |
+             list | length) > 0
+        fail_msg: >-
+          Helm reports GitLab failed, but no exact failed release Secret newer
+          than the deployed predecessor was found; refusing recovery.
+      when: _gitlab_deployed_release_secrets | length == 1
+
+    - name: Delete only failed GitLab Helm revisions newer than the deployed predecessor
+      no_log: true
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Secret
+        namespace: '{{ gitlab_namespace }}'
+        name: '{{ item.metadata.name }}'
+        delete_options:
+          preconditions:
+            uid: '{{ item.metadata.uid }}'
+            resourceVersion: '{{ item.metadata.resourceVersion }}'
+        wait: true
+        wait_timeout: 120
+      loop: '{{ _gitlab_failed_release_secrets }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+      when:
+        - _gitlab_deployed_release_secrets | length == 1
+        - (item.metadata.labels.version | int) > (_gitlab_deployed_release_revision | int)
+
+    - name: Recheck GitLab Helm status after failed revision cleanup
+      ansible.builtin.command: helm status gitlab -n {{ gitlab_namespace }} -o json
+      register: _gitlab_recovered_helm_status
+      failed_when: false
+      changed_when: false
+      when: _gitlab_deployed_release_secrets | length == 1
+
+    - name: Require failed revision cleanup to expose the deployed predecessor
+      ansible.builtin.assert:
+        that:
+          - _gitlab_recovered_helm_status.rc == 0
+          - >-
+            ((_gitlab_recovered_helm_status.stdout | from_json).info.status |
+             default('')) == 'deployed'
+          - >-
+            ((_gitlab_recovered_helm_status.stdout | from_json).version | int) ==
+            (_gitlab_deployed_release_revision | int)
+        fail_msg: >-
+          Failed GitLab history cleanup did not restore the exact prior deployed
+          revision; no workload or PVC uninstall was attempted.
+      when: _gitlab_deployed_release_secrets | length == 1
+
+    # A failed first installation has no deployed predecessor. Uninstalling is
+    # permitted only when no Gitaly resources exist or the one exact Helm pair
+    # is Pending, unbound, and never ready. Any data-bearing shape fails closed.
+    - name: Discover first-install Gitaly StatefulSets before safe failed-release removal
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - app=gitaly
+      register: _gitlab_failed_first_install_gitaly_statefulsets
+      when: _gitlab_deployed_release_secrets | length == 0
+
+    - name: Discover first-install Gitaly PVCs before safe failed-release removal
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - app=gitaly
+      register: _gitlab_failed_first_install_gitaly_pvcs
+      when: _gitlab_deployed_release_secrets | length == 0
+
+    - name: Select the exact failed first-install Gitaly pair
+      ansible.builtin.set_fact:
+        _gitlab_failed_first_install_gitaly_statefulset: >-
+          {{ _gitlab_failed_first_install_gitaly_statefulsets.resources | first }}
+        _gitlab_failed_first_install_gitaly_pvc: >-
+          {{ _gitlab_failed_first_install_gitaly_pvcs.resources | first }}
+      when:
+        - _gitlab_deployed_release_secrets | length == 0
+        - _gitlab_failed_first_install_gitaly_statefulsets.resources | length == 1
+        - _gitlab_failed_first_install_gitaly_pvcs.resources | length == 1
+
+    - name: Prove failed first-install Gitaly resources are absent or data-free
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((_gitlab_failed_first_install_gitaly_statefulsets.resources | length) == 0 and
+             (_gitlab_failed_first_install_gitaly_pvcs.resources | length) == 0) or
+            ((_gitlab_failed_first_install_gitaly_statefulsets.resources | length) == 1 and
+             (_gitlab_failed_first_install_gitaly_pvcs.resources | length) == 1 and
+             _gitlab_failed_first_install_gitaly_statefulset.metadata.name ==
+             'gitlab-gitaly' and
+             _gitlab_failed_first_install_gitaly_statefulset.metadata.labels.release ==
+             'gitlab' and
+             _gitlab_failed_first_install_gitaly_statefulset.metadata.labels.app ==
+             'gitaly' and
+             _gitlab_failed_first_install_gitaly_statefulset.metadata.labels.heritage ==
+             'Helm' and
+             _gitlab_failed_first_install_gitaly_statefulset.metadata.labels[
+             'app.kubernetes.io/managed-by'] == 'Helm' and
+             (_gitlab_failed_first_install_gitaly_statefulset.metadata.annotations[
+              'meta.helm.sh/release-name'] | default('')) == 'gitlab' and
+             (_gitlab_failed_first_install_gitaly_statefulset.metadata.annotations[
+              'meta.helm.sh/release-namespace'] | default('')) == gitlab_namespace and
+             (_gitlab_failed_first_install_gitaly_statefulset.metadata.ownerReferences |
+              default([]) | length) == 0 and
+             (_gitlab_failed_first_install_gitaly_statefulset.status.readyReplicas |
+              default(0) | int) == 0 and
+             _gitlab_failed_first_install_gitaly_pvc.metadata.name ==
+             'repo-data-gitlab-gitaly-0' and
+             _gitlab_failed_first_install_gitaly_pvc.metadata.labels.release ==
+             'gitlab' and
+             _gitlab_failed_first_install_gitaly_pvc.metadata.labels.app ==
+             'gitaly' and
+             (_gitlab_failed_first_install_gitaly_pvc.metadata.ownerReferences |
+              default([]) | length) == 0 and
+             (_gitlab_failed_first_install_gitaly_pvc.status.phase | default('')) ==
+             'Pending' and
+             (_gitlab_failed_first_install_gitaly_pvc.spec.volumeName |
+              default('') | length) == 0)
+        fail_msg: >-
+          Refusing to uninstall a failed first GitLab revision because Gitaly
+          resources are not absent or an exact never-ready, unbound, data-free
+          Helm pair. No workload or PVC was deleted.
+      when: _gitlab_deployed_release_secrets | length == 0
+
+    - name: Remove only a proven data-free failed first GitLab release
+      kubernetes.core.helm:
+        name: gitlab
+        release_namespace: '{{ gitlab_namespace }}'
+        release_state: absent
+        wait: true
+      when: _gitlab_deployed_release_secrets | length == 0
+
+    - name: Require data-free failed first release removal to complete
+      ansible.builtin.command: helm status gitlab -n {{ gitlab_namespace }} -o json
+      register: _gitlab_removed_first_release_status
+      failed_when: false
+      changed_when: false
+      when: _gitlab_deployed_release_secrets | length == 0
+
+    - name: Prove the data-free failed first release is absent
+      ansible.builtin.assert:
+        that:
+          - _gitlab_removed_first_release_status.rc != 0
+        fail_msg: >-
+          The proven data-free failed first GitLab release was not removed;
+          refusing to continue.
+      when: _gitlab_deployed_release_secrets | length == 0
 - name: Discover failed GitLab database migration Jobs
   kubernetes.core.k8s_info:
     api_version: batch/v1
@@ -142,6 +364,244 @@
        selectattr('status.failed', 'gt', 0) | list }}
   loop_control:
     label: '{{ item.metadata.name }}'
+- name: Inspect existing Gitaly storage before Helm reconcile
+  block:
+    - name: Discover existing Gitaly StatefulSets
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - app=gitaly
+      register: _gitlab_existing_gitaly_statefulsets
+
+    - name: Discover existing Gitaly persistent volume claims
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - app=gitaly
+      register: _gitlab_existing_gitaly_pvcs
+
+    - name: Require an unambiguous existing Gitaly storage inventory
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((_gitlab_existing_gitaly_statefulsets.resources | length) == 0 and
+             (_gitlab_existing_gitaly_pvcs.resources | length) == 0) or
+            ((_gitlab_existing_gitaly_statefulsets.resources | length) == 1 and
+             (_gitlab_existing_gitaly_pvcs.resources | length) == 1)
+        fail_msg: >-
+          Refusing automatic Gitaly storage reconciliation: expected either no
+          existing release storage or exactly one release=gitlab,app=gitaly
+          StatefulSet and PVC, found
+          {{ _gitlab_existing_gitaly_statefulsets.resources | length }} StatefulSet(s)
+          and {{ _gitlab_existing_gitaly_pvcs.resources | length }} PVC(s).
+
+    - name: Select the exact existing Gitaly storage pair
+      ansible.builtin.set_fact:
+        _gitlab_existing_gitaly_statefulset: >-
+          {{ _gitlab_existing_gitaly_statefulsets.resources | first }}
+        _gitlab_existing_gitaly_pvc: >-
+          {{ _gitlab_existing_gitaly_pvcs.resources | first }}
+        _gitlab_desired_gitaly_storage_class: >-
+          {{ storage_class | default('hcloud-volumes') }}
+      when: _gitlab_existing_gitaly_statefulsets.resources | length == 1
+
+    # Helm does not add ownerReferences to release objects. Requiring the exact
+    # release annotations, chart labels, selector, retention policy, claim
+    # template, and retained PVC identity prevents an unrelated or partially
+    # adopted StatefulSet from entering either automatic recovery path.
+    - name: Prove exact Helm ownership of the existing Gitaly storage pair
+      ansible.builtin.assert:
+        that:
+          - _gitlab_existing_gitaly_statefulset.metadata.name == 'gitlab-gitaly'
+          - _gitlab_existing_gitaly_statefulset.metadata.labels.release == 'gitlab'
+          - _gitlab_existing_gitaly_statefulset.metadata.labels.app == 'gitaly'
+          - _gitlab_existing_gitaly_statefulset.metadata.labels.heritage == 'Helm'
+          - _gitlab_existing_gitaly_statefulset.metadata.labels['app.kubernetes.io/managed-by'] == 'Helm'
+          - _gitlab_existing_gitaly_statefulset.metadata.labels.chart == ('gitaly-' ~ gitlab_chart_version)
+          - _gitlab_existing_gitaly_statefulset.metadata.annotations['meta.helm.sh/release-name'] == 'gitlab'
+          - _gitlab_existing_gitaly_statefulset.metadata.annotations['meta.helm.sh/release-namespace'] == gitlab_namespace
+          - (_gitlab_existing_gitaly_statefulset.metadata.ownerReferences | default([]) | length) == 0
+          - _gitlab_existing_gitaly_statefulset.spec.serviceName == 'gitlab-gitaly'
+          - _gitlab_existing_gitaly_statefulset.spec.selector.matchLabels.release == 'gitlab'
+          - _gitlab_existing_gitaly_statefulset.spec.selector.matchLabels.app == 'gitaly'
+          - _gitlab_existing_gitaly_statefulset.spec.persistentVolumeClaimRetentionPolicy.whenDeleted == 'Retain'
+          - _gitlab_existing_gitaly_statefulset.spec.persistentVolumeClaimRetentionPolicy.whenScaled == 'Retain'
+          - (_gitlab_existing_gitaly_statefulset.spec.volumeClaimTemplates | length) == 1
+          - (_gitlab_existing_gitaly_statefulset.spec.volumeClaimTemplates | first).metadata.name == 'repo-data'
+          - (_gitlab_existing_gitaly_statefulset.spec.volumeClaimTemplates | first).metadata.labels.release == 'gitlab'
+          - (_gitlab_existing_gitaly_statefulset.spec.volumeClaimTemplates | first).metadata.labels.app == 'gitaly'
+          - _gitlab_existing_gitaly_pvc.metadata.name == 'repo-data-gitlab-gitaly-0'
+          - _gitlab_existing_gitaly_pvc.metadata.labels.release == 'gitlab'
+          - _gitlab_existing_gitaly_pvc.metadata.labels.app == 'gitaly'
+          - (_gitlab_existing_gitaly_pvc.metadata.ownerReferences | default([]) | length) == 0
+        fail_msg: >-
+          Refusing automatic Gitaly immutable-storage recovery because the
+          discovered StatefulSet/PVC pair does not have the exact GitLab Helm
+          release identity and Retain ownership contract.
+      when: _gitlab_existing_gitaly_statefulsets.resources | length == 1
+
+    - name: Classify immutable Gitaly storage size drift
+      ansible.builtin.set_fact:
+        _gitlab_gitaly_size_mismatched_pvcs: >-
+          {{ _gitlab_existing_gitaly_pvcs.resources |
+             rejectattr('spec.resources.requests.storage', 'equalto', gitlab_gitaly_storage_size) |
+             list }}
+        _gitlab_existing_gitaly_ready_replicas: >-
+          {{ (((_gitlab_existing_gitaly_statefulsets.resources | first).status.readyReplicas |
+               default(0) | int)
+              if (_gitlab_existing_gitaly_statefulsets.resources | length > 0)
+              else 0) }}
+        _gitlab_gitaly_statefulset_template_drift: >-
+          {{
+            (_gitlab_existing_gitaly_statefulsets.resources | length == 1) and
+            (((_gitlab_existing_gitaly_statefulset.spec.volumeClaimTemplates | first).
+               spec.resources.requests.storage | default('')) != gitlab_gitaly_storage_size or
+             ((_gitlab_existing_gitaly_statefulset.spec.volumeClaimTemplates | first).
+               spec.storageClassName | default('', true)) !=
+             _gitlab_desired_gitaly_storage_class)
+          }}
+
+    # A Pending claim with no volumeName has never had storage attached, so it
+    # cannot contain Gitaly data. Any claim that is Bound/Lost or has a volume
+    # reference is deliberately rejected and requires an operator-led migration.
+    - name: Prove mismatched Gitaly claims are unbound and data-free
+      ansible.builtin.assert:
+        that:
+          - (item.status.phase | default('')) == 'Pending'
+          - (item.spec.volumeName | default('') | length) == 0
+          - (_gitlab_existing_gitaly_ready_replicas | int) == 0
+        fail_msg: >-
+          Refusing automatic Gitaly storage replacement for PVC
+          {{ item.metadata.name }}: requested={{ item.spec.resources.requests.storage }},
+          desired={{ gitlab_gitaly_storage_size }}, phase={{ item.status.phase | default('Unknown') }},
+          volume={{ item.spec.volumeName | default('none', true) }},
+          ready_replicas={{ _gitlab_existing_gitaly_ready_replicas }}.
+          A Bound, previously ready, or otherwise potentially data-bearing Gitaly volume
+          requires an explicit backup and operator-led migration.
+      loop: '{{ _gitlab_gitaly_size_mismatched_pvcs }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+
+    - name: Remove never-ready Gitaly StatefulSets with immutable storage drift
+      kubernetes.core.k8s:
+        state: absent
+        api_version: apps/v1
+        kind: StatefulSet
+        namespace: '{{ gitlab_namespace }}'
+        name: '{{ item.metadata.name }}'
+        wait: true
+        wait_timeout: 180
+      loop: '{{ _gitlab_existing_gitaly_statefulsets.resources }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+      when: _gitlab_gitaly_size_mismatched_pvcs | length > 0
+
+    - name: Remove unbound Gitaly claims with immutable storage drift
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: '{{ gitlab_namespace }}'
+        name: '{{ item.metadata.name }}'
+        wait: true
+        wait_timeout: 180
+      loop: '{{ _gitlab_gitaly_size_mismatched_pvcs }}'
+      loop_control:
+        label: '{{ item.metadata.name }}'
+
+    # A Helm values correction can leave a healthy StatefulSet's immutable
+    # volumeClaimTemplate stale while its already-bound PVC has the exact
+    # desired request and class. Orphaning only that proven Helm StatefulSet
+    # lets Helm recreate the controller and adopt its pod/PVC; the data-bearing
+    # claim is never deleted or patched.
+    - name: Prove bound Gitaly PVC and controller are safe for StatefulSet-only recovery
+      ansible.builtin.assert:
+        that:
+          - (_gitlab_gitaly_size_mismatched_pvcs | length) == 0
+          - (_gitlab_existing_gitaly_pvc.status.phase | default('')) == 'Bound'
+          - (_gitlab_existing_gitaly_pvc.spec.volumeName | default('') | length) > 0
+          - _gitlab_existing_gitaly_pvc.spec.resources.requests.storage == gitlab_gitaly_storage_size
+          - _gitlab_existing_gitaly_pvc.status.capacity.storage == gitlab_gitaly_storage_size
+          - _gitlab_existing_gitaly_pvc.spec.storageClassName == _gitlab_desired_gitaly_storage_class
+          - >-
+            ((_gitlab_existing_gitaly_statefulset.spec.replicas | default(1) | int) > 0 and
+             (_gitlab_existing_gitaly_statefulset.status.observedGeneration | default(0) | int) >=
+             (_gitlab_existing_gitaly_statefulset.metadata.generation | int) and
+             (_gitlab_existing_gitaly_statefulset.status.readyReplicas | default(0) | int) ==
+             (_gitlab_existing_gitaly_statefulset.spec.replicas | default(1) | int) and
+             (_gitlab_existing_gitaly_statefulset.status.currentReplicas | default(0) | int) ==
+             (_gitlab_existing_gitaly_statefulset.spec.replicas | default(1) | int) and
+             (_gitlab_existing_gitaly_statefulset.status.updatedReplicas | default(0) | int) ==
+             (_gitlab_existing_gitaly_statefulset.spec.replicas | default(1) | int) and
+             (_gitlab_existing_gitaly_statefulset.status.availableReplicas | default(0) | int) ==
+             (_gitlab_existing_gitaly_statefulset.spec.replicas | default(1) | int) and
+             (_gitlab_existing_gitaly_statefulset.status.currentRevision | default('') | length) > 0 and
+             _gitlab_existing_gitaly_statefulset.status.currentRevision ==
+             _gitlab_existing_gitaly_statefulset.status.updateRevision) or
+            ((_gitlab_existing_gitaly_statefulset.spec.replicas | default(1) | int) == 0 and
+             (_gitlab_existing_gitaly_statefulset.status.readyReplicas | default(0) | int) == 0 and
+             (_gitlab_existing_gitaly_statefulset.status.currentReplicas | default(0) | int) == 0 and
+             (_gitlab_existing_gitaly_statefulset.status.updatedReplicas | default(0) | int) == 0)
+        fail_msg: >-
+          Refusing StatefulSet-only Gitaly recovery: the retained PVC is not an
+          exact Bound {{ gitlab_gitaly_storage_size }}
+          {{ _gitlab_desired_gitaly_storage_class }} claim, or the controller is
+          neither fully healthy nor safely scaled to zero. The PVC was not changed.
+      when:
+        - _gitlab_gitaly_statefulset_template_drift | bool
+        - _gitlab_gitaly_size_mismatched_pvcs | length == 0
+
+    - name: Orphan only the drifted Gitaly StatefulSet while retaining its Bound PVC
+      kubernetes.core.k8s:
+        state: absent
+        api_version: apps/v1
+        kind: StatefulSet
+        namespace: '{{ gitlab_namespace }}'
+        name: '{{ _gitlab_existing_gitaly_statefulset.metadata.name }}'
+        delete_options:
+          propagationPolicy: Orphan
+          preconditions:
+            uid: '{{ _gitlab_existing_gitaly_statefulset.metadata.uid }}'
+            resourceVersion: '{{ _gitlab_existing_gitaly_statefulset.metadata.resourceVersion }}'
+        wait: true
+        wait_timeout: 180
+      when:
+        - _gitlab_gitaly_statefulset_template_drift | bool
+        - _gitlab_gitaly_size_mismatched_pvcs | length == 0
+
+    - name: Re-read retained Gitaly PVC after StatefulSet orphaning
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: '{{ gitlab_namespace }}'
+        name: '{{ _gitlab_existing_gitaly_pvc.metadata.name }}'
+      register: _gitlab_retained_gitaly_pvc
+      when:
+        - _gitlab_gitaly_statefulset_template_drift | bool
+        - _gitlab_gitaly_size_mismatched_pvcs | length == 0
+
+    - name: Prove StatefulSet-only recovery preserved the exact Bound Gitaly PVC
+      ansible.builtin.assert:
+        that:
+          - (_gitlab_retained_gitaly_pvc.resources | length) == 1
+          - (_gitlab_retained_gitaly_pvc.resources | first).metadata.uid == _gitlab_existing_gitaly_pvc.metadata.uid
+          - (_gitlab_retained_gitaly_pvc.resources | first).status.phase == 'Bound'
+          - (_gitlab_retained_gitaly_pvc.resources | first).spec.volumeName == _gitlab_existing_gitaly_pvc.spec.volumeName
+          - (_gitlab_retained_gitaly_pvc.resources | first).spec.resources.requests.storage == gitlab_gitaly_storage_size
+          - (_gitlab_retained_gitaly_pvc.resources | first).status.capacity.storage == gitlab_gitaly_storage_size
+          - (_gitlab_retained_gitaly_pvc.resources | first).spec.storageClassName == _gitlab_desired_gitaly_storage_class
+        fail_msg: >-
+          StatefulSet orphaning did not preserve the exact Bound Gitaly PVC;
+          refusing to continue to Helm reconciliation.
+      when:
+        - _gitlab_gitaly_statefulset_template_drift | bool
+        - _gitlab_gitaly_size_mismatched_pvcs | length == 0
 - name: Install GitLab with Helm
   kubernetes.core.helm:
     name: gitlab
@@ -150,6 +610,10 @@
     release_namespace: '{{ gitlab_namespace }}'
     create_namespace: true
     release_state: present
+    # Helm 4 uses server-side apply. Reclaim fields previously patched by the
+    # platform or older kubectl-based migration tooling before reapplying the
+    # chart, then reapply the declared post-Helm affinity below.
+    force_conflicts: true
     timeout: 30m0s
     wait: false
     values:
@@ -298,13 +762,10 @@
               cpu: 500m
               memory: 256Mi
         gitaly:
-          storages:
-            default:
-              persistentVolumeClaim:
-                size: '{{ gitlab_gitaly_storage_size }}'
-                storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
-              tags:
-                - default
+          persistence:
+            enabled: true
+            size: '{{ gitlab_gitaly_storage_size }}'
+            storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
           resources:
             requests:
               cpu: '{{ ''50m'' if gitlab_mode == ''light'' else ''200m'' }}'
@@ -361,7 +822,10 @@
                 --s3tool awscli
                 --aws-s3-endpoint-url {{ object_storage_endpoint }}
               persistence:
-                enabled: true
+                # Backups are streamed to object storage; persistent scratch
+                # remains the safe default but can be disabled explicitly for
+                # quota-constrained clusters.
+                enabled: '{{ gitlab_backup_persistence_enabled | bool }}'
                 storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
                 size: '{{ gitlab_backup_persistence_size }}'
       registry:
@@ -402,6 +866,168 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_ce_with_helm is not failed
+- name: Enforce GitLab post-reconcile readiness
+  block:
+    - name: Discover GitLab persistent volume claims
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+      register: _gitlab_selected_pvcs
+
+    - name: Require GitLab persistent volume claims to exist
+      ansible.builtin.assert:
+        that:
+          - (_gitlab_selected_pvcs.resources | default([]) | length) > 0
+        fail_msg: >-
+          No release=gitlab PersistentVolumeClaims were found in namespace
+          {{ gitlab_namespace }}; refusing to report a successful GitLab reconcile.
+
+    - name: Wait for all GitLab persistent volume claims to be Bound
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - --namespace
+          - '{{ gitlab_namespace }}'
+          - --for=jsonpath={.status.phase}=Bound
+          - --selector=release=gitlab
+          - persistentvolumeclaim
+          - '--timeout={{ gitlab_readiness_timeout }}'
+      changed_when: false
+
+    - name: Define required GitLab controllers
+      ansible.builtin.set_fact:
+        _gitlab_required_controllers:
+          - kind: StatefulSet
+            app: gitaly
+          - kind: Deployment
+            app: webservice
+          - kind: Deployment
+            app: sidekiq
+          - kind: Deployment
+            app: toolbox
+
+    - name: Discover required GitLab controllers by stable chart labels
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: '{{ item.kind }}'
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - 'app={{ item.app }}'
+      loop: '{{ _gitlab_required_controllers }}'
+      loop_control:
+        label: '{{ item.kind }}/app={{ item.app }}'
+      register: _gitlab_required_controller_discovery
+
+    - name: Require every critical GitLab controller to exist
+      ansible.builtin.assert:
+        that:
+          - (item.resources | default([]) | length) > 0
+        fail_msg: >-
+          Required GitLab {{ item.item.kind }} with labels
+          release=gitlab,app={{ item.item.app }} was not found in namespace
+          {{ gitlab_namespace }}.
+      loop: '{{ _gitlab_required_controller_discovery.results }}'
+      loop_control:
+        label: '{{ item.item.kind }}/app={{ item.item.app }}'
+
+    - name: Wait boundedly for all critical GitLab controller rollouts
+      ansible.builtin.shell: |
+        set -euo pipefail
+        pids=()
+        {% for controller in _gitlab_required_controllers %}
+        kubectl rollout status \
+          --namespace {{ gitlab_namespace | quote }} \
+          {{ controller.kind | lower | quote }} \
+          --selector={{ ('release=gitlab,app=' ~ controller.app) | quote }} \
+          --timeout={{ gitlab_readiness_timeout | quote }} &
+        pids+=("$!")
+        {% endfor %}
+
+        result=0
+        for pid in "${pids[@]}"; do
+          if ! wait "$pid"; then
+            result=1
+          fi
+        done
+        exit "$result"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+  rescue:
+    - name: Collect sanitized GitLab PVC readiness metadata
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - persistentvolumeclaim
+          - --namespace
+          - '{{ gitlab_namespace }}'
+          - --selector=release=gitlab
+          - --no-headers
+          - >-
+            --output=custom-columns=NAME:.metadata.name,PHASE:.status.phase,
+            REQUEST:.spec.resources.requests.storage,STORAGECLASS:.spec.storageClassName,
+            VOLUME:.spec.volumeName
+      register: _gitlab_readiness_pvc_metadata
+      changed_when: false
+      failed_when: false
+
+    - name: Collect sanitized GitLab controller readiness metadata
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - deployment,statefulset
+          - --namespace
+          - '{{ gitlab_namespace }}'
+          - '--selector=release=gitlab,app in (gitaly,webservice,sidekiq,toolbox)'
+          - --no-headers
+          - >-
+            --output=custom-columns=KIND:.kind,NAME:.metadata.name,APP:.metadata.labels.app,
+            DESIRED:.spec.replicas,READY:.status.readyReplicas,
+            AVAILABLE:.status.availableReplicas,UPDATED:.status.updatedReplicas
+      register: _gitlab_readiness_controller_metadata
+      changed_when: false
+      failed_when: false
+
+    - name: Collect sanitized GitLab warning event metadata
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - event
+          - --namespace
+          - '{{ gitlab_namespace }}'
+          - --field-selector=type=Warning
+          - --sort-by=.metadata.creationTimestamp
+          - --no-headers
+          - >-
+            --output=custom-columns=LAST:.lastTimestamp,REASON:.reason,
+            OBJECT_KIND:.involvedObject.kind,OBJECT_NAME:.involvedObject.name,COUNT:.count
+      register: _gitlab_readiness_warning_events
+      changed_when: false
+      failed_when: false
+
+    - name: Fail closed when GitLab is not fully ready
+      ansible.builtin.fail:
+        msg: |-
+          GitLab post-reconcile readiness gate failed at "{{ ansible_failed_task.name }}".
+          No Secret data, container environment, or event messages are included below.
+
+          PersistentVolumeClaims (name, phase, request, storage class, volume):
+          {{ _gitlab_readiness_pvc_metadata.stdout | default('unavailable', true) }}
+
+          Critical controllers (kind, name, app, desired, ready, available, updated):
+          {{ _gitlab_readiness_controller_metadata.stdout | default('unavailable', true) }}
+
+          Warning events (last timestamp, reason, object kind, object name, count):
+          {{ _gitlab_readiness_warning_events.stdout | default('none', true) }}
 - name: Add cross-component anti-affinity to GitLab Rails workloads
   kubernetes.core.k8s:
     state: present

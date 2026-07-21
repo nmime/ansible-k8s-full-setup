@@ -13,6 +13,10 @@ object_storage_master_size: 4Gi
 object_storage_volume_size: "{{ '20Gi' if resource_tier | default(tier) == 'minimal' else '40Gi' if resource_tier | default(tier) == 'small' else '100Gi' if resource_tier | default(tier) == 'medium' else '150Gi' }}"
 object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
+# Keep enough logical-volume slots for the platform's S3 collections even on
+# the 10Gi compact-storage profile. SeaweedFS auto-calculates the slot count
+# from this limit and the physical filesystem capacity.
+object_storage_volume_size_limit_mb: 256
 object_storage_replicas: "{{ 3 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
 object_storage_volume_replicas: "{{ 3 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
 object_storage_filer_replicas: "{{ 2 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
@@ -28,6 +32,8 @@ object_storage_region: us-east-1
 # Official AWS CLI v2 container used for neutral S3 bootstrap/smoke jobs.
 # The docker.io amazon/aws-cli repository publishes latest/versioned tags; tag "2" is not published.
 object_storage_aws_cli_image: amazon/aws-cli:2.34.48
+# Matches the chart app version and supplies cp/cmp for offline index migration.
+object_storage_index_migration_image: chrislusf/seaweedfs:4.25
 
 # Safe static defaults are intentionally non-production; generate-secrets overrides and persists real values.
 object_storage_access_key: "{{ generated_object_storage_access_key | default('seaweedfsadmin') }}"

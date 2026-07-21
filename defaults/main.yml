@@ -286,10 +286,16 @@ backup_storage_bucket: backups
 backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
 backup_storage_path_style: true
 backup_dr_enabled: false
-backup_dr_storage_endpoint: ""
-backup_dr_storage_region: us-east-1
-backup_dr_storage_bucket: ""
-backup_dr_storage_prefix: "{{ project_name | default('k8s') }}/velero"
+# The operational entrypoints load the gitignored project .env before Ansible
+# starts. Non-secret location metadata may therefore be supplied there without
+# duplicating it into platform.yaml; explicit profile values still win during
+# normalization. Credentials remain process-environment-only.
+backup_dr_storage_endpoint: "{{ lookup('env', 'BACKUP_DR_ENDPOINT') | default('', true) }}"
+backup_dr_storage_region: "{{ lookup('env', 'BACKUP_DR_REGION') | default('us-east-1', true) }}"
+backup_dr_storage_bucket: "{{ lookup('env', 'BACKUP_DR_BUCKET') | default('', true) }}"
+backup_dr_storage_prefix: >-
+  {{ lookup('env', 'BACKUP_DR_PREFIX') |
+     default((project_name | default('k8s')) ~ '/velero', true) }}
 backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}"
 backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
 backup_dr_schedule: "30 2 * * *"

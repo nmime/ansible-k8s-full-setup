@@ -145,6 +145,11 @@ class TestScriptStructure:
     def test_checks_shellcheck(self):
         assert "shellcheck" in self.content, "Script should check shellcheck"
 
+    def test_shellcheck_excludes_generated_campaign_state(self):
+        assert "-not -path './.campaign-state/*'" in self.content
+        assert "-not -path './.campaign-runtime/*'" in self.content
+        assert "-not -path './.migration-state/*'" in self.content
+
     def test_checks_version_matrix(self):
         assert "verify-version-matrix" in self.content, "Script should check version-matrix"
 

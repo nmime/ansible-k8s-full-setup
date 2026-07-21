@@ -52,7 +52,8 @@ all:
     # ----------------------------------------
     # Storage (SeaweedFS object storage)
     # ----------------------------------------
-    object_storage_replicas: 4
+    # Current medium baseline: three masters and three volume servers.
+    object_storage_replicas: 3
     object_storage_volume_size: 100Gi
 
     # ----------------------------------------
@@ -104,6 +105,13 @@ all:
     deploy_dragonfly: true
     deploy_temporal: true
     deploy_postal: true
+    deploy_apm: true
+    deploy_blackbox: true
+    deploy_glitchtip: true
+
+    # This flat inventory surface is retained for direct-Ansible compatibility.
+    # Prefer platform-orchestrator/platform.yaml for the complete lifecycle
+    # selection model, including PMM, Coroot, tracing, compliance, and backup.
 
     # Application repositories are registered in Argo CD separately and must
     # comply with the configured AppProject source/namespace allowlists.

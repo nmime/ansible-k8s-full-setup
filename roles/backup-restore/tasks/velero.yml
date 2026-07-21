@@ -57,6 +57,17 @@
 # server-side apply, so a later upgrade otherwise conflicts with velero-server
 # and can leave the release failed. Scheduled backups do not use owner
 # references, so replacing this declarative schedule never removes backups.
+- name: "Backup-DR | Detect whether the Velero Schedule CRD is installed"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - crd
+      - schedules.velero.io
+  register: backup_dr_schedule_crd
+  changed_when: false
+  failed_when: false
+
 - name: "Backup-DR | Replace the controller-mutated Helm schedule safely"
   kubernetes.core.k8s:
     state: absent
@@ -65,6 +76,7 @@
     namespace: "{{ backup_dr_namespace }}"
     name: velero-full-cluster
     wait: true
+  when: backup_dr_schedule_crd.rc == 0
 
 - name: "Backup-DR | Deploy Velero with node-agent filesystem backups"
   kubernetes.core.helm:

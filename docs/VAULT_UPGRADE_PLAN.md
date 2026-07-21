@@ -145,7 +145,7 @@ aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3 ls s3://vault-snapshots/ | grep
 
 ### Step 2: Update Chart + Image Version
 
-Edit `roles/k8s-secrets/tasks/main.yml` **temporarily** for the upgrade step:
+Edit `roles/k8s-secrets/tasks/reconcile.yml` **temporarily** for the upgrade step:
 
 ```yaml
 # Change these two variables:
@@ -255,7 +255,7 @@ If any step fails:
 
 Vault 1.22+ introduces **AutoStorage**, a new storage management system that replaces the monolithic Raft storage configuration. In Vault 2.0, AutoStorage becomes the default.
 
-**Impact on this setup:** Our current Raft config in `roles/k8s-secrets/tasks/main.yml` uses the legacy `storage "raft"` block. During the incremental upgrade:
+**Impact on this setup:** Our current Raft config in `roles/k8s-secrets/tasks/reconcile.yml` uses the legacy `storage "raft"` block. During the incremental upgrade:
 
 - **1.21 → 1.22:** Legacy config continues to work. No immediate action.
 - **1.22 → 1.24:** AutoStorage is available but legacy storage still works.
@@ -300,7 +300,7 @@ If the upgrade fails during a minor version step, revert the version changes:
 
 ```bash
 # Revert version changes in the tasks file
-git checkout HEAD -- roles/k8s-secrets/tasks/main.yml
+git checkout HEAD -- roles/k8s-secrets/tasks/reconcile.yml
 # Or manually revert vault_version and vault_chart_ver
 
 # Re-deploy with the previous version
@@ -445,7 +445,7 @@ and cleans up. `--skip-cleanup` preserves the namespace for manual inspection.
 **Implemented:** 2025-07-10
 
 **Changes made:**
-- `roles/k8s-secrets/tasks/main.yml`: vault_version `1.21.2` → `2.0.3`, vault_chart_ver `0.32.0` → `0.34.0`
+- `roles/k8s-secrets/tasks/reconcile.yml`: vault_version `1.21.2` → `2.0.3`, vault_chart_ver `0.32.0` → `0.34.0`
 - `roles/backup-restore/tasks/vault_raft.yml`: backup image `1.21.2` → `2.0.3`
 - `roles/backup-restore/defaults/main.yml`: backup_vault_image `1.21.2` → `2.0.3`
 - `roles/README.md`: version reference updated

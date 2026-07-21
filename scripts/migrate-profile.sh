@@ -23,6 +23,21 @@ DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 DR_REGION="${BACKUP_DR_REGION:-us-east-1}"
 DR_PREFIX="${BACKUP_DR_PREFIX:-}"
 BACKUP_RECIPIENT="${CLUSTER_BACKUP_AGE_RECIPIENT:-}"
+OPERATOR_STATE_ROOT="${PROFILE_MIGRATION_OPERATOR_STATE_ROOT:-}"
+SECRETS_FILE="${PROFILE_MIGRATION_SECRETS_FILE:-}"
+VAULT_INIT_FILE="${PROFILE_MIGRATION_VAULT_INIT_FILE:-}"
+VOLUME_QUOTA_GIB="${PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB:-}"
+VOLUME_SAFETY_MARGIN_GIB="${PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB:-100}"
+VOLUME_QUOTA_EXPLICIT=false
+VOLUME_SAFETY_MARGIN_EXPLICIT=false
+OPERATOR_STATE_ROOT_EXPLICIT=false
+SECRETS_FILE_EXPLICIT=false
+VAULT_INIT_FILE_EXPLICIT=false
+[[ -z "$OPERATOR_STATE_ROOT" ]] || OPERATOR_STATE_ROOT_EXPLICIT=true
+[[ -z "$SECRETS_FILE" ]] || SECRETS_FILE_EXPLICIT=true
+[[ -z "$VAULT_INIT_FILE" ]] || VAULT_INIT_FILE_EXPLICIT=true
+[[ -z "$VOLUME_QUOTA_GIB" ]] || VOLUME_QUOTA_EXPLICIT=true
+[[ -z "${PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB+x}" ]] || VOLUME_SAFETY_MARGIN_EXPLICIT=true
 RESIZE_TIMEOUT="${PROFILE_MIGRATION_RESIZE_TIMEOUT:-900s}"
 HCLOUD_CLIENT_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_CLIENT_TIMEOUT_SECONDS:-900}"
 HCLOUD_STATE_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS:-7200}"
@@ -61,6 +76,16 @@ Options:
   --dr-region NAME       S3 region (default: us-east-1)
   --dr-prefix PREFIX     Velero prefix (default: <project>/velero)
   --backup-recipient ID  age recipient for encrypted cluster bundles
+  --operator-state-root DIR
+                         Per-cluster generated-state directory; derives the
+                         secrets and Vault init paths used by run_tier.sh
+  --secrets-file FILE    Exact generated secrets file for this cluster
+  --vault-init-file FILE Exact encrypted Vault init recovery file
+  --volume-quota-gib N   Explicit Hetzner account volume quota in GiB; required
+                         for live execute because the provider has no quota API
+  --volume-safety-margin-gib N
+                         Unallocated capacity retained after the estimated peak
+                         (default: 100 GiB)
   --dry-run              Show pending stages without mutation
   --force                Skip interactive MIGRATE/FINALIZE confirmations
   -h, --help             Show this help
@@ -84,6 +109,11 @@ while [[ $# -gt 0 ]]; do
     --dr-region) DR_REGION="$2"; shift 2 ;;
     --dr-prefix) DR_PREFIX="$2"; shift 2 ;;
     --backup-recipient) BACKUP_RECIPIENT="$2"; shift 2 ;;
+    --operator-state-root) OPERATOR_STATE_ROOT="$2"; OPERATOR_STATE_ROOT_EXPLICIT=true; shift 2 ;;
+    --secrets-file) SECRETS_FILE="$2"; SECRETS_FILE_EXPLICIT=true; shift 2 ;;
+    --vault-init-file) VAULT_INIT_FILE="$2"; VAULT_INIT_FILE_EXPLICIT=true; shift 2 ;;
+    --volume-quota-gib) VOLUME_QUOTA_GIB="$2"; VOLUME_QUOTA_EXPLICIT=true; shift 2 ;;
+    --volume-safety-margin-gib) VOLUME_SAFETY_MARGIN_GIB="$2"; VOLUME_SAFETY_MARGIN_EXPLICIT=true; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --force) FORCE=true; shift ;;
     plan|execute|resume|status|rollback|finalize)
@@ -97,6 +127,10 @@ done
 [[ -f "$CONFIG_FILE" ]] || fail "platform config not found: $CONFIG_FILE"
 CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
 for tool in yq jq ansible-playbook; do command -v "$tool" >/dev/null || fail "required tool is missing: $tool"; done
+[[ "$VOLUME_SAFETY_MARGIN_GIB" =~ ^[0-9]+$ ]] \
+  || fail "--volume-safety-margin-gib must be a non-negative integer"
+[[ -z "$VOLUME_QUOTA_GIB" || "$VOLUME_QUOTA_GIB" =~ ^[1-9][0-9]*$ ]] \
+  || fail "--volume-quota-gib must be a positive integer"
 
 is_named_profile() {
   local candidate="$1" profile
@@ -109,6 +143,33 @@ PROJECT=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
 DOMAIN=$(yq -r '.global.domain // ""' "$CONFIG_FILE")
 EMAIL=$(yq -r '.global.email // ""' "$CONFIG_FILE")
 [[ -n "$DR_PREFIX" ]] || DR_PREFIX="${PROJECT}/velero"
+
+absolute_existing_parent_path() {
+  local path="$1" parent base
+  parent=$(dirname "$path")
+  base=$(basename "$path")
+  [[ -d "$parent" ]] || fail "operator-state parent directory is missing: $parent"
+  parent=$(cd "$parent" && pwd)
+  printf '%s/%s\n' "$parent" "$base"
+}
+
+if [[ -n "$OPERATOR_STATE_ROOT" ]]; then
+  [[ -d "$OPERATOR_STATE_ROOT" ]] || fail "operator-state root is missing: $OPERATOR_STATE_ROOT"
+  OPERATOR_STATE_ROOT=$(cd "$OPERATOR_STATE_ROOT" && pwd)
+  if [[ -z "$SECRETS_FILE" ]]; then
+    SECRETS_FILE="${OPERATOR_STATE_ROOT}/.platform-secrets.yml"
+    SECRETS_FILE_EXPLICIT=true
+  fi
+  if [[ -z "$VAULT_INIT_FILE" ]]; then
+    VAULT_INIT_FILE="${OPERATOR_STATE_ROOT}/.vault-init-${PROJECT}.json"
+    VAULT_INIT_FILE_EXPLICIT=true
+  fi
+fi
+[[ -n "$SECRETS_FILE" ]] || SECRETS_FILE="${PROJECT_ROOT}/playbooks/.platform-secrets.yml"
+[[ -n "$VAULT_INIT_FILE" ]] || VAULT_INIT_FILE="${PROJECT_ROOT}/playbooks/.vault-init-${PROJECT}.json"
+SECRETS_FILE=$(absolute_existing_parent_path "$SECRETS_FILE")
+VAULT_INIT_FILE=$(absolute_existing_parent_path "$VAULT_INIT_FILE")
+
 STATE_BASE="${PROFILE_MIGRATION_STATE_DIR:-${PROJECT_ROOT}/.migration-state}"
 POINTER_FILE="${STATE_BASE}/${PROJECT}-active-profile-migration"
 SOURCE_PROFILE=""
@@ -183,6 +244,68 @@ ROLLBACK_CONFIG="${STATE_DIR}/rollback-platform.yaml"
 STORAGE_RETENTION_FILE="${STATE_DIR}/storage-retention.tsv"
 STATEFUL_RETENTION_FILE="${STATE_DIR}/stateful-retention.tsv"
 NODE_TYPE_RETENTION_FILE="${STATE_DIR}/node-type-retention.tsv"
+SELECTION_RETENTION_FILE="${STATE_DIR}/selection-retention.tsv"
+CAPACITY_PLAN_FILE="${STATE_DIR}/volume-capacity-plan.json"
+
+restore_persisted_operator_state() {
+  local recorded_root recorded_secrets recorded_vault
+  [[ -f "$STATE_FILE" ]] || return 0
+  recorded_root=$(jq -r '.operator_state.root // ""' "$STATE_FILE")
+  recorded_secrets=$(jq -r '.operator_state.secrets_file // ""' "$STATE_FILE")
+  recorded_vault=$(jq -r '.operator_state.vault_init_file // ""' "$STATE_FILE")
+
+  if [[ "$OPERATOR_STATE_ROOT_EXPLICIT" == true && -n "$recorded_root" && "$OPERATOR_STATE_ROOT" != "$recorded_root" ]]; then
+    fail "--operator-state-root does not match the active migration state: $recorded_root"
+  fi
+  if [[ "$SECRETS_FILE_EXPLICIT" == true && -n "$recorded_secrets" && "$SECRETS_FILE" != "$recorded_secrets" ]]; then
+    fail "--secrets-file does not match the active migration state: $recorded_secrets"
+  fi
+  if [[ "$VAULT_INIT_FILE_EXPLICIT" == true && -n "$recorded_vault" && "$VAULT_INIT_FILE" != "$recorded_vault" ]]; then
+    fail "--vault-init-file does not match the active migration state: $recorded_vault"
+  fi
+
+  [[ -z "$recorded_root" || "$OPERATOR_STATE_ROOT_EXPLICIT" == true ]] || OPERATOR_STATE_ROOT="$recorded_root"
+  [[ -z "$recorded_secrets" || "$SECRETS_FILE_EXPLICIT" == true ]] || SECRETS_FILE="$recorded_secrets"
+  [[ -z "$recorded_vault" || "$VAULT_INIT_FILE_EXPLICIT" == true ]] || VAULT_INIT_FILE="$recorded_vault"
+}
+
+restore_persisted_volume_settings() {
+  local recorded_quota recorded_margin
+  [[ -f "$STATE_FILE" ]] || return 0
+  recorded_quota=$(jq -r '.volume_capacity.quota_gib // ""' "$STATE_FILE")
+  recorded_margin=$(jq -r '.volume_capacity.safety_margin_gib // ""' "$STATE_FILE")
+  if [[ "$VOLUME_QUOTA_EXPLICIT" == true && -n "$recorded_quota" && "$VOLUME_QUOTA_GIB" != "$recorded_quota" ]]; then
+    fail "--volume-quota-gib does not match the active migration state: $recorded_quota"
+  fi
+  if [[ "$VOLUME_SAFETY_MARGIN_EXPLICIT" == true && -n "$recorded_margin" && "$VOLUME_SAFETY_MARGIN_GIB" != "$recorded_margin" ]]; then
+    fail "--volume-safety-margin-gib does not match the active migration state: $recorded_margin"
+  fi
+  [[ -n "$VOLUME_QUOTA_GIB" || -z "$recorded_quota" ]] || VOLUME_QUOTA_GIB="$recorded_quota"
+  [[ "$VOLUME_SAFETY_MARGIN_EXPLICIT" == true || -z "$recorded_margin" ]] || VOLUME_SAFETY_MARGIN_GIB="$recorded_margin"
+}
+
+validate_operator_state_inputs() {
+  [[ -f "$SECRETS_FILE" && -r "$SECRETS_FILE" && -s "$SECRETS_FILE" ]] \
+    || fail "exact generated secrets file is missing, unreadable, or empty: $SECRETS_FILE"
+  if [[ $(yq -r '.secrets.enabled // false' "$SOURCE_CONFIG") == true ]]; then
+    [[ -f "$VAULT_INIT_FILE" && -r "$VAULT_INIT_FILE" && -s "$VAULT_INIT_FILE" ]] \
+      || fail "exact encrypted Vault init file is missing, unreadable, or empty: $VAULT_INIT_FILE"
+  fi
+}
+
+validate_volume_capacity_settings() {
+  [[ "$VOLUME_QUOTA_GIB" =~ ^[1-9][0-9]*$ ]] \
+    || fail "set an explicit positive Hetzner account volume quota with --volume-quota-gib or PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB"
+  [[ "$VOLUME_SAFETY_MARGIN_GIB" =~ ^[0-9]+$ ]] \
+    || fail "--volume-safety-margin-gib must be a non-negative integer"
+  (( VOLUME_SAFETY_MARGIN_GIB < VOLUME_QUOTA_GIB )) \
+    || fail "volume safety margin must be smaller than the account volume quota"
+}
+
+if [[ "$COMMAND" != plan && "$COMMAND" != execute ]]; then
+  restore_persisted_operator_state
+  restore_persisted_volume_settings
+fi
 
 state_status() {
   jq . "$STATE_FILE"
@@ -285,6 +408,7 @@ component_path() {
     gitlab-runner) printf '.gitlab.runner.enabled' ;; gitops) printf '.gitops.enabled' ;; observability) printf '.observability.enabled' ;;
     coroot) printf '.coroot.enabled' ;; tracing) printf '.tracing.enabled' ;; autoscaling) printf '.autoscaling.enabled' ;;
     temporal) printf '.temporal.enabled' ;; postal) printf '.postal.enabled' ;; backup) printf '.backup.enabled' ;;
+    disaster-recovery) printf '.backup.disaster_recovery.enabled' ;;
     glitchtip) printf '.glitchtip.enabled' ;; apm) printf '.apm.enabled' ;; blackbox) printf '.blackbox.enabled' ;;
     daytona) printf '.applications.daytona.enabled' ;; hipaa) printf '.compliance.hipaa.enabled' ;; *) return 1 ;;
   esac
@@ -296,11 +420,110 @@ component_enabled() {
   [[ $(yq -r "${path} // false" "$file") == true ]]
 }
 
+component_selection_paths() {
+  cat <<'EOF'
+.storage.enabled
+.secrets.enabled
+.secrets.eso.enabled
+.databases.enabled
+.databases.postgresql.enabled
+.databases.mongodb.enabled
+.elasticsearch.enabled
+.dragonfly.enabled
+.gitlab.enabled
+.gitlab.runner.enabled
+.gitops.enabled
+.observability.enabled
+.observability.pmm.enabled
+.coroot.enabled
+.tracing.enabled
+.autoscaling.enabled
+.temporal.enabled
+.postal.enabled
+.backup.enabled
+.backup.disaster_recovery.enabled
+.glitchtip.enabled
+.apm.enabled
+.blackbox.enabled
+.applications.daytona.enabled
+.compliance.hipaa.enabled
+.alerting.telegram.enabled
+.alerting.email.enabled
+EOF
+}
+
+preserve_optional_selection_overrides() {
+  local baseline="$PROJECT_ROOT/platform-orchestrator/profiles/${SOURCE_PROFILE}.yaml"
+  local path source_value baseline_value
+  [[ -f "$baseline" ]] || fail "source profile baseline is missing: $baseline"
+  : > "$SELECTION_RETENTION_FILE"
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    source_value=$(yq -r "${path} // false" "$SOURCE_CONFIG")
+    baseline_value=$(yq -r "${path} // false" "$baseline")
+    if [[ "$source_value" != "$baseline_value" ]]; then
+      SELECTION_VALUE="$source_value" yq -i \
+        "${path} = (strenv(SELECTION_VALUE) == \"true\")" "$TARGET_CONFIG"
+      printf '%s\t%s\t%s\n' "$path" "$baseline_value" "$source_value" >> "$SELECTION_RETENTION_FILE"
+    fi
+  done < <(component_selection_paths)
+}
+
+enforce_target_dependency_closure() {
+  # A target profile can introduce dependants that did not exist in the source
+  # profile. When the operator explicitly disabled a dependency in the source,
+  # keep that choice authoritative by disabling the newly introduced dependants
+  # instead of generating an invalid target selection.
+  if ! component_enabled "$TARGET_CONFIG" object-storage; then
+    yq -i '.gitlab.enabled = false | .gitlab.runner.enabled = false |
+      .tracing.enabled = false | .backup.enabled = false |
+      .backup.disaster_recovery.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" secrets; then
+    yq -i '.secrets.eso.enabled = false | .compliance.hipaa.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" databases; then
+    yq -i '.databases.postgresql.enabled = false | .databases.mongodb.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" postgresql; then
+    yq -i '.gitlab.enabled = false | .gitlab.runner.enabled = false |
+      .temporal.enabled = false | .glitchtip.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" elasticsearch; then
+    yq -i '.apm.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" dragonfly; then
+    yq -i '.gitlab.enabled = false | .gitlab.runner.enabled = false |
+      .postal.enabled = false | .glitchtip.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" gitlab; then
+    yq -i '.gitlab.runner.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" observability; then
+    yq -i '.observability.pmm.enabled = false | .coroot.enabled = false |
+      .tracing.enabled = false | .blackbox.enabled = false |
+      .compliance.hipaa.enabled = false | .alerting.telegram.enabled = false |
+      .alerting.email.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" postal; then
+    yq -i '.alerting.email.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" backup; then
+    yq -i '.backup.disaster_recovery.enabled = false' "$TARGET_CONFIG"
+  fi
+}
+
 components_to_remove() {
   local component
-  for component in daytona hipaa blackbox apm glitchtip temporal postal tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm glitchtip temporal postal tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     if component_enabled "$SOURCE_CONFIG" "$component" && ! component_enabled "$TARGET_CONFIG" "$component"; then printf '%s\n' "$component"; fi
   done
+}
+
+refuse_automatic_hipaa_retirement() {
+  if component_enabled "$SOURCE_CONFIG" hipaa && ! component_enabled "$TARGET_CONFIG" hipaa; then
+    fail "HIPAA-oriented hardening cannot be retired by profile migration; keep compliance.hipaa.enabled=true or complete a separately reviewed control-by-control reversal before migrating"
+  fi
 }
 
 preserve_non_shrinking_storage() {
@@ -348,6 +571,10 @@ preserve_non_shrinking_storage() {
   retain_larger_replica_count vault-raft '.secrets.vault.replicas' '.secrets.vault.replicas' '.secrets.vault.replicas' 1 1
   if [[ $(profile_mode "$SOURCE_CONFIG") == cluster && $(profile_mode "$TARGET_CONFIG") == cluster ]]; then
     retain_larger_replica_count victoriametrics-cluster '.observability.metrics.replicas' '.observability.metrics.replicas' '.observability.metrics.replicas' 2 2
+    # Retaining the larger VMStorage replica count without its matching
+    # replication factor creates a hybrid topology that stores new samples at
+    # the target's lower durability. Preserve both halves of the HA contract.
+    retain_larger_replica_count victoriametrics-replication-factor '.observability.metrics.replication_factor' '.observability.metrics.replication_factor' '.observability.metrics.replication_factor' 1 1
   fi
 }
 
@@ -363,6 +590,9 @@ generate_configs() {
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.region' "$DR_REGION"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.prefix' "$DR_PREFIX"
+  preserve_optional_selection_overrides
+  enforce_target_dependency_closure
+  refuse_automatic_hipaa_retirement
   preserve_non_shrinking_storage
 
   source_cp=$(yq -r '.infrastructure.control_plane.count' "$SOURCE_CONFIG")
@@ -410,6 +640,32 @@ generate_configs() {
     .infrastructure.workers.count = (strenv(TRANSITION_WORKERS) | tonumber)' "$ROLLBACK_CONFIG"
   set_yaml_string "$ROLLBACK_CONFIG" '.infrastructure.control_plane.type' "$target_cp_type"
   set_yaml_string "$ROLLBACK_CONFIG" '.infrastructure.workers.type' "$target_worker_type"
+  "$SCRIPT_DIR/profile-storage-capacity.py" \
+    --source "$SOURCE_CONFIG" --target "$TARGET_CONFIG" > "$CAPACITY_PLAN_FILE"
+  capacity_quota_json=null
+  [[ "$VOLUME_QUOTA_GIB" =~ ^[1-9][0-9]*$ ]] && capacity_quota_json="$VOLUME_QUOTA_GIB"
+  jq --argjson quota "$capacity_quota_json" \
+    --argjson margin "$VOLUME_SAFETY_MARGIN_GIB" '
+      .planning_inputs={configured_account_quota_gib:$quota,
+        safety_margin_gib:$margin,live_account_usage_required:true} |
+      .minimum_required_headroom_gib=(.required_additional_gib + $margin) |
+      .offline_result=(
+        if $quota == null then "quota-required-before-execute"
+        elif .minimum_required_headroom_gib > $quota then "impossible-even-empty-account"
+        else "requires-live-provider-state" end)
+    ' "$CAPACITY_PLAN_FILE" > "${CAPACITY_PLAN_FILE}.tmp.$$"
+  mv "${CAPACITY_PLAN_FILE}.tmp.$$" "$CAPACITY_PLAN_FILE"
+  jq -e '
+    .schema_version == 1 and
+    (.source.persistent_total_gib | numbers) and
+    (.target.persistent_total_gib | numbers) and
+    (.target_delta_gib | numbers) and
+    (.migration_scratch_gib | numbers) and
+    (.required_additional_gib == (.target_delta_gib + .migration_scratch_gib)) and
+    (.minimum_required_headroom_gib ==
+      (.required_additional_gib + .planning_inputs.safety_margin_gib))
+  ' "$CAPACITY_PLAN_FILE" >/dev/null \
+    || fail "generated volume-capacity plan is invalid"
 }
 
 validate_generated_configs() {
@@ -456,9 +712,19 @@ External backup endpoint: ${DR_ENDPOINT:-MISSING}
 External backup bucket: ${DR_BUCKET:-MISSING}
 Non-shrinking PVC overrides: $(wc -l < "$STORAGE_RETENTION_FILE" | tr -d ' ')
 Data-bearing replica overrides: $(wc -l < "$STATEFUL_RETENTION_FILE" | tr -d ' ')
+Preserved component selection overrides: $(wc -l < "$SELECTION_RETENTION_FILE" | tr -d ' ')
+Estimated source persistent capacity: $(jq -r '.source.persistent_total_gib' "$CAPACITY_PLAN_FILE") GiB
+Estimated target persistent capacity: $(jq -r '.target.persistent_total_gib' "$CAPACITY_PLAN_FILE") GiB
+Estimated target-only/growth delta: $(jq -r '.target_delta_gib' "$CAPACITY_PLAN_FILE") GiB
+Retained migration backup scratch: $(jq -r '.migration_scratch_gib' "$CAPACITY_PLAN_FILE") GiB
+Required additional capacity before safety margin: $(jq -r '.required_additional_gib' "$CAPACITY_PLAN_FILE") GiB
+Configured account volume quota: ${VOLUME_QUOTA_GIB:-MISSING} GiB
+Configured safety margin: ${VOLUME_SAFETY_MARGIN_GIB} GiB
+Offline capacity result: $(jq -r '.offline_result' "$CAPACITY_PLAN_FILE")
 EOF
   [[ ! -s "$STORAGE_RETENTION_FILE" ]] || { printf '\nRetained storage requests (source, requested target, YAML path):\n'; sed 's/\t/  /g' "$STORAGE_RETENTION_FILE"; }
   [[ ! -s "$STATEFUL_RETENTION_FILE" ]] || { printf '\nRetained data-bearing replicas (source, requested target, YAML path):\n'; sed 's/\t/  /g' "$STATEFUL_RETENTION_FILE"; }
+  [[ ! -s "$SELECTION_RETENTION_FILE" ]] || { printf '\nPreserved component selections (YAML path, source-profile default, active value):\n'; sed 's/\t/  /g' "$SELECTION_RETENTION_FILE"; }
   exit 0
 fi
 
@@ -476,27 +742,39 @@ if [[ "$COMMAND" == execute ]]; then
   archive_reusable_state
   generate_configs
   validate_generated_configs
+  [[ "$DRY_RUN" == true ]] || validate_operator_state_inputs
   if [[ "$DRY_RUN" == true ]]; then
     for stage in "${STAGES[@]}"; do dry "would run stage: $stage"; done
     exit 0
   fi
+  validate_volume_capacity_settings
+  [[ $(jq -r '.offline_result' "$CAPACITY_PLAN_FILE") != impossible-even-empty-account ]] \
+    || fail "estimated migration capacity plus safety margin exceeds the configured account quota even with zero existing volumes"
   if [[ "$FORCE" != true ]]; then
     printf 'Type MIGRATE to start %s -> %s migration for %s: ' "$SOURCE_PROFILE" "$TARGET_PROFILE" "$PROJECT"
     read -r confirmation; [[ "$confirmation" == MIGRATE ]] || fail "confirmation did not match MIGRATE"
   fi
-  jq -n --arg project "$PROJECT" --arg source "$SOURCE_PROFILE" --arg target "$TARGET_PROFILE" \
-    --arg activeConfig "$CONFIG_FILE" \
+  jq -n --slurpfile capacityPlan "$CAPACITY_PLAN_FILE" \
+    --arg project "$PROJECT" --arg source "$SOURCE_PROFILE" --arg target "$TARGET_PROFILE" \
+    --arg activeConfig "$CONFIG_FILE" --arg operatorStateRoot "$OPERATOR_STATE_ROOT" \
+    --arg secretsFile "$SECRETS_FILE" --arg vaultInitFile "$VAULT_INIT_FILE" \
+    --argjson volumeQuota "$VOLUME_QUOTA_GIB" \
+    --argjson volumeSafetyMargin "$VOLUME_SAFETY_MARGIN_GIB" \
     --argjson sourceCp "$(yq -r '.infrastructure.control_plane.count' "$SOURCE_CONFIG")" \
     --argjson sourceWorkers "$(yq -r '.infrastructure.workers.count' "$SOURCE_CONFIG")" \
     --argjson targetCp "$(yq -r '.infrastructure.control_plane.count' "$TARGET_CONFIG")" \
     --argjson targetWorkers "$(yq -r '.infrastructure.workers.count' "$TARGET_CONFIG")" \
-    '{schema_version:2,project:$project,source_profile:$source,target_profile:$target,
+    '{schema_version:4,project:$project,source_profile:$source,target_profile:$target,
       active_config:$activeConfig,status:"in_progress",
       created_at:(now | todateiso8601),last_completed_stage:null,
+      operator_state:{root:$operatorStateRoot,secrets_file:$secretsFile,
+        vault_init_file:$vaultInitFile},
+      volume_capacity:{quota_gib:$volumeQuota,safety_margin_gib:$volumeSafetyMargin,
+        plan:$capacityPlan[0],status:"pending-live-check"},
       topology:{source:{control_planes:$sourceCp,workers:$sourceWorkers},target:{control_planes:$targetCp,workers:$targetWorkers}}}' > "$STATE_FILE"
   printf '%s\n' "$STATE_DIR" > "$POINTER_FILE"
 elif [[ "$COMMAND" == resume ]]; then
-  for generated in "$SOURCE_CONFIG" "$TARGET_CONFIG" "$STEADY_CONFIG" "$EXPANSION_CONFIG" "$BACKUP_CONFIG" "$ROLLBACK_CONFIG"; do
+  for generated in "$SOURCE_CONFIG" "$TARGET_CONFIG" "$STEADY_CONFIG" "$EXPANSION_CONFIG" "$BACKUP_CONFIG" "$ROLLBACK_CONFIG" "$CAPACITY_PLAN_FILE"; do
     [[ -f "$generated" ]] || fail "migration config is missing: $generated"
   done
   case $(jq -r '.status' "$STATE_FILE") in
@@ -505,10 +783,18 @@ elif [[ "$COMMAND" == resume ]]; then
   esac
 fi
 
+if [[ "$DRY_RUN" != true ]]; then
+  case "$COMMAND" in
+    resume) validate_operator_state_inputs; validate_volume_capacity_settings ;;
+    rollback|finalize) validate_operator_state_inputs ;;
+  esac
+fi
+
 run_playbook() {
   local config="$1"; shift
   ansible-playbook "$PROJECT_ROOT/playbooks/deploy_platform.yml" -e "@$config" \
-    -e "project_name=$PROJECT" -e "domain=$DOMAIN" -e "email=$EMAIL" "$@"
+    -e "project_name=$PROJECT" -e "domain=$DOMAIN" -e "email=$EMAIL" \
+    -e "secrets_file=$SECRETS_FILE" -e "vault_init_output_file=$VAULT_INIT_FILE" "$@"
 }
 
 persist_active_config() {
@@ -678,7 +964,9 @@ mark_finalize_stage() {
 
 cluster_backup() {
   local config="$1"
-  local args=(--config "$config" --output-dir "$STATE_DIR/backups" --force)
+  local args=(--config "$config" --secrets-file "$SECRETS_FILE" \
+    --vault-init-file "$VAULT_INIT_FILE" \
+    --output-dir "$STATE_DIR/backups" --force)
   [[ -z "$BACKUP_RECIPIENT" ]] || args+=(--recipient "$BACKUP_RECIPIENT")
   "$SCRIPT_DIR/cluster-backup.sh" "${args[@]}" \
     || fail "encrypted cluster backup gate failed; migration checkpoint was not advanced"
@@ -714,8 +1002,73 @@ preserve_non_shrinking_node_types() {
   done
 }
 
+check_volume_capacity() {
+  local volumes_json pvs_json baseline_json current_used required consumed remaining projected result
+  local tmp="${STATE_FILE}.tmp.$$"
+  [[ -f "$STATE_FILE" && -s "$CAPACITY_PLAN_FILE" ]] \
+    || fail "volume-capacity state or generated plan is missing"
+  cmp -s <(jq -S . "$CAPACITY_PLAN_FILE") <(jq -S '.volume_capacity.plan' "$STATE_FILE") \
+    || fail "generated volume-capacity plan drifted from the active migration state"
+  [[ $(jq -r '.volume_capacity.quota_gib' "$STATE_FILE") == "$VOLUME_QUOTA_GIB" ]] \
+    || fail "recorded Hetzner volume quota drifted from the active setting"
+  [[ $(jq -r '.volume_capacity.safety_margin_gib' "$STATE_FILE") == "$VOLUME_SAFETY_MARGIN_GIB" ]] \
+    || fail "recorded volume safety margin drifted from the active setting"
+
+  volumes_json=$(hcloud volume list -o json) \
+    || fail "could not read authoritative Hetzner volume state"
+  jq -e 'type == "array" and all(.[]; (.id | numbers) and (.size | numbers) and .size > 0)' \
+    <<<"$volumes_json" >/dev/null \
+    || fail "Hetzner returned invalid or incomplete volume state"
+  current_used=$(jq '[.[].size] | add // 0' <<<"$volumes_json")
+  required=$(jq -r '.required_additional_gib' "$CAPACITY_PLAN_FILE")
+  baseline_json=$(jq -c '.volume_capacity.baseline.volumes // []' "$STATE_FILE")
+
+  if [[ "$baseline_json" == '[]' ]]; then
+    baseline_json=$(jq -c 'map({id:(.id|tostring),size:(.size|tonumber),pv_name:(.labels["pv-name"] // "")})' \
+      <<<"$volumes_json")
+    consumed=0
+  else
+    pvs_json=$(kubectl get pv -o json | jq -c '[.items[].metadata.name]') \
+      || fail "could not map current-cluster PVs for the volume-capacity drift check"
+    consumed=$(jq -n --argjson current "$volumes_json" --argjson baseline "$baseline_json" \
+      --argjson pvs "$pvs_json" '
+        [ $current[] as $volume |
+          ($volume.id | tostring) as $id |
+          ($volume.labels["pv-name"] // "") as $pv |
+          ([ $baseline[] | select(.id == $id) | .size ][0] // 0) as $old_size |
+          select($pv != "" and ($pvs | index($pv)) != null) |
+          (($volume.size | tonumber) - $old_size) |
+          select(. > 0)
+        ] | add // 0')
+  fi
+  (( consumed < required )) && remaining=$((required - consumed)) || remaining=0
+  projected=$((current_used + remaining + VOLUME_SAFETY_MARGIN_GIB))
+  if (( projected <= VOLUME_QUOTA_GIB )); then result=passed; else result=failed; fi
+
+  jq --arg status "$result" --argjson quota "$VOLUME_QUOTA_GIB" \
+    --argjson margin "$VOLUME_SAFETY_MARGIN_GIB" --argjson used "$current_used" \
+    --argjson required "$required" --argjson consumed "$consumed" \
+    --argjson remaining "$remaining" --argjson projected "$projected" \
+    --argjson baseline "$baseline_json" '
+      .volume_capacity.baseline //= {
+        captured_at:(now | todateiso8601),account_used_gib:$used,volumes:$baseline
+      } |
+      .volume_capacity.status=$status |
+      .volume_capacity.last_check={checked_at:(now | todateiso8601),quota_gib:$quota,
+        safety_margin_gib:$margin,account_used_gib:$used,
+        planned_additional_gib:$required,migration_capacity_consumed_gib:$consumed,
+        remaining_planned_gib:$remaining,projected_peak_with_margin_gib:$projected,
+        result:$status}
+    ' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+  [[ "$result" == passed ]] \
+    || fail "Hetzner volume capacity gate failed: used=${current_used}GiB remaining=${remaining}GiB margin=${VOLUME_SAFETY_MARGIN_GIB}GiB projected=${projected}GiB quota=${VOLUME_QUOTA_GIB}GiB"
+  log "Hetzner volume capacity gate passed: used=${current_used}GiB remaining=${remaining}GiB margin=${VOLUME_SAFETY_MARGIN_GIB}GiB projected=${projected}GiB quota=${VOLUME_QUOTA_GIB}GiB"
+}
+
 stage_preflight() {
   local tool expected actual
+  validate_operator_state_inputs
   for tool in kubectl helm hcloud ssh; do command -v "$tool" >/dev/null || fail "required live-migration tool is missing: $tool"; done
   [[ $(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE") == "$SOURCE_PROFILE" ]] || fail "active config no longer declares source profile $SOURCE_PROFILE"
   [[ -n "$DR_ENDPOINT" && "$DR_ENDPOINT" != *'.svc'* && "$DR_ENDPOINT" != *seaweedfs* ]] || fail "--dr-endpoint must be independent from the cluster"
@@ -723,6 +1076,7 @@ stage_preflight() {
   [[ -n "${BACKUP_DR_ACCESS_KEY:-}" && -n "${BACKUP_DR_SECRET_KEY:-}" ]] || fail "BACKUP_DR_ACCESS_KEY and BACKUP_DR_SECRET_KEY are required"
   [[ -n "$BACKUP_RECIPIENT" || -n "${CLUSTER_BACKUP_PASSPHRASE:-}" ]] || fail "set --backup-recipient or CLUSTER_BACKUP_PASSPHRASE"
   [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required"
+  check_volume_capacity
   preserve_non_shrinking_node_types
   validate_generated_configs
   kubectl cluster-info >/dev/null
@@ -738,7 +1092,7 @@ stage_backup() {
   # Scheduled backups may be disabled in the steady source profile, which
   # means GitLab's chart-managed Toolbox CronJob is absent. Reconcile GitLab
   # with the temporary backup config before the backup role requires it.
-  run_playbook "$BACKUP_CONFIG" --tags gitlab,backup
+  run_playbook "$BACKUP_CONFIG" --tags databases,gitlab,backup
   mkdir -p "$STATE_DIR/backups"
   cluster_backup "$BACKUP_CONFIG"
   # shellcheck disable=SC1091
@@ -870,7 +1224,11 @@ unseal_vault_members() {
   local -a unseal_keys=()
 
   kubectl get statefulset vault -n vault >/dev/null 2>&1 || return 0
-  init_file="${VAULT_INIT_OUTPUT_FILE:-${PROJECT_ROOT}/playbooks/.vault-init-${PROJECT}.json}"
+  # Use the exact operator-state path resolved and persisted by this migration.
+  # Falling back to the checkout-local default here would pass preflight and the
+  # backup gate, then fail only after a node drain when isolated controllers use
+  # --operator-state-root or --vault-init-file.
+  init_file="$VAULT_INIT_FILE"
   password_file="${ANSIBLE_VAULT_PASSWORD_FILE:-${VAULT_PASSWORD_FILE:-}}"
   [[ -f "$init_file" ]] || fail "Vault is deployed but protected init material is missing: $init_file"
   [[ -n "$password_file" && -f "$password_file" ]] \
@@ -970,8 +1328,11 @@ resize_node() {
   [[ "$role" != master ]] || check_etcd_health
   # A drained node can become Ready before stateful volumes have reattached and
   # application PDB capacity is restored. Never proceed to the next node until
-  # the complete target profile is healthy again.
-  check_platform_health "$TARGET_CONFIG"
+  # the complete active service set is healthy again.
+  # Target services are not installed until apply-target. During resize the
+  # source service set is still authoritative, even though nodes are converging
+  # on the target compute type and placement.
+  check_platform_health "$SOURCE_CONFIG"
 }
 
 stage_resize() {
@@ -1160,8 +1521,61 @@ stage_post_backup() {
   set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.region' "$DR_REGION"
   set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
   set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.prefix' "$DR_PREFIX"
-  run_playbook "$POST_BACKUP_CONFIG" --tags gitlab,backup
+  run_playbook "$POST_BACKUP_CONFIG" --tags databases,gitlab,backup
   cluster_backup "$POST_BACKUP_CONFIG"
+}
+
+rollback_components_to_remove() {
+  local component
+  # Remove dependants before their shared services. Backup/DR are included
+  # when the migration installed their temporary control plane for its backup
+  # gates, even if the named target does not normally select them.
+  for component in daytona blackbox apm glitchtip temporal postal tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+    component_enabled "$SOURCE_CONFIG" "$component" && continue
+    if component_enabled "$TARGET_CONFIG" "$component" \
+      || { [[ "$component" == backup || "$component" == disaster-recovery ]] \
+        && [[ -f "$STATE_DIR/stage-backup.done" ]]; }; then
+      printf '%s\n' "$component"
+    fi
+  done
+}
+
+remove_target_only_components_for_rollback() {
+  local component delete_data=false
+  # Target-only applications can have accepted writes after apply-target. The
+  # post-migration encrypted bundle is the authority required to delete their
+  # data. Before that checkpoint, remove_component.yml deliberately fails on a
+  # data-bearing component instead of silently deleting it or declaring a
+  # partial rollback successful.
+  [[ -f "$STATE_DIR/stage-post-backup.done" ]] && delete_data=true
+  while IFS= read -r component; do
+    [[ -n "$component" ]] || continue
+    ansible-playbook "$PROJECT_ROOT/playbooks/remove_component.yml" \
+      -e "@$ROLLBACK_CONFIG" -e "project_name=$PROJECT" \
+      -e "secrets_file=$SECRETS_FILE" -e "vault_init_output_file=$VAULT_INIT_FILE" \
+      -e "target_component=$component" -e "confirm_component_removal=$component" \
+      -e "delete_component_data=$delete_data"
+  done < <(rollback_components_to_remove)
+  if ! component_enabled "$SOURCE_CONFIG" hipaa && component_enabled "$TARGET_CONFIG" hipaa; then
+    warn "HIPAA-oriented hardening introduced by the target is retained; automated rollback cannot safely reverse host and cluster controls"
+  fi
+}
+
+restore_helm_baseline_without_vault() {
+  local snapshot="$1" namespace release revision found=false
+  local baseline="${snapshot}/helm-revisions.tsv"
+  [[ -s "$baseline" ]] || fail "recorded Helm revision baseline is missing: $baseline"
+  while IFS=$'\t' read -r namespace release revision; do
+    [[ -n "$namespace" && -n "$release" && "$revision" =~ ^[1-9][0-9]*$ ]] \
+      || fail "recorded Helm revision baseline contains an invalid row"
+    if [[ "$namespace" == vault ]]; then
+      warn "retaining the migrated Vault Raft release instead of restoring its file-backed Helm revision"
+      continue
+    fi
+    found=true
+    helm rollback "$release" "$revision" -n "$namespace" --wait --timeout 30m0s
+  done < "$baseline"
+  [[ "$found" == true ]] || warn "the recorded Helm baseline contained no non-Vault releases"
 }
 
 if [[ "$COMMAND" == rollback ]]; then
@@ -1178,11 +1592,13 @@ if [[ "$COMMAND" == rollback ]]; then
     run_vmctl_migration "${PROJECT}-vm-rollback-${TARGET_PROFILE}-to-${SOURCE_PROFILE}" "$VM_SOURCE_ADDR" "$VM_TARGET_ADDR" "$(jq -r '.target_write_switch_started_at' "$STATE_FILE")"
   fi
   if [[ -f "$STATE_DIR/stage-migrate-vault-storage.done" ]]; then
-    warn "Vault storage is already Raft; skipping the file-backed Helm baseline and reconciling source capabilities directly"
+    warn "Vault storage is already Raft; restoring every non-Vault Helm baseline while retaining the migrated Vault release"
+    restore_helm_baseline_without_vault "$snapshot"
   else
     "$SCRIPT_DIR/rollback.sh" --snapshot "$snapshot" --force
   fi
   persist_active_config "$ROLLBACK_CONFIG"
+  remove_target_only_components_for_rollback
   reconcile_control_plane_schedulability "$ROLLBACK_CONFIG"
   run_playbook "$ROLLBACK_CONFIG" --skip-tags infrastructure,network,security,cluster
   check_control_plane_schedulability_contract "$ROLLBACK_CONFIG"
@@ -1194,20 +1610,28 @@ fi
 
 remove_disabled_components() {
   local include_backup="$1" component
+  refuse_automatic_hipaa_retirement
   if [[ "$include_backup" == true ]]; then
     # The migration deploys a temporary backup control plane even when both the
     # source and target profiles have scheduled backups disabled. Retire that
     # temporary surface based on the target contract, not only on a source to
     # target capability delta.
+    if ! component_enabled "$TARGET_CONFIG" disaster-recovery; then
+      ansible-playbook "$PROJECT_ROOT/playbooks/remove_component.yml" -e "@$TARGET_CONFIG" -e "project_name=$PROJECT" \
+        -e "secrets_file=$SECRETS_FILE" -e "vault_init_output_file=$VAULT_INIT_FILE" \
+        -e target_component=disaster-recovery -e confirm_component_removal=disaster-recovery -e delete_component_data=true
+    fi
     if ! component_enabled "$TARGET_CONFIG" backup; then
       ansible-playbook "$PROJECT_ROOT/playbooks/remove_component.yml" -e "@$TARGET_CONFIG" -e "project_name=$PROJECT" \
+        -e "secrets_file=$SECRETS_FILE" -e "vault_init_output_file=$VAULT_INIT_FILE" \
         -e target_component=backup -e confirm_component_removal=backup -e delete_component_data=true
     fi
     return
   fi
   while IFS= read -r component; do
-    [[ "$component" == backup ]] && continue
+    [[ "$component" == backup || "$component" == disaster-recovery ]] && continue
     ansible-playbook "$PROJECT_ROOT/playbooks/remove_component.yml" -e "@$TARGET_CONFIG" -e "project_name=$PROJECT" \
+      -e "secrets_file=$SECRETS_FILE" -e "vault_init_output_file=$VAULT_INIT_FILE" \
       -e "target_component=$component" -e "confirm_component_removal=$component" -e delete_component_data=true
   done < <(components_to_remove)
 }
@@ -1316,7 +1740,9 @@ finalize_stage() {
       # The steady target may intentionally disable scheduled backups. Restore
       # the already-generated temporary backup control plane for this gate,
       # then retire it in the following checkpoint.
-      run_playbook "$POST_BACKUP_CONFIG" --tags gitlab,backup
+      validate_volume_capacity_settings
+      check_volume_capacity
+      run_playbook "$POST_BACKUP_CONFIG" --tags databases,gitlab,backup
       cluster_backup "$POST_BACKUP_CONFIG"
       ;;
     retire-backup) remove_disabled_components true ;;
@@ -1368,6 +1794,10 @@ fi
 if [[ "$DRY_RUN" == true ]]; then
   for stage in "${STAGES[@]}"; do [[ -f "$STATE_DIR/stage-${stage}.done" ]] || dry "would run stage: $stage"; done
   exit 0
+fi
+if [[ "$COMMAND" == resume && -f "$STATE_DIR/stage-preflight.done" \
+  && ! -f "$STATE_DIR/stage-post-backup.done" ]]; then
+  check_volume_capacity
 fi
 for stage in "${STAGES[@]}"; do
   [[ -f "$STATE_DIR/stage-${stage}.done" ]] && { log "checkpoint already complete: $stage"; continue; }

@@ -133,7 +133,7 @@ dragonfly:
   replicas: 1
 
 temporal:
-  enabled: false      # Requires PostgreSQL and Elasticsearch
+  enabled: false      # Requires PostgreSQL
 
 postal:
   enabled: false      # Requires Dragonfly

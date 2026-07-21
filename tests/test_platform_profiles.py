@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -43,6 +44,7 @@ COMPONENT_PATHS = (
     "postal.enabled",
     "tracing.enabled",
     "backup.enabled",
+    "backup.disaster_recovery.enabled",
     "glitchtip.enabled",
     "apm.enabled",
     "blackbox.enabled",
@@ -75,7 +77,7 @@ def test_component_certificates_use_selectable_cluster_issuer():
         REPO_ROOT / "roles" / "glitchtip" / "tasks" / "main.yml",
         REPO_ROOT / "roles" / "temporal" / "tasks" / "main.yml",
         REPO_ROOT / "roles" / "k8s-gitops" / "tasks" / "main.yml",
-        REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml",
+        REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml",
         REPO_ROOT / "roles" / "object-storage" / "tasks" / "main.yml",
     )
     for task_file in certificate_task_files:
@@ -376,7 +378,7 @@ class TestResourceTierConsumers:
             "roles/k8s-observability/tasks/main.yml",
             "roles/k8s-observability/tasks/tracing.yml",
             "roles/k8s-observability/tasks/coroot.yml",
-            "roles/k8s-secrets/tasks/main.yml",
+            "roles/k8s-secrets/tasks/reconcile.yml",
             "roles/object-storage/defaults/main.yml",
             "roles/postal/defaults/main.yml",
             "roles/postal/tasks/main.yml",
@@ -397,6 +399,35 @@ class TestResourceTierConsumers:
         assert '-e "platform_profile=${PROFILE}"' in content
         assert '-e "resource_tier=${RESOURCE_TIER}"' in content
 
+    def test_orchestrator_accepts_the_production_small_resource_contract(
+        self, tmp_path, monkeypatch
+    ):
+        orchestrator = tmp_path / "platform-orchestrator"
+        shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        profile = load_profile("production")
+        profile["global"]["domain"] = "production.example.test"
+        profile["global"]["email"] = "operator@example.test"
+        (orchestrator / "platform.yaml").write_text(yaml.safe_dump(profile))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        ansible = bin_dir / "ansible-playbook"
+        ansible.write_text("#!/bin/sh\nexit 0\n")
+        ansible.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        monkeypatch.setenv("HCLOUD_TOKEN", "test-token")
+
+        result = subprocess.run(
+            ["bash", "platform.sh", "deploy", "all"],
+            cwd=orchestrator,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "profile=production" in result.stdout
+        assert "resource_tier=small" in result.stdout
+
     def test_ansible_normalization_enforces_profile_contract(self):
         content = (
             REPO_ROOT / "playbooks" / "tasks" / "normalize_profile.yml"
@@ -414,6 +445,26 @@ class TestResourceTierConsumers:
         assert "selected_worker_spec.memory" in content
         assert "Fetch available server types from Hetzner API" in content
         assert "until: hcloud_server_types_raw.rc == 0" in content
+
+    def test_minimal_nodes_retain_live_test_headroom(self):
+        defaults = yaml.safe_load(
+            (REPO_ROOT / "roles" / "hetzner-infra" / "defaults" / "main.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        minimal = defaults["hetzner_tier_specs"]["minimal"]
+        assert minimal["cp_min_cores"] >= 4
+        assert minimal["cp_min_memory"] >= 8
+        assert minimal["worker_min_cores"] >= 4
+        assert minimal["worker_min_memory"] >= 8
+
+        profile = yaml.safe_load(
+            (REPO_ROOT / "platform-orchestrator" / "profiles" / "minimal.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert profile["infrastructure"]["control_plane"]["type"] == "cx33"
+        assert profile["infrastructure"]["workers"]["type"] == "cx33"
 
     def test_server_create_uses_argument_safe_ssh_key_values(self):
         content = (
@@ -455,6 +506,36 @@ class TestResourceTierConsumers:
         assert 'kubectl uncordon "$node"' in tasks
         assert "Enforce schedulable control-plane contract for compact profiles" in tasks
         assert "not (cp_schedulable | default(false) | bool)" in tasks
+        assert tasks.count(".spec.unschedulable == true") >= 2
+        schedulable = tasks.split(
+            "Enforce schedulable control-plane contract for compact profiles", 1
+        )[1].split("- name:", 1)[0]
+        assert 'kubectl uncordon "$node"' in schedulable
+        assert "node-role.kubernetes.io/master:NoSchedule-" in schedulable
+        assert "schedulable control-plane contract was not established" in schedulable
+        assert ".spec.unschedulable != true" in schedulable
+        assert "length == 0" in schedulable
+        assert "exit 1" in schedulable
+
+        dedicated = tasks.split(
+            "Enforce dedicated control-plane scheduling contract", 1
+        )[1].split("- name:", 1)[0]
+        assert "dedicated scheduling contract was not established" in dedicated
+        assert ".spec.unschedulable != true" in dedicated
+        assert "exit 1" in dedicated
+
+    def test_component_resume_reconstructs_control_plane_topology_from_profile(self):
+        normalize = (
+            REPO_ROOT / "playbooks" / "tasks" / "normalize_profile.yml"
+        ).read_text(encoding="utf-8")
+        infra = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+
+        assert "infrastructure.control_plane.count" in normalize
+        assert "infrastructure.workers.count" in normalize
+        assert "infrastructure.control_plane.schedulable" in normalize
+        assert "cp_schedulable: {{ cp_schedulable | bool }}" in infra
 
     def test_local_api_tunnel_is_portable_and_does_not_kill_unmanaged_ports(self):
         tasks = (
@@ -648,7 +729,7 @@ class TestComponentLifecycle:
 
     def test_eso_and_runner_flags_are_consumed_by_their_roles(self):
         secrets = (
-            REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "main.yml"
+            REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
         ).read_text(encoding="utf-8")
         gitlab = (
             REPO_ROOT / "roles" / "gitlab-selfhosted" / "tasks" / "main.yml"
@@ -743,6 +824,7 @@ class TestComponentLifecycle:
             "temporal",
             "postal",
             "backup",
+            "disaster-recovery",
             "glitchtip",
             "apm",
             "blackbox",
@@ -758,6 +840,14 @@ class TestComponentLifecycle:
         (
             ("coroot", ("coroot.enabled", "observability.enabled")),
             ("pmm", ("observability.pmm.enabled", "observability.enabled")),
+            (
+                "disaster-recovery",
+                (
+                    "backup.disaster_recovery.enabled",
+                    "backup.enabled",
+                    "storage.enabled",
+                ),
+            ),
             (
                 "hipaa",
                 (
@@ -812,6 +902,22 @@ class TestComponentLifecycle:
         assert result.returncode != 0
         assert "coroot" in result.stdout + result.stderr
 
+    def test_native_backup_cannot_be_disabled_while_dr_is_selected(self, tmp_path):
+        orchestrator = tmp_path / "platform-orchestrator"
+        shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        profile = load_profile("medium")
+        with (orchestrator / "platform.yaml").open("w", encoding="utf-8") as stream:
+            yaml.safe_dump(profile, stream)
+        result = subprocess.run(
+            ["bash", "platform.sh", "disable", "backup"],
+            cwd=orchestrator,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode != 0
+        assert "disaster-recovery" in result.stdout + result.stderr
+
     @pytest.mark.parametrize(
         ("enabled_path", "disabled_path", "expected_message"),
         (
@@ -822,6 +928,11 @@ class TestComponentLifecycle:
             ("postal.enabled", "dragonfly.enabled", "Postal requires"),
             ("tracing.enabled", "storage.enabled", "Tempo tracing requires"),
             ("backup.enabled", "storage.enabled", "Backup automation requires"),
+            (
+                "backup.disaster_recovery.enabled",
+                "backup.enabled",
+                "External disaster recovery requires",
+            ),
             ("alerting.email.enabled", "postal.enabled", "Email alerting requires"),
             ("coroot.enabled", "observability.enabled", "Coroot require observability"),
             ("observability.pmm.enabled", "observability.enabled", "PMM"),
@@ -846,6 +957,7 @@ class TestComponentLifecycle:
         profile["postal"]["enabled"] = False
         profile["tracing"]["enabled"] = False
         profile["backup"]["enabled"] = False
+        profile["backup"]["disaster_recovery"]["enabled"] = False
         profile["coroot"]["enabled"] = False
         profile["blackbox"]["enabled"] = False
         profile["compliance"]["hipaa"]["enabled"] = False
@@ -947,6 +1059,7 @@ class TestComponentLifecycle:
             "temporal",
             "postal",
             "backup",
+            "disaster-recovery",
             "glitchtip",
             "apm",
             "blackbox",
@@ -958,6 +1071,54 @@ class TestComponentLifecycle:
             assert f"./platform.sh deploy {component}" in deployment
         for foundation in ("infra", "network", "dns", "cluster", "tls"):
             assert f"./platform.sh deploy {foundation}" in deployment
+
+    def test_catalog_profile_matrix_matches_named_profile_source(self):
+        catalog = (
+            REPO_ROOT / "docs" / "TECHNOLOGY_CATALOG.md"
+        ).read_text(encoding="utf-8")
+        profiles = tuple(EXPECTED_PROFILE_TIERS)
+        row_paths = {
+            "Object storage": "storage.enabled",
+            "Secrets": "secrets.enabled",
+            "ESO": "secrets.eso.enabled",
+            "Databases parent": "databases.enabled",
+            "PostgreSQL": "databases.postgresql.enabled",
+            "MongoDB": "databases.mongodb.enabled",
+            "Elasticsearch": "elasticsearch.enabled",
+            "Dragonfly": "dragonfly.enabled",
+            "GitLab": "gitlab.enabled",
+            "GitLab Runner": "gitlab.runner.enabled",
+            "GitOps": "gitops.enabled",
+            "Observability core": "observability.enabled",
+            "PMM": "observability.pmm.enabled",
+            "Coroot": "coroot.enabled",
+            "Tracing": "tracing.enabled",
+            "Autoscaling": "autoscaling.enabled",
+            "Temporal": "temporal.enabled",
+            "Postal": "postal.enabled",
+            "Native backup automation": "backup.enabled",
+            "External disaster recovery": "backup.disaster_recovery.enabled",
+            "GlitchTip": "glitchtip.enabled",
+            "APM": "apm.enabled",
+            "Blackbox": "blackbox.enabled",
+            "Daytona": "applications.daytona.enabled",
+            "HIPAA-oriented hardening": "compliance.hipaa.enabled",
+        }
+        documented = {}
+        for line in catalog.splitlines():
+            if not line.startswith("| "):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if cells[0] in row_paths:
+                documented[cells[0]] = cells[-len(profiles) :]
+
+        assert set(documented) == set(row_paths)
+        for label, path in row_paths.items():
+            expected = [
+                "on" if get_path(load_profile(profile), path) is True else "off"
+                for profile in profiles
+            ]
+            assert documented[label] == expected, label
 
     def test_vault_upgrade_plan_does_not_claim_kubernetes_auto_unseal(self):
         plan = (

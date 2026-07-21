@@ -520,18 +520,32 @@
             or .key == "node-role.kubernetes.io/master")
           and .effect == "NoSchedule")
       ' >/dev/null; then
-        continue
+        if kubectl get node "$node" -o json | jq -e '.spec.unschedulable == true' >/dev/null; then
+          kubectl uncordon "$node"
+          changed=true
+        fi
+      else
+        kubectl taint node "$node" node-role.kubernetes.io/control-plane=:NoSchedule --overwrite
+        if ! kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data \
+          --force --timeout=10m; then
+          kubectl uncordon "$node" >/dev/null 2>&1 || true
+          kubectl taint node "$node" node-role.kubernetes.io/control-plane:NoSchedule- \
+            >/dev/null 2>&1 || true
+          exit 1
+        fi
+        kubectl uncordon "$node"
+        changed=true
       fi
-      kubectl taint node "$node" node-role.kubernetes.io/control-plane=:NoSchedule --overwrite
-      if ! kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data \
-        --force --timeout=10m; then
-        kubectl uncordon "$node" >/dev/null 2>&1 || true
-        kubectl taint node "$node" node-role.kubernetes.io/control-plane:NoSchedule- \
-          >/dev/null 2>&1 || true
+      kubectl get node "$node" -o json | jq -e '
+        (.spec.unschedulable != true) and
+        any(.spec.taints[]?;
+          (.key == "node-role.kubernetes.io/control-plane"
+            or .key == "node-role.kubernetes.io/master")
+          and .effect == "NoSchedule")
+      ' >/dev/null || {
+        echo "dedicated scheduling contract was not established for $node" >&2
         exit 1
-      fi
-      kubectl uncordon "$node"
-      changed=true
+      }
     done
     echo "changed=$changed"
   args:
@@ -544,19 +558,44 @@
   when: not (cp_schedulable | default(false) | bool)
 
 - name: Enforce schedulable control-plane contract for compact profiles
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - taint
-      - node
-      - '{{ item }}'
-      - node-role.kubernetes.io/control-plane:NoSchedule-
-  loop: '{{ master_ips.keys() | list }}'
+  ansible.builtin.shell: |
+    set -euo pipefail
+    changed=false
+    for node in {{ master_ips.keys() | list | join(' ') }}; do
+      if kubectl get node "$node" -o json | jq -e '
+        any(.spec.taints[]?;
+          (.key == "node-role.kubernetes.io/control-plane"
+            or .key == "node-role.kubernetes.io/master")
+          and .effect == "NoSchedule")
+      ' >/dev/null; then
+        kubectl taint node "$node" node-role.kubernetes.io/control-plane:NoSchedule- \
+          >/dev/null 2>&1 || true
+        kubectl taint node "$node" node-role.kubernetes.io/master:NoSchedule- \
+          >/dev/null 2>&1 || true
+        changed=true
+      fi
+      if kubectl get node "$node" -o json | jq -e '.spec.unschedulable == true' >/dev/null; then
+        kubectl uncordon "$node"
+        changed=true
+      fi
+      kubectl get node "$node" -o json | jq -e '
+        (.spec.unschedulable != true) and
+        ([.spec.taints[]? |
+          select(
+            (.key == "node-role.kubernetes.io/control-plane"
+              or .key == "node-role.kubernetes.io/master")
+            and .effect == "NoSchedule"
+          )] | length == 0)
+      ' >/dev/null || {
+        echo "schedulable control-plane contract was not established for $node" >&2
+        exit 1
+      }
+    done
+    echo "changed=$changed"
+  args:
+    executable: /bin/bash
   register: schedulable_control_plane
-  changed_when: schedulable_control_plane.rc == 0
-  failed_when:
-    - schedulable_control_plane.rc != 0
-    - "'not found' not in schedulable_control_plane.stderr"
+  changed_when: "'changed=true' in schedulable_control_plane.stdout"
   when: cp_schedulable | default(false) | bool
 
 - name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop

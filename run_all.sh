@@ -226,7 +226,11 @@ for profile in $PROFILES; do
   if [[ "$CAPACITY_FAMILY" == cpx ]]; then
     args+=(--bastion-type cpx22)
     case "$profile" in
-      minimal) args+=(--cp-type cpx22 --worker-type cpx22) ;;
+      # The minimal control plane is schedulable and the worker carries the
+      # complete core platform. 2 vCPU/4 GiB nodes leave no room for the
+      # Velero node agent (and measured less than 5% memory headroom), so keep
+      # the smallest live-tested 4 vCPU/8 GiB floor for both nodes.
+      minimal) args+=(--cp-type cpx32 --worker-type cpx32) ;;
       small) args+=(--cp-type cpx22 --worker-type cpx32) ;;
       medium|production) args+=(--cp-type cpx42 --worker-type cpx42) ;;
       medium-optimized) args+=(--cp-type cpx32 --worker-type cpx32) ;;

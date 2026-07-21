@@ -14,17 +14,25 @@ hetzner_worker_type: '{{ infrastructure.workers.type | default("") }}'
 # time convergence with Kubernetes and etcd gates.
 hetzner_allow_destructive_reconcile: false
 
+# Hetzner can throttle bursty multi-cluster reconciles. Discovery is retried,
+# but creation is permitted only after an explicit "not found" response. This
+# prevents a transient API failure from being interpreted as resource absence.
+hcloud_read_retries: 12
+hcloud_read_delay: 10
+hcloud_write_retries: 12
+hcloud_write_delay: 10
+
 # Minimum resource requirements per tier (used for auto-selection).
 # Auto-select picks the cheapest x86 server type meeting these minimums.
 hetzner_tier_specs:
   minimal:
     cp_count: 1
-    cp_min_cores: 2
-    cp_min_memory: 4
+    cp_min_cores: 4
+    cp_min_memory: 8
     cp_schedulable: true
     worker_count: 1
-    worker_min_cores: 2
-    worker_min_memory: 4
+    worker_min_cores: 4
+    worker_min_memory: 8
     lb_enabled: false
   small:
     cp_count: 1

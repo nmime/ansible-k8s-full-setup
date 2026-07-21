@@ -80,7 +80,7 @@ load_config() {
     exit 1
   }
   case "$PROFILE" in
-    minimal|small|medium|production)
+    minimal|small|medium)
       if [[ "$TIER" != "$PROFILE" || "$RESOURCE_TIER" != "$PROFILE" ]]; then
         error "$PROFILE requires tier=$PROFILE and resource_tier=$PROFILE"
         exit 1
@@ -89,6 +89,12 @@ load_config() {
     medium-optimized)
       if [[ "$TIER" != "medium" || "$RESOURCE_TIER" != "small" ]]; then
         error "medium-optimized requires tier=medium and resource_tier=small"
+        exit 1
+      fi
+      ;;
+    production)
+      if [[ "$TIER" != "production" || "$RESOURCE_TIER" != "small" ]]; then
+        error "production requires tier=production and resource_tier=small"
         exit 1
       fi
       ;;
@@ -138,6 +144,7 @@ component_path() {
     temporal) echo '.temporal.enabled' ;;
     postal) echo '.postal.enabled' ;;
     backup) echo '.backup.enabled' ;;
+    disaster-recovery) echo '.backup.disaster_recovery.enabled' ;;
     glitchtip) echo '.glitchtip.enabled' ;;
     apm) echo '.apm.enabled' ;;
     blackbox) echo '.blackbox.enabled' ;;
@@ -168,6 +175,7 @@ enable_paths() {
     temporal) echo '.databases.enabled .databases.postgresql.enabled .temporal.enabled' ;;
     postal) echo '.dragonfly.enabled .postal.enabled' ;;
     backup) echo '.storage.enabled .backup.enabled' ;;
+    disaster-recovery) echo '.storage.enabled .backup.enabled .backup.disaster_recovery.enabled' ;;
     glitchtip) echo '.databases.enabled .databases.postgresql.enabled .dragonfly.enabled .glitchtip.enabled' ;;
     apm) echo '.elasticsearch.enabled .apm.enabled' ;;
     blackbox) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .blackbox.enabled' ;;
@@ -201,7 +209,7 @@ show_components() {
   printf '%-18s %s\n' COMPONENT ENABLED
   printf '%-18s %s\n' '------------------' '-------'
   local component path value
-  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing autoscaling temporal postal backup glitchtip apm blackbox daytona hipaa; do
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing autoscaling temporal postal backup disaster-recovery glitchtip apm blackbox daytona hipaa; do
     path=$(component_path "$component")
     value=$(flag_from_config "$path" false)
     printf '%-18s %s\n' "$component" "$value"
@@ -238,7 +246,8 @@ enabled_blockers() {
     gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
     observability) blockers='.observability.pmm.enabled:pmm .coroot.enabled:coroot .tracing.enabled:tracing .blackbox.enabled:blackbox .compliance.hipaa.enabled:hipaa' ;;
     secrets) blockers='.secrets.eso.enabled:eso .compliance.hipaa.enabled:hipaa' ;;
-    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tracing|autoscaling|temporal|postal|backup|glitchtip|apm|blackbox|daytona|hipaa) ;;
+    backup) blockers='.backup.disaster_recovery.enabled:disaster-recovery' ;;
+    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tracing|autoscaling|temporal|postal|disaster-recovery|glitchtip|apm|blackbox|daytona|hipaa) ;;
     *) return 1 ;;
   esac
   for label in $blockers; do
@@ -369,7 +378,8 @@ deploy_component() {
     autoscaling)   require_component_enabled "$component"; run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;
     temporal)      require_component_enabled "$component"; run_playbook --tags temporal 2>&1 | tee -a "${LOG_DIR}/temporal.log" ;;
     postal)        require_component_enabled "$component"; run_playbook --tags postal 2>&1 | tee -a "${LOG_DIR}/postal.log" ;;
-    backup)        require_component_enabled "$component"; run_playbook --tags backup 2>&1 | tee -a "${LOG_DIR}/backup.log" ;;
+    backup)        require_component_enabled "$component"; run_playbook --tags databases,gitlab,backup 2>&1 | tee -a "${LOG_DIR}/backup.log" ;;
+    disaster-recovery) require_component_enabled "$component"; run_playbook --tags databases,gitlab,backup 2>&1 | tee -a "${LOG_DIR}/disaster-recovery.log" ;;
     glitchtip)     require_component_enabled "$component"; run_playbook --tags glitchtip 2>&1 | tee -a "${LOG_DIR}/glitchtip.log" ;;
     apm)           require_component_enabled "$component"; run_playbook --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
     blackbox)      require_component_enabled "$component"; run_playbook --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;

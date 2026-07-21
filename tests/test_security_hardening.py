@@ -40,7 +40,7 @@ def test_service_network_policies_allow_cilium_gateway_ingress_identity():
 
 def test_vault_tls_covers_the_required_short_raft_addresses() -> None:
     tls = read("roles/k8s-secrets/tasks/vault_tls.yml")
-    tasks = read("roles/k8s-secrets/tasks/main.yml")
+    tasks = read("roles/k8s-secrets/tasks/reconcile.yml")
 
     assert '- "*.vault-internal"' in tls
     assert '- "vault-active.{{ vault_ns }}.svc.cluster.local"' in tls
@@ -194,7 +194,7 @@ class TestGenerateSecrets:
 class TestVaultTLS:
     @pytest.fixture(autouse=True)
     def _load(self):
-        self.content = read("roles/k8s-secrets/tasks/main.yml")
+        self.content = read("roles/k8s-secrets/tasks/reconcile.yml")
 
     def test_vault_uses_one_chart_managed_maintenance_pdb(self):
         """Every tier must be drainable without overlapping Vault PDBs."""
@@ -261,6 +261,53 @@ class TestVaultTLS:
         assert "--encrypt-vault-id" in self.content
         assert "when: vault_init_data is defined" in self.content
         assert "https://vault-0.vault-internal.{{ vault_ns }}.svc.cluster.local:8200" in self.content
+
+    def test_vault_kv_v2_is_reconciled_after_every_initialization(self):
+        reconcile = self.content.split(
+            "- name: Discover Vault secrets engines before reconciliation", 1
+        )[1].split("- name: Enable Vault file audit device", 1)[0]
+
+        assert "vault secrets list -format=json" in reconcile
+        assert "Reject an incompatible Vault secret mount" in reconcile
+        assert "'secret/' not in vault_secret_mounts" in reconcile
+        assert "Enable missing KV-v2 secrets engine" in reconcile
+        assert "vault secrets enable -path=secret kv-v2" in reconcile
+        assert "Prove the KV-v2 secrets engine is reconciled" in reconcile
+        assert "vault_init is changed" not in reconcile
+        assert "failed_when: false" not in reconcile
+        assert reconcile.count("no_log: true") >= 6
+
+    def test_vault_kubernetes_auth_is_discovered_and_verified(self):
+        reconcile = self.content.split(
+            "- name: Discover Vault auth methods before reconciliation", 1
+        )[1].split("- name: Create Vault snapshot backup policy", 1)[0]
+
+        assert reconcile.count("vault auth list -format=json") == 2
+        assert "Reject an incompatible Vault Kubernetes auth mount" in reconcile
+        assert "'kubernetes/' not in vault_auth_methods" in reconcile
+        assert "Enable missing Kubernetes auth method" in reconcile
+        assert "Prove the Kubernetes auth method is reconciled" in reconcile
+        assert "Verify the Vault Kubernetes auth configuration" in reconcile
+        assert "'https://kubernetes.default.svc:443'" in reconcile
+        assert "vault_init is changed" not in reconcile
+        assert "failed_when: false" not in reconcile
+        assert reconcile.count("no_log: true") >= 8
+
+    def test_vault_eso_policy_and_role_reconcile_fail_closed(self):
+        reconcile = self.content.split("- name: Create Vault policy for ESO", 1)[1]
+        reconcile = reconcile.split(
+            "- name: Create ClusterSecretStore for Vault", 1
+        )[0]
+
+        assert "vault policy write external-secrets" in reconcile
+        assert "auth/kubernetes/role/external-secrets" in reconcile
+        assert "vault policy read external-secrets" in reconcile
+        assert "Prove the Vault ESO auth role is reconciled" in reconcile
+        assert ".data.token_ttl | int == 3600" in reconcile
+        assert reconcile.count("vault_init_data is defined") >= 6
+        assert "vault_init is changed" not in reconcile
+        assert "failed_when: false" not in reconcile
+        assert reconcile.count("no_log: true") >= 6
 
     def test_vault_internal_certificate_secures_local_cli_operations(self):
         tls = read("roles/k8s-secrets/tasks/vault_tls.yml")
@@ -380,7 +427,7 @@ class TestNoClusterAdmin:
 
 def test_default_deny_uses_standard_networkpolicy_and_removes_invalid_cilium_legacy():
     for path in (
-        "roles/k8s-secrets/tasks/main.yml",
+        "roles/k8s-secrets/tasks/reconcile.yml",
         "roles/k8s-autoscaling/tasks/main.yml",
         "roles/gitlab-selfhosted/tasks/main.yml",
         "roles/k8s-gitops/tasks/main.yml",
@@ -504,7 +551,7 @@ def test_seaweedfs_replicates_multi_server_data_and_refreshes_filer_topology():
 def test_pre_observability_roles_do_not_create_monitoring_crs():
     """Monitoring CRDs do not exist until k8s-observability installs them."""
     for path in (
-        "roles/k8s-secrets/tasks/main.yml",
+        "roles/k8s-secrets/tasks/reconcile.yml",
         "roles/object-storage/tasks/main.yml",
         "roles/elasticsearch/tasks/main.yml",
     ):
@@ -582,7 +629,7 @@ def test_private_api_tunnel_is_health_supervised():
 
 
 def test_vault_unauthenticated_metrics_access_is_listener_scoped():
-    vault = read("roles/k8s-secrets/tasks/main.yml")
+    vault = read("roles/k8s-secrets/tasks/reconcile.yml")
     assert vault.count("unauthenticated_metrics_access = true") == 2
     assert vault.count('listener "tcp" {') == 2
     assert vault.count("telemetry {") == 4
@@ -616,6 +663,21 @@ def test_victoriametrics_alerting_uses_non_reserved_config_and_tier_datasource()
     assert "vmalertmanager-platform-config" not in alerting
     assert "vmsingle-vmsingle." in alerting
     assert "vmselect-vmcluster." in alerting
+
+
+def test_victoriametrics_replication_tracks_storage_replicas_not_resource_envelope():
+    observability = read("roles/k8s-observability/tasks/main.yml")
+    production = load_yaml("platform-orchestrator/profiles/production.yaml")
+    optimized = load_yaml("platform-orchestrator/profiles/medium-optimized.yaml")
+
+    assert production["resource_tier"] == "small"
+    assert production["observability"]["metrics"]["replicas"] == 2
+    assert production["observability"]["metrics"]["replication_factor"] == 2
+    assert optimized["resource_tier"] == "small"
+    assert optimized["observability"]["metrics"]["replicas"] == 1
+    assert optimized["observability"]["metrics"]["replication_factor"] == 1
+    assert "vm_replication_factor:" in observability
+    assert "replicationFactor: '{{ vm_replication_factor | int }}'" in observability
 
 
 def test_hcloud_exporter_is_pinned_and_hardened():
@@ -718,6 +780,14 @@ def test_secret_bearing_facts_and_secret_reads_are_censored():
             assert "no_log: true" in block, f"{path}: {name} must be censored"
 
 
+def test_platform_fact_gathering_excludes_controller_environment_secrets():
+    playbook = read("playbooks/deploy_platform.yml")
+
+    assert "gather_facts: false" in playbook
+    assert "Gather controller facts without persisting the process environment" in playbook
+    assert "- '!env'" in playbook
+
+
 def test_elasticsearch_password_rotation_precedes_secret_update():
     tasks = read("roles/elasticsearch/tasks/main.yml")
     assert tasks.index("Rotate the Elasticsearch elastic user") < tasks.index(
@@ -741,6 +811,9 @@ def test_dragonfly_auth_secret_change_rolls_statefulset():
     )[1].split("\n- name:", 1)[0]
     assert 'pod="dragonfly-${ordinal}"' in rollout
     assert "kubectl delete pod" in rollout
-    assert "kubectl wait --for=condition=Ready" in rollout
+    assert "--wait=false" in rollout
+    assert "old_uid=" in rollout and "new_uid=" in rollout
+    assert '"$new_uid" != "$old_uid"' in rollout
+    assert "replacement pod $pod did not become Ready within 5 minutes" in rollout
     assert "no_log: true" in rollout
     assert "platform.example.com/dragonfly-applied-credentials-hash" in tasks

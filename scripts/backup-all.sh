@@ -90,7 +90,11 @@ else
   fi
   info "Storage reachable"
 fi
-TS=$(date -u +%Y%m%dT%H%M%SZ); RF="${PROJECT_ROOT}/.backup-results-${TS}.log"
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+# Multi-cluster controllers can start several backups in the same second.
+# Keep each audit trail independent even for two runs of the same project.
+RESULT_PROJECT=$(printf '%s' "${PROJECT_NAME:-k8s}" | tr -c 'A-Za-z0-9._-' '-')
+RF="${PROJECT_ROOT}/.backup-results-${RESULT_PROJECT}-${TS}-$$.log"
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
 check_comp() {
   kubectl get pods -n "$1" -l "$2" -o json 2>/dev/null \

@@ -76,7 +76,10 @@ class TestUpgradeE2EBreakingChanges:
     @pytest.mark.e2e
     def test_gitaly_storages_migration(self):
         t = read(GITLAB_TASKS)
-        assert "storages:" in t and "persistentVolumeClaim:" in t and "tags:" in t
+        gitaly = t.split("        gitaly:", 1)[1].split("        kas:", 1)[0]
+        assert "persistence:" in gitaly
+        assert "size: '{{ gitlab_gitaly_storage_size }}'" in gitaly
+        assert "persistentVolumeClaim:" not in gitaly
 
     @pytest.mark.e2e
     def test_no_postgresql_install_block(self):

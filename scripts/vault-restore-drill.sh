@@ -70,6 +70,7 @@ DRILL_NS="vault-restore-drill"
 SOURCE_NS="vault"
 RESTORE_CREDENTIALS_SECRET=""
 TTL_HOURS=24
+STORAGE_SIZE="${VAULT_RESTORE_STORAGE_SIZE:-10Gi}"
 SKIP_CLEANUP=false
 DRY_RUN=false
 PASS_COUNT=0
@@ -85,6 +86,7 @@ Usage: vault-restore-drill.sh [options]
   --namespace NAME          Isolated drill namespace
   --source-namespace NAME   Namespace containing vault-backup-credentials
   --credentials-secret NAME Copy restore-unseal-keys and restore-token from this source Secret
+  --storage-size SIZE       Isolated Raft PVC size (default: 10Gi)
   --ttl-hours HOURS         Retention label for a preserved drill namespace
   --skip-cleanup            Preserve the drill namespace after execution
   --dry-run                 Print and validate the plan without cluster changes
@@ -106,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     --namespace) DRILL_NS="${2:?missing namespace}"; shift 2 ;;
     --source-namespace) SOURCE_NS="${2:?missing source namespace}"; shift 2 ;;
     --credentials-secret) RESTORE_CREDENTIALS_SECRET="${2:?missing secret name}"; shift 2 ;;
+    --storage-size) STORAGE_SIZE="${2:?missing storage size}"; shift 2 ;;
     --ttl-hours) TTL_HOURS="${2:?missing hours}"; shift 2 ;;
     --skip-cleanup) SKIP_CLEANUP=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -115,8 +118,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 section "Vault Restore Drill"
+[[ "$STORAGE_SIZE" =~ ^[1-9][0-9]*(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|K)$ ]] \
+  || { fail "--storage-size must be a positive Kubernetes storage quantity such as 10Gi"; exit 2; }
 info "Namespace: $DRILL_NS"
 info "Vault version: $VAULT_VERSION"
+info "Storage size: $STORAGE_SIZE"
 info "Snapshot: s3://${SNAPSHOT_BUCKET}/${SNAPSHOT_NAME}"
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -168,7 +174,7 @@ kubectl label namespace "$DRILL_NS" \
   backup-restore.io/drill=true \
   backup-restore.io/retention-hours="$TTL_HOURS" --overwrite
 
-kubectl apply -n "$DRILL_NS" -f - <<'EOF'
+kubectl apply -n "$DRILL_NS" -f - <<EOF
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -177,7 +183,7 @@ spec:
   hard:
     pods: "5"
     persistentvolumeclaims: "2"
-    requests.storage: 20Gi
+    requests.storage: ${STORAGE_SIZE}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -187,7 +193,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 5Gi
+      storage: ${STORAGE_SIZE}
 EOF
 
 kubectl get secret vault-backup-credentials -n "$SOURCE_NS" -o json |
@@ -319,6 +325,8 @@ metadata:
   name: vault
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: vault

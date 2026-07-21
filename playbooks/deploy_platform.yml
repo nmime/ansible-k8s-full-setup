@@ -2,7 +2,7 @@
 - name: Deploy Kubernetes Platform
   hosts: localhost
   connection: local
-  gather_facts: true
+  gather_facts: false
   any_errors_fatal: true
   environment:
     KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
@@ -15,6 +15,13 @@
     project_name: "{{ project_name | default('k8s') }}"
 
   pre_tasks:
+    - name: Gather controller facts without persisting the process environment
+      ansible.builtin.setup:
+        gather_subset:
+          - all
+          - '!env'
+      tags: [always]
+
     - name: Check for persisted infrastructure facts
       ansible.builtin.stat:
         path: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
@@ -299,6 +306,47 @@
         name: hipaa-hardening
       when: platform_hipaa_enabled | bool
       tags: [hipaa, security, compliance]
+
+    # A later component reconcile can consume the last scheduling headroom
+    # after Velero's own rollout gate passed. Re-check at the true end of every
+    # deployment, including profiles where DR is not normally enabled but a
+    # retained node-agent exists from a migration or recovery campaign.
+    - name: Detect a retained Velero node-agent
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        namespace: "{{ backup_dr_namespace | default('velero') }}"
+        name: node-agent
+      register: final_velero_node_agent
+      when: >-
+        'all' in ansible_run_tags or
+        (ansible_run_tags |
+         difference(['always', 'infrastructure', 'network', 'security', 'dns']) |
+         length) > 0
+      tags: [always]
+
+    - name: Prove final Velero node-agent coverage after all components
+      ansible.builtin.assert:
+        that:
+          - final_velero_node_agent.resources[0].status.desiredNumberScheduled | default(0) | int > 0
+          - >-
+            final_velero_node_agent.resources[0].status.numberReady | default(0) | int
+            == final_velero_node_agent.resources[0].status.desiredNumberScheduled | default(0) | int
+          - >-
+            final_velero_node_agent.resources[0].status.numberUnavailable | default(0) | int
+            == 0
+        fail_msg: >-
+          Velero node-agent does not cover every eligible node after final
+          component scheduling. Increase node capacity or reduce the selected
+          workload envelope before relying on full-cluster PVC recovery.
+      when:
+        - >-
+          'all' in ansible_run_tags or
+          (ansible_run_tags |
+           difference(['always', 'infrastructure', 'network', 'security', 'dns']) |
+           length) > 0
+        - final_velero_node_agent.resources | length > 0
+      tags: [always]
 
     - name: Display deployment completion summary
       debug:

@@ -28,6 +28,8 @@ ignore: |
   .venv/
   .ansible/
   .migration-state/
+  .campaign-state/
+  .campaign-runtime/
   snapshot/
   node_modules/
   playbooks/kubespray/

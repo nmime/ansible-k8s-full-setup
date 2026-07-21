@@ -8,7 +8,8 @@ complete only when all three succeed:
 2. Velero resource and Kopia filesystem backups for Kubernetes objects and
    every mounted PVC, written to storage outside the protected cluster.
 3. An encrypted workstation-side cluster bundle containing etcd,
-   control-plane PKI, generated secrets, desired configuration, Helm state,
+   control-plane PKI, generated secrets, the already-Ansible-Vault-encrypted
+   Vault initialization/unseal material, desired configuration, Helm state,
    Kubespray inventory, and Hetzner state.
 
 ## Components covered
@@ -66,16 +67,47 @@ backup:
 Store independent credentials in the gitignored, mode-`0600` project `.env`:
 
 ```dotenv
+BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+BACKUP_DR_BUCKET=company-platform-dr
 BACKUP_DR_ACCESS_KEY=...
 BACKUP_DR_SECRET_KEY=...
+# Optional; default is a sibling of the Velero prefix:
+# <Velero parent>/cluster-bundles/<project>.
+CLUSTER_BACKUP_DR_PREFIX=k8s/cluster-bundles/production
 ```
 
 Backup, restore, orchestration, and migration commands load `.env`
 automatically. Explicitly exported variables still take precedence.
+Blank `endpoint` and `bucket` fields in a named profile fall back to
+`BACKUP_DR_ENDPOINT` and `BACKUP_DR_BUCKET`; region and prefix also have
+environment fallbacks when omitted. Access and secret keys are resolved only
+from the process environment and are never appended to the Ansible command
+line or written into `platform.yaml`.
+Cluster bundles are deliberately stored outside the Velero prefix. Velero
+rejects unknown top-level directories inside its own backup store, so an
+explicit `CLUSTER_BACKUP_DR_PREFIX` equal to or nested below the configured
+Velero prefix fails before publication.
 
 The role rejects `.svc` and SeaweedFS endpoints. Backing up a cluster into the
 same cluster is not disaster recovery. Use object lock/versioning and a
 separate failure domain where the provider supports them.
+
+`minimal` and `small` leave both scheduled native backups and external DR off
+by default, but both can be added later without rebuilding the cluster:
+
+```bash
+cd platform-orchestrator
+./platform.sh enable disaster-recovery
+./platform.sh deploy disaster-recovery
+```
+
+That selector enables `backup.enabled`, object storage, and
+`backup.disaster_recovery.enabled` together. `enable backup` alone intentionally
+selects only application-native jobs. A complete `backup-cluster` recovery
+point requires the external disaster-recovery layer to have been deployed and
+its Velero storage location to be available. Supplying `--dr-endpoint` and
+`--dr-bucket` to the disposable tier runner selects both layers for any of the
+five profiles.
 
 ## Quick Start
 
@@ -83,40 +115,88 @@ Install/update the backup resources through the main playbook, then trigger
 the configured CronJobs:
 
 ```bash
-ansible-playbook -i inventory.yml playbooks/deploy_platform.yml --tags backup
+ansible-playbook -i inventory.yml playbooks/deploy_platform.yml --tags databases,gitlab,backup
 ./scripts/backup-all.sh --dry-run
 ./scripts/backup-all.sh --config platform-orchestrator/platform.yaml --force
 
 # Complete encrypted cluster backup. Never pass a passphrase on argv.
 export CLUSTER_BACKUP_PASSPHRASE='use-a-secret-manager-value'
-./platform-orchestrator/platform.sh backup-cluster --force
+./platform-orchestrator/platform.sh backup-cluster \
+  --vault-init-file playbooks/.vault-init-k8s.json --force
 
 # Or use an age recipient instead of a shared passphrase.
 ./platform-orchestrator/platform.sh backup-cluster \
+  --vault-init-file playbooks/.vault-init-k8s.json \
   --recipient age1example... --output-dir /secure/offsite/path --force
+
+# Multi-cluster controllers must name the generated secret set explicitly.
+./scripts/cluster-backup.sh --config /state/cluster-a/platform.yaml \
+  --secrets-file /state/cluster-a/.platform-secrets.yml \
+  --vault-init-file /state/cluster-a/.vault-init-cluster-a.json \
+  --ssh-known-hosts /state/cluster-a/ssh/known_hosts --force
 ```
 
 `backup-all.sh` triggers an on-demand full `PerconaPGBackup`, a PBM MongoDB
 backup, Vault snapshot, SeaweedFS topology artifact, GitLab archive, and GitLab
 Rails secrets for the components enabled by the supplied platform config. An
 enabled component that is missing or unhealthy is a backup failure, while a
-disabled component is skipped. `cluster-backup.sh` then
+disabled component is skipped. Each invocation writes a project- and
+process-specific `.backup-results-<project>-<timestamp>-<pid>.log`, so parallel
+multi-cluster runs cannot merge their audit trails. `cluster-backup.sh` then
 requires a completed Velero resource/PVC backup and captures the control-plane
-and cloud recovery bundle. Missing layers fail closed; skip options require the
-explicit `--allow-incomplete` marker, and such a bundle cannot be restored by
-`cluster-restore.sh`.
+and cloud recovery bundle. It then uploads the encrypted archive and checksum
+to independent DR storage, downloads the archive again, verifies its SHA-256,
+and uploads the JSON manifest last as the atomic completion receipt. A remote
+archive without that final receipt is interrupted and must not be restored.
+Missing layers fail closed; skip options (including `--skip-remote-publish`)
+require the explicit `--allow-incomplete` marker, and such a bundle cannot be
+restored by `cluster-restore.sh`.
 
-Before creating the Velero object, the script records every PVC-backed volume
-mounted by every pod. It then requires a completed `PodVolumeBackup` for every
-recorded namespace/pod/volume tuple and rejects partial or missing filesystem
-copies. PVCs that are not mounted are not claimed as protected data; either
-mount and back them up through an application-aware process or remove obsolete
-claims after verifying retention requirements.
+For concurrent or ephemeral clusters, pass a persistent per-cluster
+`--ssh-known-hosts` file. Both the bastion and private control-plane connection
+use that exact mode-`0600` trust database, preventing private-address collisions
+between clusters without weakening host-key checking or rewriting the operator's
+global `known_hosts` file.
+
+Before creating the Velero object, the script inventories every non-terminating
+PVC. A complete backup requires every one to be `Bound` and actually mounted by
+a non-terminating Running pod. It retains a mode-`0600`, machine-readable
+`*.pvc-evidence.json` next to the output even if this gate rejects the backup.
+The script then requires a completed `PodVolumeBackup` for every recorded
+namespace/pod/volume tuple and rejects partial or missing filesystem copies.
+Use `--allow-incomplete` only to capture evidence while repairing an obsolete,
+unbound, or intentionally unmounted claim; the resulting bundle is not a valid
+complete recovery point.
 
 The encrypted archive has an external checksum sidecar and an internal
 `SHA256SUMS` manifest. Temporary plaintext is created with mode `0700`/`0600`
 and deleted on every exit path. The bundle contains Kubernetes Secrets and PKI;
 store the decryption identity separately.
+
+Source recovery includes the `HEAD` Git bundle, one binary patch from `HEAD`
+to the final working tree (therefore including both staged and unstaged tracked
+changes), and a tar archive of safe non-ignored untracked files. Ignored files
+and credential-like untracked paths are never added; generated secrets and
+Vault initialization material use their dedicated guarded paths instead. The
+manifest records the paths, untracked count, and SHA-256 digest of every source
+recovery artifact. After restoring the Git bundle, apply `worktree.patch`, then
+extract `repository-untracked.tar` at the checkout root.
+
+`--secrets-file` prevents a multi-cluster controller from falling back to a
+different checkout's generated secret set. The default remains
+`playbooks/.platform-secrets.yml` for the normal single-cluster layout.
+Whenever `secrets.enabled` is true, `--vault-init-file` is mandatory. The
+backup verifies the Ansible Vault header, decryptability through
+`ANSIBLE_VAULT_PASSWORD_FILE`, and the required root-token/unseal-share shape
+without logging any contents. It copies the still-encrypted file into the
+outer encrypted bundle and records that dependency in `MANIFEST.json`. Keep
+the Ansible Vault password separately from the bundle and its age identity or
+backup passphrase.
+
+Vault restore drills allocate a validated `10Gi` Raft PVC by default. Override
+it with `VAULT_RESTORE_STORAGE_SIZE` or `--storage-size 20Gi`; the namespace
+quota follows the same value so larger snapshots do not fail behind a hidden
+hard-coded quota.
 
 ## Profile migration backup gates
 
@@ -181,6 +261,24 @@ matches the restored snapshot ID and byte count, verifies the data read-only,
 and cleans up. It proves a filesystem recovery primitive; a full cutover still
 requires all related claims on a replacement cluster.
 
+For PostgreSQL, pass the successful repo2 backup's
+`status.backupName` (the pgBackRest set label, not the Kubernetes CR name) and
+the source platform project. The dispatcher derives the exact
+`<project>-pg` cluster, proves that exactly one successful repo2 backup owns
+the label, and restores that set with pgBackRest `--set`:
+
+```bash
+PG_SET=$(kubectl get perconapgbackup BACKUP_CR -n databases \
+  -o jsonpath='{.status.backupName}')
+./scripts/restore-drill.sh --component postgresql \
+  --backup "$PG_SET" --project my-platform --namespace pg-restore-drill \
+  --force
+```
+
+Use `--pg-cluster` instead of `--project` only when the source cluster does not
+follow the platform naming convention. `--backup latest` remains available
+for exploratory drills, but it is not an exact recovery-point proof.
+
 For a meaningful MongoDB integrity check, identify a stable sentinel:
 
 ```bash
@@ -192,8 +290,9 @@ For a meaningful MongoDB integrity check, identify a stable sentinel:
   --verify-collection backup_markers --min-documents 1
 ```
 
-An actual Vault drill also requires the original snapshot unseal material and
-a known path whose restored value must be readable:
+An actual Vault drill also requires the original snapshot unseal material,
+retained as `config/vault-init.json.vault` in schema-v2 cluster bundles, and a
+known path whose restored value must be readable:
 
 ```bash
 export OBJECT_STORAGE_ENDPOINT=https://s3.example.internal
@@ -208,15 +307,22 @@ unseal shares needed to reach the threshold as newline-delimited
 `restore-unseal-keys`. The drill restores the snapshot, writes the documented
 single-peer `peers.json` recovery file for the isolated copy, unseals with the
 required number of shares, verifies one active voting leader and the sentinel,
-then cleans up. `VAULT_RESTORE_UNSEAL_KEY` remains a legacy convenience only
-for a one-share Vault.
+then cleans up. Its single-replica Deployment uses `Recreate`, so a restart can
+reattach the ReadWriteOnce Raft PVC without a rolling-update deadlock.
+`VAULT_RESTORE_UNSEAL_KEY` remains a legacy convenience only for a one-share
+Vault.
 
-The GitLab artifact drill downloads the selected archive directly into an
+The GitLab artifact drill is an archive-validation drill, not a GitLab service
+or database restore. It downloads the selected archive directly into an
 isolated PVC, verifies its remote and local sizes, safely extracts it with the
 source release's exact Toolbox image, and verifies metadata and repository
 payload. The platform configures Toolbox with `--skip db` because GitLab uses
 external Percona PostgreSQL; the matching pgBackRest restore drill is a
 separate mandatory gate rather than a database dump inside the archive.
+Persistent Toolbox staging remains enabled by default. An explicitly
+quota-constrained campaign may set `gitlab.backup_persistence_enabled: false`;
+that changes only temporary staging to pod-local storage while the completed
+archive is still uploaded to S3 before the Job succeeds.
 For a disaster recovery cutover, restore a same-version GitLab chart with the
 official Toolbox `backup-utility --restore`, restore the saved Rails secret,
 and follow the GitLab restore runbook. A Helm rollback is not a data restore.

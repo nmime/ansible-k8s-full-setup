@@ -155,7 +155,7 @@ VERSION_REGISTRY = {
         "value": "2.0.3",
         "files": [
             ("defaults/main.yml", 'vault_version: "2.0.3"'),
-            ("roles/k8s-secrets/tasks/main.yml", "tag: '{{ vault_version }}'"),
+            ("roles/k8s-secrets/tasks/reconcile.yml", "tag: '{{ vault_version }}'"),
         ],
     },
     "caddy_image_tag": {

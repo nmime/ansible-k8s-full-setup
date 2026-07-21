@@ -100,8 +100,8 @@
       type: Opaque
       stringData:
         SECRET_KEY: "{{ gt_secret_key }}"
-        DATABASE_URL: "postgres://{{ glitchtip_db_user }}:{{ gt_pg_password }}@{{ gt_pg_host_direct }}:5432/{{ glitchtip_db_name }}"
-        REDIS_URL: "redis://:{{ gt_dragonfly_password | urlencode }}@{{ glitchtip_redis_host }}:{{ glitchtip_redis_port }}/{{ glitchtip_redis_db }}"
+        DATABASE_URL: "postgres://{{ glitchtip_db_user | urlencode | replace('/', '%2F') }}:{{ gt_pg_password | urlencode | replace('/', '%2F') }}@{{ gt_pg_host_direct }}:5432/{{ glitchtip_db_name | urlencode | replace('/', '%2F') }}"
+        REDIS_URL: "redis://:{{ gt_dragonfly_password | urlencode | replace('/', '%2F') }}@{{ glitchtip_redis_host }}:{{ glitchtip_redis_port }}/{{ glitchtip_redis_db }}"
   no_log: true
   register: _r_gt_config
   retries: 3
@@ -165,6 +165,239 @@
   retries: 3
   delay: 10
   until: _r_gt_dependency_egress is not failed
+
+- name: Validate GlitchTip stale Helm recovery threshold
+  ansible.builtin.assert:
+    that:
+      - (glitchtip_helm_pending_stale_seconds | int) >= 900
+    fail_msg: >-
+      glitchtip_helm_pending_stale_seconds must be at least 900 seconds so an
+      active Helm transaction cannot be mistaken for a stale one.
+
+- name: Inspect GlitchTip Helm release metadata
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - secrets
+      - --namespace
+      - "{{ gt_ns }}"
+      - --selector
+      - owner=helm,name=glitchtip
+      - --output
+      - >-
+        custom-columns=NAME:.metadata.name,OWNER:.metadata.labels.owner,RELEASE:.metadata.labels.name,STATUS:.metadata.labels.status,VERSION:.metadata.labels.version,CREATED:.metadata.creationTimestamp,UID:.metadata.uid,RESOURCE_VERSION:.metadata.resourceVersion
+      - --no-headers
+  register: gt_helm_metadata
+  changed_when: false
+
+- name: Initialize GlitchTip Helm release metadata facts
+  ansible.builtin.set_fact:
+    gt_helm_release_records: []
+
+- name: Require complete GlitchTip Helm metadata-only records
+  ansible.builtin.assert:
+    that:
+      - (item.split() | length) == 8
+    fail_msg: >-
+      Refusing automatic GlitchTip Helm recovery because a release metadata
+      record is incomplete or ambiguous.
+  loop: "{{ gt_helm_metadata.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item.split() | first | default('invalid-release-record') }}"
+
+- name: Parse GlitchTip Helm release metadata
+  ansible.builtin.set_fact:
+    gt_helm_release_records: >-
+      {{ gt_helm_release_records + [{
+        'name': gt_helm_fields[0],
+        'owner': gt_helm_fields[1],
+        'release': gt_helm_fields[2],
+        'status': gt_helm_fields[3],
+        'revision': gt_helm_fields[4] | int,
+        'created': gt_helm_fields[5],
+        'uid': gt_helm_fields[6],
+        'resource_version': gt_helm_fields[7]
+      }] }}
+  vars:
+    gt_helm_fields: "{{ item.split() }}"
+  loop: "{{ gt_helm_metadata.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item.split() | first | default('invalid-release-record') }}"
+  no_log: true
+
+- name: Fail closed on ambiguous GlitchTip Helm release metadata
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^sh\.helm\.release\.v1\.glitchtip\.v[1-9][0-9]*$')
+      - item.owner == 'helm'
+      - item.release == 'glitchtip'
+      - (item.revision | int) == (item.name | regex_replace('^.*\.v', '') | int)
+      - item.status in ['deployed', 'failed', 'superseded', 'uninstalled', 'pending-install', 'pending-upgrade', 'pending-rollback']
+      - item.created is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')
+      - item.uid is match('^[0-9a-f-]{36}$')
+      - item.resource_version is match('^[1-9][0-9]*$')
+    fail_msg: >-
+      Refusing automatic GlitchTip Helm recovery because release metadata is
+      malformed or does not have the exact expected ownership and name.
+  loop: "{{ gt_helm_release_records }}"
+  loop_control:
+    label: "{{ item.name | default('invalid-release-record') }}"
+
+- name: Select pending GlitchTip Helm release revisions
+  ansible.builtin.set_fact:
+    gt_helm_pending_records: >-
+      {{ gt_helm_release_records
+         | selectattr('status', 'in', ['pending-install', 'pending-upgrade', 'pending-rollback'])
+         | list }}
+
+- name: Recover a stale GlitchTip Helm transaction
+  when: (gt_helm_pending_records | length) > 0
+  block:
+    - name: Require one unambiguous newest pending GlitchTip revision
+      ansible.builtin.assert:
+        that:
+          - (gt_helm_pending_records | length) == 1
+          - (gt_helm_pending_records[0].revision | int) == (gt_helm_release_records | map(attribute='revision') | map('int') | max)
+        fail_msg: >-
+          Refusing automatic GlitchTip Helm recovery because the pending
+          transaction is ambiguous or is not the newest release revision.
+
+    - name: Calculate pending GlitchTip Helm transaction age
+      ansible.builtin.set_fact:
+        gt_helm_pending_age_seconds: >-
+          {{ ((now(utc=true) -
+               (gt_helm_pending_records[0].created |
+                to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds()) | int }}
+
+    - name: Refuse to interrupt a recent GlitchTip Helm transaction
+      ansible.builtin.assert:
+        that:
+          - (gt_helm_pending_age_seconds | int) >= (glitchtip_helm_pending_stale_seconds | int)
+        fail_msg: >-
+          GlitchTip Helm revision {{ gt_helm_pending_records[0].revision }} is
+          still pending but is only {{ gt_helm_pending_age_seconds }} seconds
+          old. Refusing recovery until it is at least
+          {{ glitchtip_helm_pending_stale_seconds }} seconds old.
+
+    - name: Reinspect pending GlitchTip Helm metadata before recovery
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - secret
+          - "{{ gt_helm_pending_records[0].name }}"
+          - --namespace
+          - "{{ gt_ns }}"
+          - --output
+          - >-
+            custom-columns=NAME:.metadata.name,OWNER:.metadata.labels.owner,RELEASE:.metadata.labels.name,STATUS:.metadata.labels.status,VERSION:.metadata.labels.version,CREATED:.metadata.creationTimestamp,UID:.metadata.uid,RESOURCE_VERSION:.metadata.resourceVersion
+          - --no-headers
+      register: gt_helm_recheck
+      changed_when: false
+
+    - name: Require unchanged stale GlitchTip transaction metadata
+      ansible.builtin.assert:
+        that:
+          - (gt_helm_recheck.stdout.split() | length) == 8
+          - gt_helm_recheck.stdout.split()[0] == gt_helm_pending_records[0].name
+          - gt_helm_recheck.stdout.split()[1] == 'helm'
+          - gt_helm_recheck.stdout.split()[2] == 'glitchtip'
+          - gt_helm_recheck.stdout.split()[3] == gt_helm_pending_records[0].status
+          - (gt_helm_recheck.stdout.split()[4] | int) == (gt_helm_pending_records[0].revision | int)
+          - gt_helm_recheck.stdout.split()[5] == gt_helm_pending_records[0].created
+          - gt_helm_recheck.stdout.split()[6] == gt_helm_pending_records[0].uid
+          - gt_helm_recheck.stdout.split()[7] == gt_helm_pending_records[0].resource_version
+        fail_msg: >-
+          Refusing automatic GlitchTip Helm recovery because the transaction
+          metadata changed after inspection.
+
+    - name: Delete only the UID-matched stale GlitchTip Helm revision
+      no_log: true
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Secret
+        namespace: "{{ gt_ns }}"
+        name: "{{ gt_helm_pending_records[0].name }}"
+        delete_options:
+          preconditions:
+            uid: "{{ gt_helm_pending_records[0].uid }}"
+            resourceVersion: "{{ gt_helm_pending_records[0].resource_version }}"
+      register: gt_helm_stale_secret_delete
+
+    - name: Ensure no GlitchTip Helm transaction started during recovery
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - secrets
+          - --namespace
+          - "{{ gt_ns }}"
+          - --selector
+          - owner=helm,name=glitchtip,status=pending-install
+          - --output
+          - name
+      register: gt_helm_new_pending_install
+      changed_when: false
+
+    - name: Inspect concurrent pending GlitchTip upgrades
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - secrets
+          - --namespace
+          - "{{ gt_ns }}"
+          - --selector
+          - owner=helm,name=glitchtip,status=pending-upgrade
+          - --output
+          - name
+      register: gt_helm_new_pending_upgrade
+      changed_when: false
+
+    - name: Inspect concurrent pending GlitchTip rollbacks
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - secrets
+          - --namespace
+          - "{{ gt_ns }}"
+          - --selector
+          - owner=helm,name=glitchtip,status=pending-rollback
+          - --output
+          - name
+      register: gt_helm_new_pending_rollback
+      changed_when: false
+
+    - name: Refuse uninstall when a new GlitchTip transaction appeared
+      ansible.builtin.assert:
+        that:
+          - gt_helm_new_pending_install.stdout | trim | length == 0
+          - gt_helm_new_pending_upgrade.stdout | trim | length == 0
+          - gt_helm_new_pending_rollback.stdout | trim | length == 0
+        fail_msg: >-
+          A new GlitchTip Helm transaction appeared during stale recovery.
+          Refusing to uninstall an active release.
+
+    - name: Uninstall only the stale GlitchTip Helm release
+      ansible.builtin.command:
+        argv:
+          - helm
+          - uninstall
+          - glitchtip
+          - --namespace
+          - "{{ gt_ns }}"
+          - --no-hooks
+          - --wait
+          - --timeout
+          - "{{ glitchtip_helm_recovery_timeout }}"
+      register: gt_helm_stale_uninstall
+      changed_when: gt_helm_stale_uninstall.rc == 0
+      failed_when: >-
+        gt_helm_stale_uninstall.rc != 0 and
+        'release: not found' not in (gt_helm_stale_uninstall.stderr | lower)
 
 - name: Install GlitchTip via Helm
   kubernetes.core.helm:

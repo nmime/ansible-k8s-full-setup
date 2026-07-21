@@ -214,7 +214,7 @@ class TestRoleVersionsMatchCentral:
         assert "0.66.2" in content, "vm_operator 0.66.2 should be in observability tasks"
 
     def test_eso_in_tasks(self):
-        content = (ROOT / "roles/k8s-secrets/tasks/main.yml").read_text()
+        content = (ROOT / "roles/k8s-secrets/tasks/reconcile.yml").read_text()
         assert "2.7.0" in content, "eso 2.7.0 should be in secrets tasks"
 
     def test_cluster_mgmt_uses_variables(self):

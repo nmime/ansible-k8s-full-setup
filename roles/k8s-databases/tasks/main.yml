@@ -302,9 +302,7 @@
               repo2-retention-full-type: count
             repos:
             - name: repo1
-              schedules:
-                full: '{{ backup_schedule | default(''0 2 * * *'') }}'
-                differential: 0 */6 * * *
+              schedules: "{{ {'full': (backup_schedule | default('0 2 * * *')), 'differential': '0 */6 * * *'} if (platform_backup_enabled | default(backup_enabled) | bool) else {} }}"
               volume:
                 volumeClaimSpec:
                   accessModes:
@@ -314,8 +312,7 @@
                     requests:
                       storage: '{{ pg_storage }}'
             - name: repo2
-              schedules:
-                full: 0 3 * * 0
+              schedules: "{{ {'full': '0 3 * * 0'} if (platform_backup_enabled | default(backup_enabled) | bool) else {} }}"
               s3:
                 bucket: backups
                 endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
@@ -532,7 +529,7 @@
         sharding:
           enabled: false
         backup:
-          enabled: true
+          enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
           image: percona/percona-backup-mongodb:2.13.0
           storages:
             s3-object-storage:
@@ -544,18 +541,18 @@
                 credentialsSecret: object-storage-backup-credentials
                 prefix: mongodb/{{ project_name | default('k8s') }}-mongo
           pitr:
-            enabled: true
+            enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
             oplogOnly: true
             compressionType: gzip
           tasks:
           - name: daily-backup
-            enabled: true
+            enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
             schedule: '{{ backup_schedule | default(''0 2 * * *'') }}'
             keep: '{{ backup_retention_days | default(30) }}'
             storageName: s3-object-storage
             compressionType: gzip
           - name: weekly-full-backup
-            enabled: true
+            enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
             schedule: 0 3 * * 0
             keep: 8
             storageName: s3-object-storage

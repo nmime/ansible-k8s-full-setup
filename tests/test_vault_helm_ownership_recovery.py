@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_helm4_forces_desired_vault_field_ownership_natively():
-    tasks = (ROOT / "roles/k8s-secrets/tasks/main.yml").read_text()
+    tasks = (ROOT / "roles/k8s-secrets/tasks/reconcile.yml").read_text()
 
     install = tasks.index("Install Vault via Helm")
     block = tasks[install : tasks.index("Wait for Vault pods", install)]

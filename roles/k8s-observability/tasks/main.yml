@@ -10,6 +10,11 @@
     vm_storage_size: '{{ metrics_storage | default(''100Gi'') }}'
     loki_retention: '{{ logging_retention | default(''14d'') }}'
     vm_replicas: '{{ observability.metrics.replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) | int }}'
+    vm_replication_factor: >-
+      {{ observability.metrics.replication_factor |
+         default(2 if (observability.metrics.replicas |
+           default(2 if resource_tier in ['medium', 'production'] else 1) | int) >= 2 else 1) |
+         int }}
     grafana_replicas: '{{ observability.grafana.replicas | default(2 if resource_tier == ''production'' else 1) }}'
     bastion_metrics_ip: >-
       {{ bastion_private_ip | default(bastion_public_ip | default('')) }}
@@ -160,7 +165,7 @@
         namespace: '{{ monitoring_namespace }}'
       spec:
         retentionPeriod: '{{ vm_retention }}'
-        replicationFactor: '{{ (2 if resource_tier in [''medium'', ''production''] else 1) | int }}'
+        replicationFactor: '{{ vm_replication_factor | int }}'
         vmstorage:
           replicaCount: '{{ vm_replicas | int }}'
           storage:
