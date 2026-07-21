@@ -1521,7 +1521,7 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert 'resize2fs "$root_source"' in content
     assert "SSH did not recover" in content
     resize_node = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
-    assert 'check_platform_health "$SOURCE_CONFIG"' in resize_node
+    assert 'wait_for_platform_convergence "$SOURCE_CONFIG"' in resize_node
     assert 'check_platform_health "$TARGET_CONFIG"' not in resize_node
     assert "condition=DiskPressure=False" in content
     assert "crictl rmi --prune" in content
@@ -1637,6 +1637,80 @@ def test_migration_resize_rechecks_provider_off_after_placement_before_type_chan
     assert stop_checks[0] < mutation < stop_checks[1] < change_type
     assert 'hcloud server poweroff "$node"' not in resize
     assert 'kubectl uncordon "$node"' in resize
+
+
+def test_migration_resize_waits_for_stateful_data_paths_before_next_drain():
+    content = MIGRATE.read_text(encoding="utf-8")
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+    converged = resize.split(
+        'if [[ "$current_type" == "$target_type"', 1
+    )[1].split("return 0", 1)[0]
+
+    assert "PROFILE_MIGRATION_PLATFORM_CONVERGENCE_TIMEOUT_SECONDS" in content
+    assert "PROFILE_MIGRATION_PLATFORM_CONVERGENCE_INTERVAL_SECONDS" in content
+    assert 'wait_for_platform_convergence "$SOURCE_CONFIG" "pre-resize health for $node"' in resize
+    assert 'wait_for_platform_convergence "$SOURCE_CONFIG" "post-resize health for $node"' in resize
+    assert resize.index('"pre-resize health for $node"') < resize.index('kubectl drain "$node"')
+    assert resize.index('kubectl uncordon "$node"') < resize.rindex('"post-resize health for $node"')
+    assert '"post-resize health for $node"' in converged
+    assert 'in_progress="${node_state_dir}/${node}.in-progress"' in resize
+    assert 'done_marker="${node_state_dir}/${node}.done"' in resize
+    assert '[[ -f "$in_progress" || "$node_unschedulable" == true ]]' in resize
+    assert '"$node_unschedulable" == true' in resize
+    assert 'rm -f "$in_progress"' in converged
+
+    probes = content.split("check_stateful_data_paths()", 1)[1].split(
+        "wait_for_platform_convergence()", 1
+    )[0]
+    assert "SeaweedFS S3 write/read/delete probe failed" in probes
+    assert "s3 cp /tmp/value" in probes
+    assert 'test \\"$(cat /tmp/read)\\" = \\"$HOSTNAME\\"' in probes
+    assert "curlimages/curl:8.17.0" in probes
+    assert "loki/api/v1/push" in probes
+    assert "loki/api/v1/query_range" in probes
+    assert "X-Scope-OrgID: fake" in probes
+    assert "profile-migration-probe" in probes
+    assert "Loki fresh push/query probe failed" in probes
+    assert "cleanup_probe_pod storage" in probes
+    assert "cleanup_probe_pod monitoring" in probes
+    assert '"app.kubernetes.io/component":"data-path-probe"' in probes
+    assert "cleanup_stale_data_path_probes" in content
+
+
+def test_platform_convergence_retries_transient_failures(tmp_path):
+    content = MIGRATE.read_text(encoding="utf-8")
+    helper = "wait_for_platform_convergence()" + content.split(
+        "wait_for_platform_convergence()", 1
+    )[1].split("ssh_args_for_facts()", 1)[0]
+    calls = tmp_path / "calls"
+    harness = f'''set -euo pipefail
+PLATFORM_CONVERGENCE_TIMEOUT=5
+PLATFORM_CONVERGENCE_INTERVAL=1
+CALLS={str(calls)!r}
+printf '0\\n' > "$CALLS"
+warn() {{ :; }}
+log() {{ :; }}
+fail() {{ echo "$*" >&2; exit 1; }}
+check_platform_health() {{
+  count=$(cat "$CALLS")
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$CALLS"
+  (( count >= 3 ))
+}}
+check_stateful_data_paths() {{ :; }}
+cleanup_stale_data_path_probes() {{ :; }}
+{helper}
+wait_for_platform_convergence /unused "test convergence"
+test "$(cat "$CALLS")" = 3
+'''
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_ensure_server_stopped_handles_provider_restart_after_placement(tmp_path):

@@ -53,6 +53,8 @@ HCLOUD_STATE_TIMEOUT="${PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS:-7200}"
 ETCD_HEALTH_TIMEOUT="${PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS:-300}"
 API_READY_TIMEOUT="${PROFILE_MIGRATION_API_READY_TIMEOUT_SECONDS:-300}"
 VAULT_MEMBER_TIMEOUT="${PROFILE_MIGRATION_VAULT_MEMBER_TIMEOUT_SECONDS:-900}"
+PLATFORM_CONVERGENCE_TIMEOUT="${PROFILE_MIGRATION_PLATFORM_CONVERGENCE_TIMEOUT_SECONDS:-900}"
+PLATFORM_CONVERGENCE_INTERVAL="${PROFILE_MIGRATION_PLATFORM_CONVERGENCE_INTERVAL_SECONDS:-15}"
 ROOT_DISK_PRUNE_PERCENT="${PROFILE_MIGRATION_ROOT_DISK_PRUNE_PERCENT:-75}"
 ROOT_DISK_MAX_PERCENT="${PROFILE_MIGRATION_ROOT_DISK_MAX_PERCENT:-85}"
 VMCTL_IMAGE="docker.io/victoriametrics/vmctl:v1.147.0"
@@ -146,6 +148,10 @@ for tool in yq jq ansible-playbook; do command -v "$tool" >/dev/null || fail "re
   || fail "--volume-safety-margin-gib must be a non-negative integer"
 [[ -z "$VOLUME_QUOTA_GIB" || "$VOLUME_QUOTA_GIB" =~ ^[1-9][0-9]*$ ]] \
   || fail "--volume-quota-gib must be a positive integer"
+[[ "$PLATFORM_CONVERGENCE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || fail "PROFILE_MIGRATION_PLATFORM_CONVERGENCE_TIMEOUT_SECONDS must be a positive integer"
+[[ "$PLATFORM_CONVERGENCE_INTERVAL" =~ ^[1-9][0-9]*$ ]] \
+  || fail "PROFILE_MIGRATION_PLATFORM_CONVERGENCE_INTERVAL_SECONDS must be a positive integer"
 
 is_named_profile() {
   local candidate="$1" profile
@@ -964,6 +970,104 @@ check_platform_health() {
   [[ "$not_bound" == 0 ]] || fail "$not_bound PVCs are not Bound"
 }
 
+cleanup_probe_pod() {
+  kubectl delete pod -n "$1" "$2" --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || true
+}
+
+cleanup_stale_data_path_probes() {
+  local namespace
+  for namespace in storage monitoring; do
+    kubectl delete pod -n "$namespace" \
+      -l 'app.kubernetes.io/part-of=profile-migration,app.kubernetes.io/component=data-path-probe' \
+      --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || true
+  done
+}
+
+# Controller readiness alone is insufficient for stateful services: Loki can
+# have a present Service and PVC while its store initialization is crashing,
+# and SeaweedFS can be Ready while its S3 data path is unusable. Exercise the
+# exact source data paths before and after every one-node drain. Probe objects
+# are unique, content-verified, deleted by the pod, and defensively removed by
+# the controller even when the probe fails.
+check_stateful_data_paths() {
+  local config="$1" pod manifest output
+  if [[ $(yq -r '(.storage.enabled // false)' "$config") == true ]]; then
+    pod="profile-migration-s3-probe-$$-${RANDOM}"
+    manifest=$(jq -n --arg name "$pod" '{
+      apiVersion:"v1", kind:"Pod",
+      metadata:{name:$name,namespace:"storage",labels:{"app.kubernetes.io/part-of":"profile-migration","app.kubernetes.io/component":"data-path-probe"}},
+      spec:{restartPolicy:"Never",automountServiceAccountToken:false,
+        securityContext:{runAsNonRoot:true,runAsUser:1000,runAsGroup:1000,seccompProfile:{type:"RuntimeDefault"}},
+        containers:[{name:"aws-cli",image:"amazon/aws-cli:2.34.48",
+          command:["/bin/sh","-ec"],
+          args:["set -eu; key=s3://backups/profile-migration-health/$HOSTNAME; cleanup() { aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 rm \"$key\" >/dev/null 2>&1 || true; }; trap cleanup EXIT; printf %s \"$HOSTNAME\" >/tmp/value; aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 cp /tmp/value \"$key\" >/dev/null; aws --endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333 s3 cp \"$key\" /tmp/read >/dev/null; test \"$(cat /tmp/read)\" = \"$HOSTNAME\"; cleanup; trap - EXIT"],
+          envFrom:[{secretRef:{name:"seaweedfs-s3-config"}}],
+          env:[{name:"AWS_DEFAULT_REGION",value:"us-east-1"},{name:"AWS_EC2_METADATA_DISABLED",value:"true"}],
+          resources:{requests:{cpu:"25m",memory:"32Mi"},limits:{cpu:"250m",memory:"128Mi"}},
+          securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]},readOnlyRootFilesystem:false}
+        }]}}
+    ')
+    cleanup_probe_pod storage "$pod"
+    kubectl create -f - <<<"$manifest" >/dev/null
+    if ! kubectl wait -n storage "pod/${pod}" --for=jsonpath='{.status.phase}'=Succeeded --timeout=5m >/dev/null; then
+      output=$(kubectl logs -n storage "$pod" --tail=100 2>&1 || true)
+      cleanup_probe_pod storage "$pod"
+      printf '%s\n' "$output" >&2
+      fail "SeaweedFS S3 write/read/delete probe failed"
+    fi
+    cleanup_probe_pod storage "$pod"
+  fi
+
+  if [[ $(yq -r '(.observability.enabled // false) and ((.observability.logging.stack // "loki") == "loki")' "$config") == true ]]; then
+    pod="profile-migration-loki-probe-$$-${RANDOM}"
+    manifest=$(jq -n --arg name "$pod" '{
+      apiVersion:"v1", kind:"Pod",
+      metadata:{name:$name,namespace:"monitoring",labels:{"app.kubernetes.io/part-of":"profile-migration","app.kubernetes.io/component":"data-path-probe"}},
+      spec:{restartPolicy:"Never",automountServiceAccountToken:false,
+        securityContext:{runAsNonRoot:true,runAsUser:1000,runAsGroup:1000,seccompProfile:{type:"RuntimeDefault"}},
+        containers:[{name:"curl",image:"curlimages/curl:8.17.0",
+          command:["/bin/sh","-ec"],
+          args:["set -eu; now=$(date +%s); marker=$HOSTNAME-$now; ts=${now}000000000; start=$((now - 5))000000000; end=$((now + 30))000000000; payload=$(printf \"{\\\"streams\\\":[{\\\"stream\\\":{\\\"job\\\":\\\"profile-migration-probe\\\",\\\"marker\\\":\\\"%s\\\"},\\\"values\\\":[[\\\"%s\\\",\\\"%s\\\"]]}]}\" \"$marker\" \"$ts\" \"$marker\"); curl -kfsS --retry 6 --retry-delay 5 --max-time 30 -H \"X-Scope-OrgID: fake\" -H \"Content-Type: application/json\" -X POST http://loki-gateway.monitoring.svc/loki/api/v1/push --data \"$payload\"; sleep 5; response=$(curl -kfsS --retry 6 --retry-delay 5 --max-time 30 -H \"X-Scope-OrgID: fake\" --get http://loki-gateway.monitoring.svc/loki/api/v1/query_range --data-urlencode \"query={job=\\\"profile-migration-probe\\\",marker=\\\"$marker\\\"}\" --data-urlencode \"start=$start\" --data-urlencode \"end=$end\" --data-urlencode \"limit=10\"); printf %s \"$response\" | grep -F \"$marker\" >/dev/null"],
+          resources:{requests:{cpu:"10m",memory:"16Mi"},limits:{cpu:"100m",memory:"64Mi"}},
+          securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]},readOnlyRootFilesystem:true}
+        }]}}
+    ')
+    cleanup_probe_pod monitoring "$pod"
+    kubectl create -f - <<<"$manifest" >/dev/null
+    if ! kubectl wait -n monitoring "pod/${pod}" --for=jsonpath='{.status.phase}'=Succeeded --timeout=5m >/dev/null; then
+      output=$(kubectl logs -n monitoring "$pod" --tail=100 2>&1 || true)
+      cleanup_probe_pod monitoring "$pod"
+      printf '%s\n' "$output" >&2
+      fail "Loki fresh push/query probe failed"
+    fi
+    cleanup_probe_pod monitoring "$pod"
+  fi
+}
+
+wait_for_platform_convergence() {
+  local config="$1" label="$2" deadline=$((SECONDS + PLATFORM_CONVERGENCE_TIMEOUT))
+  local attempt=0 output=""
+  while (( SECONDS < deadline )); do
+    attempt=$((attempt + 1))
+    # A controller crash can leave an earlier short-lived probe behind. Remove
+    # only our exact probe label before the all-pod health gate so resume does
+    # not deadlock on its own stale evidence.
+    cleanup_stale_data_path_probes
+    if output=$( (check_platform_health "$config" && check_stateful_data_paths "$config") 2>&1); then
+      printf '%s\n' "$output"
+      log "$label passed after $attempt attempt(s)"
+      return 0
+    fi
+    warn "$label is not converged (attempt $attempt); retrying"
+    if (( attempt == 1 || attempt % 4 == 0 )); then
+      printf '%s\n' "$output" | tail -40 >&2
+    fi
+    sleep "$PLATFORM_CONVERGENCE_INTERVAL"
+  done
+  printf '%s\n' "$output" | tail -80 >&2
+  fail "$label did not converge within ${PLATFORM_CONVERGENCE_TIMEOUT}s"
+}
+
 ssh_args_for_facts() {
   local facts="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml" quoted_identity quoted_known_hosts proxy_command
   [[ -f "$facts" ]] || fail "infrastructure facts are missing: $facts"
@@ -1265,7 +1369,7 @@ stage_preflight() {
   expected=$(( $(yq -r '.infrastructure.control_plane.count' "$SOURCE_CONFIG") + $(yq -r '.infrastructure.workers.count' "$SOURCE_CONFIG") ))
   actual=$(kubectl get nodes -o json | jq '.items | length')
   [[ "$actual" == "$expected" ]] || fail "source profile declares $expected nodes but cluster has $actual"
-  check_platform_health "$SOURCE_CONFIG"
+  wait_for_platform_convergence "$SOURCE_CONFIG" "source platform preflight"
   check_etcd_health
   hcloud server describe "${PROJECT}-master-1" >/dev/null
 }
@@ -1475,12 +1579,28 @@ unseal_vault_members() {
 
 resize_node() {
   local node="$1" target_type="$2" role="$3" server_json current_type current_disk target_disk placement target_placement=""
+  local node_state_dir="$STATE_DIR/resize-nodes" in_progress done_marker node_unschedulable
+  mkdir -p "$node_state_dir"
+  in_progress="${node_state_dir}/${node}.in-progress"
+  done_marker="${node_state_dir}/${node}.done"
   server_json=$(hcloud server describe "$node" -o json)
   current_type=$(jq -r '.server_type.name' <<<"$server_json")
   current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
   target_disk=$(hcloud server-type describe "$target_type" -o json | jq -r '.disk')
   placement=$(jq -r '.placement_group.name // ""' <<<"$server_json")
+  node_unschedulable=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}' 2>/dev/null || true)
   requires_spread "$TARGET_CONFIG" && target_placement="${PROJECT}-spread"
+  if [[ -f "$in_progress" || "$node_unschedulable" == true ]]; then
+    # The cordon is also an upgrade-safe recovery signal for migrations that
+    # were interrupted before per-node markers existed. Finish this node and
+    # require the full post-gate before considering any subsequent drain.
+    log "resuming interrupted one-node resize for $node"
+  else
+    # A stage-level checkpoint is intentionally not enough here: on resume,
+    # every next drain must be rejected until workloads and stateful data paths
+    # have recovered from the previous node operation.
+    wait_for_platform_convergence "$SOURCE_CONFIG" "pre-resize health for $node"
+  fi
   if [[ "$current_type" == "$target_type" && "$placement" == "$target_placement" ]] \
     && (( current_disk >= target_disk )); then
     ensure_server_running "$node"
@@ -1491,6 +1611,9 @@ resize_node() {
     kubectl uncordon "$node" >/dev/null
     unseal_vault_members
     [[ "$role" != master ]] || check_etcd_health
+    wait_for_platform_convergence "$SOURCE_CONFIG" "post-resize health for $node"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$done_marker"
+    rm -f "$in_progress"
     log "$node already converged at type=$target_type"
     return 0
   fi
@@ -1498,6 +1621,7 @@ resize_node() {
   unseal_vault_members
   maintain_node_root_disk "$node"
   [[ "$role" != master ]] || check_etcd_health "$node"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$in_progress"
   kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
   # Power operations are asynchronous. Placement-group reconciliation can also
   # leave a server running, so provider status—not CLI completion—is the gate.
@@ -1537,7 +1661,9 @@ resize_node() {
   # Target services are not installed until apply-target. During resize the
   # source service set is still authoritative, even though nodes are converging
   # on the target compute type and placement.
-  check_platform_health "$SOURCE_CONFIG"
+  wait_for_platform_convergence "$SOURCE_CONFIG" "post-resize health for $node"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$done_marker"
+  rm -f "$in_progress"
 }
 
 stage_resize() {
@@ -1712,7 +1838,7 @@ stage_validate() {
   kubectl wait nodes --all --for=condition=Ready --timeout=900s
   check_etcd_health
   check_control_plane_schedulability_contract "$STEADY_CONFIG"
-  check_platform_health "$STEADY_CONFIG"
+  wait_for_platform_convergence "$STEADY_CONFIG" "target platform validation"
   kubectl get backupstoragelocation/default -n velero -o json | jq -e '.status.phase == "Available"' >/dev/null
 }
 
