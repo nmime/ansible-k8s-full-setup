@@ -279,6 +279,18 @@ cluster UID, and replacement restore compares that UID rather than relying on
 Kubespray's frequently reused context name. Legacy bundles retain the stricter
 context-name compatibility gate.
 
+The durable DR lifecycle was then exercised live. A 10 GiB protected volume
+was created, MinIO reached TLS health, and a 27-byte S3 sentinel was uploaded.
+`down` removed the server and left the volume detached, labeled, and
+delete-protected. A subsequent `up` attached that same volume to a newly
+created server, reached TLS health, and returned the exact sentinel. The first
+recreation attempt also exposed safe stale-host-key rejection when Hetzner
+reassigned the previous IPv4 address; the helper now removes only that
+provider-assigned address from its campaign-scoped trust file before accepting
+the new server key. The successful rerun proves server-loss durability for the
+new DR design; it does not recover objects already lost with the old root-disk
+design.
+
 ## Source corrections produced by the campaign
 
 Live failures were retained as findings until their causes were fixed and the

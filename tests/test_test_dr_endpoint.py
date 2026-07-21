@@ -136,3 +136,13 @@ def test_credentials_are_not_logged_or_written_to_state():
     assert "BACKUP_DR_ACCESS_KEY" not in state
     assert "BACKUP_DR_SECRET_KEY" not in state
     assert "set -x" not in content
+
+
+def test_recreated_server_removes_only_its_provider_assigned_stale_host_key():
+    content = SCRIPT.read_text(encoding="utf-8")
+    assigned = 'SERVER_IP=$(hcloud server describe "$PROJECT"'
+    remove = 'ssh-keygen -R "$SERVER_IP" -f "$KNOWN_HOSTS_FILE"'
+    first_ssh = 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+    assert assigned in content
+    assert remove in content
+    assert content.index(assigned) < content.index(remove) < content.index(first_ssh)

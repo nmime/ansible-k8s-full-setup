@@ -26,6 +26,12 @@ filesystem and campaign marker, mount it by filesystem UUID, and refuse to
 adopt or format ambiguous storage. A failed `up` removes partial compute but
 retains the delete-protected volume.
 
+The provider may reassign a recently released public IP to the replacement
+server. After creating the new server through the authenticated API, the helper
+removes only that exact IP's obsolete entry from its campaign-scoped
+`known_hosts` file, then accepts and records the replacement key. It never
+relaxes host-key checking globally.
+
 `down` is therefore safe for ordinary cleanup and server-recreation drills. It
 does **not** erase backup objects. Confirm that independent recovery evidence
 is no longer needed before using the destructive operation:
