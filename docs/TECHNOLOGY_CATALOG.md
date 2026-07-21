@@ -163,6 +163,12 @@ VMCluster replicas are not reduced without their service-specific data
 compaction or member-removal procedure; retained counts are explicit in the
 migration plan and state.
 
+The bastion is also retained without an in-place type change. Before mutation,
+the migration reads its live provider type and writes it to every generated
+source, transition, target, backup, and rollback config as well as durable
+state. Resume repeats that read-only capture to heal older states and reconciles
+the expansion spread placement group's exact project ownership label.
+
 ## Pinned platform versions
 
 The authoritative values live in `defaults/main.yml` and role defaults. This

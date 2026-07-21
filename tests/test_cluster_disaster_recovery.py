@@ -905,6 +905,7 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     config = tmp_path / "platform.yaml"
     profile = yaml.safe_load((ROOT / "platform-orchestrator" / "profiles" / "minimal.yaml").read_text())
     profile["global"].update({"project": "offline-plan", "domain": "cluster.example", "email": "ops@example.com"})
+    profile["network"]["bastion"]["server_type"] = "cpx22"
     config.write_text(yaml.safe_dump(profile), encoding="utf-8")
     env = os.environ.copy()
     env["PROFILE_MIGRATION_STATE_DIR"] = str(tmp_path / "state")
@@ -957,6 +958,19 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     assert expansion["tier"] == "minimal"
     assert expansion["infrastructure"]["control_plane"]["count"] == 3
     assert expansion["infrastructure"]["workers"]["count"] == 3
+    for generated_name in (
+        "source-platform.yaml",
+        "target-platform.yaml",
+        "target-transition-platform.yaml",
+        "expansion-platform.yaml",
+        "backup-platform.yaml",
+        "rollback-platform.yaml",
+    ):
+        generated = yaml.safe_load((state / generated_name).read_text())
+        assert generated["network"]["bastion"]["server_type"] == "cpx22"
+    assert (state / "bastion-type-retention.tsv").read_text() == (
+        "source-declared\tcpx22\ttarget-requested\tcx23\tretained\tcpx22\n"
+    )
     capacity = json.loads((state / "volume-capacity-plan.json").read_text())
     assert capacity["source"]["persistent_total_gib"] == 240
     assert capacity["target"]["persistent_total_gib"] == 1310
@@ -1489,6 +1503,14 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert "primary_disk_size" in content
     assert "preserve_non_shrinking_node_types" in content
     assert "node-type-retention.tsv" in content
+    assert "bastion-type-retention.tsv" in content
+    capture_bastion = content.split("capture_live_bastion_type()", 1)[1].split(
+        "preserve_non_shrinking_node_types()", 1
+    )[0]
+    assert 'hcloud server describe "${PROJECT}-bastion" -o json' in capture_bastion
+    assert 'set_yaml_string "$config" \'.network.bastion.server_type\' "$live_type"' in capture_bastion
+    assert '.bastion={server:$server' in capture_bastion
+    assert "resize_supported:false" in capture_bastion
     assert "cannot shrink" in content
     assert 'for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$ROLLBACK_CONFIG"' in content
     assert 'current_cores" != "$target_cores' in content
@@ -1522,6 +1544,12 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert "remove-node.yml" in content
     assert content.index("remove-node.yml") < content.index('hcloud server delete "$node"')
     assert "hetzner_allow_destructive_reconcile=true" in content
+    placement_group = content.split("ensure_spread_placement_group()", 1)[1].split(
+        "stage_expand()", 1
+    )[0]
+    assert '--label "project=$PROJECT"' in placement_group
+    assert 'add-label --overwrite "$placement_group" "project=$PROJECT"' in placement_group
+    assert "grep -qi 'not found' <<<\"$result\"" in placement_group
     assert "kubectl delete vmsingle" in content
     assert "kubectl delete vmcluster" in content
     assert "helm uninstall" in content
