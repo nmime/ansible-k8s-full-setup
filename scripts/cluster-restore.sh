@@ -173,12 +173,13 @@ else
 fi
 PROJECT=$(jq -r '.project' "$BUNDLE_DIR/MANIFEST.json")
 SOURCE_CONTEXT=$(jq -r '.source_context' "$BUNDLE_DIR/MANIFEST.json")
+SOURCE_CLUSTER_UID=$(jq -r '.source_cluster_uid // ""' "$BUNDLE_DIR/MANIFEST.json")
 COMPLETENESS=$(jq -r '.completeness' "$BUNDLE_DIR/MANIFEST.json")
 [[ "$COMPLETENESS" == complete ]] || fail "bundle is explicitly marked incomplete"
 log "verified bundle $(jq -r '.backup_id' "$BUNDLE_DIR/MANIFEST.json") for project $PROJECT"
 
 if [[ "$MODE" == verify ]]; then
-  jq '{backup_id,created_at,project,domain,profile,source_context,completeness,
+  jq '{backup_id,created_at,project,domain,profile,source_context,source_cluster_uid,completeness,
     velero_backup_name,contains,recovery_dependencies,restore_order}' \
     "$BUNDLE_DIR/MANIFEST.json"
   exit 0
@@ -188,7 +189,17 @@ if [[ "$MODE" == velero ]]; then
   command -v kubectl >/dev/null || fail "kubectl is required for Velero restore"
   kubectl cluster-info >/dev/null
   TARGET_CONTEXT=$(kubectl config current-context)
-  [[ "$TARGET_CONTEXT" != "$SOURCE_CONTEXT" ]] || fail "Velero restore must target a replacement cluster, not source context $SOURCE_CONTEXT"
+  TARGET_CLUSTER_UID=$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}')
+  [[ -n "$TARGET_CLUSTER_UID" ]] || fail "could not determine the target cluster UID"
+  if [[ -n "$SOURCE_CLUSTER_UID" ]]; then
+    [[ "$TARGET_CLUSTER_UID" != "$SOURCE_CLUSTER_UID" ]] \
+      || fail "Velero restore must target a replacement cluster, not source cluster UID $SOURCE_CLUSTER_UID"
+  else
+    # Schema-v1 and early schema-v2 bundles predate cluster UID capture. Keep
+    # their context-name guard as a conservative compatibility boundary.
+    [[ "$TARGET_CONTEXT" != "$SOURCE_CONTEXT" ]] \
+      || fail "legacy bundle has no source cluster UID; target context must differ from source context $SOURCE_CONTEXT"
+  fi
   [[ -n "$VELERO_BACKUP" ]] || VELERO_BACKUP=$(jq -r '.velero_backup_name // ""' "$BUNDLE_DIR/MANIFEST.json")
   [[ -n "$VELERO_BACKUP" && "$VELERO_BACKUP" != null ]] || fail "bundle has no Velero backup name"
   kubectl wait backupstoragelocation/default -n velero --for=jsonpath='{.status.phase}'=Available --timeout=300s

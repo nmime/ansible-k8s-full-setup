@@ -11,17 +11,19 @@ log() { printf '  %s\n' "$*"; }
 PROJECT="${1:-}"
 [[ $# -gt 0 ]] && shift
 CONFIRM=""
+ACTIVE_MIGRATION_CONFIRM=""
 API_LOCAL_PORT="${K8S_API_LOCAL_PORT:-16443}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --confirm) CONFIRM="${2:-}"; shift 2 ;;
+    --confirm-active-migration) ACTIVE_MIGRATION_CONFIRM="${2:-}"; shift 2 ;;
     --api-port) API_LOCAL_PORT="${2:-}"; shift 2 ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
 
-[[ -n "$PROJECT" ]] || fail "usage: $0 <project> --confirm <project> [--api-port PORT]"
+[[ -n "$PROJECT" ]] || fail "usage: $0 <project> --confirm <project> [--confirm-active-migration PHRASE] [--api-port PORT]"
 [[ "$PROJECT" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail "invalid project name"
 [[ "$CONFIRM" == "$PROJECT" ]] || fail "confirmation must exactly match project '$PROJECT'"
 [[ "$API_LOCAL_PORT" =~ ^[0-9]+$ ]] || fail "API tunnel port must be an integer"
@@ -29,6 +31,28 @@ done
   || fail "API tunnel port must be between 1024 and 65535"
 [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required"
 command -v hcloud >/dev/null || fail "hcloud CLI is required"
+command -v jq >/dev/null || fail "jq is required"
+
+# A normal project confirmation is insufficient while a resumable profile
+# migration owns the cluster. This protects long-running backup/resize/restore
+# campaigns from a stale cleanup command in another terminal or task. The
+# second phrase is deliberately project-specific and is still required when a
+# migration lock process has died, because durable state remains authoritative.
+ACTIVE_MIGRATION_STATES=()
+while IFS= read -r state_file; do
+  [[ -s "$state_file" ]] || continue
+  state_project=$(jq -r '.project // ""' "$state_file" 2>/dev/null || true)
+  state_status=$(jq -r '.status // ""' "$state_file" 2>/dev/null || true)
+  if [[ "$state_project" == "$PROJECT" && "$state_status" == in_progress ]]; then
+    ACTIVE_MIGRATION_STATES+=("$state_file")
+  fi
+done < <(find "$ROOT_DIR" -maxdepth 7 -type f -name state.json \
+  \( -path '*/.migration-state/*' -o -path '*/migration-proof/*' \) -print 2>/dev/null | sort)
+if (( ${#ACTIVE_MIGRATION_STATES[@]} > 0 )); then
+  expected_active_confirmation="DESTROY_ACTIVE_MIGRATION_${PROJECT}"
+  [[ "$ACTIVE_MIGRATION_CONFIRM" == "$expected_active_confirmation" ]] \
+    || fail "project $PROJECT has an in-progress profile migration (${ACTIVE_MIGRATION_STATES[0]}); rerun only after recovery or add --confirm-active-migration $expected_active_confirmation"
+fi
 
 FAILURES=0
 PROJECT_VOLUME_IDS=()
@@ -118,6 +142,24 @@ for volume_id in "${PROJECT_VOLUME_IDS[@]:-}"; do
   hcloud volume describe "$volume_id" >/dev/null 2>&1 || continue
   log "Detaching captured project volume if attached: $volume_id"
   hcloud volume detach "$volume_id" >/dev/null 2>&1 || true
+  volume_detached=false
+  for ((attempt = 0; attempt < 60; attempt++)); do
+    if ! volume_json=$(hcloud volume describe "$volume_id" -o json 2>/dev/null); then
+      volume_detached=true
+      break
+    fi
+    if [[ "$(jq -r '.server == null' <<<"$volume_json")" == true ]]; then
+      volume_detached=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$volume_detached" != true ]]; then
+    printf '  FAILED waiting for captured project volume to detach: %s\n' "$volume_id" >&2
+    FAILURES=$((FAILURES + 1))
+    continue
+  fi
+  hcloud volume describe "$volume_id" >/dev/null 2>&1 || continue
   log "Deleting captured project volume: $volume_id"
   if ! hcloud volume delete "$volume_id"; then
     printf '  FAILED to delete captured project volume: %s\n' "$volume_id" >&2

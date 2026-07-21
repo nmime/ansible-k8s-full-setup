@@ -240,6 +240,10 @@ run_with_retry helm list --all-namespaces >/dev/null \
   || fail "Helm API preflight failed after retries"
 CONTEXT=$(kubectl config current-context)
 [[ -n "$CONTEXT" ]] || fail "kubectl has no current context"
+SOURCE_CLUSTER_UID=$(run_with_retry kubectl get namespace kube-system -o jsonpath='{.metadata.uid}') \
+  || fail "could not capture the source cluster UID"
+[[ "$SOURCE_CLUSTER_UID" =~ ^[a-f0-9-]{16,}$ ]] \
+  || fail "source cluster UID is empty or malformed"
 
 if [[ "$FORCE" != true ]]; then
   printf 'Back up cluster context %s for project %s? Type BACKUP: ' "$CONTEXT" "$PROJECT"
@@ -749,6 +753,7 @@ HAS_CLOUD=true
 jq -n \
   --arg id "$BACKUP_ID" --arg timestamp "$TIMESTAMP" --arg project "$PROJECT" \
   --arg domain "$DOMAIN" --arg profile "$PROFILE" --arg context "$CONTEXT" \
+  --arg sourceClusterUid "$SOURCE_CLUSTER_UID" \
   --arg completeness "$COMPLETENESS" --arg app "$APP_BACKUP_RESULT" \
   --arg velero "$VELERO_BACKUP_RESULT" --arg veleroName "$VELERO_BACKUP_NAME" \
   --arg pvcGate "$PVC_GATE_RESULT" --argjson pvcGateFailures "$PVC_GATE_FAILURES" \
@@ -761,7 +766,8 @@ jq -n \
   --arg untrackedPathsSha "$UNTRACKED_PATHS_SHA256" \
   --argjson untrackedFileCount "$UNTRACKED_FILE_COUNT" \
   '{schema_version:2,backup_id:$id,created_at:$timestamp,project:$project,domain:$domain,
-    profile:$profile,source_context:$context,completeness:$completeness,
+    profile:$profile,source_context:$context,source_cluster_uid:$sourceClusterUid,
+    completeness:$completeness,
     application_backups:$app,velero_backup:$velero,velero_backup_name:$veleroName,
     pvc_protection_gate:{status:$pvcGate,failures:$pvcGateFailures,
       evidence:"application-backups/pvc-protection-evidence.json"},
