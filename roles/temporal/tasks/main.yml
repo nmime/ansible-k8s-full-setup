@@ -7,7 +7,6 @@
     temporal_admin_tools_ver: 1.31.0
     temporal_domain: temporal.{{ domain }}
     temporal_num_history_shards: '{{ temporal.history_shards | default(512) }}'
-    temporal_replicas: '{{ temporal.replicas | default(2 if resource_tier == ''production'' else 1) }}'
     temporal_history_replicas: '{{ temporal.history_replicas | default(2 if resource_tier == ''production'' else 1) }}'
     temporal_matching_replicas: '{{ temporal.matching_replicas | default(2 if resource_tier == ''production'' else 1) }}'
     temporal_frontend_replicas: '{{ temporal.frontend_replicas | default(2 if resource_tier == ''production'' else 1) }}'

@@ -645,6 +645,9 @@ preserve_non_shrinking_storage() {
     retain_larger_quantity victoriametrics '.observability.metrics.storage_size' '.observability.metrics.storage_size' '.observability.metrics.storage_size' "$(resource_default "$SOURCE_CONFIG" metrics)" "$(resource_default "$TARGET_CONFIG" metrics)"
   fi
   retain_larger_quantity pmm '.observability.pmm.storage_size' '.observability.pmm.storage_size' '.observability.pmm.storage_size' "$(resource_default "$SOURCE_CONFIG" pmm)" "$(resource_default "$TARGET_CONFIG" pmm)"
+  if component_enabled "$SOURCE_CONFIG" observability && component_enabled "$TARGET_CONFIG" observability; then
+    retain_larger_quantity alertmanager '.alerting.storage_size' '.alerting.storage_size' '.alerting.storage_size' 5Gi 5Gi
+  fi
   if component_enabled "$SOURCE_CONFIG" elasticsearch && component_enabled "$TARGET_CONFIG" elasticsearch; then
     retain_larger_quantity elasticsearch-master '.elasticsearch.master.storage_size' '.elasticsearch.master.storage_size' '.elasticsearch.master.storage_size' "$(resource_default "$SOURCE_CONFIG" es-master)" "$(resource_default "$TARGET_CONFIG" es-master)"
     retain_larger_quantity elasticsearch-data '.elasticsearch.data.storage_size' '.elasticsearch.data.storage_size' '.elasticsearch.data.storage_size' "$(resource_default "$SOURCE_CONFIG" es-data)" "$(resource_default "$TARGET_CONFIG" es-data)"

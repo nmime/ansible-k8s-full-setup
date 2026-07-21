@@ -29,7 +29,7 @@ Options:
   --dr-bucket NAME       External DR bucket
   --dr-prefix PREFIX     Unique bucket prefix (default: PROJECT/velero)
   --dns-zone DOMAIN      Authoritative Hetzner parent zone
-  --certificate-issuer   ClusterIssuer for test certificates
+  --certificate-issuer   ClusterIssuer (default: production uses letsencrypt-prod; others staging)
   --bastion-type TYPE    Capacity-equivalent bastion server type override
   --cp-type TYPE         Capacity-equivalent control-plane type override
   --worker-type TYPE     Capacity-equivalent worker server type override
@@ -76,7 +76,8 @@ DR_ENDPOINT="${BACKUP_DR_ENDPOINT:-}"
 DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 DR_PREFIX="${BACKUP_DR_PREFIX:-}"
 DNS_ZONE="${HETZNER_DNS_ZONE:-}"
-CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-letsencrypt-staging}"
+CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-}"
+CERTIFICATE_ISSUER_FROM_OPTION=false
 BASTION_TYPE=""
 CP_TYPE=""
 WORKER_TYPE=""
@@ -103,7 +104,7 @@ while [[ $# -gt 0 ]]; do
     --dr-bucket) require_value "$1" "${2:-}"; DR_BUCKET="$2"; shift 2 ;;
     --dr-prefix) require_value "$1" "${2:-}"; DR_PREFIX="$2"; shift 2 ;;
     --dns-zone) require_value "$1" "${2:-}"; DNS_ZONE="$2"; shift 2 ;;
-    --certificate-issuer) require_value "$1" "${2:-}"; CERTIFICATE_ISSUER="$2"; shift 2 ;;
+    --certificate-issuer) require_value "$1" "${2:-}"; CERTIFICATE_ISSUER="$2"; CERTIFICATE_ISSUER_FROM_OPTION=true; shift 2 ;;
     --bastion-type) require_value "$1" "${2:-}"; BASTION_TYPE="$2"; shift 2 ;;
     --cp-type) require_value "$1" "${2:-}"; CP_TYPE="$2"; shift 2 ;;
     --worker-type) require_value "$1" "${2:-}"; WORKER_TYPE="$2"; shift 2 ;;
@@ -135,7 +136,6 @@ STATUS_FILE="${RUN_ROOT}/status.json"
 [[ "$DNS_ZONE" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$DNS_ZONE" == *.* ]] || die "invalid DNS zone '$DNS_ZONE'"
 [[ "$DOMAIN" == "$DNS_ZONE" || "$DOMAIN" == *."$DNS_ZONE" ]] \
   || die "domain '$DOMAIN' is not within DNS zone '$DNS_ZONE'"
-[[ "$CERTIFICATE_ISSUER" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "invalid certificate issuer"
 for server_type in "$BASTION_TYPE" "$CP_TYPE" "$WORKER_TYPE"; do
   [[ -z "$server_type" || "$server_type" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] \
     || die "invalid Hetzner server type '$server_type'"
@@ -184,6 +184,14 @@ mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME" "$CONTROLLER_T
 # shellcheck source=scripts/load-project-env.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/scripts/load-project-env.sh"
+if ! $CERTIFICATE_ISSUER_FROM_OPTION && [[ -n "${CERT_MANAGER_CLUSTER_ISSUER:-}" ]]; then
+  CERTIFICATE_ISSUER="$CERT_MANAGER_CLUSTER_ISSUER"
+fi
+if [[ -z "$CERTIFICATE_ISSUER" ]]; then
+  CERTIFICATE_ISSUER=letsencrypt-staging
+  [[ "$PROFILE" == production ]] && CERTIFICATE_ISSUER=letsencrypt-prod
+fi
+[[ "$CERTIFICATE_ISSUER" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "invalid certificate issuer"
 OPERATOR_STATE_ROOT="${OPERATOR_STATE_ROOT:-${SCRIPT_DIR}/.campaign-state/${PROJECT}}"
 [[ "$OPERATOR_STATE_ROOT" == /* ]] || die "operator state root must be absolute"
 mkdir -p "$OPERATOR_STATE_ROOT"
@@ -247,6 +255,7 @@ if $MINIMUM_STORAGE; then
     .postal.mariadb_storage = "10Gi" |
     .coroot.storage_size = "10Gi" |
     .coroot.clickhouse.storage_size = "10Gi" |
+    .alerting.storage_size = "10Gi" |
     .campaign.minimum_storage = true
   ' "$CONFIG_FILE"
 fi

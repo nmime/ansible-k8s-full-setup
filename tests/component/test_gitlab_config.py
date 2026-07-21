@@ -40,6 +40,18 @@ class TestChart10ValuesStructure:
     def test_sidekiq_configured(self):
         assert "sidekiq:" in self.content
 
+    def test_production_replica_floors_and_caps_are_wired_to_chart_values(self):
+        for variable in (
+            "gitlab_webservice_max_replicas",
+            "gitlab_sidekiq_max_replicas",
+            "gitlab_registry_max_replicas",
+        ):
+            assert variable in self.content
+        assert "minReplicas: '{{ gitlab_sidekiq_replicas | int }}'" in self.content
+        assert "maxReplicas: '{{ gitlab_webservice_max_replicas | int }}'" in self.content
+        assert "maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'" in self.content
+        assert "maxReplicas: '{{ gitlab_registry_max_replicas | int }}'" in self.content
+
     def test_heavy_rails_workloads_prefer_different_nodes(self):
         assert self.content.count("topologySpreadConstraints:") >= 2
         assert self.content.count("whenUnsatisfiable: ScheduleAnyway") >= 2

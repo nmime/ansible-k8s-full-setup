@@ -102,7 +102,10 @@
   tags: [backup, backup-gitlab]
 
 - name: "Backup | Include full-cluster disaster-recovery tasks"
-  ansible.builtin.include_tasks: velero.yml
+  ansible.builtin.include_tasks:
+    file: velero.yml
+    apply:
+      tags: [backup, backup-dr, velero]
   when: backup_dr_enabled | bool
   tags: [backup, backup-dr, velero]
 

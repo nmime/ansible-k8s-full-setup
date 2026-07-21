@@ -82,3 +82,18 @@ def test_temporal_small_connection_pools_fit_postgresql_budget():
     assert "default(2 if resource_tier in [''minimal'', ''small''] else 5)" in TASKS
     assert TASKS.count("maxConns: '{{ temporal_sql_max_conns | int }}'") == 2
     assert TASKS.count("maxIdleConns: '{{ temporal_sql_max_idle_conns | int }}'") == 2
+
+
+def test_temporal_replica_controls_are_independent_and_consumed():
+    tasks = yaml.safe_load(TASKS)
+    facts = next(task for task in tasks if task["name"] == "Set Temporal tier-specific variables")[
+        "set_fact"
+    ]
+    assert "temporal_replicas" not in facts
+
+    install = next(task for task in tasks if task["name"] == "Install Temporal server via Helm")
+    server = install["kubernetes.core.helm"]["values"]["server"]
+    for component in ("frontend", "history", "matching", "worker"):
+        assert server[component]["replicaCount"] == (
+            "{{ temporal_" + component + "_replicas | int }}"
+        )

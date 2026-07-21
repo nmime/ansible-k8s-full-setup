@@ -33,6 +33,22 @@
         limits:
           cpu: "{{ blackbox_cpu_lim }}"
           memory: "{{ blackbox_memory_lim }}"
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
       serviceMonitor:
         enabled: false
       config:

@@ -28,6 +28,12 @@ ansible-playbook -i inventory -t backup playbooks/deploy_platform.yml
   --vault-init-file playbooks/.vault-init-k8s.json --dry-run
 ```
 
+For a replacement cluster, `ansible-playbook ... --tags velero-bootstrap`
+installs only the external Velero control plane from this role; it does not
+create native backup CronJobs or verification jobs. Pass the exact recovered
+platform secrets and encrypted Vault init paths. The ordinary `velero` and
+`backup-dr` tags propagate to every dynamically included Velero task.
+
 ## Configuration
 
 All variables are in `defaults/main.yml`. Key settings are `backup_schedule`,

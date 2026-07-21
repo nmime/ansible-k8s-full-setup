@@ -142,7 +142,12 @@ Rails secrets for the components enabled by the supplied platform config. An
 enabled component that is missing or unhealthy is a backup failure, while a
 disabled component is skipped. Each invocation writes a project- and
 process-specific `.backup-results-<project>-<timestamp>-<pid>.log`, so parallel
-multi-cluster runs cannot merge their audit trails. `cluster-backup.sh` then
+multi-cluster runs cannot merge their audit trails. With `--result-json`, it
+also writes a mode-`0600` native recovery catalog containing the exact
+PostgreSQL/MongoDB backup CR names, pgBackRest set, backup repository, exact
+Job names, restore contract, and artifact prefix for every enabled component.
+`cluster-backup.sh` requires that catalog to be complete and stores it as
+`application-backups/native-backups.json`. It then
 requires a completed Velero resource/PVC backup and captures the control-plane
 and cloud recovery bundle. It then uploads the encrypted archive and checksum
 to independent DR storage, downloads the archive again, verifies its SHA-256,
@@ -248,6 +253,63 @@ Always start in dry-run mode and use an isolated test cluster/namespace:
 ./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.enc \
   --mode velero --confirm RESTORE_k8s
 ```
+
+## Full replacement-cluster recovery
+
+Use the same logical project, domain, desired config, generated secrets,
+repository state, and Velero prefix. A different provider cluster UID proves
+that the restore target is new; changing the logical identity breaks native
+backup names, DNS, and object prefixes.
+
+```bash
+# 1. Verify and materialize exact state without printing secrets. The output
+# directory must not already exist.
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.age \
+  --identity /secure/age-identity.txt --mode verify
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.age \
+  --identity /secure/age-identity.txt --mode operator-state \
+  --output-dir /secure/recovery/k8s
+
+# 2. While the source API is still available, re-download and hash the remote
+# receipt, checksum, and encrypted archive before deleting any provider object.
+./teardown.sh k8s --confirm k8s \
+  --require-backup-receipt /secure/BACKUP.tar.gz.age.manifest.json
+
+# 3. Check out the bundled repository revision/patch, then build only the
+# replacement foundation and external Velero control plane from exact state.
+STATE=/secure/recovery/k8s
+PROJECT=$(yq -r .global.project "$STATE/platform.yaml")
+DOMAIN=$(yq -r .global.domain "$STATE/platform.yaml")
+EMAIL=$(yq -r .global.email "$STATE/platform.yaml")
+ansible-playbook playbooks/deploy_platform.yml -e @"$STATE/platform.yaml" \
+  -e "project_name=$PROJECT" -e "domain=$DOMAIN" -e "email=$EMAIL" \
+  -e "secrets_file=$STATE/.platform-secrets.yml" \
+  -e "vault_init_output_file=$STATE/.vault-init-${PROJECT}.json" \
+  --tags infrastructure,network,cluster,velero-bootstrap
+
+# 4. Restore. The command requires a Completed source Backup, explicit warning
+# allowances, complete PVR coverage, every expected PVC Bound and mounted, and
+# all platform health gates. Warning allowances default to zero.
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.age \
+  --identity /secure/age-identity.txt --mode velero \
+  --confirm "RESTORE_${PROJECT}"
+```
+
+`operator-state` creates a new mode-`0700` directory and mode-`0600` files,
+including `platform.yaml`, `.platform-secrets.yml`, encrypted Vault init state,
+the native catalog, manifest, and bundled Git recovery inputs. It rejects link,
+device, absolute, and traversal archive members and refuses to overwrite an
+existing destination. `run_tier.sh` is not the recovery bootstrap command: it
+copies a named profile over its configured output. Use the exact bundled config
+as shown above.
+
+Velero restores Kubernetes objects and filesystem-backed PVC bytes. It does not
+replace application-native replay. After the strict Velero gate, consume
+`native-backups.json` in the recorded `restore_order`: pgBackRest for
+PostgreSQL, PBM for MongoDB, Vault Raft snapshot when recorded (or the explicit
+Velero fallback), GitLab Toolbox plus Rails secrets, and the SeaweedFS topology
+contract. Run component integrity checks, `live-tier-smoke.sh`, bounded load,
+and a new complete cluster backup before declaring recovery complete.
 
 The generic `restore-drill.sh` dispatcher supports PostgreSQL, MongoDB, Vault,
 SeaweedFS, and GitLab.

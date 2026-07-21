@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -81,6 +82,7 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
     )
     assert profile["storage"]["size_per_replica"] == "10Gi"
     assert profile["observability"]["pmm"]["storage_size"] == "10Gi"
+    assert profile["alerting"]["storage_size"] == "10Gi"
     assert profile["gitlab"]["backup_persistence_enabled"] is False
     assert (run_root / "status.json").is_file()
     assert "k8s_api_local_port=17446" in result.stdout
@@ -156,6 +158,100 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
     assert len(projects) == 5
     assert ports == set(range(18443, 18448))
     assert "No cloud resources were changed" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("profile", "environment_issuer", "option_issuer", "expected"),
+    (
+        ("production", None, None, "letsencrypt-prod"),
+        ("small", None, None, "letsencrypt-staging"),
+        ("production", "private-issuer", None, "private-issuer"),
+        ("production", "private-issuer", "explicit-issuer", "explicit-issuer"),
+    ),
+)
+def test_certificate_issuer_defaults_and_overrides(
+    tmp_path, profile, environment_issuer, option_issuer, expected
+):
+    env = safe_env()
+    env.pop("CERT_MANAGER_CLUSTER_ISSUER", None)
+    if environment_issuer is not None:
+        env["CERT_MANAGER_CLUSTER_ISSUER"] = environment_issuer
+    command = [
+        str(RUN_TIER),
+        profile,
+        "--campaign-id",
+        "issuer-test",
+        "--project",
+        f"issuer-test-{profile}",
+        "--domain",
+        f"{profile}.example.invalid",
+        "--dr-endpoint",
+        "https://dr.example.invalid",
+        "--dr-bucket",
+        "issuer-tests",
+        "--run-root",
+        str(tmp_path / profile / (option_issuer or "default")),
+        "--dry-run",
+    ]
+    if option_issuer is not None:
+        command.extend(("--certificate-issuer", option_issuer))
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"cert_manager_cluster_issuer={expected}" in result.stdout
+
+
+def test_certificate_issuer_help_documents_safe_profile_defaults():
+    result = subprocess.run(
+        [str(RUN_TIER), "--help"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "production uses letsencrypt-prod; others staging" in result.stdout
+
+
+def test_certificate_issuer_can_be_loaded_from_the_protected_project_env(tmp_path):
+    project_env = tmp_path / ".env"
+    project_env.write_text("CERT_MANAGER_CLUSTER_ISSUER=env-file-issuer\n", encoding="utf-8")
+    project_env.chmod(0o600)
+    env = safe_env()
+    env.pop("CERT_MANAGER_CLUSTER_ISSUER", None)
+    env["PROJECT_ENV_FILE"] = str(project_env)
+    result = subprocess.run(
+        [
+            str(RUN_TIER),
+            "production",
+            "--campaign-id",
+            "issuer-env-file",
+            "--project",
+            "issuer-env-file-production",
+            "--domain",
+            "production.example.invalid",
+            "--dr-endpoint",
+            "https://dr.example.invalid",
+            "--dr-bucket",
+            "issuer-tests",
+            "--run-root",
+            str(tmp_path / "state"),
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "cert_manager_cluster_issuer=env-file-issuer" in result.stdout
 
 
 def test_runner_source_declares_all_profiles_and_parallel_waits():
