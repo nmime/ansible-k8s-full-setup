@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 from pathlib import Path
@@ -22,6 +23,7 @@ STORAGE_CAPACITY = SCRIPTS / "profile-storage-capacity.py"
 VAULT_MIGRATE = SCRIPTS / "vault-storage-migrate.sh"
 CAPTURE_REPOSITORY = SCRIPTS / "capture-repository-state.sh"
 VELERO = ROOT / "roles" / "backup-restore" / "tasks" / "velero.yml"
+TEARDOWN = ROOT / "teardown.sh"
 
 
 @pytest.mark.parametrize(
@@ -493,6 +495,60 @@ def test_encrypted_bundle_is_remote_verified_before_manifest_last_receipt():
     assert 'cmp -s "$FINAL_RECEIPT" "$REMOTE_RECEIPT_VERIFY"' in content
 
 
+def test_schema2_receipt_binds_project_uid_prefix_and_uses_rfc3339_time():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert "RECEIPT_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" in content
+    assert '{schema_version:2,receipt_type:"encrypted-cluster-backup"' in content
+    assert "source_cluster_uid:$sourceClusterUid" in content
+    assert "velero_storage_prefix:$veleroPrefix" in content
+    assert "project:$project" in content
+
+
+def test_complete_bundle_requires_a_structured_native_backup_catalog():
+    backup = BACKUP.read_text(encoding="utf-8")
+    orchestrator = (SCRIPTS / "backup-all.sh").read_text(encoding="utf-8")
+    assert '--result-json "$STAGE_DIR/application-backups/native-backups.json"' in backup
+    assert "structured native backup catalog is missing" in backup
+    assert 'bundle_path:(if $app == "completed" then "application-backups/native-backups.json"' in backup
+    assert "--result-json" in orchestrator
+    assert "restore_contract:$contract" in orchestrator
+    assert "artifact_locator:$locator" in orchestrator
+    assert "repository:$repository" in orchestrator
+
+
+def test_backup_all_emits_process_isolated_structured_catalog_in_dry_run(tmp_path):
+    catalog = tmp_path / "native-backups.json"
+    result = subprocess.run(
+        [
+            str(SCRIPTS / "backup-all.sh"),
+            "--config",
+            str(ROOT / "platform-orchestrator" / "profiles" / "production.yaml"),
+            "--result-json",
+            str(catalog),
+            "--dry-run",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    data = json.loads(catalog.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1
+    assert data["summary"]["expected"] == len(data["artifacts"]) == 6
+    assert data["completeness"] == "incomplete"
+    assert {artifact["component"] for artifact in data["artifacts"]} == {
+        "postgresql",
+        "mongodb",
+        "vault",
+        "seaweedfs",
+        "gitlab",
+        "gitlab-secrets",
+    }
+    assert all(artifact["restore_contract"] for artifact in data["artifacts"])
+    assert stat.S_IMODE(catalog.stat().st_mode) == 0o600
+
+
 def test_local_receipt_stays_pending_until_remote_receipt_is_uploaded_and_verified():
     content = BACKUP.read_text(encoding="utf-8")
     pending_archive = (
@@ -758,6 +814,8 @@ def _make_encrypted_fixture(
     tmp_path: Path,
     passphrase: str,
     vault_init_state: str = "legacy",
+    unsafe_member: bool = False,
+    receipt_schema: int = 2,
 ) -> Path:
     bundle_name = "test-cluster-20260716T000000Z"
     bundle = tmp_path / bundle_name
@@ -766,8 +824,23 @@ def _make_encrypted_fixture(
         "schema_version": 1 if vault_init_state == "legacy" else 2,
         "backup_id": bundle_name,
         "project": "test",
+        "domain": "test.example.invalid",
+        "profile": "production",
         "source_context": "source",
+        "source_cluster_uid": "11111111-2222-3333-4444-555555555555",
         "completeness": "complete",
+        "velero_backup": "completed",
+        "velero_backup_name": "test-backup",
+        "velero_storage_prefix": "test/velero",
+        "pvc_protection_gate": {
+            "status": "complete",
+            "failures": 0,
+            "evidence": "application-backups/pvc-protection-evidence.json",
+        },
+        "native_backup_catalog": {
+            "included": True,
+            "bundle_path": "application-backups/native-backups.json",
+        },
         "contains": {"etcd_snapshot": True},
         "restore_order": ["infrastructure", "control-plane", "velero"],
     }
@@ -790,6 +863,78 @@ def _make_encrypted_fixture(
             else "plaintext-must-not-appear-in-output\n"
         )
         (config / "vault-init.json.vault").write_text(value, encoding="utf-8")
+    config = bundle / "config"
+    config.mkdir(exist_ok=True)
+    (config / "platform.yaml").write_text(
+        "global:\n  project: test\n  domain: test.example.invalid\n  email: ops@example.invalid\n",
+        encoding="utf-8",
+    )
+    (config / "platform-secrets.yml").write_text(
+        "$ANSIBLE_VAULT;1.1;AES256\nfixture-platform-secrets\n", encoding="utf-8"
+    )
+    for name, value in {
+        "repository.bundle": "fixture bundle\n",
+        "worktree.patch": "",
+        "repository-untracked.tar": "fixture tar\n",
+        "repository-untracked-files.txt": "",
+        "repository-untracked-count.txt": "0\n",
+        "git-status.txt": "",
+    }.items():
+        (config / name).write_text(value, encoding="utf-8")
+    application = bundle / "application-backups"
+    application.mkdir()
+    (application / "native-backups.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project": "test",
+                "completeness": "complete",
+                "summary": {"expected": 0, "passed": 0, "failed": 0, "skipped": 0},
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (application / "pvc-protection-evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "complete",
+                "summary": {"failures": 0},
+                "claims": [
+                    {
+                        "namespace": "data",
+                        "name": "db-data",
+                        "protected": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (application / "pod-volume-backups.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "spec": {
+                            "pod": {"namespace": "data", "name": "db-0"},
+                            "volume": "data",
+                        },
+                        "status": {"phase": "Completed"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    mounted = "data\tdb-0\tdata\n"
+    (application / "mounted-pod-volumes.expected.tsv").write_text(
+        mounted, encoding="utf-8"
+    )
+    (application / "mounted-pod-volumes.completed.tsv").write_text(
+        mounted, encoding="utf-8"
+    )
     (bundle / "MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
     checksum_lines = []
     for path in sorted(item for item in bundle.rglob("*") if item.is_file()):
@@ -798,6 +943,8 @@ def _make_encrypted_fixture(
     (bundle / "SHA256SUMS").write_text(
         "\n".join(checksum_lines) + "\n", encoding="utf-8"
     )
+    if unsafe_member:
+        (bundle / "unsafe-link").symlink_to("/etc/passwd")
     plain = tmp_path / f"{bundle_name}.tar.gz"
     with tarfile.open(plain, "w:gz") as archive:
         archive.add(bundle, arcname=bundle_name)
@@ -830,9 +977,16 @@ def _make_encrypted_fixture(
     Path(f"{encrypted}.sha256").write_text(f"{digest}  {encrypted.name}\n", encoding="utf-8")
     if manifest["schema_version"] == 2:
         receipt = {
-            "schema_version": 1,
+            "schema_version": receipt_schema,
             "receipt_type": "encrypted-cluster-backup",
             "backup_id": bundle_name,
+            "project": "test",
+            "domain": "test.example.invalid",
+            "profile": "production",
+            "source_context": "source",
+            "source_cluster_uid": "11111111-2222-3333-4444-555555555555",
+            "velero_backup_name": "test-backup",
+            "velero_storage_prefix": "test/velero",
             "archive": encrypted.name,
             "sha256": digest,
             "completeness": "complete",
@@ -848,6 +1002,16 @@ def _make_encrypted_fixture(
                 "receipt_key": f"bundles/{bundle_name}/{encrypted.name}.manifest.json",
             },
         }
+        if receipt_schema == 1:
+            for identity_field in (
+                "project",
+                "domain",
+                "profile",
+                "source_context",
+                "source_cluster_uid",
+                "velero_storage_prefix",
+            ):
+                receipt.pop(identity_field)
         Path(f"{encrypted}.manifest.json").write_text(
             json.dumps(receipt), encoding="utf-8"
         )
@@ -886,6 +1050,120 @@ def test_restore_verifies_schema2_bundle_with_encrypted_vault_dependency(tmp_pat
     assert result.returncode == 0, result.stderr
     assert '"vault_init_material": true' in result.stdout
     assert '"encryption": "ansible-vault"' in result.stdout
+
+
+def test_restore_verify_accepts_legacy_schema1_completion_receipt(tmp_path):
+    encrypted = _make_encrypted_fixture(
+        tmp_path,
+        "correct horse battery staple",
+        vault_init_state="included",
+        receipt_schema=1,
+    )
+    env = os.environ.copy()
+    env["CLUSTER_BACKUP_PASSPHRASE"] = "correct horse battery staple"
+    result = subprocess.run(
+        ["bash", str(RESTORE), "--archive", str(encrypted), "--mode", "verify"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "verified bundle" in result.stdout
+
+
+def test_restore_materializes_exact_private_operator_state(tmp_path):
+    encrypted = _make_encrypted_fixture(
+        tmp_path, "correct horse battery staple", vault_init_state="included"
+    )
+    output = tmp_path / "operator-state"
+    env = os.environ.copy()
+    env["CLUSTER_BACKUP_PASSPHRASE"] = "correct horse battery staple"
+    result = subprocess.run(
+        [
+            "bash",
+            str(RESTORE),
+            "--archive",
+            str(encrypted),
+            "--mode",
+            "operator-state",
+            "--output-dir",
+            str(output),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(output.stat().st_mode) == 0o700
+    expected = {
+        "platform.yaml",
+        ".platform-secrets.yml",
+        ".vault-init-test.json",
+        "MANIFEST.json",
+        "native-backups.json",
+        "recovery-state.json",
+    }
+    assert expected <= {path.name for path in output.iterdir()}
+    for path in output.rglob("*"):
+        expected_mode = 0o700 if path.is_dir() else 0o600
+        assert stat.S_IMODE(path.stat().st_mode) == expected_mode, path
+    assert (output / ".platform-secrets.yml").read_text().endswith(
+        "fixture-platform-secrets\n"
+    )
+    assert (output / ".vault-init-test.json").read_text().startswith(
+        "$ANSIBLE_VAULT;"
+    )
+    assert "fixture-platform-secrets" not in result.stdout + result.stderr
+
+
+def test_restore_operator_state_refuses_to_overwrite_existing_destination(tmp_path):
+    encrypted = _make_encrypted_fixture(
+        tmp_path, "correct horse battery staple", vault_init_state="included"
+    )
+    output = tmp_path / "operator-state"
+    output.mkdir()
+    sentinel = output / "sentinel"
+    sentinel.write_text("keep", encoding="utf-8")
+    env = os.environ.copy()
+    env["CLUSTER_BACKUP_PASSPHRASE"] = "correct horse battery staple"
+    result = subprocess.run(
+        [
+            "bash",
+            str(RESTORE),
+            "--archive",
+            str(encrypted),
+            "--mode",
+            "operator-state",
+            "--output-dir",
+            str(output),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert sentinel.read_text() == "keep"
+    assert "destination already exists" in result.stderr
+
+
+def test_restore_rejects_link_members_before_extraction(tmp_path):
+    encrypted = _make_encrypted_fixture(
+        tmp_path, "correct horse battery staple", unsafe_member=True
+    )
+    env = os.environ.copy()
+    env["CLUSTER_BACKUP_PASSPHRASE"] = "correct horse battery staple"
+    result = subprocess.run(
+        ["bash", str(RESTORE), "--archive", str(encrypted), "--mode", "verify"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "unsafe path or member type" in result.stderr
 
 
 def test_restore_rejects_schema2_bundle_without_atomic_completion_receipt(tmp_path):
@@ -970,6 +1248,281 @@ def test_restore_rejects_a_tampered_encrypted_archive(tmp_path):
     )
     assert result.returncode != 0
     assert "checksum mismatch" in result.stderr
+
+
+def _mock_strict_restore_runtime(tmp_path: Path, backup_warnings: int = 0) -> tuple[Path, dict[str, str]]:
+    runtime = tmp_path / "restore-runtime"
+    scripts = runtime / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(RESTORE, scripts / "cluster-restore.sh")
+    shutil.copy2(SCRIPTS / "load-project-env.sh", scripts / "load-project-env.sh")
+    health_marker = runtime / "health-called"
+    (scripts / "health-gates.sh").write_text(
+        f"#!/usr/bin/env bash\nset -eu\nprintf passed > {health_marker!s}\n",
+        encoding="utf-8",
+    )
+    (scripts / "health-gates.sh").chmod(0o755)
+    bin_dir = runtime / "bin"
+    bin_dir.mkdir()
+    kubectl = bin_dir / "kubectl"
+    kubectl.write_text(
+        """#!/usr/bin/env bash
+set -eu
+args="$*"
+case "$args" in
+  "cluster-info") exit 0 ;;
+  "config current-context") printf 'replacement\\n' ;;
+  "get namespace kube-system -o jsonpath={.metadata.uid}") printf 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' ;;
+  "wait backupstoragelocation/default -n velero --for=jsonpath={.status.phase}=Available --timeout=300s") exit 0 ;;
+  get\\ backup\\ test-backup\\ -n\\ velero\\ -o\\ json)
+    printf '{"status":{"phase":"Completed","errors":0,"warnings":%s}}\\n' "${MOCK_BACKUP_WARNINGS:-0}" ;;
+  "apply -f -") cat >/dev/null ;;
+  get\\ restore*jsonpath*) printf 'Completed' ;;
+  get\\ restore*"-o json") printf '{"status":{"phase":"Completed","errors":0,"warnings":0}}\\n' ;;
+  get\\ podvolumerestores*) printf '{"items":[{"status":{"phase":"Completed"}}]}\\n' ;;
+  "get persistentvolumeclaims --all-namespaces -o json")
+    printf '{"items":[{"metadata":{"namespace":"data","name":"db-data"},"status":{"phase":"Bound"}}]}\\n' ;;
+  "get pods --all-namespaces -o json")
+    printf '%s\\n' '{"items":[{"metadata":{"namespace":"data","name":"db-0"},"status":{"phase":"Running"},"spec":{"containers":[{"name":"db","volumeMounts":[{"name":"data"}]}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"db-data"}}]}}]}' ;;
+  *) printf 'unexpected kubectl invocation: %s\\n' "$args" >&2; exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    kubectl.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["MOCK_BACKUP_WARNINGS"] = str(backup_warnings)
+    env["CLUSTER_BACKUP_PASSPHRASE"] = "correct horse battery staple"
+    env["CLUSTER_RESTORE_TIMEOUT_SECONDS"] = "5"
+    return scripts / "cluster-restore.sh", env
+
+
+def test_strict_velero_restore_requires_warning_review_and_full_coverage(tmp_path):
+    encrypted = _make_encrypted_fixture(
+        tmp_path, "correct horse battery staple", vault_init_state="included"
+    )
+    restore, env = _mock_strict_restore_runtime(tmp_path, backup_warnings=1)
+    rejected = subprocess.run(
+        [
+            str(restore),
+            "--archive",
+            str(encrypted),
+            "--mode",
+            "velero",
+            "--confirm",
+            "RESTORE_test",
+            "--force",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert rejected.returncode != 0
+    assert "explicitly allowed warning count" in rejected.stderr
+
+    accepted = subprocess.run(
+        [
+            str(restore),
+            "--archive",
+            str(encrypted),
+            "--mode",
+            "velero",
+            "--confirm",
+            "RESTORE_test",
+            "--force",
+            "--allow-backup-warnings",
+            "1",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert (tmp_path / "restore-runtime" / "health-called").read_text() == "passed"
+    evidence = list(tmp_path.glob("*.pod-volume-restores.json"))
+    assert len(evidence) == 1
+    assert json.loads(evidence[0].read_text())["items"][0]["status"]["phase"] == "Completed"
+
+
+def _mock_teardown_gate(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    archive = tmp_path / "test-cluster.tar.gz.enc"
+    archive.write_bytes(b"verified encrypted recovery bundle")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    checksum = Path(f"{archive}.sha256")
+    checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    receipt = Path(f"{archive}.manifest.json")
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "receipt_type": "encrypted-cluster-backup",
+                "backup_id": "test-cluster-20260722T000000Z",
+                "created_at": subprocess.run(
+                    ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip(),
+                "project": "test",
+                "source_cluster_uid": "11111111-2222-3333-4444-555555555555",
+                "archive": archive.name,
+                "sha256": digest,
+                "completeness": "complete",
+                "velero_backup_name": "test-backup",
+                "velero_storage_prefix": "test/velero",
+                "remote": {
+                    "published": True,
+                    "download_sha256_verified": True,
+                    "receipt_uploaded_last": True,
+                    "publication_state": "complete",
+                    "endpoint": "https://dr.example.invalid",
+                    "bucket": "test-dr",
+                    "archive_key": f"bundles/{archive.name}",
+                    "checksum_key": f"bundles/{archive.name}.sha256",
+                    "receipt_key": f"bundles/{archive.name}.manifest.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "hcloud-called"
+    (bin_dir / "kubectl").write_text(
+        """#!/usr/bin/env bash
+set -eu
+case "$*" in
+  "get namespace kube-system -o jsonpath={.metadata.uid}") printf '%s' "$MOCK_SOURCE_UID" ;;
+  "get nodes -o json") printf '{"items":[]}' ;;
+  *) exit 1 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (bin_dir / "hcloud").write_text(
+        f"""#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> {marker!s}
+case "${{2:-}}" in
+  list) printf '[]\\n' ;;
+  describe) exit 1 ;;
+  *) exit 0 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (bin_dir / "aws").write_text(
+        """#!/usr/bin/env bash
+set -eu
+source_path="$5"
+destination="$6"
+case "$source_path" in
+  *.manifest.json) cp "$MOCK_REMOTE_RECEIPT" "$destination" ;;
+  *.sha256) cp "$MOCK_REMOTE_CHECKSUM" "$destination" ;;
+  *) cp "$MOCK_REMOTE_ARCHIVE" "$destination" ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    for executable in bin_dir.iterdir():
+        executable.chmod(0o755)
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "HOME": str(home),
+            "HCLOUD_TOKEN": "test-token",
+            "BACKUP_DR_ENDPOINT": "https://dr.example.invalid",
+            "BACKUP_DR_BUCKET": "test-dr",
+            "BACKUP_DR_ACCESS_KEY": "test-access-key",
+            "BACKUP_DR_SECRET_KEY": "test-secret-key-value",
+            "MOCK_SOURCE_UID": "11111111-2222-3333-4444-555555555555",
+            "MOCK_REMOTE_RECEIPT": str(receipt),
+            "MOCK_REMOTE_CHECKSUM": str(checksum),
+            "MOCK_REMOTE_ARCHIVE": str(archive),
+            "PROJECT_ENV_FILE": str(tmp_path / "absent.env"),
+        }
+    )
+    return receipt, marker, env
+
+
+@pytest.mark.parametrize("mutation", ("project", "source_uid", "stale"))
+def test_teardown_receipt_gate_fails_before_any_hcloud_call(tmp_path, mutation):
+    receipt, marker, env = _mock_teardown_gate(tmp_path)
+    data = json.loads(receipt.read_text(encoding="utf-8"))
+    if mutation == "project":
+        data["project"] = "another-project"
+    elif mutation == "source_uid":
+        data["source_cluster_uid"] = "ffffffff-2222-3333-4444-555555555555"
+    else:
+        data["created_at"] = "2000-01-01T00:00:00Z"
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    result = subprocess.run(
+        [
+            str(TEARDOWN),
+            "test",
+            "--confirm",
+            "test",
+            "--require-backup-receipt",
+            str(receipt),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode != 0
+    assert not marker.exists()
+
+
+def test_teardown_receipt_gate_rechecks_remote_bytes_before_hcloud(tmp_path):
+    receipt, marker, env = _mock_teardown_gate(tmp_path)
+    tampered = tmp_path / "tampered-remote-archive"
+    tampered.write_bytes(b"tampered")
+    env["MOCK_REMOTE_ARCHIVE"] = str(tampered)
+    result = subprocess.run(
+        [
+            str(TEARDOWN),
+            "test",
+            "--confirm",
+            "test",
+            "--require-backup-receipt",
+            str(receipt),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode != 0
+    assert "remote encrypted backup archive failed" in result.stderr
+    assert not marker.exists()
+
+
+def test_teardown_accepts_recent_remote_verified_receipt(tmp_path):
+    receipt, marker, env = _mock_teardown_gate(tmp_path)
+    result = subprocess.run(
+        [
+            str(TEARDOWN),
+            "test",
+            "--confirm",
+            "test",
+            "--require-backup-receipt",
+            str(receipt),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert marker.exists()
+    assert "Verified recent local and remote recovery bundle" in result.stdout
 
 
 def test_etcd_recovery_supports_replacement_inventory_and_member_identity():
@@ -1509,9 +2062,11 @@ def test_downgrade_plan_retains_only_non_shrinkable_pvc_requests(tmp_path):
     assert target["storage"]["size_per_replica"] == "100Gi"
     assert target["databases"]["postgresql"]["storage_size"] == "50Gi"
     assert target["observability"]["metrics"]["storage_size"] == "100Gi"
+    assert target["alerting"]["storage_size"] == "10Gi"
     assert "seaweedfs-volume\t100Gi\t40Gi" in retention
     assert "seaweedfs-index\t4Gi\t2Gi" in retention
     assert "postgresql\t50Gi\t30Gi" in retention
+    assert "alertmanager\t10Gi\t5Gi" in retention
     assert target["storage"]["master_replicas"] == 3
     assert target["storage"]["volume_replicas"] == 3
     assert target["observability"]["metrics"]["replicas"] == 2

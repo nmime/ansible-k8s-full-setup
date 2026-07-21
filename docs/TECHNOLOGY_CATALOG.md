@@ -33,14 +33,22 @@ The `medium-optimized` profile intentionally has the same technology set as
 `medium`, but uses the `small` resource envelope plus explicit compact
 overrides for heavy services.
 The `production` profile also uses the conservative request envelope, while
-explicitly retaining HA replicas for Vault, databases, storage, GitLab,
-Argo CD, metrics, autoscaling, Temporal, alerting, tracing, and error tracking.
+explicitly retaining selective critical HA replicas for Vault, databases,
+storage, GitLab, Argo CD, metrics, autoscaling, Temporal, alerting, tracing,
+and error tracking.
 Its three control planes are dedicated and its three 16 GiB workers are sized
 with failover headroom rather than steady-state-only fit.
 Production explicitly pairs two VictoriaMetrics `vmstorage` replicas with
 replication factor `2`, even though its pod request envelope is `small`.
 `medium-optimized` intentionally keeps one `vmstorage` replica and replication
 factor `1`; resource sizing therefore cannot silently change metrics durability.
+
+`production` is not universal active-active HA. Gitaly, the Elasticsearch data
+node, Grafana's SQLite/RWO deployment, Postal web/MariaDB, and Coroot with its
+ClickHouse data path remain intentional singletons. Their recovery contract is
+backup/PVC restoration (or an explicitly accepted telemetry rebuild for
+Coroot), followed by component health gates; they do not provide immediate
+replica failover.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,

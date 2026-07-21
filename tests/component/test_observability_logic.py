@@ -1,4 +1,4 @@
-import os, re, pytest
+import os, re, pytest, yaml
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OBS = os.path.join(REPO, "roles", "k8s-observability")
@@ -34,6 +34,20 @@ class TestAlertingIntact:
         assert "VMAlert" in read("tasks/alerting.yml")
     def test_vmrules(self):
         assert "VMRule" in read("tasks/alerting.yml")
+
+    def test_replica_and_storage_controls_are_profile_driven(self):
+        tasks = yaml.safe_load(read("tasks/alerting.yml"))
+        alertmanager = next(task for task in tasks if task["name"] == "Deploy VMAlertmanager CR")
+        vmalert = next(task for task in tasks if task["name"] == "Deploy VMAlert CR")
+        alertmanager_spec = alertmanager["kubernetes.core.k8s"]["definition"]["spec"]
+        vmalert_spec = vmalert["kubernetes.core.k8s"]["definition"]["spec"]
+        assert "alerting.replicas" in alertmanager_spec["replicaCount"]
+        assert "tier in ['medium', 'production']" in alertmanager_spec["replicaCount"]
+        assert "alerting.storage_size" in alertmanager_spec["storage"][
+            "volumeClaimTemplate"
+        ]["spec"]["resources"]["requests"]["storage"]
+        assert "alerting.vmalert_replicas" in vmalert_spec["replicaCount"]
+        assert "tier == 'production'" in vmalert_spec["replicaCount"]
 
 class TestElasticsearchUntouched:
     def test_exists(self):

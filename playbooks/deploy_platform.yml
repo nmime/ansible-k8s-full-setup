@@ -295,6 +295,21 @@
       tags: [daytona, workspaces, application]
 
   post_tasks:
+    # Recovery needs the external Velero control plane before any protected
+    # workloads are recreated. Keep this isolated from the native backup role:
+    # tagging the imported role would make every backup CronJob part of the
+    # bootstrap path because import_role tags are inherited by all child tasks.
+    - name: Bootstrap only Velero disaster recovery on a replacement cluster
+      ansible.builtin.include_role:
+        name: backup-restore
+        tasks_from: velero.yml
+        apply:
+          tags: [velero-bootstrap]
+      when:
+        - platform_backup_enabled | bool
+        - backup_dr_enabled | bool
+      tags: [never, velero-bootstrap]
+
     - name: Deploy backup and restore automation
       ansible.builtin.import_role:
         name: backup-restore

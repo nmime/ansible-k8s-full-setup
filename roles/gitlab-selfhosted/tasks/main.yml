@@ -727,7 +727,7 @@
           workerProcesses: '{{ gitlab_webservice_worker_processes | int }}'
         sidekiq:
           replicaCount: '{{ gitlab_sidekiq_replicas | int }}'
-          minReplicas: 1
+          minReplicas: '{{ gitlab_sidekiq_replicas | int }}'
           maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'
           topologySpreadConstraints:
             - maxSkew: 1

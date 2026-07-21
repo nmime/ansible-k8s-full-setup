@@ -4,6 +4,10 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/load-project-env.sh
 source "${ROOT_DIR}/scripts/load-project-env.sh"
+if ! command -v aws >/dev/null 2>&1 && [[ -x "${ROOT_DIR}/.venv/bin/aws" ]]; then
+  PATH="${ROOT_DIR}/.venv/bin:${PATH}"
+  export PATH
+fi
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '  %s\n' "$*"; }
@@ -13,17 +17,24 @@ PROJECT="${1:-}"
 CONFIRM=""
 ACTIVE_MIGRATION_CONFIRM=""
 API_LOCAL_PORT="${K8S_API_LOCAL_PORT:-16443}"
+BACKUP_RECEIPT=""
+MAX_BACKUP_AGE_SECONDS="${CLUSTER_TEARDOWN_MAX_BACKUP_AGE_SECONDS:-86400}"
+TEARDOWN_GATE_DIR=""
+cleanup_gate() { [[ -z "$TEARDOWN_GATE_DIR" ]] || rm -rf "$TEARDOWN_GATE_DIR"; }
+trap cleanup_gate EXIT INT TERM
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --confirm) CONFIRM="${2:-}"; shift 2 ;;
     --confirm-active-migration) ACTIVE_MIGRATION_CONFIRM="${2:-}"; shift 2 ;;
     --api-port) API_LOCAL_PORT="${2:-}"; shift 2 ;;
+    --require-backup-receipt) BACKUP_RECEIPT="${2:-}"; shift 2 ;;
+    --max-backup-age-seconds) MAX_BACKUP_AGE_SECONDS="${2:-}"; shift 2 ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
 
-[[ -n "$PROJECT" ]] || fail "usage: $0 <project> --confirm <project> [--confirm-active-migration PHRASE] [--api-port PORT]"
+[[ -n "$PROJECT" ]] || fail "usage: $0 <project> --confirm <project> [--confirm-active-migration PHRASE] [--require-backup-receipt FILE] [--max-backup-age-seconds N] [--api-port PORT]"
 [[ "$PROJECT" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail "invalid project name"
 [[ "$CONFIRM" == "$PROJECT" ]] || fail "confirmation must exactly match project '$PROJECT'"
 [[ "$API_LOCAL_PORT" =~ ^[0-9]+$ ]] || fail "API tunnel port must be an integer"
@@ -32,6 +43,8 @@ done
 [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required"
 command -v hcloud >/dev/null || fail "hcloud CLI is required"
 command -v jq >/dev/null || fail "jq is required"
+[[ "$MAX_BACKUP_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+  || fail "--max-backup-age-seconds must be a positive integer"
 
 # A normal project confirmation is insufficient while a resumable profile
 # migration owns the cluster. This protects long-running backup/resize/restore
@@ -52,6 +65,104 @@ if (( ${#ACTIVE_MIGRATION_STATES[@]} > 0 )); then
   expected_active_confirmation="DESTROY_ACTIVE_MIGRATION_${PROJECT}"
   [[ "$ACTIVE_MIGRATION_CONFIRM" == "$expected_active_confirmation" ]] \
     || fail "project $PROJECT has an in-progress profile migration (${ACTIVE_MIGRATION_STATES[0]}); rerun only after recovery or add --confirm-active-migration $expected_active_confirmation"
+fi
+
+sha256_file() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+verify_required_backup_receipt() {
+  local receipt="$1" archive checksum source_uid expected_sha actual_sha
+  local endpoint bucket receipt_key archive_key checksum_key remote_sha sidecar_sha
+  [[ -f "$receipt" && -r "$receipt" && -s "$receipt" ]] \
+    || fail "required backup receipt is missing, unreadable, or empty: $receipt"
+  [[ "$receipt" == *.manifest.json ]] \
+    || fail "required backup receipt must end with .manifest.json"
+  archive="${receipt%.manifest.json}"
+  checksum="${archive}.sha256"
+  [[ -f "$archive" && -r "$archive" && -s "$archive" ]] \
+    || fail "required encrypted backup archive is missing: $archive"
+  [[ -f "$checksum" && -r "$checksum" && -s "$checksum" ]] \
+    || fail "required encrypted backup checksum is missing: $checksum"
+  command -v kubectl >/dev/null || fail "kubectl is required for the backup receipt source-identity gate"
+  source_uid=$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null) \
+    || fail "cannot read the source cluster UID for the backup receipt gate"
+  [[ -n "$source_uid" ]] || fail "source cluster UID is empty"
+  jq -e --arg project "$PROJECT" --arg sourceUid "$source_uid" \
+    --arg archive "$(basename "$archive")" --argjson maxAge "$MAX_BACKUP_AGE_SECONDS" '
+      .schema_version == 2 and
+      .receipt_type == "encrypted-cluster-backup" and
+      .project == $project and .source_cluster_uid == $sourceUid and
+      .archive == $archive and .completeness == "complete" and
+      (.velero_backup_name | type == "string" and length > 0) and
+      (.velero_storage_prefix | type == "string" and length > 0) and
+      (.sha256 | test("^[a-f0-9]{64}$")) and
+      ((now - (.created_at | fromdateiso8601)) >= -300) and
+      ((now - (.created_at | fromdateiso8601)) <= $maxAge) and
+      .remote.published == true and
+      .remote.download_sha256_verified == true and
+      .remote.receipt_uploaded_last == true and
+      .remote.publication_state == "complete" and
+      (.remote.endpoint | type == "string" and length > 0) and
+      (.remote.bucket | type == "string" and length > 0) and
+      (.remote.archive_key | type == "string" and length > 0) and
+      (.remote.checksum_key | type == "string" and length > 0) and
+      (.remote.receipt_key | type == "string" and length > 0)
+    ' "$receipt" >/dev/null \
+    || fail "backup receipt is stale, incomplete, or does not match project/source cluster identity"
+  expected_sha=$(jq -r '.sha256' "$receipt")
+  actual_sha=$(sha256_file "$archive")
+  sidecar_sha=$(awk 'NR == 1 {print $1}' "$checksum")
+  [[ "$actual_sha" == "$expected_sha" && "$sidecar_sha" == "$expected_sha" ]] \
+    || fail "local encrypted backup archive does not match its receipt and checksum"
+
+  command -v aws >/dev/null || fail "aws CLI is required to re-verify the remote backup before teardown"
+  command -v cmp >/dev/null || fail "cmp is required to verify the remote receipt"
+  endpoint=$(jq -r '.remote.endpoint' "$receipt")
+  bucket=$(jq -r '.remote.bucket' "$receipt")
+  [[ -n "${BACKUP_DR_ENDPOINT:-}" && "$BACKUP_DR_ENDPOINT" == "$endpoint" ]] \
+    || fail "BACKUP_DR_ENDPOINT must exactly match the verified receipt endpoint"
+  [[ -n "${BACKUP_DR_BUCKET:-}" && "$BACKUP_DR_BUCKET" == "$bucket" ]] \
+    || fail "BACKUP_DR_BUCKET must exactly match the verified receipt bucket"
+  [[ -n "${BACKUP_DR_ACCESS_KEY:-}" && -n "${BACKUP_DR_SECRET_KEY:-}" ]] \
+    || fail "BACKUP_DR_ACCESS_KEY and BACKUP_DR_SECRET_KEY are required for remote teardown verification"
+  receipt_key=$(jq -r '.remote.receipt_key' "$receipt")
+  archive_key=$(jq -r '.remote.archive_key' "$receipt")
+  checksum_key=$(jq -r '.remote.checksum_key' "$receipt")
+  TEARDOWN_GATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/teardown-backup-gate.XXXXXX")
+  chmod 0700 "$TEARDOWN_GATE_DIR"
+  AWS_ACCESS_KEY_ID="$BACKUP_DR_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$BACKUP_DR_SECRET_KEY" \
+    AWS_DEFAULT_REGION="${BACKUP_DR_REGION:-us-east-1}" AWS_EC2_METADATA_DISABLED=true \
+    aws --endpoint-url "$endpoint" s3 cp "s3://${bucket}/${receipt_key}" \
+    "$TEARDOWN_GATE_DIR/receipt.json" --only-show-errors \
+    || fail "remote backup completion receipt is unavailable"
+  cmp -s "$receipt" "$TEARDOWN_GATE_DIR/receipt.json" \
+    || fail "remote backup completion receipt differs from the local verified receipt"
+  AWS_ACCESS_KEY_ID="$BACKUP_DR_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$BACKUP_DR_SECRET_KEY" \
+    AWS_DEFAULT_REGION="${BACKUP_DR_REGION:-us-east-1}" AWS_EC2_METADATA_DISABLED=true \
+    aws --endpoint-url "$endpoint" s3 cp "s3://${bucket}/${checksum_key}" \
+    "$TEARDOWN_GATE_DIR/archive.sha256" --only-show-errors \
+    || fail "remote backup checksum is unavailable"
+  remote_sha=$(awk 'NR == 1 {print $1}' "$TEARDOWN_GATE_DIR/archive.sha256")
+  [[ "$remote_sha" == "$expected_sha" ]] || fail "remote backup checksum differs from the receipt"
+  AWS_ACCESS_KEY_ID="$BACKUP_DR_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$BACKUP_DR_SECRET_KEY" \
+    AWS_DEFAULT_REGION="${BACKUP_DR_REGION:-us-east-1}" AWS_EC2_METADATA_DISABLED=true \
+    aws --endpoint-url "$endpoint" s3 cp "s3://${bucket}/${archive_key}" \
+    "$TEARDOWN_GATE_DIR/archive" --only-show-errors \
+    || fail "remote encrypted backup archive is unavailable"
+  [[ "$(sha256_file "$TEARDOWN_GATE_DIR/archive")" == "$expected_sha" ]] \
+    || fail "remote encrypted backup archive failed the teardown SHA-256 gate"
+  rm -rf "$TEARDOWN_GATE_DIR"
+  TEARDOWN_GATE_DIR=""
+  log "Verified recent local and remote recovery bundle for source cluster UID $source_uid"
+}
+
+if [[ -n "$BACKUP_RECEIPT" ]]; then
+  verify_required_backup_receipt "$BACKUP_RECEIPT"
 fi
 
 FAILURES=0

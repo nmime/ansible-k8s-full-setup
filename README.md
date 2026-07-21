@@ -29,7 +29,7 @@ The runtime has four capability tiers and five named profiles:
 | `small` | small | small | 1 control plane + 2 workers | Compact GitLab platform with PostgreSQL, Dragonfly, storage, secrets, GitOps, and monitoring |
 | `medium` | medium | medium | 3 schedulable control planes + 2 workers | Full platform with standard medium sizing; control-plane capacity is part of the workload envelope |
 | `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
-| `production` | production | small | 3 tainted control planes + 3 workers | Resource-efficient HA with explicit critical replicas, failover headroom, and grow-only storage defaults |
+| `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
@@ -44,6 +44,27 @@ Dragonfly, and object storage; profile validation rejects an invalid
 combination. The same fail-closed validation covers GlitchTip, APM, Temporal,
 Postal, Coroot, tracing, backup, HIPAA-oriented hardening, ESO, the GitLab
 Runner, and parent bundles.
+
+Production is deliberately selective HA, not universal active-active HA. Its
+control plane, Vault, SeaweedFS masters/volumes, PostgreSQL, MongoDB, GitLab
+Rails workloads, Argo CD, VictoriaMetrics, Temporal, alerting, tracing, and
+selected stateless services have explicit redundant topology. The compact
+footprint retains these intentional singleton recovery boundaries:
+
+- GitLab Gitaly uses one RWO data claim. Recover it from the verified GitLab
+  application backup and cluster/PVC backup before reopening repository writes.
+- Elasticsearch has three masters but one data node. It has no data-replica
+  failover; restore its data claim from a verified cluster backup.
+- Grafana uses one SQLite/RWO instance. Reapply declarative data sources and
+  dashboards and restore its claim when local UI state must be retained.
+- Postal has one web instance and one MariaDB data path. Redeploying the web
+  pod is stateless, but MariaDB must be restored before mail operations resume.
+- Coroot and its ClickHouse data path are singletons. Restore their claims when
+  historical telemetry is required, or explicitly accept a telemetry rebuild.
+
+These boundaries reduce steady-state requests on three 16 GiB workers; backup
+and restore gates provide recovery, not instant failover, for the listed data
+paths.
 
 The optimized profile keeps three-way control-plane, Vault, PostgreSQL,
 MongoDB, SeaweedFS, and Elasticsearch-master topology. Recoverable stateless
@@ -360,6 +381,9 @@ ansible-playbook playbooks/validate_profile.yml \
   --recipient age1... --force
 ./platform-orchestrator/platform.sh restore-cluster \
   --archive /secure/k8s-cluster-....tar.gz.age --mode verify
+./platform-orchestrator/platform.sh restore-cluster \
+  --archive /secure/k8s-cluster-....tar.gz.age --mode operator-state \
+  --identity /secure/age-identity.txt --output-dir /secure/recovery/k8s
 
 # Capture rollback baseline and inspect an upgrade
 ./scripts/upgrade-platform.sh snapshot
@@ -387,6 +411,14 @@ Ansible-Vault-encrypted initialization file. The schema-v2 recovery bundle
 keeps that file encrypted, verifies its structure without logging contents,
 and records it as a required Vault recovery dependency. Store the Ansible Vault
 password separately from the bundle decryption identity.
+
+Schema-v2 completion receipts bind the archive to the project, source cluster
+UID, and exact Velero prefix. Before destructive replacement, pass that receipt
+to `teardown.sh --require-backup-receipt`; teardown re-downloads and hashes the
+remote receipt, checksum, and archive before its first provider operation. Use
+the recovered exact config/secrets/repository state with the `velero-bootstrap`
+tag, then run strict Velero restore and the structured native backup catalog.
+See [Backup and restore](BACKUP_RESTORE.md) for the ordered recovery commands.
 
 The platform CLI also loads the DR values from the mode-`0600`, gitignored
 `.env`. Blank named-profile endpoint/bucket fields fall back to that

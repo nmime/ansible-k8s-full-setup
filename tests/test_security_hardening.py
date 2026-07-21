@@ -721,6 +721,134 @@ def test_postgresql_operator_config_uses_current_secure_schema():
     assert "PMM_SERVER_TOKEN" in databases
 
 
+def test_platform_operators_have_bounded_resources_and_restricted_pod_security():
+    observability_tasks = yaml.safe_load(read("roles/k8s-observability/tasks/main.yml"))
+    vm_install = next(
+        task
+        for task in observability_tasks
+        if task.get("name") == "Install VictoriaMetrics Operator"
+    )
+    vm_values = vm_install["kubernetes.core.helm"]["values"]
+    assert vm_values["resources"]["requests"] == {"cpu": "50m", "memory": "128Mi"}
+    assert vm_values["resources"]["limits"] == {"cpu": "200m", "memory": "256Mi"}
+    assert vm_values["podSecurityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    assert vm_values["securityContext"]["allowPrivilegeEscalation"] is False
+    assert vm_values["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+    database_tasks = yaml.safe_load(read("roles/k8s-databases/tasks/main.yml"))
+    mongo_install = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Install Percona MongoDB Operator"
+    )
+    mongo_values = mongo_install["kubernetes.core.helm"]["values"]
+    assert mongo_values["resources"]["requests"] == {
+        "cpu": "50m",
+        "memory": "128Mi",
+    }
+    assert mongo_values["resources"]["limits"] == {
+        "cpu": "250m",
+        "memory": "256Mi",
+    }
+    assert mongo_values["podSecurityContext"]["runAsNonRoot"] is True
+    assert mongo_values["podSecurityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    assert mongo_values["securityContext"]["allowPrivilegeEscalation"] is False
+    assert mongo_values["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert mongo_values["securityContext"]["readOnlyRootFilesystem"] is True
+
+    pg_hardening = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Harden PG Operator pod security and allow slow image pulls"
+    )
+    patch = pg_hardening["shell"]
+    assert '"progressDeadlineSeconds":1800' in patch
+    assert '"seccompProfile":{"type":"RuntimeDefault"}' in patch
+
+
+def test_configurable_platform_addons_are_not_best_effort():
+    cluster_tasks = yaml.safe_load(read("roles/k8s-cluster-management/tasks/main.yml"))
+    cert_manager = next(
+        task for task in cluster_tasks if task.get("name") == "Install cert-manager"
+    )["kubernetes.core.helm"]["values"]
+    for component in (cert_manager, cert_manager["webhook"], cert_manager["cainjector"]):
+        assert component["resources"]["requests"]["cpu"]
+        assert component["resources"]["requests"]["memory"]
+        assert component["resources"]["limits"]["cpu"]
+        assert component["resources"]["limits"]["memory"]
+    assert cert_manager["startupapicheck"]["resources"]["requests"]
+
+    hcloud_webhook = next(
+        task
+        for task in cluster_tasks
+        if task.get("name")
+        == "Install official Hetzner Cloud DNS webhook for cert-manager"
+    )["kubernetes.core.helm"]["values"]
+    assert hcloud_webhook["resources"]["requests"] == {
+        "cpu": "10m",
+        "memory": "32Mi",
+    }
+    assert hcloud_webhook["resources"]["limits"] == {
+        "cpu": "100m",
+        "memory": "128Mi",
+    }
+
+    object_storage = yaml.safe_load(read("roles/object-storage/tasks/main.yml"))
+    seaweed = next(
+        task
+        for task in object_storage[0]["block"]
+        if task.get("name") == "Install SeaweedFS via official Helm chart"
+    )["kubernetes.core.helm"]["values"]
+    for component in ("master", "volume", "filer"):
+        assert seaweed[component]["resources"]["requests"]["cpu"]
+        assert seaweed[component]["resources"]["requests"]["memory"]
+        assert seaweed[component]["resources"]["limits"]["cpu"]
+        assert seaweed[component]["resources"]["limits"]["memory"]
+
+    coroot_tasks = yaml.safe_load(read("roles/k8s-observability/tasks/coroot.yml"))
+    coroot = next(
+        task
+        for task in coroot_tasks
+        if task.get("name") == "Install pinned Coroot CE with external VictoriaMetrics"
+    )["kubernetes.core.helm"]["values"]
+    keeper = coroot["clickhouse"]["keeper"]["resources"]
+    assert keeper["requests"] == {"cpu": "50m", "memory": "128Mi"}
+    assert keeper["limits"] == {"cpu": "500m", "memory": "512Mi"}
+
+    secrets_tasks = yaml.safe_load(read("roles/k8s-secrets/tasks/reconcile.yml"))
+    vault = next(
+        task for task in secrets_tasks if task.get("name") == "Install Vault via Helm"
+    )["kubernetes.core.helm"]["values"]["server"]
+    assert vault["resources"]["requests"] == {"cpu": "100m", "memory": "256Mi"}
+    assert vault["resources"]["limits"] == {"cpu": "1", "memory": "1Gi"}
+    init_resources = vault["extraInitContainers"][0]["resources"]
+    assert init_resources["requests"] == {"cpu": "10m", "memory": "32Mi"}
+    assert init_resources["limits"] == {"cpu": "100m", "memory": "128Mi"}
+
+    eso = next(
+        task
+        for task in secrets_tasks
+        if task.get("name") == "Install External Secrets Operator via Helm"
+    )["kubernetes.core.helm"]["values"]
+    for component in (eso, eso["webhook"], eso["certController"]):
+        assert component["resources"]["requests"]["cpu"]
+        assert component["resources"]["requests"]["memory"]
+        assert component["resources"]["limits"]["cpu"]
+        assert component["resources"]["limits"]["memory"]
+
+    blackbox_tasks = yaml.safe_load(read("roles/blackbox-exporter/tasks/main.yml"))
+    blackbox = next(
+        task
+        for task in blackbox_tasks
+        if task.get("name") == "Install blackbox-exporter via Helm"
+    )["kubernetes.core.helm"]["values"]
+    assert blackbox["podSecurityContext"]["runAsNonRoot"] is True
+    assert blackbox["podSecurityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    assert blackbox["securityContext"]["allowPrivilegeEscalation"] is False
+    assert blackbox["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert blackbox["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+
+
 def test_os_hardening_waits_for_package_manager_and_does_not_hide_node_failures():
     tasks = read("roles/network-security/tasks/main.yml")
     assert "apt-get update" not in tasks

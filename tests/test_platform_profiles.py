@@ -215,7 +215,11 @@ class TestNamedProfileContract:
         assert profile["databases"]["postgresql"]["proxy_replicas"] == 2
         assert profile["databases"]["mongodb"]["replicas"] == 3
         assert profile["gitlab"]["webservice_replicas"] == 2
+        assert profile["gitlab"]["webservice_max_replicas"] == 4
         assert profile["gitlab"]["sidekiq_replicas"] == 2
+        assert profile["gitlab"]["sidekiq_max_replicas"] == 4
+        assert profile["gitlab"]["registry_max_replicas"] == 3
+        assert profile["gitlab"]["runner"]["concurrent_jobs"] == 4
         assert profile["gitlab"]["webservice_memory_request"] == "768Mi"
         assert profile["gitlab"]["sidekiq_memory_request"] == "768Mi"
         assert profile["gitlab"]["kas_memory_request"] == "128Mi"
@@ -225,11 +229,17 @@ class TestNamedProfileContract:
         assert profile["gitops"]["controller_replicas"] == 2
         assert profile["observability"]["metrics"]["replicas"] == 2
         assert profile["autoscaling"]["replicas"] == 2
+        assert "replicas" not in profile["temporal"]
         assert profile["temporal"]["frontend_replicas"] == 2
         assert profile["temporal"]["history_replicas"] == 2
+        assert profile["temporal"]["matching_replicas"] == 2
+        assert profile["temporal"]["worker_replicas"] == 2
         assert profile["postal"]["smtp_replicas"] == 2
         assert profile["postal"]["worker_replicas"] == 2
         assert profile["alerting"]["replicas"] == 2
+        assert profile["alerting"]["vmalert_replicas"] == 2
+        assert profile["alerting"]["storage_size"] == "10Gi"
+        assert profile["blackbox"]["replicas"] == 2
         assert profile["tracing"]["collector_replicas"] == 2
         assert profile["glitchtip"]["web_replicas"] == 2
         assert profile["glitchtip"]["worker_replicas"] == 2
@@ -854,6 +864,9 @@ class TestResourceTierConsumers:
         assert "providerID: 'hcloud://{{ (item.stdout | from_json).id }}'" in tasks
         assert "HCLOUD_LOAD_BALANCERS_ENABLED" in tasks
         assert "HCLOUD_NETWORK_ROUTES_ENABLED" in tasks
+        assert "rejectattr('name', 'equalto', 'HCLOUD_LOAD_BALANCERS_ENABLED')" in tasks
+        assert "rejectattr('name', 'equalto', 'HCLOUD_NETWORK_ROUTES_ENABLED')" in tasks
+        assert "/spec/template/spec/containers/0/env/-" not in tasks
         assert "Verify every Kubernetes node has a Hetzner provider ID" in tasks
 
     def test_network_node_hardening_uses_infrastructure_ip_maps(self):
@@ -864,6 +877,27 @@ class TestResourceTierConsumers:
         assert "network_worker_ips" in content
         assert "network_node_ips | join(' ')" in content
         assert not re.search(r"(?<!network_)control_plane_ips", content)
+
+    def test_vault_raft_join_accepts_retry_join_race(self):
+        content = (
+            REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
+        ).read_text(encoding="utf-8")
+        join = content.index("Join raft peers (HA mode)")
+        wait = content.index("Wait for raft peers to recognize initialization")
+        task = content[join:wait]
+
+        assert "vault status -format=json" in task
+        assert "initialized" in task
+        assert "vault operator raft join" in task
+
+    def test_vault_token_copy_targets_the_server_container(self):
+        content = (
+            REPO_ROOT / "roles" / "k8s-secrets" / "tasks" / "reconcile.yml"
+        ).read_text(encoding="utf-8")
+        copy = content.index("Copy the transient Vault token file into the Vault pod")
+        mode = content.index("Enforce mode 0600 on the transient Vault pod token file")
+
+        assert "container: vault" in content[copy:mode]
 
     def test_dns_capability_is_checked_before_provisioning(self):
         content = (

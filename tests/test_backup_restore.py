@@ -107,6 +107,43 @@ def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
     assert "retries: 3" in content
 
 
+def test_velero_dynamic_include_propagates_tags_to_every_child_task():
+    tasks = load_yaml(TASKS_DIR / "main.yml")
+    include = next(
+        task
+        for task in tasks
+        if task.get("name") == "Backup | Include full-cluster disaster-recovery tasks"
+    )
+    args = include["ansible.builtin.include_tasks"]
+    assert args["file"] == "velero.yml"
+    assert set(args["apply"]["tags"]) == {"backup", "backup-dr", "velero"}
+    assert set(include["tags"]) == {"backup", "backup-dr", "velero"}
+
+
+def test_replacement_cluster_has_an_isolated_velero_only_bootstrap_path():
+    play = load_yaml(REPO_ROOT / "playbooks" / "deploy_platform.yml")[0]
+    bootstrap = next(
+        task
+        for task in play["post_tasks"]
+        if task.get("name")
+        == "Bootstrap only Velero disaster recovery on a replacement cluster"
+    )
+    include = bootstrap["ansible.builtin.include_role"]
+    assert include["name"] == "backup-restore"
+    assert include["tasks_from"] == "velero.yml"
+    assert include["apply"]["tags"] == ["velero-bootstrap"]
+    assert set(bootstrap["tags"]) == {"never", "velero-bootstrap"}
+    assert "platform_backup_enabled | bool" in bootstrap["when"]
+    assert "backup_dr_enabled | bool" in bootstrap["when"]
+
+    normal = next(
+        task
+        for task in play["post_tasks"]
+        if task.get("name") == "Deploy backup and restore automation"
+    )
+    assert "velero-bootstrap" not in normal["tags"]
+
+
 def test_deployment_rechecks_velero_coverage_after_every_component():
     content = (REPO_ROOT / "playbooks" / "deploy_platform.yml").read_text()
     assert "Detect a retained Velero node-agent" in content

@@ -230,6 +230,13 @@
           master:
             enabled: true
             replicas: "{{ object_storage_replicas | int }}"
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
             defaultReplication: "{{ object_storage_replication_placement | default('000') }}"
             volumeSizeLimitMB: "{{ object_storage_volume_size_limit_mb | int }}"
             # The upstream default allocates seven logical volumes whenever a
@@ -258,6 +265,13 @@
           volume:
             enabled: true
             replicas: "{{ object_storage_volume_replicas | int }}"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: '1'
+                memory: 1Gi
             dataDirs:
               - name: data
                 type: persistentVolumeClaim
@@ -278,6 +292,13 @@
           filer:
             enabled: true
             replicas: "{{ object_storage_filer_replicas | int }}"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: '1'
+                memory: 1Gi
             data:
               type: persistentVolumeClaim
               storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"

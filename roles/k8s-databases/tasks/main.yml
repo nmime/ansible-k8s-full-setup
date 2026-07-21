@@ -71,11 +71,13 @@
   delay: 30
   until: _r_install_percona_pg_operator is not failed
   when: platform_postgresql_enabled | default(true) | bool
-- name: Increase PG Operator progressDeadlineSeconds for slow image pulls
+- name: Harden PG Operator pod security and allow slow image pulls
   shell: |
     DEPLOY=$(kubectl get deployment -n {{ db_ns }} -l app.kubernetes.io/name=pg-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -z "$DEPLOY" ]; then DEPLOY="percona-pg-operator"; fi
-    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} -p '{"spec":{"progressDeadlineSeconds":1800}}' --type=merge
+    kubectl patch deployment "$DEPLOY" -n {{ db_ns }} \
+      -p '{"spec":{"progressDeadlineSeconds":1800,"template":{"spec":{"securityContext":{"seccompProfile":{"type":"RuntimeDefault"}}}}}}' \
+      --type=merge
   register: _r_patch_pg_operator_progress_deadline
   retries: 10
   delay: 15
@@ -441,6 +443,28 @@
     release_state: present
     wait: false
     timeout: 10m0s
+    values:
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 2
+        runAsGroup: 2
+        fsGroup: 2
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
   register: _r_install_percona_mongodb_operator
   retries: 3
   delay: 30

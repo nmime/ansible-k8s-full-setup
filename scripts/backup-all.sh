@@ -10,7 +10,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
-DRY_RUN=false; COMPONENT=""; FORCE=false; CONFIG_FILE=""
+DRY_RUN=false; COMPONENT=""; FORCE=false; CONFIG_FILE=""; RESULT_JSON=""
 [[ ! -f "${PROJECT_ROOT}/platform-orchestrator/platform.yaml" ]] \
   || CONFIG_FILE="${PROJECT_ROOT}/platform-orchestrator/platform.yaml"
 while [[ $# -gt 0 ]]; do
@@ -18,8 +18,9 @@ while [[ $# -gt 0 ]]; do
     --dry-run)   DRY_RUN=true; shift ;;
     --component) COMPONENT="$2"; shift 2 ;;
     --config)    CONFIG_FILE="$2"; shift 2 ;;
+    --result-json) RESULT_JSON="$2"; shift 2 ;;
     --force)     FORCE=true; shift ;;
-    -h|--help) echo "Usage: $0 [--dry-run] [--component <name>] [--config FILE] [--force]";
+    -h|--help) echo "Usage: $0 [--dry-run] [--component <name>] [--config FILE] [--result-json FILE] [--force]";
                echo "  --component  postgresql|mongodb|vault|seaweedfs|gitlab|all"; exit 0 ;;
     *) error "Unknown option: $1"; exit 1 ;;
   esac
@@ -95,6 +96,37 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 # Keep each audit trail independent even for two runs of the same project.
 RESULT_PROJECT=$(printf '%s' "${PROJECT_NAME:-k8s}" | tr -c 'A-Za-z0-9._-' '-')
 RF="${PROJECT_ROOT}/.backup-results-${RESULT_PROJECT}-${TS}-$$.log"
+CATALOG_RECORDS=$(mktemp "${TMPDIR:-/tmp}/native-backup-catalog.XXXXXX")
+# Invoked indirectly by the EXIT/INT/TERM trap below.
+# shellcheck disable=SC2329
+cleanup_catalog() { rm -f "$CATALOG_RECORDS"; }
+trap cleanup_catalog EXIT INT TERM
+catalog_record() {
+  local component="$1" namespace="$2" kind="$3" name="$4" state="$5"
+  local contract="$6" locator="${7:-}" repository="${8:-}"
+  jq -cn --arg component "$component" --arg namespace "$namespace" \
+    --arg kind "$kind" --arg name "$name" --arg state "$state" \
+    --arg contract "$contract" --arg locator "$locator" \
+    --arg repository "$repository" --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{component:$component,namespace:$namespace,kind:$kind,name:$name,state:$state,
+      restore_contract:$contract,artifact_locator:$locator,repository:$repository,
+      recorded_at:$recordedAt}' >> "$CATALOG_RECORDS"
+}
+write_catalog() {
+  [[ -n "$RESULT_JSON" ]] || return 0
+  mkdir -p "$(dirname "$RESULT_JSON")"
+  jq -s --arg project "${PROJECT_NAME:-k8s}" --arg createdAt "$TS" \
+    --argjson expected "$TOTAL" --argjson passed "$PASSED" \
+    --argjson failed "$FAILED" --argjson skipped "$SKIPPED" \
+    '{schema_version:1,project:$project,created_at:$createdAt,
+      summary:{expected:$expected,passed:$passed,failed:$failed,skipped:$skipped},
+      completeness:(if length == $expected and $failed == 0 and
+        all(.[]; .state == "completed" or .state == "velero-fallback" or .state == "disabled")
+        then "complete" else "incomplete" end),
+      artifacts:.}' "$CATALOG_RECORDS" > "${RESULT_JSON}.tmp"
+  mv "${RESULT_JSON}.tmp" "$RESULT_JSON"
+  chmod 600 "$RESULT_JSON"
+}
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
 check_comp() {
   kubectl get pods -n "$1" -l "$2" -o json 2>/dev/null \
@@ -120,22 +152,28 @@ run_backup() {
   local comp="$1" cronjob="$2" ns="$3" lbl="$4"; TOTAL=$((TOTAL+1))
   if dry_run_component_is_disabled "$comp"; then
     info "[DRY RUN] Would skip disabled component ${comp}"
-    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"; return 0
+    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"
+    catalog_record "$comp" "$ns" CronJob "$cronjob" disabled disabled
+    return 0
   fi
-  if [ "$DRY_RUN" = "true" ]; then info "[DRY RUN] Would trigger ${ns}/${cronjob}"; PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0; fi
+  if [ "$DRY_RUN" = "true" ]; then info "[DRY RUN] Would trigger ${ns}/${cronjob}"; PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; catalog_record "$comp" "$ns" CronJob "$cronjob" planned planned; return 0; fi
   if ! check_comp "$ns" "$lbl"; then
     if { [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; } || component_expected "$comp"; then
       error "Requested component '${comp}' is not deployed"
       FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+      catalog_record "$comp" "$ns" CronJob "$cronjob" failed missing-workload
     else
       warn "'${comp}' not deployed"
       SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"
+      catalog_record "$comp" "$ns" CronJob "$cronjob" disabled disabled
     fi
     return 0
   fi
   if ! kubectl get cronjob "$cronjob" -n "$ns" &>/dev/null; then
     error "Backup CronJob ${ns}/${cronjob} is missing; deploy the backup-restore role first"
-    FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"; return 0
+    FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+    catalog_record "$comp" "$ns" CronJob "$cronjob" failed missing-cronjob
+    return 0
   fi
   local job_suffix job
   job_suffix=$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')
@@ -154,9 +192,16 @@ run_backup() {
       fi
     fi
     PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"
+    case "$comp" in
+      vault) catalog_record "$comp" "$ns" Job "$job" completed vault-raft "s3://backups/${PROJECT_NAME:-k8s}/vault/" ;;
+      seaweedfs) catalog_record "$comp" "$ns" Job "$job" completed seaweedfs-topology "s3://backups/${PROJECT_NAME:-k8s}/seaweedfs/" ;;
+      gitlab) catalog_record "$comp" "$ns" Job "$job" completed gitlab-toolbox "s3://gitlab-backups/" ;;
+      gitlab-secrets) catalog_record "$comp" "$ns" Job "$job" completed gitlab-rails-secrets "s3://backups/${PROJECT_NAME:-k8s}/gitlab-secrets/" ;;
+    esac
   else
     kubectl logs "job/${job}" -n "$ns" --all-containers --tail=200 2>&1 | tee -a "$RF" || true
     FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+    catalog_record "$comp" "$ns" Job "$job" failed job
   fi
 }
 echo "Timestamp: ${TS}" > "$RF"
@@ -167,19 +212,25 @@ run_mongodb_backup() {
   TOTAL=$((TOTAL+1))
   if dry_run_component_is_disabled "$comp"; then
     info "[DRY RUN] Would skip disabled component ${comp}"
-    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"; return 0
+    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"
+    catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" disabled disabled
+    return 0
   fi
   if [ "$DRY_RUN" = true ]; then
     info "[DRY RUN] Would create PerconaServerMongoDBBackup ${ns}/${backup}"
-    PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0
+    PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"
+    catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" planned pbm "s3-object-storage"
+    return 0
   fi
   if ! kubectl get perconaservermongodb "$cluster" -n "$ns" >/dev/null 2>&1; then
     if { [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; } || component_expected "$comp"; then
       error "Requested MongoDB cluster ${ns}/${cluster} is not deployed"
       FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+      catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" failed missing-cluster
     else
       warn "MongoDB is not deployed"
       SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"
+      catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" disabled disabled
     fi
     return 0
   fi
@@ -198,7 +249,7 @@ EOF
     state=$(kubectl get perconaservermongodbbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
     state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
     case "$state_lower" in
-      ready|successful) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; return 0 ;;
+      ready|successful) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" completed pbm "s3-object-storage"; return 0 ;;
       error|failed) break ;;
     esac
     attempts=$((attempts+1)); sleep 10
@@ -206,10 +257,11 @@ EOF
   kubectl describe perconaservermongodbbackup "$backup" -n "$ns" | tee -a "$RF"
   error "MongoDB backup ${ns}/${backup} failed or timed out"
   FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+  catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" failed pbm "s3-object-storage"
 }
 run_postgresql_backup() {
   local comp=postgresql ns=databases cluster="${PROJECT_NAME:-k8s}-pg"
-  local backup state state_lower job_name attempts=0 repo="${BACKUP_POSTGRESQL_REPO:-repo2}"
+  local backup state state_lower job_name backup_set attempts=0 repo="${BACKUP_POSTGRESQL_REPO:-repo2}"
   local timeout_seconds="${BACKUP_POSTGRESQL_TIMEOUT_SECONDS:-1800}" max_attempts
   [[ "$timeout_seconds" =~ ^[0-9]+$ ]] && [ "$timeout_seconds" -ge 10 ] \
     || { error "BACKUP_POSTGRESQL_TIMEOUT_SECONDS must be an integer >= 10"; FAILED=$((FAILED+1)); return 0; }
@@ -218,19 +270,25 @@ run_postgresql_backup() {
   TOTAL=$((TOTAL+1))
   if dry_run_component_is_disabled "$comp"; then
     info "[DRY RUN] Would skip disabled component ${comp}"
-    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"; return 0
+    SKIPPED=$((SKIPPED+1)); echo "${comp}: DRY-SKIP" >> "$RF"
+    catalog_record "$comp" "$ns" PerconaPGBackup "$backup" disabled disabled "" "$repo"
+    return 0
   fi
   if [ "$DRY_RUN" = true ]; then
     info "[DRY RUN] Would create PerconaPGBackup ${ns}/${backup}"
-    PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"; return 0
+    PASSED=$((PASSED+1)); echo "${comp}: DRY-OK" >> "$RF"
+    catalog_record "$comp" "$ns" PerconaPGBackup "$backup" planned pgbackrest "" "$repo"
+    return 0
   fi
   if ! kubectl get perconapgcluster "$cluster" -n "$ns" >/dev/null 2>&1; then
     if { [ -n "$COMPONENT" ] && [ "$COMPONENT" != all ]; } || component_expected "$comp"; then
       error "Requested PostgreSQL cluster ${ns}/${cluster} is not deployed"
       FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+      catalog_record "$comp" "$ns" PerconaPGBackup "$backup" failed missing-cluster "" "$repo"
     else
       warn "PostgreSQL is not deployed"
       SKIPPED=$((SKIPPED+1)); echo "${comp}: SKIP" >> "$RF"
+      catalog_record "$comp" "$ns" PerconaPGBackup "$backup" disabled disabled "" "$repo"
     fi
     return 0
   fi
@@ -238,6 +296,7 @@ run_postgresql_backup() {
     | jq -e --arg repo "$repo" '.spec.backups.pgbackrest.repos | any(.name == $repo)' >/dev/null; then
     error "PostgreSQL backup repository ${repo} is not configured on ${ns}/${cluster}"
     FAILED=$((FAILED+1)); echo "${comp}: FAIL-missing-${repo}" >> "$RF"
+    catalog_record "$comp" "$ns" PerconaPGBackup "$backup" failed missing-repository "" "$repo"
     return 0
   fi
   kubectl apply -f - <<EOF | tee -a "$RF"
@@ -256,7 +315,14 @@ EOF
     state=$(kubectl get perconapgbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
     state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
     case "$state_lower" in
-      succeeded|successful|ready) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; return 0 ;;
+      succeeded|successful|ready)
+        backup_set=$(kubectl get perconapgbackup "$backup" -n "$ns" \
+          -o jsonpath='{.status.backupName}' 2>/dev/null || true)
+        [[ -n "$backup_set" ]] || break
+        PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"
+        catalog_record "$comp" "$ns" PerconaPGBackup "$backup" completed pgbackrest "$backup_set" "$repo"
+        return 0
+        ;;
       failed|error) break ;;
     esac
     # Percona 3.x can leave the CR at Running after its backing Job has
@@ -277,6 +343,7 @@ EOF
   kubectl describe perconapgbackup "$backup" -n "$ns" | tee -a "$RF" || true
   error "PostgreSQL backup ${ns}/${backup} failed or timed out"
   FAILED=$((FAILED+1)); echo "${comp}: FAIL" >> "$RF"
+  catalog_record "$comp" "$ns" PerconaPGBackup "$backup" failed pgbackrest "" "$repo"
 }
 run_named_backup() {
   case "$1" in
@@ -293,10 +360,12 @@ run_named_backup() {
           TOTAL=$((TOTAL+1)); SKIPPED=$((SKIPPED+1))
           warn "Vault uses file storage; native Raft snapshot deferred to the mandatory Velero filesystem backup"
           echo "vault: VELERO-FALLBACK" >> "$RF"
+          catalog_record vault vault PersistentVolumeClaim vault-data velero-fallback velero-filesystem
         else
           TOTAL=$((TOTAL+1)); FAILED=$((FAILED+1))
           error "Vault native backup requires integrated Raft storage (detected: ${vault_storage})"
           echo "vault: FAIL-${vault_storage}" >> "$RF"
+          catalog_record vault vault StatefulSet vault failed unsupported-storage
         fi
       fi
       ;;
@@ -315,5 +384,6 @@ else
 fi
 echo "============================================"; echo "  BACKUP SUMMARY"; echo "============================================"
 echo "  Total: ${TOTAL}  Passed: ${PASSED}  Failed: ${FAILED}  Skipped: ${SKIPPED}"
+write_catalog
 [ "$FAILED" -gt 0 ] && error "Failed." && exit 1
 info "Completed successfully."; exit 0

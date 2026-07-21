@@ -151,6 +151,13 @@
           image:
             name: 'ghcr.io/coroot/clickhouse:{{ coroot_clickhouse_image_tag }}'
             pullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
       nodeAgent:
         image:
           name: 'ghcr.io/coroot/coroot-node-agent:{{ coroot_node_agent_image_tag }}'

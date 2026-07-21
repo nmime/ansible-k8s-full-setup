@@ -1,9 +1,11 @@
 # ============================================
 # PRODUCTION TIER - higher-availability platform footprint
 # ============================================
-# Best for: Full HA, medium-high traffic
+# Best for: Selective critical HA with a small production resource envelope
 # Nodes: 6 x cx43 16Gi-class nodes (3 masters, 3 workers) + cx23 bastion + lb11
-# HA: Three-way control plane with higher stateless workload redundancy
+# HA: Three-way control plane plus explicit quorum and selected workload replicas
+# Recovery: Gitaly, Elasticsearch data, Grafana, Postal MariaDB/web, and Coroot
+# retain intentional singleton boundaries and require backup-driven recovery.
 # Storage: resource-efficient HA defaults with online grow-only expansion
 # Scheduling: application requests are deliberately sized to leave failover
 # headroom on three 16Gi workers while the three control planes stay dedicated.
@@ -124,7 +126,10 @@ gitlab:
   # use the chart's conservative per-pod worker envelope on 16Gi workers.
   mode: light
   webservice_replicas: 2
+  webservice_max_replicas: 4
   sidekiq_replicas: 2
+  sidekiq_max_replicas: 4
+  registry_max_replicas: 3
   webservice_memory_request: 768Mi
   sidekiq_memory_request: 768Mi
   kas_memory_request: 128Mi
@@ -133,7 +138,9 @@ gitlab:
   gitaly_storage_size: 50Gi
   runner:
     enabled: true
-    concurrent_jobs: 20
+    # Four concurrent jobs preserve scheduling and burst headroom for the
+    # platform control workloads on three 16Gi workers.
+    concurrent_jobs: 4
 
 # ---------------------------------------------
 # GitOps
@@ -218,10 +225,10 @@ dragonfly:
 
 temporal:
   enabled: true
-  replicas: 2
   history_replicas: 2
   matching_replicas: 2
   frontend_replicas: 2
+  worker_replicas: 2
   frontend_memory_request: 256Mi
   frontend_memory_limit: 1Gi
   history_memory_request: 384Mi
@@ -333,9 +340,12 @@ apm:
 # ---------------------------------------------
 blackbox:
   enabled: true    # Probes all public URLs + internal TCP every 60s
+  replicas: 2
 
 alerting:
   replicas: 2
+  vmalert_replicas: 2
+  storage_size: 10Gi
   telegram:
     enabled: false
   email:

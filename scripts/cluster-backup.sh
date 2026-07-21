@@ -652,8 +652,16 @@ APP_BACKUP_RESULT=skipped
 if [[ "$RUN_APP_BACKUPS" == true ]]; then
   log "triggering application-consistent backups"
   PROJECT_NAME="$PROJECT" BACKUP_ALLOW_VELERO_VAULT_FALLBACK=true \
-    "$SCRIPT_DIR/backup-all.sh" --config "$CONFIG_FILE" --force \
+    "$SCRIPT_DIR/backup-all.sh" --config "$CONFIG_FILE" \
+    --result-json "$STAGE_DIR/application-backups/native-backups.json" --force \
     | tee "$STAGE_DIR/application-backups/backup-all.log"
+  jq -e --arg project "$PROJECT" '
+    .schema_version == 1 and .project == $project and
+    .completeness == "complete" and .summary.failed == 0 and
+    .summary.expected == (.artifacts | length) and (.artifacts | type == "array") and
+    all(.artifacts[]; .state == "completed" or .state == "velero-fallback" or .state == "disabled")
+  ' "$STAGE_DIR/application-backups/native-backups.json" >/dev/null \
+    || fail "structured native backup catalog is missing, incomplete, or belongs to another project"
   APP_BACKUP_RESULT=completed
 fi
 
@@ -765,10 +773,14 @@ jq -n \
   --arg untrackedArchiveSha "$UNTRACKED_ARCHIVE_SHA256" \
   --arg untrackedPathsSha "$UNTRACKED_PATHS_SHA256" \
   --argjson untrackedFileCount "$UNTRACKED_FILE_COUNT" \
+  --arg veleroPrefix "$VELERO_DR_PREFIX" \
   '{schema_version:2,backup_id:$id,created_at:$timestamp,project:$project,domain:$domain,
     profile:$profile,source_context:$context,source_cluster_uid:$sourceClusterUid,
     completeness:$completeness,
     application_backups:$app,velero_backup:$velero,velero_backup_name:$veleroName,
+    velero_storage_prefix:$veleroPrefix,
+    native_backup_catalog:{included:($app == "completed"),
+      bundle_path:(if $app == "completed" then "application-backups/native-backups.json" else null end)},
     pvc_protection_gate:{status:$pvcGate,failures:$pvcGateFailures,
       evidence:"application-backups/pvc-protection-evidence.json"},
     kubernetes_resource_export_failures:$resourceFailures,
@@ -836,8 +848,14 @@ write_completion_receipt() {
     --arg publicationState "$publication_state" \
     --argjson remotePublished "$remote_published" --argjson remoteVerified "$REMOTE_VERIFIED" \
     --argjson receiptUploadedLast "$receipt_uploaded_last" \
-    '{schema_version:1,receipt_type:"encrypted-cluster-backup",backup_id:$backupId,
-      created_at:$createdAt,archive:$archive,encryption:$encryption,
+    --arg project "$PROJECT" --arg domain "$DOMAIN" --arg profile "$PROFILE" \
+    --arg sourceContext "$CONTEXT" --arg sourceClusterUid "$SOURCE_CLUSTER_UID" \
+    --arg veleroPrefix "$VELERO_DR_PREFIX" \
+    '{schema_version:2,receipt_type:"encrypted-cluster-backup",backup_id:$backupId,
+      created_at:$createdAt,project:$project,domain:$domain,profile:$profile,
+      source_context:$sourceContext,source_cluster_uid:$sourceClusterUid,
+      velero_storage_prefix:$veleroPrefix,
+      archive:$archive,encryption:$encryption,
       completeness:$completeness,velero_backup_name:$veleroBackup,sha256:$sha256,
       remote:{published:$remotePublished,download_sha256_verified:$remoteVerified,
         publication_state:$publicationState,

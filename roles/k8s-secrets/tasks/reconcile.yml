@@ -155,6 +155,13 @@
           repository: hashicorp/vault
           tag: '{{ vault_version }}'
           pullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
         # Empty PVCs created while expanding from one to three Raft members do
         # not contain Vault's storage subdirectory. Create it as the hardened
         # Vault UID/GID before the server starts; the volume's fsGroup grants
@@ -176,6 +183,13 @@
             capabilities:
               drop:
               - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
           volumeMounts:
           - name: data
             mountPath: /vault/data
@@ -551,7 +565,15 @@
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-{{ item }}
-    command: vault operator raft join https://vault-0.vault-internal.{{ vault_ns }}.svc.cluster.local:8200
+    command: >-
+      sh -ec '
+      if vault status -format=json 2>/dev/null |
+         grep -Eq "\"initialized\"[[:space:]]*:[[:space:]]*true"; then
+        exit 0;
+      fi;
+      vault operator raft join
+      https://vault-0.vault-internal.{{ vault_ns }}.svc.cluster.local:8200
+      '
   loop: '{{ range(1, vault_replicas | int) | list }}'
   when: vault_ha | bool and vault_init is changed
   register: _r_join_raft_peers__ha_mode_
@@ -631,6 +653,7 @@
   kubernetes.core.k8s_cp:
     namespace: '{{ vault_ns }}'
     pod: vault-0
+    container: vault
     local_path: '{{ vault_token_controller_file }}'
     remote_path: '{{ vault_token_remote_file }}'
     state: to_pod
@@ -645,6 +668,57 @@
   changed_when: false
   no_log: true
   when: vault_init_data is defined
+- name: Read Vault raft membership from the leader
+  kubernetes.core.k8s_exec:
+    namespace: '{{ vault_ns }}'
+    pod: vault-0
+    command: >-
+      sh -ec 'VAULT_TOKEN=$(cat "$1"); export VAULT_TOKEN;
+      exec vault operator raft list-peers -format=json' --
+      {{ vault_token_remote_file }}
+  register: _vault_raft_peers_raw
+  changed_when: false
+  no_log: true
+  retries: 12
+  delay: 5
+  until: >-
+    _vault_raft_peers_raw.rc | default(1) == 0 and
+    (((_vault_raft_peers_raw.stdout | from_json)
+    .get('data', {}).get('config', {}).get('servers', [])) | length) ==
+    (vault_replicas | int)
+  when: vault_ha | bool and vault_init_data is defined
+- name: Build expected Vault raft membership
+  ansible.builtin.set_fact:
+    vault_expected_raft_node_ids: >-
+      {{ range(0, vault_replicas | int) | map('string') |
+      map('regex_replace', '^', 'vault-') | list }}
+    vault_raft_servers: >-
+      {{ (_vault_raft_peers_raw.stdout | from_json)
+      .get('data', {}).get('config', {}).get('servers', []) }}
+  when: vault_ha | bool and vault_init_data is defined
+- name: Prove exact Vault raft quorum
+  ansible.builtin.assert:
+    that:
+    - (vault_raft_servers | length) == (vault_replicas | int)
+    - >-
+      (vault_raft_servers | map(attribute='node_id') | list | sort) ==
+      (vault_expected_raft_node_ids | sort)
+    - >-
+      (vault_raft_servers | selectattr('voter', 'defined') |
+      selectattr('voter', 'equalto', true) | list | length) ==
+      (vault_replicas | int)
+    - >-
+      (vault_raft_servers | selectattr('leader', 'defined') |
+      selectattr('leader', 'equalto', true) | list | length) == 1
+    fail_msg: >-
+      Vault Raft membership is unsafe. Expected nodes
+      {{ vault_expected_raft_node_ids | sort }}, observed
+      {{ vault_raft_servers | map(attribute='node_id') | list | sort }};
+      voters={{ vault_raft_servers | selectattr('voter', 'defined') |
+      selectattr('voter', 'equalto', true) | list | length }},
+      leaders={{ vault_raft_servers | selectattr('leader', 'defined') |
+      selectattr('leader', 'equalto', true) | list | length }}.
+  when: vault_ha | bool and vault_init_data is defined
 - name: Discover Vault secrets engines before reconciliation
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
@@ -983,6 +1057,30 @@
     - value: webhook.replicaCount={{ secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}
     - value: certController.replicaCount={{ secrets.eso.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}
     - value: serviceMonitor.enabled=true
+    values:
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      webhook:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      certController:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
   register: _r_install_external_secrets_operator_via_he
   retries: 3
   delay: 15

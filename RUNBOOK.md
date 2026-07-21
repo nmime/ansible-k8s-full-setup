@@ -344,6 +344,16 @@ export CLUSTER_BACKUP_AGE_IDENTITY=/secure/path/to/age-identity.txt
 ./scripts/cluster-restore.sh \
   --archive /secure/cluster-a/k8s-cluster-....tar.gz.age \
   --mode verify --identity "$CLUSTER_BACKUP_AGE_IDENTITY"
+
+# Materialize exact state, then require the fresh schema-v2 receipt before the
+# source project can be removed.
+./scripts/cluster-restore.sh \
+  --archive /secure/cluster-a/k8s-cluster-....tar.gz.age \
+  --mode operator-state --identity "$CLUSTER_BACKUP_AGE_IDENTITY" \
+  --output-dir /secure/recovery/cluster-a
+./teardown.sh cluster-a --confirm cluster-a \
+  --require-backup-receipt \
+  /secure/cluster-a/k8s-cluster-....tar.gz.age.manifest.json
 ```
 
 GitLab recovery needs the Toolbox archive and the separately stored Rails
@@ -355,6 +365,15 @@ recovery also needs external Velero/Kopia data and the encrypted
 etcd/PKI/config bundle. Backup object existence is not restore proof; run all
 five isolated component drills and replacement-cluster drills on a schedule. See
 [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+
+The receipt gate is evaluated before the first Hetzner API list or mutation. It
+requires a recent schema-v2 receipt matching the exact project and live source
+cluster UID, validates the local archive/checksum, then downloads and compares
+the remote receipt, checksum, and archive through the configured DR endpoint.
+The default maximum age is 24 hours; change it only with the recorded
+`--max-backup-age-seconds` maintenance-window policy. Build the replacement
+with the same logical identity and exact Velero prefix, use the dedicated
+`velero-bootstrap` tag, then run strict Velero and native-catalog replay gates.
 
 ## Upgrades
 

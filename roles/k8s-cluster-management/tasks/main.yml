@@ -683,7 +683,30 @@
   delay: 10
   until: _r_install_hetzner_cloud_controller_manager is not failed
 
-- name: Increase CCM progressDeadlineSeconds for slow image pulls
+- name: Read the CCM environment before enforcing controller ownership
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: kube-system
+    name: hcloud-cloud-controller-manager
+  register: ccm_before_controller_policy
+
+- name: Remove stale or duplicate CCM controller-ownership switches
+  ansible.builtin.set_fact:
+    ccm_controller_policy_env: >-
+      {{
+        ccm_before_controller_policy.resources[0].spec.template.spec.containers[0].env
+        | default([])
+        | rejectattr('name', 'equalto', 'HCLOUD_LOAD_BALANCERS_ENABLED')
+        | rejectattr('name', 'equalto', 'HCLOUD_NETWORK_ROUTES_ENABLED')
+        | list
+        + [
+            {'name': 'HCLOUD_LOAD_BALANCERS_ENABLED', 'value': 'false'},
+            {'name': 'HCLOUD_NETWORK_ROUTES_ENABLED', 'value': 'false'}
+          ]
+      }}
+
+- name: Enforce the bounded CCM controller policy and rollout deadline
   kubernetes.core.k8s_json_patch:
     kind: Deployment
     namespace: kube-system
@@ -694,16 +717,9 @@
         value: 1800
       # MetalLB owns Gateway API service addresses and Hetzner LBs are created
       # by the infrastructure role. CCM should only reconcile cloud node data.
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: HCLOUD_LOAD_BALANCERS_ENABLED
-          value: 'false'
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: HCLOUD_NETWORK_ROUTES_ENABLED
-          value: 'false'
+      - op: replace
+        path: /spec/template/spec/containers/0/env
+        value: "{{ ccm_controller_policy_env }}"
   register: _r_patch_ccm_progress_deadline
   retries: 3
   delay: 10
@@ -1494,6 +1510,10 @@
 # ============================================
 # cert-manager v1.21.0
 # ============================================
+# These small requests bound configurable application add-ons without applying
+# generic limits to Cilium, MetalLB, Hetzner CSI, kube-system static pods, or
+# control-plane components. Those systems require component-specific capacity
+# and latency evidence before resource limits are safe.
 
 - name: Add Jetstack Helm repository
   kubernetes.core.helm_repository:
@@ -1527,6 +1547,37 @@
           drop:
             - ALL
         readOnlyRootFilesystem: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      webhook:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      cainjector:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      startupapicheck:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
     set_values:
       - value: "replicaCount={{ certmanager_replicas }}"
       - value: "webhook.replicaCount={{ certmanager_replicas }}"
@@ -1553,6 +1604,14 @@
     release_namespace: cert-manager
     release_state: present
     wait: true
+    values:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
   when: k8s_create_external_tls | default(true) | bool
   register: _r_install_official_hetzner_cloud_dns_webho
   retries: 3
@@ -1745,7 +1804,12 @@
     - served_gateway_certificate_fingerprint.rc == 0
     - >-
       served_gateway_certificate_fingerprint.stdout
-      == expected_gateway_certificate_fingerprint.stdout
+      | regex_replace('(?i)^sha256 fingerprint=', '')
+      | trim
+      ==
+      expected_gateway_certificate_fingerprint.stdout
+      | regex_replace('(?i)^sha256 fingerprint=', '')
+      | trim
   when: k8s_create_external_tls | default(true) | bool
 
 - name: Require public TLS ingress with the selected certificate issuer

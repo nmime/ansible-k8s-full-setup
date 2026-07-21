@@ -126,7 +126,8 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
         if enabled(config, "observability.grafana.enabled", True):
             add("observability/grafana", 1, "10Gi", "Grafana SQLite")
         alert_replicas = nested(config, "alerting.replicas", 2 if resource in {"medium", "production"} else 1)
-        add("observability/alertmanager", alert_replicas, "5Gi", "VMAlertmanager")
+        add("observability/alertmanager", alert_replicas,
+            nested(config, "alerting.storage_size", "5Gi"), "VMAlertmanager")
         if enabled(config, "observability.pmm.enabled", tier in {"medium", "production"}):
             add("observability/pmm", 1, nested(config, "observability.pmm.storage_size",
                                                "20Gi" if resource in {"minimal", "small"} else "50Gi"), "PMM")
