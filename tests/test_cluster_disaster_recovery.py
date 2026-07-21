@@ -1514,6 +1514,7 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert "cannot shrink" in content
     assert 'for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$ROLLBACK_CONFIG"' in content
     assert 'current_cores" != "$target_cores' in content
+    assert "ensure_server_stopped" in content
     assert 'hcloud server change-type "$node" "$target_type"' in content
     assert 'change-type --keep-disk "$node"' not in content
     assert 'growpart "/dev/$parent" "$partnum"' in content
@@ -1616,6 +1617,74 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
         '[[ "$component" == backup || "$component" == disaster-recovery ]] '
         "&& continue"
     ) in content
+
+
+def test_migration_resize_rechecks_provider_off_after_placement_before_type_change():
+    content = MIGRATE.read_text(encoding="utf-8")
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+    mutation = resize.index('hcloud server add-to-placement-group')
+    change_type = resize.index('hcloud server change-type "$node" "$target_type"')
+    stop_checks = []
+    offset = 0
+    while True:
+        position = resize.find('ensure_server_stopped "$node"', offset)
+        if position < 0:
+            break
+        stop_checks.append(position)
+        offset = position + 1
+
+    assert len(stop_checks) == 2
+    assert stop_checks[0] < mutation < stop_checks[1] < change_type
+    assert 'hcloud server poweroff "$node"' not in resize
+    assert 'kubectl uncordon "$node"' in resize
+
+
+def test_ensure_server_stopped_handles_provider_restart_after_placement(tmp_path):
+    content = MIGRATE.read_text(encoding="utf-8")
+    helper = "ensure_server_stopped()" + content.split(
+        "ensure_server_stopped()", 1
+    )[1].split("ensure_server_running()", 1)[0]
+    status_file = tmp_path / "status"
+    calls_file = tmp_path / "poweroff-calls"
+    timeout_file = tmp_path / "simulate-client-timeout"
+    harness = f'''set -euo pipefail
+HCLOUD_CLIENT_TIMEOUT=2
+HCLOUD_STATE_TIMEOUT=2
+STATUS_FILE={str(status_file)!r}
+CALLS_FILE={str(calls_file)!r}
+TIMEOUT_FILE={str(timeout_file)!r}
+printf 'running\\n' > "$STATUS_FILE"
+printf '0\\n' > "$CALLS_FILE"
+printf '0\\n' > "$TIMEOUT_FILE"
+server_status() {{ cat "$STATUS_FILE"; }}
+wait_for_server_settled() {{ server_status "$1"; }}
+run_with_timeout() {{
+  count=$(cat "$CALLS_FILE")
+  printf '%s\\n' "$((count + 1))" > "$CALLS_FILE"
+  printf 'off\\n' > "$STATUS_FILE"
+  [[ $(cat "$TIMEOUT_FILE") == 0 ]]
+}}
+warn() {{ :; }}
+fail() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+sleep() {{ :; }}
+{helper}
+ensure_server_stopped worker-1
+# Placement-group reconciliation reproduced the live provider transition.
+printf 'running\\n' > "$STATUS_FILE"
+# The provider accepts the second power-off even though the client times out.
+printf '1\\n' > "$TIMEOUT_FILE"
+ensure_server_stopped worker-1
+[[ $(cat "$STATUS_FILE") == off ]]
+[[ $(cat "$CALLS_FILE") == 2 ]]
+'''
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_vmctl_migration_job_uses_restricted_pod_security():

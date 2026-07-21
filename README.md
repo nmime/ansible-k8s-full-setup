@@ -165,6 +165,12 @@ state created from a deployment whose bastion override existed only on the
 command line. Expansion creates or reconciles its spread placement group with
 the exact `project=<global.project>` ownership label.
 
+Each retained-node resize waits for the authoritative Hetzner server state to
+be `off` before placement reconciliation and checks for `off` again immediately
+before changing type. This makes a retry safe when an interrupted run leaves a
+node cordoned or when a placement-group operation returns the server to
+`running`; `resume` completes that node before advancing to the next one.
+
 The backup checkpoint captures its Helm rollback baseline with the migration's
 exact generated source config, not the repository default. Both the config and
 snapshot root are passed explicitly, and the baseline is retained under the
