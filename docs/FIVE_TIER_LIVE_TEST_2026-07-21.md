@@ -3,18 +3,22 @@
 ## Result and scope
 
 All five named profiles were deployed concurrently as isolated Hetzner Cloud
-clusters and exercised against delegated `n0xeid.xyz` DNS. The accepted evidence
-set contains 23/23 Ready Kubernetes nodes, 141/141 protected PVCs, five passing
-profile-aware smoke runs, five healthy final snapshots, five complete encrypted
-cluster bundles, five successful local archive-verification runs, and 254,950
-load operations with zero reported errors. All five production component drill
-paths also passed: GitLab archive, PostgreSQL, Vault, SeaweedFS, and MongoDB.
+clusters and exercised against delegated `n0xeid.xyz` DNS. The historical
+five-tier acceptance evidence contains 23/23 Ready Kubernetes nodes, 141/141
+protected PVCs, five passing profile-aware smoke runs, five healthy post-load
+snapshots, five complete encrypted cluster bundles, five successful local
+archive-verification runs, and 254,950 load operations with zero reported
+errors. All five production component drill paths also passed: GitLab archive,
+PostgreSQL, Vault, SeaweedFS, and MongoDB.
 
 This report describes the disposable `load5-260720-r5` campaign. It does not
 convert a successful backup verification into a claim that every application
 has been restored. The exact restore and cleanup boundaries are recorded below.
 Credential values, decrypted recovery material, provider identifiers, and
-Secret contents are deliberately excluded.
+Secret contents are deliberately excluded. The later teardown and resumable
+`minimal` to `production` migration changed the live topology; the acceptance
+figures above are not a claim that all five clusters still exist. Current-state
+statements below use the 2026-07-21T14:11:15Z evidence cutoff.
 
 ## Profiles and technology intent
 
@@ -42,18 +46,19 @@ intent while reducing profile-controlled persistent requests to the provider's
 using pod-local GitLab backup staging. The completed backup artifacts remained
 durable in external S3.
 
-The `minimal` cluster was safely resized one node at a time to `cpx32` for both
-nodes after live testing showed that 2-vCPU/4-GiB nodes could not keep the core
-stack plus one Velero node agent per node schedulable. The profile floor is now
-4 vCPU/8 GiB. This did not change its two-node topology or technology set.
+Before the migration began, the `minimal` cluster was safely resized one node
+at a time to `cpx32` for both nodes after live testing showed that 2-vCPU/4-GiB
+nodes could not keep the core stack plus one Velero node agent per node
+schedulable. The profile floor is now 4 vCPU/8 GiB. This did not change its
+two-node acceptance topology or technology set.
 
 The authoritative selectable-component matrix, dependencies, and later
 enable/disable/remove behavior remain in
 [`TECHNOLOGY_CATALOG.md`](TECHNOLOGY_CATALOG.md).
 
-## Final cluster evidence
+## Historical five-tier acceptance evidence
 
-The final snapshots were collected after load with
+The acceptance snapshots were collected after load with
 `scripts/collect-live-evidence.sh`. Every snapshot reported `healthy: true`, no
 node pressure, no unready pod, no unavailable Deployment/StatefulSet/DaemonSet,
 no failed Job, no unbound PVC, no unavailable APIService, and no unready
@@ -79,8 +84,9 @@ After the component drills and intentional GitLab cleanup, a new production
 `post-restore` snapshot reported `healthy: true`: 6/6 nodes Ready, zero node
 pressure, 195 observed pods with none pending/failed/unready, zero unavailable
 controllers, zero failed Jobs, zero unbound PVCs, healthy certificates/routes/
-APIServices, and 6/6 healthy provider-edge checks. This supersedes the earlier
-production snapshot as the final live-health result.
+APIServices, and 6/6 healthy provider-edge checks. This superseded the earlier
+production snapshot for the five-tier acceptance phase. That disposable
+production cluster was subsequently removed.
 
 ## Bounded load result
 
@@ -105,7 +111,7 @@ still rejecting nonzero operation errors and unhealthy settled evidence.
 
 ## Backup and archive verification
 
-Each tier produced one complete age-encrypted cluster bundle. The bundle
+Each tier produced one complete age-encrypted acceptance bundle. The bundle
 contains desired config, encrypted generated secrets, the still-Ansible-Vault-
 encrypted Vault init material, Kubespray inventory, Helm and Kubernetes API
 state, an etcd snapshot, control-plane PKI/config, cloud state, and repository
@@ -138,6 +144,15 @@ verified all five local archives, their external checksums, internal
 `SHA256SUMS`, project identity, completeness marker, and required Vault recovery
 dependency. This is archive-integrity and recovery-input proof; it does not
 mutate a cluster or replay PVC contents.
+
+The original five archive/checksum/receipt triplets and their Velero objects
+remain in external DR storage after provider teardown. The later live
+`minimal` to `production` migration produced two additional complete encrypted
+pre-switch triplets, timestamped `20260721T102455Z` and `20260721T104447Z`.
+Both are retained remotely; the first was independently decrypted and verified,
+and the second is the durable backup-stage checkpoint used by the active
+migration. These extra checkpoints do not replace the original five-tier
+acceptance bundles.
 
 Production then exercised every isolated component drill:
 
@@ -183,12 +198,42 @@ of migration scratch. It therefore requires 1,270 GiB of additional capacity
 plus the configured 100 GiB safety margin.
 
 This campaign proved the planning/state machine and quota boundary through the
-automated source suite and a live `minimal` → `production` execute invocation.
-That invocation persisted resumable schema-v4 state and failed closed in its
-first `preflight` checkpoint: 1,440 GiB was already in use, the migration still
-required 1,270 GiB, and the 100 GiB margin projected a 2,810 GiB peak against
-the explicit 1,500 GiB account quota. No migration checkpoint or cluster
-mutation ran. A live all-to-all cutover matrix was not attempted.
+automated source suite and one live `minimal` to `production` migration. Its
+first execute attempt persisted resumable schema-v4 state and failed closed in
+`preflight`: 1,440 GiB was already in use, the migration still required 1,270
+GiB, and the 100 GiB margin projected a 2,810 GiB peak against the explicit
+1,500 GiB account quota. No checkpoint or cluster mutation ran in that first
+attempt.
+
+After the four other disposable tier clusters were removed, account usage was
+110 GiB and the same calculation projected 1,480 GiB including the safety
+margin. `resume` passed preflight, completed the encrypted backup checkpoint,
+and expanded the source from 1+1 to three control planes plus three workers.
+Expansion completed with all six nodes Ready and healthy three-member etcd.
+The migration then began its one-node-at-a-time resize. At the evidence cutoff,
+five Kubernetes nodes had reached `cx43`, the remaining first control plane was
+still `cpx32`, the retained bastion remained `cpx22`, and all six Kubernetes
+nodes were Ready. The durable state still reported `status: in_progress` and
+`last_completed_stage: expand`; the resize stage was not complete.
+
+The live run also exercised fail-closed recovery paths. Backup initially found
+that the rollback baseline used the wrong config/root, expansion found a live
+bastion type that differed from the requested target, and provider placement
+reconciliation restarted a powered-off node before its type change. The source
+now captures the exact migration config/root, retains the authoritative live
+bastion type, labels the spread placement group, and checks authoritative
+provider power state both before and after placement. A Loki TSDB cache EOF
+after the first worker drain stopped the health gate; the cache was quarantined
+without deleting the active index, WAL, PVC, or remote objects, and the run did
+not advance until Loki readiness and a fresh push/query succeeded. Resume now
+gates every subsequent drain on live data-path health and records per-node
+in-progress markers.
+
+No later migration stage is claimed complete here. `resize`, Vault storage
+migration, target reconciliation, VictoriaMetrics migration, target validation,
+post-migration backup, and separately confirmed finalization still remained at
+the cutoff. The automated suite validated all 20 ordered plans, but a live
+all-to-all cutover matrix was not attempted.
 
 ## Source corrections produced by the campaign
 
@@ -222,7 +267,14 @@ affected checks rerun. The resulting source changes include:
   final evidence-path preservation on failures;
 - persisted schema-v4 migration state, selection retention, volume-capacity
   planning, explicit SSH identity/trust and controller API-port retention,
-  backup gates, rollback, resumability, and finalization ordering.
+  backup gates, rollback, resumability, and finalization ordering;
+- exact project-label teardown and exact active-context membership checks,
+  including bounded shutdown of the managed API tunnel before cleanup returns;
+- migration-specific rollback-baseline config/root isolation, authoritative live
+  bastion retention, exact placement-group ownership, and provider power-state
+  checks before a node type change; and
+- per-node resize recovery markers plus full data-path health checks before
+  every subsequent drain, including Loki push/query and object-store sentinels.
 
 ## Source validation
 
@@ -238,6 +290,13 @@ the focused backup and cluster-DR lane was rerun: 244 tests passed across
 credential-capture, SSH-state, and API-port hardening, the complete local gate
 passed all ten checks and all 1,343 collected tests.
 
+The later live migration findings produced additional focused migration tests
+for rollback-baseline isolation, bastion retention, provider power-state and
+capacity retries, interrupted-node recovery, and pre-drain health gating. The
+1,343-test result predates those later commits and is not presented as a full
+suite run of the final source. A new complete local gate remains required before
+the campaign can be declared closed.
+
 ## Explicit remaining boundaries and cleanup state
 
 At the evidence cutoff:
@@ -249,24 +308,35 @@ At the evidence cutoff:
 - No full Velero replay into a separately provisioned replacement cluster was
   executed. Such a drill must use a different Kubernetes context; the restore
   script rejects the recorded source context.
-- A live `minimal` → `production` execute reached and correctly failed its
-  provider-capacity preflight before any checkpoint or mutation. All 20 ordered
-  plan paths were validated; no live cutover stage or all-to-all live matrix had
-  run at this evidence cutoff.
+- All 20 ordered plan paths were validated in the source suite. Only the live
+  `minimal` to `production` transition was attempted; it passed the resumed
+  preflight, backup, and expansion checkpoints but had not completed resize or
+  any later cutover/finalization stage.
 - The isolated GitLab drill namespace was cleaned successfully. After the
   complete production bundle and GitLab archive drill, the disposable
   production GitLab namespace was explicitly removed to release test-account
   volume capacity; its remote archive and backup objects were retained. The
   subsequent production post-restore health snapshot was healthy.
-- Whole-cluster/provider cleanup was not part of the acceptance evidence in
-  this report. Before declaring the campaign closed, recheck the live provider
-  and DNS state, remove only exact campaign-labeled resources, remove the
-  disposable external DR endpoint after retaining any required evidence, and
-  verify unrelated projects and DNS records remain unchanged.
-- This report contains no credential values. Provider and DR credentials used
-  for a disposable campaign should be rotated or invalidated after teardown.
+- The `small`, `medium`, `medium-optimized`, and `production` clusters were
+  removed in parallel and idempotent teardown reruns completed successfully.
+  Exact project-labeled compute/network resources and their captured CSI
+  volumes were absent afterward. Their encrypted local controller state,
+  external backup objects, and DNS records were intentionally retained.
+- The live provider still contained the expanded `minimal` migration project
+  and the independent DR endpoint. Teardown intentionally preserves DNS, so
+  the old A records for all five tier domains remained and must not be mistaken
+  for live-cluster proof. The DR endpoint, bucket, and its DNS record must remain
+  until required recovery evidence is retained independently.
+- This report contains no credential values. The repository `.env` is
+  gitignored and mode `0600`, while encrypted campaign-state directories are
+  mode `0700`. A temporary raw Loki pre-repair copy under the gitignored runtime
+  tree is plaintext workload data and must be permission-restricted, encrypted,
+  or removed after recovery verification. Object-storage credentials exposed
+  during diagnostics must be rotated; disposable provider and DR credentials
+  should also be rotated or invalidated after final teardown.
 
-The durable evidence remains under the gitignored
-`.campaign-runtime/load5-260720-r5/results/` tree until operator cleanup. The
+The acceptance results remain under the gitignored
+`.campaign-runtime/load5-260720-r5/results/` tree, while migration checkpoints
+remain under the adjacent private migration state until operator cleanup. The
 repository documentation and tests describe how to repeat every check without
 depending on these ephemeral local paths.

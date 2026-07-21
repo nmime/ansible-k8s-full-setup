@@ -251,7 +251,11 @@ The durable stages are:
    create spread placement when either side requires it, then verify etcd.
 4. `resize` — drain, stop, place, resize, start, wait, and uncordon one node at
    a time; verify etcd after every control-plane change and validate the source
-   service set that remains authoritative until target reconciliation.
+   service set that remains authoritative until target reconciliation. A
+   per-node in-progress marker distinguishes an interrupted drain from a fresh
+   node. On resume, an already converged node still runs the full post-resize
+   health gate, and the next fresh drain is blocked until the current source
+   data paths are healthy.
 5. `migrate-vault-storage` — complete the guarded offline conversion from any
    legacy file-backed Vault storage to Raft before the target service reconcile.
 6. `apply-target` — reconcile target cluster policy and selected services while
@@ -380,8 +384,17 @@ edit the current tier and rerun the upgrade script.
 ### Migration stops after node expansion or resize
 
 Run `platform.sh migrate status`, inspect Kubernetes node state, the Hetzner
-server type/placement, and etcd health, then use `migrate resume`. Do not mark a
-checkpoint complete manually.
+server type/placement, etcd health, and every source data path before using
+`migrate resume`. Do not mark a checkpoint complete manually. Resume uses the
+per-node marker to finish a node that was already drained or powered off, then
+requires the same post-resize health gate before it can drain another node.
+
+For a Loki source, require the StatefulSet and canaries to be Ready and perform
+a fresh push/query through the normal gateway. If TSDB synchronization reports
+an EOF, stop migration and preserve the PVC plus external backup before
+recovery. Treat `tsdb-shipper-cache` as reconstructable cache only; do not
+delete the active index, WAL, PVC, or remote object to make the readiness gate
+pass. Validate the object-store sentinel before resuming.
 
 ### Backup stage fails
 

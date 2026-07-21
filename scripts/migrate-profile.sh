@@ -54,6 +54,7 @@ HCLOUD_CAPACITY_RETRY_ATTEMPTS="${PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMP
 HCLOUD_CAPACITY_RETRY_INTERVAL="${PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS:-15}"
 ETCD_HEALTH_TIMEOUT="${PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS:-300}"
 API_READY_TIMEOUT="${PROFILE_MIGRATION_API_READY_TIMEOUT_SECONDS:-300}"
+CSI_DETACH_TIMEOUT="${PROFILE_MIGRATION_CSI_DETACH_TIMEOUT_SECONDS:-900}"
 VAULT_MEMBER_TIMEOUT="${PROFILE_MIGRATION_VAULT_MEMBER_TIMEOUT_SECONDS:-900}"
 PLATFORM_CONVERGENCE_TIMEOUT="${PROFILE_MIGRATION_PLATFORM_CONVERGENCE_TIMEOUT_SECONDS:-900}"
 PLATFORM_CONVERGENCE_INTERVAL="${PROFILE_MIGRATION_PLATFORM_CONVERGENCE_INTERVAL_SECONDS:-15}"
@@ -158,6 +159,8 @@ for tool in yq jq ansible-playbook; do command -v "$tool" >/dev/null || fail "re
   || fail "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS must be a positive integer"
 [[ "$HCLOUD_CAPACITY_RETRY_INTERVAL" =~ ^[1-9][0-9]*$ ]] \
   || fail "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS must be a positive integer"
+[[ "$CSI_DETACH_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || fail "PROFILE_MIGRATION_CSI_DETACH_TIMEOUT_SECONDS must be a positive integer"
 
 is_named_profile() {
   local candidate="$1" profile
@@ -1113,6 +1116,202 @@ check_etcd_health() {
   fail "etcd cluster did not become healthy within ${ETCD_HEALTH_TIMEOUT}s"
 }
 
+control_plane_private_ip() {
+  local node="$1" facts="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml"
+  NODE="$node" yq -r '.master_ips[strenv(NODE)] // ""' "$facts"
+}
+
+control_plane_etcd_endpoints() {
+  local config="$1" count i ip
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  for ((i=1; i<=count; i++)); do
+    ip=$(control_plane_private_ip "${PROJECT}-master-${i}")
+    [[ -n "$ip" ]] || fail "private IP is missing for ${PROJECT}-master-${i}"
+    printf 'https://%s:2379\n' "$ip"
+  done
+}
+
+control_plane_etcd_endpoint_csv() {
+  local config="$1" count i ip output="" endpoint
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  for ((i=1; i<=count; i++)); do
+    ip=$(control_plane_private_ip "${PROJECT}-master-${i}")
+    [[ -n "$ip" ]] || fail "private IP is missing for ${PROJECT}-master-${i}"
+    endpoint="https://${ip}:2379"
+    [[ -z "$output" ]] || output+=,
+    output+="$endpoint"
+  done
+  printf '%s\n' "$output"
+}
+
+check_etcd_member_contract() {
+  local config="$1" count host endpoints output actual expected_members actual_members learners i ip
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  host=$(control_plane_private_ip "${PROJECT}-master-1")
+  endpoints=$(control_plane_etcd_endpoint_csv "$config")
+  ssh_args_for_facts
+  output=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+    "set -eu; set -a; . /etc/etcd.env; set +a; export ETCDCTL_ENDPOINTS=${endpoints}; etcdctl endpoint health >/dev/null; etcdctl endpoint status >/dev/null; test -z \"\$(etcdctl alarm list)\"; etcdctl member list -w json" </dev/null) \
+    || fail "could not verify every expected etcd endpoint"
+  actual=$(jq '.members | length' <<<"$output")
+  learners=$(jq '[.members[] | select(.isLearner == true)] | length' <<<"$output")
+  expected_members=""
+  for ((i=1; i<=count; i++)); do
+    ip=$(control_plane_private_ip "${PROJECT}-master-${i}")
+    [[ -n "$ip" ]] || fail "private IP is missing for ${PROJECT}-master-${i}"
+    expected_members+="etcd${i} https://${ip}:2380 https://${ip}:2379"$'\n'
+  done
+  expected_members=$(printf '%s' "$expected_members" | sort)
+  actual_members=$(jq -r '.members[] | "\(.name) \(.peerURLs | sort | join(",")) \(.clientURLs | sort | join(","))"' <<<"$output" | sort)
+  [[ "$actual" == "$count" && "$learners" == 0 ]] \
+    || fail "etcd membership mismatch: expected=${count} voting members actual=${actual} learners=${learners}"
+  [[ "$actual_members" == "$expected_members" ]] \
+    || fail "etcd member names, peer URLs, or client URLs do not match the control-plane inventory"
+}
+
+control_plane_etcd_clients_match() {
+  local config="$1" count endpoints expected_config actual_config actual_http i node host
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  endpoints=$(control_plane_etcd_endpoint_csv "$config")
+  expected_config=$(control_plane_etcd_endpoints "$config" | sort)
+  actual_config=$(kubectl -n kube-system get configmap kubeadm-config -o json \
+    | jq -r '.data.ClusterConfiguration' | yq -r '.etcd.external.endpoints[]' | sort) \
+    || return 1
+  actual_http=$(kubectl -n kube-system get configmap kubeadm-config -o json \
+    | jq -r '.data.ClusterConfiguration' | yq -r '.etcd.external.httpEndpoints[]' | sort) \
+    || return 1
+  [[ "$actual_config" == "$expected_config" ]] || return 1
+  [[ "$actual_http" == "$expected_config" ]] || return 1
+  ssh_args_for_facts
+  for ((i=1; i<=count; i++)); do
+    node="${PROJECT}-master-${i}"
+    host=$(control_plane_private_ip "$node")
+    ssh "${SSH_ARGS[@]}" "root@${host}" \
+      "set -eu; systemctl is-active --quiet etcd; grep -Fq -- '--etcd-servers=${endpoints}' /etc/kubernetes/manifests/kube-apiserver.yaml; grep -Fq -- '--etcd-certfile=/etc/ssl/etcd/ssl/node-${node}.pem' /etc/kubernetes/manifests/kube-apiserver.yaml; grep -Fq -- '--etcd-keyfile=/etc/ssl/etcd/ssl/node-${node}-key.pem' /etc/kubernetes/manifests/kube-apiserver.yaml; KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null" </dev/null \
+      || return 1
+  done
+}
+
+reconcile_control_plane_etcd_clients() {
+  local config="$1" count endpoints i node host old_id new_id attempt
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  endpoints=$(control_plane_etcd_endpoint_csv "$config")
+  ssh_args_for_facts
+  host=$(control_plane_private_ip "${PROJECT}-master-1")
+  ssh "${SSH_ARGS[@]}" "root@${host}" \
+    'set -eu; kubeadm init phase upload-config kubeadm --config /etc/kubernetes/kubeadm-config.yaml' </dev/null \
+    || fail "could not upload the expanded kubeadm cluster configuration"
+  # Reconcile secondary API servers first so the original endpoint remains
+  # available until two independent replacements have passed local readiness.
+  for ((i=2; i<=count; i++)); do
+    node="${PROJECT}-master-${i}"
+    host=$(control_plane_private_ip "$node")
+    old_id=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+      'crictl ps -q --name kube-apiserver | head -1' </dev/null)
+    ssh "${SSH_ARGS[@]}" "root@${host}" \
+      "set -eu; cp -a /etc/kubernetes/manifests/kube-apiserver.yaml /root/kube-apiserver.yaml.pre-etcd-ha; kubeadm init phase control-plane apiserver --config /etc/kubernetes/kubeadm-config.yaml >/dev/null" </dev/null \
+      || fail "could not reconcile kube-apiserver etcd endpoints on $node"
+    for attempt in {1..60}; do
+      new_id=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+        'crictl ps -q --name kube-apiserver | head -1' </dev/null 2>/dev/null || true)
+      if [[ -n "$new_id" && "$new_id" != "$old_id" ]] && ssh "${SSH_ARGS[@]}" "root@${host}" \
+        "grep -Fq -- '--etcd-servers=${endpoints}' /etc/kubernetes/manifests/kube-apiserver.yaml && KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null" </dev/null; then
+        break
+      fi
+      sleep 5
+    done
+    [[ -n "$new_id" && "$new_id" != "$old_id" ]] \
+      || fail "$node kube-apiserver did not restart after etcd endpoint reconciliation"
+  done
+  node="${PROJECT}-master-1"
+  host=$(control_plane_private_ip "$node")
+  old_id=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+    'crictl ps -q --name kube-apiserver | head -1' </dev/null)
+  ssh "${SSH_ARGS[@]}" "root@${host}" \
+    "set -eu; cp -a /etc/kubernetes/manifests/kube-apiserver.yaml /root/kube-apiserver.yaml.pre-etcd-ha; kubeadm init phase control-plane apiserver --config /etc/kubernetes/kubeadm-config.yaml >/dev/null" </dev/null \
+    || fail "could not reconcile kube-apiserver etcd endpoints on $node"
+  for attempt in {1..60}; do
+    new_id=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
+      'crictl ps -q --name kube-apiserver | head -1' </dev/null 2>/dev/null || true)
+    if [[ -n "$new_id" && "$new_id" != "$old_id" ]] && ssh "${SSH_ARGS[@]}" "root@${host}" \
+      "grep -Fq -- '--etcd-servers=${endpoints}' /etc/kubernetes/manifests/kube-apiserver.yaml && KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null" </dev/null; then
+      break
+    fi
+    sleep 5
+  done
+  [[ -n "$new_id" && "$new_id" != "$old_id" ]] \
+    || fail "$node kube-apiserver did not restart after etcd endpoint reconciliation"
+  wait_for_api_ready
+}
+
+ensure_control_plane_etcd_ha() {
+  local config="$1"
+  check_etcd_member_contract "$config"
+  if ! control_plane_etcd_clients_match "$config"; then
+    warn "control-plane etcd client endpoints are stale; reconciling kubeadm and API server manifests"
+    reconcile_control_plane_etcd_clients "$config"
+  fi
+  control_plane_etcd_clients_match "$config" \
+    || fail "control-plane API servers do not all use the complete etcd endpoint set"
+  check_etcd_member_contract "$config"
+}
+
+check_control_plane_alternates_ready() {
+  local excluded_node="$1" config="$2" count i node host alternates=0
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  (( count >= 3 )) || return 0
+  ssh_args_for_facts
+  for ((i=1; i<=count; i++)); do
+    node="${PROJECT}-master-${i}"
+    [[ "$node" != "$excluded_node" ]] || continue
+    host=$(control_plane_private_ip "$node")
+    ssh "${SSH_ARGS[@]}" "root@${host}" \
+      'set -eu; systemctl is-active --quiet etcd; set -a; . /etc/etcd.env; set +a; etcdctl endpoint health >/dev/null; KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null' </dev/null \
+      || fail "alternate control-plane endpoint $node is not ready before draining $excluded_node"
+    alternates=$((alternates + 1))
+  done
+  (( alternates >= 2 )) || fail "fewer than two alternate control-plane endpoints are ready"
+}
+
+check_control_plane_survivors() {
+  local excluded_node="$1" config="$2" count i node host survivor_host="" endpoints="" endpoint survivor_count=0
+  count=$(yq -r '.infrastructure.control_plane.count' "$config")
+  (( count >= 3 )) \
+    || fail "cannot safely resize a control-plane node without at least three expanded control-plane members"
+  ssh_args_for_facts
+  for ((i=1; i<=count; i++)); do
+    node="${PROJECT}-master-${i}"
+    [[ "$node" != "$excluded_node" ]] || continue
+    host=$(control_plane_private_ip "$node")
+    [[ -n "$survivor_host" ]] || survivor_host="$host"
+    endpoint="https://${host}:2379"
+    [[ -z "$endpoints" ]] || endpoints+=,
+    endpoints+="$endpoint"
+    survivor_count=$((survivor_count + 1))
+    ssh "${SSH_ARGS[@]}" "root@${host}" \
+      'set -eu; systemctl is-active --quiet etcd; KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null' </dev/null \
+      || fail "surviving control-plane endpoint $node is not independently ready"
+  done
+  (( survivor_count >= 2 )) || fail "fewer than two control-plane survivors remain"
+  ssh "${SSH_ARGS[@]}" "root@${survivor_host}" \
+    "set -eu; set -a; . /etc/etcd.env; set +a; export ETCDCTL_ENDPOINTS=${endpoints}; etcdctl endpoint health >/dev/null" </dev/null \
+    || fail "surviving etcd members cannot commit without $excluded_node"
+  wait_for_api_ready
+}
+
+wait_for_csi_detach() {
+  local node="$1" deadline=$((SECONDS + CSI_DETACH_TIMEOUT)) attachments provider_volumes
+  while (( SECONDS < deadline )); do
+    attachments=$(kubectl get volumeattachments.storage.k8s.io -o json \
+      | jq --arg node "$node" '[.items[] | select(.spec.nodeName == $node)] | length')
+    provider_volumes=$(hcloud server describe "$node" -o json | jq '.volumes | length')
+    if [[ "$attachments" == 0 && "$provider_volumes" == 0 ]]; then return 0; fi
+    warn "$attachments CSI attachment object(s) and $provider_volumes provider volume(s) remain on drained node $node; waiting for detach"
+    sleep 10
+  done
+  fail "Kubernetes and provider volumes did not fully detach from $node within ${CSI_DETACH_TIMEOUT}s"
+}
+
 run_with_timeout() {
   local timeout_seconds="$1" command_pid timer_pid status
   shift
@@ -1460,6 +1659,7 @@ stage_expand() {
   kubectl wait nodes --all --for=condition=Ready --timeout=900s
   actual=$(kubectl get nodes -o json | jq '.items | length')
   [[ "$actual" == "$expected" ]] || fail "expected $expected Kubernetes nodes after expansion, found $actual"
+  ensure_control_plane_etcd_ha "$EXPANSION_CONFIG"
   check_etcd_health
 }
 
@@ -1611,6 +1811,7 @@ unseal_vault_members() {
 resize_node() {
   local node="$1" target_type="$2" role="$3" server_json current_type current_disk target_disk placement target_placement=""
   local node_state_dir="$STATE_DIR/resize-nodes" in_progress done_marker node_unschedulable interrupted=false
+  local current_status provider_volumes
   mkdir -p "$node_state_dir"
   in_progress="${node_state_dir}/${node}.in-progress"
   done_marker="${node_state_dir}/${node}.done"
@@ -1654,6 +1855,7 @@ resize_node() {
     unseal_vault_members
     maintain_node_root_disk "$node"
     [[ "$role" != master ]] || check_etcd_health "$node"
+    [[ "$role" != master ]] || check_control_plane_alternates_ready "$node" "$EXPANSION_CONFIG"
     date -u +%Y-%m-%dT%H:%M:%SZ > "$in_progress"
     kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
   else
@@ -1662,9 +1864,34 @@ resize_node() {
     # node must wait until provider reconciliation has started it again.
     log "skipping completed pre-drain work for interrupted node $node"
   fi
+  current_status=$(server_status "$node")
+  provider_volumes=$(hcloud server describe "$node" -o json | jq '.volumes | length')
+  if [[ "$current_status" == off && "$provider_volumes" != 0 ]]; then
+    warn "$node resumed while off with provider volumes attached; starting it so CSI can reconcile detachment"
+    ensure_server_running "$node"
+    wait_for_api_ready
+    kubectl wait "node/${node}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT"
+  fi
+  # A successful Kubernetes eviction does not mean the storage provider has
+  # detached every RWO volume yet. Powering the VM off during that window can
+  # corrupt an application filesystem or prolong a multi-attach outage.
+  wait_for_csi_detach "$node"
   # Power operations are asynchronous. Placement-group reconciliation can also
   # leave a server running, so provider status—not CLI completion—is the gate.
   ensure_server_stopped "$node"
+  if [[ "$role" == master ]] \
+    && (( $(yq -r '.infrastructure.control_plane.count' "$EXPANSION_CONFIG") >= 3 )); then
+    # Prove that the API tunnel, both surviving API servers, and the two-member
+    # etcd quorum work while this master is actually absent, before changing
+    # any provider attributes on the stopped server.
+    if ! (check_control_plane_survivors "$node" "$EXPANSION_CONFIG"); then
+      warn "control-plane survivor gate failed with $node off; restoring the stopped master before aborting"
+      ensure_server_running "$node"
+      wait_for_api_ready
+      kubectl wait "node/${node}" --for=condition=Ready --timeout="$RESIZE_TIMEOUT" || true
+      fail "refusing provider mutation because control-plane failover was not healthy without $node"
+    fi
+  fi
   if [[ -n "$target_placement" && "$placement" != "$target_placement" ]]; then
     [[ -z "$placement" ]] || hcloud server remove-from-placement-group "$node"
     hcloud server add-to-placement-group --placement-group "$target_placement" "$node"
@@ -1702,6 +1929,7 @@ stage_resize() {
   local -a nodes=() node_types=() node_roles=() in_progress_markers=()
   workers=$(yq -r '.infrastructure.workers.count' "$TARGET_CONFIG")
   masters=$(yq -r '.infrastructure.control_plane.count' "$TARGET_CONFIG")
+  ensure_control_plane_etcd_ha "$EXPANSION_CONFIG"
   worker_type=$(yq -r '.infrastructure.workers.type' "$TARGET_CONFIG")
   cp_type=$(yq -r '.infrastructure.control_plane.type' "$TARGET_CONFIG")
   for ((i=1; i<=workers; i++)); do

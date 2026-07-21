@@ -582,7 +582,8 @@ def test_migration_recovers_from_an_accepted_hcloud_action_after_client_failure(
     assert "PROFILE_MIGRATION_HCLOUD_STATE_TIMEOUT_SECONDS" in content
     assert "run_with_timeout" in content
     assert "wait_for_server_settled" in content
-    assert "Hetzner accepted the type change" in content
+    assert "authoritative post-action shape" in content
+    assert 'server_json=$(hcloud server describe "$node" -o json)' in content
 
 
 def test_migration_waits_for_etcd_after_a_control_plane_restart():
@@ -590,6 +591,75 @@ def test_migration_waits_for_etcd_after_a_control_plane_restart():
     assert "PROFILE_MIGRATION_ETCD_HEALTH_TIMEOUT_SECONDS" in content
     assert "etcd quorum is not fully ready yet" in content
     assert "etcd cluster did not become healthy within" in content
+
+
+def test_migration_reconciles_complete_etcd_clients_after_control_plane_expansion():
+    content = MIGRATE.read_text(encoding="utf-8")
+    expansion = content.split("stage_expand()", 1)[1].split(
+        "wait_for_node_runtime()", 1
+    )[0]
+    resize = content.split("stage_resize()", 1)[1].split(
+        "control_plane_nodes()", 1
+    )[0]
+    reconcile = content.split("reconcile_control_plane_etcd_clients()", 1)[1].split(
+        "ensure_control_plane_etcd_ha()", 1
+    )[0]
+
+    assert 'ensure_control_plane_etcd_ha "$EXPANSION_CONFIG"' in expansion
+    assert 'ensure_control_plane_etcd_ha "$EXPANSION_CONFIG"' in resize
+    assert "kubeadm init phase upload-config kubeadm" in reconcile
+    assert "kubeadm init phase control-plane apiserver" in reconcile
+    assert reconcile.index("for ((i=2; i<=count; i++))") < reconcile.rindex(
+        'node="${PROJECT}-master-1"'
+    )
+    assert "old_id=" in reconcile
+    assert '"$new_id" != "$old_id"' in reconcile
+    assert "etcdctl member list -w json" in content
+    assert ".clientURLs | sort" in content
+    assert ".peerURLs | sort" in content
+    assert "learners" in content
+    assert "control-plane API servers do not all use the complete etcd endpoint set" in content
+
+
+def test_migration_proves_control_plane_survivors_after_poweroff_before_mutation():
+    content = MIGRATE.read_text(encoding="utf-8")
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+    survivor = content.split("check_control_plane_survivors()", 1)[1].split(
+        "wait_for_csi_detach()", 1
+    )[0]
+
+    stopped = resize.index('ensure_server_stopped "$node"')
+    survivor_gate = resize.index('check_control_plane_survivors "$node"')
+    placement = resize.index('hcloud server add-to-placement-group')
+    assert stopped < survivor_gate < placement
+    assert "surviving control-plane endpoint" in survivor
+    assert "surviving etcd members cannot commit" in survivor
+    assert "etcdctl endpoint health" in survivor
+    assert "wait_for_api_ready" in survivor
+    assert "restoring the stopped master before aborting" in resize
+    assert resize.index("control-plane survivor gate failed") < resize.index(
+        'ensure_server_running "$node"', survivor_gate
+    )
+
+
+def test_migration_waits_for_csi_detach_after_drain_before_poweroff():
+    content = MIGRATE.read_text(encoding="utf-8")
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+    detach = content.split("wait_for_csi_detach()", 1)[1].split(
+        "run_with_timeout()", 1
+    )[0]
+
+    assert "PROFILE_MIGRATION_CSI_DETACH_TIMEOUT_SECONDS" in content
+    assert "volumeattachments.storage.k8s.io" in detach
+    assert ".spec.nodeName == $node" in detach
+    assert 'hcloud server describe "$node" -o json' in detach
+    assert ".volumes | length" in detach
+    assert resize.index('kubectl drain "$node"') < resize.index(
+        'wait_for_csi_detach "$node"'
+    )
+    assert resize.index('wait_for_csi_detach "$node"') < resize.index(
+        'ensure_server_stopped "$node"'
+    )
 
 
 def test_migration_enforces_control_plane_schedulability_in_both_directions():
@@ -1623,7 +1693,7 @@ def test_migration_resize_rechecks_provider_off_after_placement_before_type_chan
     content = MIGRATE.read_text(encoding="utf-8")
     resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
     mutation = resize.index('hcloud server add-to-placement-group')
-    change_type = resize.index('hcloud server change-type "$node" "$target_type"')
+    change_type = resize.index('change_server_type_with_retry "$node" "$target_type"')
     stop_checks = []
     offset = 0
     while True:
@@ -1635,6 +1705,10 @@ def test_migration_resize_rechecks_provider_off_after_placement_before_type_chan
 
     assert len(stop_checks) == 2
     assert stop_checks[0] < mutation < stop_checks[1] < change_type
+    retry = content.split("change_server_type_with_retry()", 1)[1].split(
+        "ensure_server_running()", 1
+    )[0]
+    assert 'hcloud server change-type "$node" "$target_type"' in retry
     assert 'hcloud server poweroff "$node"' not in resize
     assert 'kubectl uncordon "$node"' in resize
 

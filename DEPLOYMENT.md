@@ -281,11 +281,14 @@ configured source, namespace, and resource allowlists.
 ./platform-orchestrator/platform.sh destroy
 ```
 
-Type the exact confirmation when prompted. The script deletes and verifies
-project-prefixed load balancers, servers, firewalls, placement groups, SSH
-keys, subnets, and the network. Before server deletion it captures every
-provider volume attached to those exact servers, including CSI-generated
-`pvc-*` names. When the active Kubernetes context contains only project-named
-nodes, it also captures detached/retained Hetzner CSI volume handles from PVs.
-It then detaches, deletes, and verifies those exact volume IDs. It
-intentionally preserves DNS and the global kubeconfig.
+Type the exact confirmation when prompted. The script selects load balancers,
+servers, firewalls, and labeled placement groups only when their
+`project` label exactly equals the confirmed project; overlapping name prefixes
+never broaden deletion scope. It also handles the exact conventional SSH-key,
+subnet, network, and legacy `${project}-spread` names. Before server deletion it
+captures every provider volume attached to those exact labeled servers,
+including CSI-generated `pvc-*` names. It captures detached/retained Hetzner
+CSI volume handles from Kubernetes PVs only when every node in the active
+context is an exact member of that provider-server set. It then detaches,
+deletes, and verifies those exact volume IDs. It intentionally preserves DNS
+and the global kubeconfig.

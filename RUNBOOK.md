@@ -489,11 +489,15 @@ treating Helm rollback as sufficient.
 ./platform-orchestrator/platform.sh destroy
 ```
 
-The confirmation must match the project. The script verifies deletion of
-project-prefixed Hetzner compute/network resources plus all CSI volumes captured
-by attachment to the project's servers or, for a context whose nodes all match
-the project, by the PV's Hetzner CSI volume handle. It preserves DNS and the
-global kubeconfig. The orchestrator passes the configured
+The confirmation must match the project. Servers, load balancers, firewalls,
+and labeled placement groups are selected only by an exact `project` label;
+overlapping name prefixes never broaden teardown scope. Exact conventional
+names are used for the SSH key, subnet, network, and legacy spread group. The
+script also verifies deletion of every CSI volume captured by attachment to
+those exact labeled servers. It reads detached volume handles from PVs only
+when every node in the active Kubernetes context is an exact member of the
+provider-server set. It preserves DNS and the global kubeconfig. The
+orchestrator passes the configured
 `k8s_api_local_port`, so teardown stops only that project's matching tunnel and
 removes only its project-specific known-hosts file. Review the backup inventory
 before authorizing teardown.
