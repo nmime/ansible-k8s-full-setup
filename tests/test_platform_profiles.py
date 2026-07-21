@@ -667,6 +667,26 @@ class TestResourceTierConsumers:
         assert "list_prefixed" not in teardown
         assert 'placement-group describe "${PROJECT}-spread"' in teardown
 
+    def test_teardown_requires_a_second_confirmation_for_active_migrations(self):
+        teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
+        assert "--confirm-active-migration" in teardown
+        assert "DESTROY_ACTIVE_MIGRATION_${PROJECT}" in teardown
+        assert ".status // \"\"" in teardown
+        assert '"$state_project" == "$PROJECT"' in teardown
+        assert '"$state_status" == in_progress' in teardown
+        assert "migration-proof" in teardown
+        assert ".migration-state" in teardown
+        assert "in-progress profile migration" in teardown
+
+    def test_teardown_waits_for_volume_detachment_before_delete(self):
+        teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
+        detach = teardown.index('hcloud volume detach "$volume_id"')
+        detached_gate = teardown.index('[[ "$volume_detached" != true ]]', detach)
+        delete = teardown.index('hcloud volume delete "$volume_id"', detach)
+        assert detach < detached_gate < delete
+        assert "FAILED waiting for captured project volume to detach" in teardown
+        assert "'.server == null'" in teardown
+
     def test_parent_hetzner_dns_zone_uses_relative_record_names(self):
         defaults = (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
         infra = (

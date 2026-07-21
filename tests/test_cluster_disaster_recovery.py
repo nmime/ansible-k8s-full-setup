@@ -727,6 +727,16 @@ def test_backup_retries_api_exports_and_never_keeps_partial_yaml():
     assert 'temporary="${destination}.tmp"' in content
 
 
+def test_replacement_restore_compares_cluster_uid_not_only_context_name():
+    backup = BACKUP.read_text(encoding="utf-8")
+    restore = RESTORE.read_text(encoding="utf-8")
+    assert "SOURCE_CLUSTER_UID=" in backup
+    assert "source_cluster_uid:$sourceClusterUid" in backup
+    assert "TARGET_CLUSTER_UID=" in restore
+    assert '[[ "$TARGET_CLUSTER_UID" != "$SOURCE_CLUSTER_UID" ]]' in restore
+    assert "legacy bundle has no source cluster UID" in restore
+
+
 def test_cloud_capture_is_portable_to_bash_32_with_nounset():
     content = BACKUP.read_text(encoding="utf-8")
     assert 'if [[ "$kind" == load-balancer ]]' in content

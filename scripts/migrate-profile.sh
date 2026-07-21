@@ -1152,6 +1152,9 @@ check_etcd_member_contract() {
   host=$(control_plane_private_ip "${PROJECT}-master-1")
   endpoints=$(control_plane_etcd_endpoint_csv "$config")
   ssh_args_for_facts
+  # The inventory-derived endpoint CSV must be expanded by the controller and
+  # injected into the remote etcdctl environment.
+  # shellcheck disable=SC2029
   output=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
     "set -eu; set -a; . /etc/etcd.env; set +a; export ETCDCTL_ENDPOINTS=${endpoints}; etcdctl endpoint health >/dev/null; etcdctl endpoint status >/dev/null; test -z \"\$(etcdctl alarm list)\"; etcdctl member list -w json" </dev/null) \
     || fail "could not verify every expected etcd endpoint"
@@ -1188,6 +1191,9 @@ control_plane_etcd_clients_match() {
   for ((i=1; i<=count; i++)); do
     node="${PROJECT}-master-${i}"
     host=$(control_plane_private_ip "$node")
+    # These inventory-derived values intentionally expand on the controller;
+    # the remote command validates the exact generated manifest arguments.
+    # shellcheck disable=SC2029
     ssh "${SSH_ARGS[@]}" "root@${host}" \
       "set -eu; systemctl is-active --quiet etcd; grep -Fq -- '--etcd-servers=${endpoints}' /etc/kubernetes/manifests/kube-apiserver.yaml; grep -Fq -- '--etcd-certfile=/etc/ssl/etcd/ssl/node-${node}.pem' /etc/kubernetes/manifests/kube-apiserver.yaml; grep -Fq -- '--etcd-keyfile=/etc/ssl/etcd/ssl/node-${node}-key.pem' /etc/kubernetes/manifests/kube-apiserver.yaml; KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null" </dev/null \
       || return 1
@@ -1216,6 +1222,7 @@ reconcile_control_plane_etcd_clients() {
     for attempt in {1..60}; do
       new_id=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
         'crictl ps -q --name kube-apiserver | head -1' </dev/null 2>/dev/null || true)
+      # shellcheck disable=SC2029
       if [[ -n "$new_id" && "$new_id" != "$old_id" ]] && ssh "${SSH_ARGS[@]}" "root@${host}" \
         "grep -Fq -- '--etcd-servers=${endpoints}' /etc/kubernetes/manifests/kube-apiserver.yaml && KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null" </dev/null; then
         break
@@ -1235,6 +1242,7 @@ reconcile_control_plane_etcd_clients() {
   for attempt in {1..60}; do
     new_id=$(ssh "${SSH_ARGS[@]}" "root@${host}" \
       'crictl ps -q --name kube-apiserver | head -1' </dev/null 2>/dev/null || true)
+    # shellcheck disable=SC2029
     if [[ -n "$new_id" && "$new_id" != "$old_id" ]] && ssh "${SSH_ARGS[@]}" "root@${host}" \
       "grep -Fq -- '--etcd-servers=${endpoints}' /etc/kubernetes/manifests/kube-apiserver.yaml && KUBECONFIG=/etc/kubernetes/admin.conf kubectl --server=https://127.0.0.1:6443 --request-timeout=8s get --raw=/readyz >/dev/null" </dev/null; then
       break
@@ -1295,6 +1303,9 @@ check_control_plane_survivors() {
       || fail "surviving control-plane endpoint $node is not independently ready"
   done
   (( survivor_count >= 2 )) || fail "fewer than two control-plane survivors remain"
+  # The survivor-only endpoint CSV is built locally from the replacement
+  # inventory and intentionally expanded into the remote etcdctl environment.
+  # shellcheck disable=SC2029
   ssh "${SSH_ARGS[@]}" "root@${survivor_host}" \
     "set -eu; set -a; . /etc/etcd.env; set +a; export ETCDCTL_ENDPOINTS=${endpoints}; etcdctl endpoint health >/dev/null" </dev/null \
     || fail "surviving etcd members cannot commit without $excluded_node"

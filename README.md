@@ -219,7 +219,8 @@ reconciliation when its protected state is missing.
 # Plan all five controllers without Git worktrees or cloud mutations.
 ./run_all.sh --campaign-id lab01 --minimum-storage --dry-run
 
-# Create an independent disposable DR target, then deploy all five profiles.
+# Create an independent DR target with disposable compute and durable storage,
+# then deploy all five profiles.
 eval "$(./scripts/test-dr-endpoint.sh up lab01 | grep '^export ')"
 ./run_all.sh --campaign-id lab01 --minimum-storage --manage-dns \
   --capacity-family cpx \
@@ -230,13 +231,25 @@ eval "$(./scripts/test-dr-endpoint.sh up lab01 | grep '^export ')"
 and never guesses that teardown is safe. It prints the exact per-controller
 cleanup commands. After evidence is secured, remove those five projects and
 run `./scripts/test-dr-endpoint.sh down lab01`; verify the cloud and parent DNS
-zone returned to their recorded baseline.
+zone returned to their recorded baseline. `down` retains the independently
+delete-protected `<campaign>-dr-data` volume, and a later `up` reattaches it
+without reformatting. After recovery evidence expires, explicitly purge it with
+`./scripts/test-dr-endpoint.sh purge lab01 "PURGE lab01 DR DATA"`. See
+[`docs/TEST_DR_ENDPOINT.md`](docs/TEST_DR_ENDPOINT.md) for the durability and
+fail-closed lifecycle contract.
 
 Teardown selects servers, load balancers, firewalls, networks, and volumes by
 the exact `project` label, not by a name prefix. This is required when project
 names overlap (for example `medium` and `medium-optimized`) and makes parallel
 cleanup safe. Legacy placement groups are removed only by the exact
 `${project}-spread` name.
+
+If any durable profile-migration state for the project is still
+`in_progress`, ordinary `--confirm PROJECT` is intentionally insufficient.
+Recover or roll back the migration, or explicitly authorize destruction with
+the second phrase printed by `teardown.sh`. Captured volumes are not deleted
+until the provider confirms they are detached; a detach timeout leaves the
+volume intact and makes teardown fail for operator review.
 
 When `global.domain` is a delegated name below an existing Hetzner zone, set
 top-level `hetzner_dns_zone` to the parent, for example

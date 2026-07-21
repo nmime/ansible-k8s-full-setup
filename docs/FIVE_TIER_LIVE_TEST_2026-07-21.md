@@ -235,6 +235,50 @@ post-migration backup, and separately confirmed finalization still remained at
 the cutoff. The automated suite validated all 20 ordered plans, but a live
 all-to-all cutover matrix was not attempted.
 
+## Post-cutoff destructive-provider incident
+
+At `2026-07-21T15:50:54Z` through `15:52:33Z`, after the original evidence
+cutoff, Hetzner recorded explicit API deletion actions for all seven expanded
+`minimal` servers and the independent DR server. Nine captured CSI volumes
+were explicitly deleted at `15:52:22Z`. This was not migration finalization:
+durable migration state remains `in_progress`, its last completed stage is
+`expand`, and no cleanup/finalize checkpoint exists. It was also not provider
+TTL cleanup. Provider action history does not expose actor identity, and no
+matching retained Codex execution, local shell history, cron job, launch job,
+or surviving process identifies the caller. The action ordering is consistent
+with project teardown and DR `down` being invoked in parallel from an
+unrecorded shell, host, agent, console, or token holder; that is a forensic
+inference, not proven attribution.
+
+Two 10 GiB volumes survived because their detach actions did not complete until
+after the immediate delete attempts. This exposed a teardown race: the old
+implementation requested detach and deleted without waiting for authoritative
+provider detachment. Teardown now waits for `.server == null`, fails with the
+volume retained on timeout, and requires a second project-specific destructive
+confirmation whenever any migration state remains active.
+
+The latest local encrypted checkpoint
+`load5-260720-minimal-cluster-20260721T104447Z` still verifies completely. It
+contains repository/configuration state, encrypted platform secrets, Vault
+initialization material, Kubernetes/Helm exports, Kubespray inventory, an etcd
+snapshot, control-plane PKI, and cloud inventory. Its Velero metadata records
+1,876 protected resources and 11 completed PodVolumeBackups. The bundle does
+not embed the referenced Kopia packs or application-native object backups;
+those payloads were stored in the deleted DR server's root filesystem. A full
+PVC replay from this local archive is therefore impossible unless another copy
+of the original DR object tree is recovered. Local raw Loki and one SeaweedFS
+volume-server copy are retained only as partial forensic evidence, not a
+supported logical restore.
+
+The test DR helper now puts MinIO data on a dedicated campaign-labeled Hetzner
+volume with provider delete protection. Normal `down` removes only disposable
+compute, firewall, key, and DNS state; a later `up` safely reattaches the same
+filesystem. Destructive data removal requires the exact separate
+`PURGE <campaign> DR DATA` phrase. New backup manifests also record the source
+cluster UID, and replacement restore compares that UID rather than relying on
+Kubespray's frequently reused context name. Legacy bundles retain the stricter
+context-name compatibility gate.
+
 ## Source corrections produced by the campaign
 
 Live failures were retained as findings until their causes were fixed and the
