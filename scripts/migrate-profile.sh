@@ -26,6 +26,9 @@ BACKUP_RECIPIENT="${CLUSTER_BACKUP_AGE_RECIPIENT:-}"
 OPERATOR_STATE_ROOT="${PROFILE_MIGRATION_OPERATOR_STATE_ROOT:-}"
 SECRETS_FILE="${PROFILE_MIGRATION_SECRETS_FILE:-}"
 VAULT_INIT_FILE="${PROFILE_MIGRATION_VAULT_INIT_FILE:-}"
+SSH_KEY_PATH="${PROFILE_MIGRATION_SSH_KEY_PATH:-}"
+SSH_KNOWN_HOSTS_FILE="${PROFILE_MIGRATION_SSH_KNOWN_HOSTS_FILE:-}"
+K8S_API_LOCAL_PORT="${PROFILE_MIGRATION_K8S_API_LOCAL_PORT:-}"
 VOLUME_QUOTA_GIB="${PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB:-}"
 VOLUME_SAFETY_MARGIN_GIB="${PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB:-100}"
 VOLUME_QUOTA_EXPLICIT=false
@@ -33,9 +36,15 @@ VOLUME_SAFETY_MARGIN_EXPLICIT=false
 OPERATOR_STATE_ROOT_EXPLICIT=false
 SECRETS_FILE_EXPLICIT=false
 VAULT_INIT_FILE_EXPLICIT=false
+SSH_KEY_PATH_EXPLICIT=false
+SSH_KNOWN_HOSTS_FILE_EXPLICIT=false
+K8S_API_LOCAL_PORT_EXPLICIT=false
 [[ -z "$OPERATOR_STATE_ROOT" ]] || OPERATOR_STATE_ROOT_EXPLICIT=true
 [[ -z "$SECRETS_FILE" ]] || SECRETS_FILE_EXPLICIT=true
 [[ -z "$VAULT_INIT_FILE" ]] || VAULT_INIT_FILE_EXPLICIT=true
+[[ -z "$SSH_KEY_PATH" ]] || SSH_KEY_PATH_EXPLICIT=true
+[[ -z "$SSH_KNOWN_HOSTS_FILE" ]] || SSH_KNOWN_HOSTS_FILE_EXPLICIT=true
+[[ -z "$K8S_API_LOCAL_PORT" ]] || K8S_API_LOCAL_PORT_EXPLICIT=true
 [[ -z "$VOLUME_QUOTA_GIB" ]] || VOLUME_QUOTA_EXPLICIT=true
 [[ -z "${PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB+x}" ]] || VOLUME_SAFETY_MARGIN_EXPLICIT=true
 RESIZE_TIMEOUT="${PROFILE_MIGRATION_RESIZE_TIMEOUT:-900s}"
@@ -81,6 +90,9 @@ Options:
                          secrets and Vault init paths used by run_tier.sh
   --secrets-file FILE    Exact generated secrets file for this cluster
   --vault-init-file FILE Exact encrypted Vault init recovery file
+  --ssh-key-path FILE    Exact private SSH identity used for cluster nodes
+  --ssh-known-hosts FILE Project-isolated SSH host-key database
+  --api-port PORT        Controller-local Kubernetes API tunnel port
   --volume-quota-gib N   Explicit Hetzner account volume quota in GiB; required
                          for live execute because the provider has no quota API
   --volume-safety-margin-gib N
@@ -112,6 +124,9 @@ while [[ $# -gt 0 ]]; do
     --operator-state-root) OPERATOR_STATE_ROOT="$2"; OPERATOR_STATE_ROOT_EXPLICIT=true; shift 2 ;;
     --secrets-file) SECRETS_FILE="$2"; SECRETS_FILE_EXPLICIT=true; shift 2 ;;
     --vault-init-file) VAULT_INIT_FILE="$2"; VAULT_INIT_FILE_EXPLICIT=true; shift 2 ;;
+    --ssh-key-path) SSH_KEY_PATH="$2"; SSH_KEY_PATH_EXPLICIT=true; shift 2 ;;
+    --ssh-known-hosts) SSH_KNOWN_HOSTS_FILE="$2"; SSH_KNOWN_HOSTS_FILE_EXPLICIT=true; shift 2 ;;
+    --api-port) K8S_API_LOCAL_PORT="$2"; K8S_API_LOCAL_PORT_EXPLICIT=true; shift 2 ;;
     --volume-quota-gib) VOLUME_QUOTA_GIB="$2"; VOLUME_QUOTA_EXPLICIT=true; shift 2 ;;
     --volume-safety-margin-gib) VOLUME_SAFETY_MARGIN_GIB="$2"; VOLUME_SAFETY_MARGIN_EXPLICIT=true; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -153,6 +168,33 @@ absolute_existing_parent_path() {
   printf '%s/%s\n' "$parent" "$base"
 }
 
+resolve_ssh_runtime_paths() {
+  if [[ -z "$SSH_KEY_PATH" ]]; then
+    SSH_KEY_PATH=$(yq -r '.infrastructure.ssh_key_path // ""' "$CONFIG_FILE")
+  fi
+  if [[ -z "$SSH_KEY_PATH" ]]; then
+    SSH_KEY_PATH=$(yq -r '.ssh_key_path // "~/.ssh/id_ed25519"' "$PROJECT_ROOT/defaults/main.yml")
+  fi
+  [[ "${SSH_KEY_PATH#\~/}" == "$SSH_KEY_PATH" ]] \
+    || SSH_KEY_PATH="${HOME:?HOME is required to resolve the SSH identity}/${SSH_KEY_PATH:2}"
+  [[ "$SSH_KEY_PATH" == /* ]] || SSH_KEY_PATH="$(pwd)/${SSH_KEY_PATH}"
+
+  if [[ -z "$SSH_KNOWN_HOSTS_FILE" ]]; then
+    SSH_KNOWN_HOSTS_FILE="${HOME:?HOME is required for isolated SSH state}/.ssh/known_hosts-${PROJECT}"
+  fi
+  [[ "${SSH_KNOWN_HOSTS_FILE#\~/}" == "$SSH_KNOWN_HOSTS_FILE" ]] \
+    || SSH_KNOWN_HOSTS_FILE="${HOME}/${SSH_KNOWN_HOSTS_FILE:2}"
+  [[ "$SSH_KNOWN_HOSTS_FILE" == /* ]] || SSH_KNOWN_HOSTS_FILE="$(pwd)/${SSH_KNOWN_HOSTS_FILE}"
+
+  if [[ -z "$K8S_API_LOCAL_PORT" ]]; then
+    K8S_API_LOCAL_PORT=$(yq -r '.k8s_api_local_port // 16443' "$CONFIG_FILE")
+  fi
+  if [[ ! "$K8S_API_LOCAL_PORT" =~ ^[0-9]+$ ]] \
+    || (( K8S_API_LOCAL_PORT < 1024 || K8S_API_LOCAL_PORT > 65535 )); then
+    fail "--api-port must be an integer between 1024 and 65535"
+  fi
+}
+
 if [[ -n "$OPERATOR_STATE_ROOT" ]]; then
   [[ -d "$OPERATOR_STATE_ROOT" ]] || fail "operator-state root is missing: $OPERATOR_STATE_ROOT"
   OPERATOR_STATE_ROOT=$(cd "$OPERATOR_STATE_ROOT" && pwd)
@@ -169,6 +211,7 @@ fi
 [[ -n "$VAULT_INIT_FILE" ]] || VAULT_INIT_FILE="${PROJECT_ROOT}/playbooks/.vault-init-${PROJECT}.json"
 SECRETS_FILE=$(absolute_existing_parent_path "$SECRETS_FILE")
 VAULT_INIT_FILE=$(absolute_existing_parent_path "$VAULT_INIT_FILE")
+resolve_ssh_runtime_paths
 
 STATE_BASE="${PROFILE_MIGRATION_STATE_DIR:-${PROJECT_ROOT}/.migration-state}"
 POINTER_FILE="${STATE_BASE}/${PROJECT}-active-profile-migration"
@@ -248,11 +291,14 @@ SELECTION_RETENTION_FILE="${STATE_DIR}/selection-retention.tsv"
 CAPACITY_PLAN_FILE="${STATE_DIR}/volume-capacity-plan.json"
 
 restore_persisted_operator_state() {
-  local recorded_root recorded_secrets recorded_vault
+  local recorded_root recorded_secrets recorded_vault recorded_ssh_key recorded_known_hosts recorded_api_port
   [[ -f "$STATE_FILE" ]] || return 0
   recorded_root=$(jq -r '.operator_state.root // ""' "$STATE_FILE")
   recorded_secrets=$(jq -r '.operator_state.secrets_file // ""' "$STATE_FILE")
   recorded_vault=$(jq -r '.operator_state.vault_init_file // ""' "$STATE_FILE")
+  recorded_ssh_key=$(jq -r '.operator_state.ssh_key_path // ""' "$STATE_FILE")
+  recorded_known_hosts=$(jq -r '.operator_state.ssh_known_hosts_file // ""' "$STATE_FILE")
+  recorded_api_port=$(jq -r '.operator_state.k8s_api_local_port // ""' "$STATE_FILE")
 
   if [[ "$OPERATOR_STATE_ROOT_EXPLICIT" == true && -n "$recorded_root" && "$OPERATOR_STATE_ROOT" != "$recorded_root" ]]; then
     fail "--operator-state-root does not match the active migration state: $recorded_root"
@@ -263,10 +309,26 @@ restore_persisted_operator_state() {
   if [[ "$VAULT_INIT_FILE_EXPLICIT" == true && -n "$recorded_vault" && "$VAULT_INIT_FILE" != "$recorded_vault" ]]; then
     fail "--vault-init-file does not match the active migration state: $recorded_vault"
   fi
+  if [[ "$SSH_KEY_PATH_EXPLICIT" == true && -n "$recorded_ssh_key" && "$SSH_KEY_PATH" != "$recorded_ssh_key" ]]; then
+    fail "--ssh-key-path does not match the active migration state: $recorded_ssh_key"
+  fi
+  if [[ "$SSH_KNOWN_HOSTS_FILE_EXPLICIT" == true && -n "$recorded_known_hosts" && "$SSH_KNOWN_HOSTS_FILE" != "$recorded_known_hosts" ]]; then
+    fail "--ssh-known-hosts does not match the active migration state: $recorded_known_hosts"
+  fi
+  if [[ "$K8S_API_LOCAL_PORT_EXPLICIT" == true && -n "$recorded_api_port" && "$K8S_API_LOCAL_PORT" != "$recorded_api_port" ]]; then
+    fail "--api-port does not match the active migration state: $recorded_api_port"
+  fi
 
   [[ -z "$recorded_root" || "$OPERATOR_STATE_ROOT_EXPLICIT" == true ]] || OPERATOR_STATE_ROOT="$recorded_root"
   [[ -z "$recorded_secrets" || "$SECRETS_FILE_EXPLICIT" == true ]] || SECRETS_FILE="$recorded_secrets"
   [[ -z "$recorded_vault" || "$VAULT_INIT_FILE_EXPLICIT" == true ]] || VAULT_INIT_FILE="$recorded_vault"
+  [[ -z "$recorded_ssh_key" || "$SSH_KEY_PATH_EXPLICIT" == true ]] || SSH_KEY_PATH="$recorded_ssh_key"
+  [[ -z "$recorded_known_hosts" || "$SSH_KNOWN_HOSTS_FILE_EXPLICIT" == true ]] || SSH_KNOWN_HOSTS_FILE="$recorded_known_hosts"
+  [[ -z "$recorded_api_port" || "$K8S_API_LOCAL_PORT_EXPLICIT" == true ]] || K8S_API_LOCAL_PORT="$recorded_api_port"
+  if [[ ! "$K8S_API_LOCAL_PORT" =~ ^[0-9]+$ ]] \
+    || (( K8S_API_LOCAL_PORT < 1024 || K8S_API_LOCAL_PORT > 65535 )); then
+    fail "recorded Kubernetes API port is not between 1024 and 65535: $K8S_API_LOCAL_PORT"
+  fi
 }
 
 restore_persisted_volume_settings() {
@@ -291,6 +353,23 @@ validate_operator_state_inputs() {
     [[ -f "$VAULT_INIT_FILE" && -r "$VAULT_INIT_FILE" && -s "$VAULT_INIT_FILE" ]] \
       || fail "exact encrypted Vault init file is missing, unreadable, or empty: $VAULT_INIT_FILE"
   fi
+  [[ -f "$SSH_KEY_PATH" && ! -L "$SSH_KEY_PATH" && -r "$SSH_KEY_PATH" ]] \
+    || fail "exact private SSH identity is missing, unreadable, or a symlink: $SSH_KEY_PATH"
+  [[ -f "${SSH_KEY_PATH}.pub" && ! -L "${SSH_KEY_PATH}.pub" && -r "${SSH_KEY_PATH}.pub" ]] \
+    || fail "public SSH identity is missing, unreadable, or a symlink: ${SSH_KEY_PATH}.pub"
+  [[ -f "$SSH_KNOWN_HOSTS_FILE" && ! -L "$SSH_KNOWN_HOSTS_FILE" && -r "$SSH_KNOWN_HOSTS_FILE" ]] \
+    || fail "project SSH known-hosts file is missing, unreadable, or a symlink: $SSH_KNOWN_HOSTS_FILE"
+}
+
+persist_controller_runtime_state() {
+  local tmp="${STATE_FILE}.tmp.$$"
+  jq --arg sshKey "$SSH_KEY_PATH" --arg knownHosts "$SSH_KNOWN_HOSTS_FILE" \
+    --argjson apiPort "$K8S_API_LOCAL_PORT" \
+    '.operator_state.ssh_key_path=$sshKey |
+      .operator_state.ssh_known_hosts_file=$knownHosts |
+      .operator_state.k8s_api_local_port=$apiPort |
+      .updated_at=(now | todateiso8601)' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
 }
 
 validate_volume_capacity_settings() {
@@ -580,12 +659,18 @@ preserve_non_shrinking_storage() {
 
 generate_configs() {
   cp "$CONFIG_FILE" "$SOURCE_CONFIG"
+  set_yaml_string "$SOURCE_CONFIG" '.infrastructure.ssh_key_path' "$SSH_KEY_PATH"
+  K8S_API_LOCAL_PORT_VALUE="$K8S_API_LOCAL_PORT" yq -i \
+    '.k8s_api_local_port = (strenv(K8S_API_LOCAL_PORT_VALUE) | tonumber)' "$SOURCE_CONFIG"
   cp "$PROJECT_ROOT/platform-orchestrator/profiles/${TARGET_PROFILE}.yaml" "$TARGET_CONFIG"
   set_yaml_string "$TARGET_CONFIG" '.global.project' "$PROJECT"
   set_yaml_string "$TARGET_CONFIG" '.global.domain' "$DOMAIN"
   set_yaml_string "$TARGET_CONFIG" '.global.email' "$EMAIL"
   set_yaml_string "$TARGET_CONFIG" '.global.timezone' "$(yq -r '.global.timezone // "UTC"' "$SOURCE_CONFIG")"
   set_yaml_string "$TARGET_CONFIG" '.infrastructure.region' "$(yq -r '.infrastructure.region // "hel1"' "$SOURCE_CONFIG")"
+  set_yaml_string "$TARGET_CONFIG" '.infrastructure.ssh_key_path' "$SSH_KEY_PATH"
+  K8S_API_LOCAL_PORT_VALUE="$K8S_API_LOCAL_PORT" yq -i \
+    '.k8s_api_local_port = (strenv(K8S_API_LOCAL_PORT_VALUE) | tonumber)' "$TARGET_CONFIG"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.endpoint' "$DR_ENDPOINT"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.region' "$DR_REGION"
   set_yaml_string "$TARGET_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
@@ -742,7 +827,6 @@ if [[ "$COMMAND" == execute ]]; then
   archive_reusable_state
   generate_configs
   validate_generated_configs
-  [[ "$DRY_RUN" == true ]] || validate_operator_state_inputs
   if [[ "$DRY_RUN" == true ]]; then
     for stage in "${STAGES[@]}"; do dry "would run stage: $stage"; done
     exit 0
@@ -750,6 +834,7 @@ if [[ "$COMMAND" == execute ]]; then
   validate_volume_capacity_settings
   [[ $(jq -r '.offline_result' "$CAPACITY_PLAN_FILE") != impossible-even-empty-account ]] \
     || fail "estimated migration capacity plus safety margin exceeds the configured account quota even with zero existing volumes"
+  validate_operator_state_inputs
   if [[ "$FORCE" != true ]]; then
     printf 'Type MIGRATE to start %s -> %s migration for %s: ' "$SOURCE_PROFILE" "$TARGET_PROFILE" "$PROJECT"
     read -r confirmation; [[ "$confirmation" == MIGRATE ]] || fail "confirmation did not match MIGRATE"
@@ -758,6 +843,8 @@ if [[ "$COMMAND" == execute ]]; then
     --arg project "$PROJECT" --arg source "$SOURCE_PROFILE" --arg target "$TARGET_PROFILE" \
     --arg activeConfig "$CONFIG_FILE" --arg operatorStateRoot "$OPERATOR_STATE_ROOT" \
     --arg secretsFile "$SECRETS_FILE" --arg vaultInitFile "$VAULT_INIT_FILE" \
+    --arg sshKeyPath "$SSH_KEY_PATH" --arg sshKnownHostsFile "$SSH_KNOWN_HOSTS_FILE" \
+    --argjson k8sApiLocalPort "$K8S_API_LOCAL_PORT" \
     --argjson volumeQuota "$VOLUME_QUOTA_GIB" \
     --argjson volumeSafetyMargin "$VOLUME_SAFETY_MARGIN_GIB" \
     --argjson sourceCp "$(yq -r '.infrastructure.control_plane.count' "$SOURCE_CONFIG")" \
@@ -768,7 +855,9 @@ if [[ "$COMMAND" == execute ]]; then
       active_config:$activeConfig,status:"in_progress",
       created_at:(now | todateiso8601),last_completed_stage:null,
       operator_state:{root:$operatorStateRoot,secrets_file:$secretsFile,
-        vault_init_file:$vaultInitFile},
+        vault_init_file:$vaultInitFile,ssh_key_path:$sshKeyPath,
+        ssh_known_hosts_file:$sshKnownHostsFile,
+        k8s_api_local_port:$k8sApiLocalPort},
       volume_capacity:{quota_gib:$volumeQuota,safety_margin_gib:$volumeSafetyMargin,
         plan:$capacityPlan[0],status:"pending-live-check"},
       topology:{source:{control_planes:$sourceCp,workers:$sourceWorkers},target:{control_planes:$targetCp,workers:$targetWorkers}}}' > "$STATE_FILE"
@@ -785,8 +874,15 @@ fi
 
 if [[ "$DRY_RUN" != true ]]; then
   case "$COMMAND" in
-    resume) validate_operator_state_inputs; validate_volume_capacity_settings ;;
-    rollback|finalize) validate_operator_state_inputs ;;
+    resume)
+      validate_operator_state_inputs
+      persist_controller_runtime_state
+      validate_volume_capacity_settings
+      ;;
+    rollback|finalize)
+      validate_operator_state_inputs
+      persist_controller_runtime_state
+      ;;
   esac
 fi
 
@@ -794,6 +890,7 @@ run_playbook() {
   local config="$1"; shift
   ansible-playbook "$PROJECT_ROOT/playbooks/deploy_platform.yml" -e "@$config" \
     -e "project_name=$PROJECT" -e "domain=$DOMAIN" -e "email=$EMAIL" \
+    -e "ssh_key_path=$SSH_KEY_PATH" -e "k8s_api_local_port=$K8S_API_LOCAL_PORT" \
     -e "secrets_file=$SECRETS_FILE" -e "vault_init_output_file=$VAULT_INIT_FILE" "$@"
 }
 
@@ -845,16 +942,17 @@ check_platform_health() {
 }
 
 ssh_args_for_facts() {
-  local facts="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml" identity quoted_identity proxy_command
+  local facts="${PROJECT_ROOT}/playbooks/${PROJECT}-infra-facts.yml" quoted_identity quoted_known_hosts proxy_command
   [[ -f "$facts" ]] || fail "infrastructure facts are missing: $facts"
   BASTION=$(yq -r '.bastion_public_ip' "$facts")
-  identity=$(yq -r '.infrastructure.ssh_key_path // ""' "$CONFIG_FILE")
-  [[ -n "$identity" ]] || identity=$(yq -r '.ssh_key_path // ""' "$PROJECT_ROOT/defaults/main.yml")
-  [[ "${identity#\~/}" == "$identity" ]] || identity="${HOME:?HOME is required to resolve the SSH identity}/${identity:2}"
-  [[ -f "$identity" ]] || fail "SSH identity is missing: ${identity:-not configured}"
-  printf -v quoted_identity '%q' "$identity"
-  proxy_command="ssh -i ${quoted_identity} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -W %h:%p root@${BASTION}"
-  SSH_ARGS=(-i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o "ProxyCommand=${proxy_command}")
+  [[ -f "$SSH_KEY_PATH" ]] || fail "SSH identity is missing: ${SSH_KEY_PATH:-not configured}"
+  [[ -f "$SSH_KNOWN_HOSTS_FILE" ]] || fail "project SSH known-hosts file is missing: $SSH_KNOWN_HOSTS_FILE"
+  printf -v quoted_identity '%q' "$SSH_KEY_PATH"
+  printf -v quoted_known_hosts '%q' "$SSH_KNOWN_HOSTS_FILE"
+  proxy_command="ssh -i ${quoted_identity} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${quoted_known_hosts} -o ConnectTimeout=20 -W %h:%p root@${BASTION}"
+  SSH_ARGS=(-i "$SSH_KEY_PATH" -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE}" \
+    -o ConnectTimeout=20 -o "ProxyCommand=${proxy_command}")
 }
 
 check_etcd_health() {
@@ -966,6 +1064,7 @@ cluster_backup() {
   local config="$1"
   local args=(--config "$config" --secrets-file "$SECRETS_FILE" \
     --vault-init-file "$VAULT_INIT_FILE" \
+    --ssh-identity "$SSH_KEY_PATH" --ssh-known-hosts "$SSH_KNOWN_HOSTS_FILE" \
     --output-dir "$STATE_DIR/backups" --force)
   [[ -z "$BACKUP_RECIPIENT" ]] || args+=(--recipient "$BACKUP_RECIPIENT")
   "$SCRIPT_DIR/cluster-backup.sh" "${args[@]}" \

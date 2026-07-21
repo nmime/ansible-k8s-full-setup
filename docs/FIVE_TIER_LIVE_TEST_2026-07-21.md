@@ -177,15 +177,18 @@ Live `execute` refuses to begin without an explicit Hetzner account GiB quota,
 combines the estimate with account-wide live volume usage and a safety margin,
 persists provider volume IDs/sizes as its baseline, and rechecks quota,
 cluster-attributed growth, and plan drift on resume. Unknown storage quantities
-fail closed. The representative `minimal` → `production` source test estimated
-240 GiB source, 1,310 GiB target, 1,100 GiB target delta, 50 GiB scratch, and
-1,250 GiB minimum headroom including the 100 GiB margin.
+fail closed. The live `minimal` → `production` plan measured 110 GiB of
+source claims, 1,310 GiB of target claims, a 1,220 GiB target delta, and 50 GiB
+of migration scratch. It therefore requires 1,270 GiB of additional capacity
+plus the configured 100 GiB safety margin.
 
 This campaign proved the planning/state machine and quota boundary through the
-automated source suite. It did **not** execute a live all-to-all migration matrix
-or a live `minimal` → `production` cutover; those operations would mutate the
-already-tested source clusters and require additional temporary provider volume
-headroom.
+automated source suite and a live `minimal` → `production` execute invocation.
+That invocation persisted resumable schema-v4 state and failed closed in its
+first `preflight` checkpoint: 1,440 GiB was already in use, the migration still
+required 1,270 GiB, and the 100 GiB margin projected a 2,810 GiB peak against
+the explicit 1,500 GiB account quota. No migration checkpoint or cluster
+mutation ran. A live all-to-all cutover matrix was not attempted.
 
 ## Source corrections produced by the campaign
 
@@ -217,8 +220,9 @@ affected checks rerun. The resulting source changes include:
 - profile-aware load resources, secure Dragonfly authentication without a
   password argument, exact result accounting, HPA-aware restart detection, and
   final evidence-path preservation on failures;
-- persisted schema-v3 migration state, selection retention, volume-capacity
-  planning, backup gates, rollback, resumability, and finalization ordering.
+- persisted schema-v4 migration state, selection retention, volume-capacity
+  planning, explicit SSH identity/trust and controller API-port retention,
+  backup gates, rollback, resumability, and finalization ordering.
 
 ## Source validation
 
@@ -230,7 +234,9 @@ profile-pair plans and fail-closed volume-quota tests. `git diff --check` and th
 report's trailing-whitespace check also passed. After the restore/prefix fixes,
 the focused backup and cluster-DR lane was rerun: 244 tests passed across
 `tests/test_backup_restore.py` and
-`tests/test_cluster_disaster_recovery.py`.
+`tests/test_cluster_disaster_recovery.py`. After teardown ownership,
+credential-capture, SSH-state, and API-port hardening, the complete local gate
+passed all ten checks and all 1,343 collected tests.
 
 ## Explicit remaining boundaries and cleanup state
 
@@ -243,8 +249,10 @@ At the evidence cutoff:
 - No full Velero replay into a separately provisioned replacement cluster was
   executed. Such a drill must use a different Kubernetes context; the restore
   script rejects the recorded source context.
-- No live profile migration was executed; only all 20 ordered plan paths and
-  the fail-closed implementation contracts were tested.
+- A live `minimal` → `production` execute reached and correctly failed its
+  provider-capacity preflight before any checkpoint or mutation. All 20 ordered
+  plan paths were validated; no live cutover stage or all-to-all live matrix had
+  run at this evidence cutoff.
 - The isolated GitLab drill namespace was cleaned successfully. After the
   complete production bundle and GitLab archive drill, the disposable
   production GitLab namespace was explicitly removed to release test-account

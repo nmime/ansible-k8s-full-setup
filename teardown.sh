@@ -30,7 +30,6 @@ done
 [[ -n "${HCLOUD_TOKEN:-}" ]] || fail "HCLOUD_TOKEN is required"
 command -v hcloud >/dev/null || fail "hcloud CLI is required"
 
-PREFIX="${PROJECT}-"
 FAILURES=0
 PROJECT_VOLUME_IDS=()
 PROJECT_VOLUME_COUNT=0
@@ -66,16 +65,22 @@ printf '=== Tearing down Hetzner project resources: %s ===\n' "$PROJECT"
 
 # CSI volumes use provider-generated pvc-* names, so name-prefix matching is
 # insufficient. Capture the immutable IDs of every volume currently attached
-# to a project server before deleting those servers. Unrelated detached
-# volumes and volumes attached to non-project servers are never selected.
-project_server_ids=$(hcloud server list -o json \
-  | jq -c --arg prefix "$PREFIX" '[.[] | select(.name | startswith($prefix)) | .id]')
+# to an exactly project-labeled server before deleting those servers. Project
+# names can overlap (for example, "medium" and "medium-optimized"), therefore
+# neither servers nor volumes may be selected by a project-name prefix here.
+# Unrelated detached volumes and volumes attached to non-project servers are
+# never selected.
+project_servers_json=$(hcloud server list -o json \
+  | jq -c --arg project "$PROJECT" \
+    '[.[] | select(.labels.project == $project) | {id, name}]')
+project_server_ids=$(jq -c '[.[].id]' <<<"$project_servers_json")
+project_server_names=$(jq -c '[.[].name]' <<<"$project_servers_json")
 while IFS= read -r volume_id; do
   [[ -n "$volume_id" ]] || continue
   add_project_volume_id "$volume_id"
 done < <(hcloud volume list -o json \
-  | jq -r --argjson server_ids "$project_server_ids" --arg prefix "$PREFIX" \
-    '.[] | select((.server != null and (.server as $server | $server_ids | index($server))) or (.name | startswith($prefix))) | .id' \
+  | jq -r --arg project "$PROJECT" --argjson server_ids "$project_server_ids" \
+    '.[] | select(.labels.project == $project or (.server != null and (.server as $server | $server_ids | index($server)))) | .id' \
   | sort -u)
 
 # A retained PVC may already be detached while its PV still records the exact
@@ -83,8 +88,8 @@ done < <(hcloud volume list -o json \
 # context belongs to this project; this prevents an unrelated kubeconfig from
 # broadening teardown scope.
 if command -v kubectl >/dev/null 2>&1 && nodes_json=$(kubectl get nodes -o json 2>/dev/null); then
-  matching_context=$(jq -r --arg prefix "$PREFIX" \
-    '(.items | length) > 0 and all(.items[]; .metadata.name | startswith($prefix))' \
+  matching_context=$(jq -r --argjson server_names "$project_server_names" \
+    '(.items | length) > 0 and all(.items[]; .metadata.name as $name | $server_names | index($name) != null)' \
     <<<"$nodes_json")
   if [[ "$matching_context" == true ]]; then
     while IFS= read -r volume_id; do

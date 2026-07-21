@@ -189,12 +189,25 @@ finalize reconcile:
 ```bash
 ./scripts/migrate-profile.sh --target medium execute \
   --operator-state-root /state/cluster-a \
+  --ssh-key-path /home/operator/.ssh/id_ed25519 \
+  --ssh-known-hosts /state/controller-home/.ssh/known_hosts-cluster-a \
+  --api-port 16444 \
   --volume-quota-gib 1500 --volume-safety-margin-gib 100
 ```
 
 Without that option, migration retains the ordinary single-checkout defaults
 in `playbooks/`. `--secrets-file` and `--vault-init-file` support layouts where
 the two files are not under one operator-state root.
+
+Multi-controller runs must retain their isolated `HOME` and per-project SSH
+host-key database. If the private key is outside that `HOME`, pass its absolute
+path with `--ssh-key-path` and pass the existing project host-key file with
+`--ssh-known-hosts`. Both paths are persisted with the migration and explicit
+resume/finalize values must match, preventing a reused IP from being trusted
+through another cluster's shared `known_hosts` file.
+Pass the already assigned controller tunnel port with `--api-port` for any
+cluster not using `16443`. Migration persists it, embeds it in every generated
+config, passes it to reconciliation, and rejects resume/finalize drift.
 
 Use the exact account volume quota displayed by Hetzner; its API has no quota
 field, so live migration refuses to infer one. The offline plan records

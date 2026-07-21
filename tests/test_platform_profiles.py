@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -653,10 +654,116 @@ class TestResourceTierConsumers:
         teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
         assert "PROJECT_VOLUME_IDS" in teardown
         assert "project_server_ids" in teardown
+        server_selector = teardown.split("project_servers_json=", 1)[1].split(
+            "project_server_ids=", 1
+        )[0]
+        assert '--arg project "$PROJECT"' in server_selector
+        assert ".labels.project == $project" in server_selector
+        assert "startswith($prefix)" not in server_selector
+        server_filter = next(
+            line.split("'", 2)[1]
+            for line in server_selector.splitlines()
+            if ".labels.project == $project" in line
+        )
+        overlapping_projects = [
+            {
+                "id": 101,
+                "name": "load5-medium-master-1",
+                "labels": {"project": "load5-medium"},
+            },
+            {
+                "id": 102,
+                "name": "load5-medium-optimized-master-1",
+                "labels": {"project": "load5-medium-optimized"},
+            },
+        ]
+        selected_servers = subprocess.run(
+            ["jq", "-c", "--arg", "project", "load5-medium", server_filter],
+            input=json.dumps(overlapping_projects),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(selected_servers.stdout) == [
+            {"id": 101, "name": "load5-medium-master-1"}
+        ]
+        assert "project_server_names=$(jq -c '[.[].name]'" in teardown
+        volume_selector = teardown.split(
+            "done < <(hcloud volume list -o json", 1
+        )[1].split("| sort -u)", 1)[0]
         assert ".server as $server" in teardown
-        assert '--arg prefix "$PREFIX"' in teardown
+        assert '--argjson server_ids "$project_server_ids"' in volume_selector
+        assert "startswith($prefix)" not in volume_selector
+        assert ".name | startswith" not in volume_selector
+        volume_filter = next(
+            line.split("'", 2)[1]
+            for line in volume_selector.splitlines()
+            if ".server as $server" in line
+        )
+        overlapping_volumes = [
+            {"id": 1001, "server": 101},
+            {"id": 1002, "server": 102},
+            {
+                "id": 1003,
+                "server": None,
+                "labels": {"project": "load5-medium"},
+            },
+            {
+                "id": 1004,
+                "server": None,
+                "labels": {"project": "load5-medium-optimized"},
+            },
+        ]
+        selected_volumes = subprocess.run(
+            [
+                "jq",
+                "-r",
+                "--arg",
+                "project",
+                "load5-medium",
+                "--argjson",
+                "server_ids",
+                "[101]",
+                volume_filter,
+            ],
+            input=json.dumps(overlapping_volumes),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert selected_volumes.stdout.splitlines() == ["1001", "1003"]
         assert "add_project_volume_id" in teardown
-        assert 'all(.items[]; .metadata.name | startswith($prefix))' in teardown
+        assert '--argjson server_names "$project_server_names"' in teardown
+        assert "$server_names | index($name) != null" in teardown
+        assert 'all(.items[]; .metadata.name | startswith($prefix))' not in teardown
+        context_selector = teardown.split("matching_context=$(jq", 1)[1].split(
+            '<<<"$nodes_json")', 1
+        )[0]
+        context_filter = next(
+            line.split("'", 2)[1]
+            for line in context_selector.splitlines()
+            if "$server_names | index($name)" in line
+        )
+        wrong_context = {
+            "items": [
+                {"metadata": {"name": "load5-medium-optimized-master-1"}}
+            ]
+        }
+        context_result = subprocess.run(
+            [
+                "jq",
+                "-r",
+                "--argjson",
+                "server_names",
+                '["load5-medium-master-1"]',
+                context_filter,
+            ],
+            input=json.dumps(wrong_context),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert context_result.stdout.strip() == "false"
         assert '.spec.csi.driver == "csi.hetzner.cloud"' in teardown
         assert ".spec.csi.volumeHandle" in teardown
         assert 'hcloud volume delete "$volume_id"' in teardown

@@ -37,7 +37,14 @@ while IFS= read -r -d '' path; do
   }
   case "$path" in
     .env|.env.*|*/.env|*/.env.*|*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|\
-    id_rsa|*/id_rsa|id_rsa.*|*/id_rsa.*|id_ed25519|*/id_ed25519|\
+    .npmrc|*/.npmrc|.pypirc|*/.pypirc|.netrc|*/.netrc|\
+    .aws/credentials|*/.aws/credentials|.docker/config.json|*/.docker/config.json|\
+    .kube/config|*/.kube/config|credentials|*/credentials|\
+    credentials.json|*/credentials.json|*-credentials.json|*_credentials.json|\
+    *service-account.json|*service_account.json|\
+    *.tfvars|*.tfvars.json|*.ovpn|\
+    id_rsa|*/id_rsa|id_rsa.*|*/id_rsa.*|id_dsa|*/id_dsa|id_dsa.*|*/id_dsa.*|\
+    id_ecdsa|*/id_ecdsa|id_ecdsa.*|*/id_ecdsa.*|id_ed25519|*/id_ed25519|\
     id_ed25519.*|*/id_ed25519.*|*kubeconfig*|*vault-password*|\
     playbooks/.platform-secrets.yml|playbooks/.vault-init-*.json)
       echo "Refusing to capture credential-like untracked file: $path" >&2

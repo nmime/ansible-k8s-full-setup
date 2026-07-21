@@ -88,6 +88,100 @@ def test_repository_capture_recovers_index_worktree_and_safe_untracked_files(tmp
     assert "credential-like untracked file" in rejected.stderr
 
 
+@pytest.mark.parametrize(
+    "credential_path",
+    (
+        ".npmrc",
+        "config/.pypirc",
+        "home/.netrc",
+        ".aws/credentials",
+        "user/.docker/config.json",
+        "operator/.kube/config",
+        "secrets/credentials",
+        "config/credentials.json",
+        "gcp/application_default_credentials.json",
+        "gcp/build-service-account.json",
+        "gcp/service_account.json",
+        "terraform/production.tfvars",
+        "terraform/production.tfvars.json",
+        "vpn/client.ovpn",
+        "ssh/id_dsa",
+        "ssh/id_ecdsa.backup",
+    ),
+)
+def test_repository_capture_rejects_nested_credential_paths(tmp_path, credential_path):
+    repository = tmp_path / "repository"
+    destination = tmp_path / "capture"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Test"], check=True
+    )
+    (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "fixture"], check=True
+    )
+
+    credential = repository / credential_path
+    credential.parent.mkdir(parents=True, exist_ok=True)
+    credential.write_text("credential material\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(CAPTURE_REPOSITORY), str(repository), str(destination)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert f"credential-like untracked file: {credential_path}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "safe_path",
+    (
+        "docs/npmrc.example",
+        "config/.npmrc.example",
+        "config/credentials.example.json",
+        "terraform/production.tfvars.example",
+        "vpn/client.ovpn.example",
+        "docs/service-account.md",
+    ),
+)
+def test_repository_capture_accepts_credential_name_lookalikes(tmp_path, safe_path):
+    repository = tmp_path / "repository"
+    destination = tmp_path / "capture"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Test"], check=True
+    )
+    (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "fixture"], check=True
+    )
+
+    safe_file = repository / safe_path
+    safe_file.parent.mkdir(parents=True, exist_ok=True)
+    safe_file.write_text("placeholder documentation\n", encoding="utf-8")
+    result = subprocess.run(
+        [str(CAPTURE_REPOSITORY), str(repository), str(destination)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (destination / "repository-untracked-files.txt").read_text().splitlines() == [
+        safe_path
+    ]
+
+
 def test_cluster_manifest_records_repository_recovery_checksums():
     content = BACKUP.read_text(encoding="utf-8")
     assert '"$SCRIPT_DIR/capture-repository-state.sh"' in content
@@ -805,6 +899,8 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     env["PROFILE_MIGRATION_STATE_DIR"] = str(tmp_path / "state")
     env["PROFILE_MIGRATION_HCLOUD_VOLUME_QUOTA_GIB"] = ""
     env["PROFILE_MIGRATION_VOLUME_SAFETY_MARGIN_GIB"] = "100"
+    ssh_key = tmp_path / "id_ed25519"
+    known_hosts = tmp_path / "known_hosts-offline-plan"
     result = subprocess.run(
         [
             "bash",
@@ -815,6 +911,12 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
             "https://s3.external.example",
             "--dr-bucket",
             "cluster-dr",
+            "--ssh-key-path",
+            str(ssh_key),
+            "--ssh-known-hosts",
+            str(known_hosts),
+            "--api-port",
+            "16444",
             "--target",
             "production",
             "plan",
@@ -832,6 +934,14 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     assert target["platform_profile"] == "production"
     assert target["global"]["domain"] == "cluster.example"
     assert target["backup"]["disaster_recovery"]["bucket"] == "cluster-dr"
+    assert target["infrastructure"]["ssh_key_path"] == str(ssh_key)
+    assert target["k8s_api_local_port"] == 16444
+    assert yaml.safe_load((state / "source-platform.yaml").read_text())["infrastructure"][
+        "ssh_key_path"
+    ] == str(ssh_key)
+    assert yaml.safe_load((state / "source-platform.yaml").read_text())[
+        "k8s_api_local_port"
+    ] == 16444
     assert expansion["platform_profile"] == "custom"
     assert expansion["tier"] == "minimal"
     assert expansion["infrastructure"]["control_plane"]["count"] == 3
@@ -850,6 +960,131 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     assert capacity["minimum_required_headroom_gib"] == 1250
     assert capacity["offline_result"] == "quota-required-before-execute"
     assert "Required additional capacity before safety margin: 1150 GiB" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("option", "field", "message"),
+    (
+        ("--ssh-key-path", "ssh_key_path", "--ssh-key-path does not match"),
+        (
+            "--ssh-known-hosts",
+            "ssh_known_hosts_file",
+            "--ssh-known-hosts does not match",
+        ),
+    ),
+)
+def test_migration_rejects_explicit_ssh_state_drift(tmp_path, option, field, message):
+    config = tmp_path / "platform.yaml"
+    profile = yaml.safe_load(
+        (ROOT / "platform-orchestrator" / "profiles" / "minimal.yaml").read_text()
+    )
+    profile["global"].update(
+        {"project": "ssh-state", "domain": "cluster.example", "email": "ops@example.com"}
+    )
+    config.write_text(yaml.safe_dump(profile), encoding="utf-8")
+    state_base = tmp_path / "state"
+    state = state_base / "ssh-state-minimal-to-production"
+    state.mkdir(parents=True)
+    recorded = str(tmp_path / f"recorded-{field}")
+    (state / "state.json").write_text(
+        json.dumps(
+            {
+                "project": "ssh-state",
+                "source_profile": "minimal",
+                "target_profile": "production",
+                "operator_state": {field: recorded},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_base / "ssh-state-active-profile-migration").write_text(
+        str(state), encoding="utf-8"
+    )
+    env = os.environ.copy()
+    env["PROFILE_MIGRATION_STATE_DIR"] = str(state_base)
+    result = subprocess.run(
+        [
+            "bash",
+            str(MIGRATE),
+            "--config",
+            str(config),
+            option,
+            str(tmp_path / f"different-{field}"),
+            "status",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+def test_migration_rejects_explicit_api_port_state_drift(tmp_path):
+    config = tmp_path / "platform.yaml"
+    profile = yaml.safe_load(
+        (ROOT / "platform-orchestrator" / "profiles" / "minimal.yaml").read_text()
+    )
+    profile["global"].update(
+        {"project": "api-state", "domain": "cluster.example", "email": "ops@example.com"}
+    )
+    config.write_text(yaml.safe_dump(profile), encoding="utf-8")
+    state_base = tmp_path / "state"
+    state = state_base / "api-state-minimal-to-production"
+    state.mkdir(parents=True)
+    (state / "state.json").write_text(
+        json.dumps(
+            {
+                "project": "api-state",
+                "source_profile": "minimal",
+                "target_profile": "production",
+                "operator_state": {"k8s_api_local_port": 16444},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_base / "api-state-active-profile-migration").write_text(
+        str(state), encoding="utf-8"
+    )
+    env = os.environ.copy()
+    env["PROFILE_MIGRATION_STATE_DIR"] = str(state_base)
+    result = subprocess.run(
+        [
+            "bash",
+            str(MIGRATE),
+            "--config",
+            str(config),
+            "--api-port",
+            "16445",
+            "status",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "--api-port does not match" in result.stderr
+
+
+def test_migration_uses_persisted_identity_and_project_known_hosts_everywhere():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "--ssh-key-path FILE" in content
+    assert "--ssh-known-hosts FILE" in content
+    assert "--api-port PORT" in content
+    assert ".operator_state.ssh_key_path=$sshKey" in content
+    assert ".operator_state.ssh_known_hosts_file=$knownHosts" in content
+    assert ".operator_state.k8s_api_local_port=$apiPort" in content
+    assert '-e "ssh_key_path=$SSH_KEY_PATH"' in content
+    assert '-e "k8s_api_local_port=$K8S_API_LOCAL_PORT"' in content
+    assert '--ssh-identity "$SSH_KEY_PATH" --ssh-known-hosts "$SSH_KNOWN_HOSTS_FILE"' in content
+    assert '-o "UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE}"' in content
+    assert "UserKnownHostsFile=${quoted_known_hosts}" in content
+    assert 'set_yaml_string "$SOURCE_CONFIG"' in content
+    assert 'set_yaml_string "$TARGET_CONFIG"' in content
 
 
 PROFILES = ("minimal", "small", "medium", "medium-optimized", "production")
