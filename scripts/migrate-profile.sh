@@ -1050,6 +1050,26 @@ wait_for_server_settled() {
   fail "Hetzner server $node did not reach a stable running/off state within ${HCLOUD_STATE_TIMEOUT}s"
 }
 
+ensure_server_stopped() {
+  local node="$1" status deadline
+  status=$(wait_for_server_settled "$node")
+  if [[ "$status" == running ]]; then
+    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server poweroff "$node"; then
+      status=$(server_status "$node" 2>/dev/null || echo unknown)
+      [[ "$status" == stopping || "$status" == off ]] \
+        || fail "failed to power off $node (provider status: $status)"
+      warn "Hetzner accepted the power-off for $node but the local CLI did not finish cleanly; continuing from provider state"
+    fi
+  fi
+  deadline=$((SECONDS + HCLOUD_STATE_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    [[ $(server_status "$node" 2>/dev/null || echo unknown) == off ]] && return 0
+    sleep 15
+  done
+  status=$(server_status "$node" 2>/dev/null || echo unknown)
+  fail "Hetzner server $node did not become off within ${HCLOUD_STATE_TIMEOUT}s (provider status: $status)"
+}
+
 ensure_server_running() {
   local node="$1" status deadline
   status=$(wait_for_server_settled "$node")
@@ -1454,7 +1474,7 @@ unseal_vault_members() {
 }
 
 resize_node() {
-  local node="$1" target_type="$2" role="$3" current_type current_disk target_disk placement target_placement=""
+  local node="$1" target_type="$2" role="$3" server_json current_type current_disk target_disk placement target_placement=""
   server_json=$(hcloud server describe "$node" -o json)
   current_type=$(jq -r '.server_type.name' <<<"$server_json")
   current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
@@ -1479,22 +1499,28 @@ resize_node() {
   maintain_node_root_disk "$node"
   [[ "$role" != master ]] || check_etcd_health "$node"
   kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
-  hcloud server poweroff "$node"
+  # Power operations are asynchronous. Placement-group reconciliation can also
+  # leave a server running, so provider status—not CLI completion—is the gate.
+  ensure_server_stopped "$node"
   if [[ -n "$target_placement" && "$placement" != "$target_placement" ]]; then
     [[ -z "$placement" ]] || hcloud server remove-from-placement-group "$node"
     hcloud server add-to-placement-group --placement-group "$target_placement" "$node"
   elif [[ -z "$target_placement" && -n "$placement" ]]; then
     hcloud server remove-from-placement-group "$node"
   fi
-  if { [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); } && \
-    ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server change-type "$node" "$target_type"; then
-    server_json=$(hcloud server describe "$node" -o json)
-    current_type=$(jq -r '.server_type.name' <<<"$server_json")
-    current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
-    if [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); then
-      fail "failed to resize $node to type=$target_type disk>=${target_disk}GB"
+  if [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); then
+    # Recheck after placement mutations: Hetzner may return the server to a
+    # running state, and change-type rejects anything except provider state off.
+    ensure_server_stopped "$node"
+    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server change-type "$node" "$target_type"; then
+      server_json=$(hcloud server describe "$node" -o json)
+      current_type=$(jq -r '.server_type.name' <<<"$server_json")
+      current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
+      if [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); then
+        fail "failed to resize $node to type=$target_type disk>=${target_disk}GB"
+      fi
+      warn "Hetzner accepted the type change for $node but the local CLI did not finish cleanly; continuing from provider state"
     fi
-    warn "Hetzner accepted the type change for $node but the local CLI did not finish cleanly; continuing from provider state"
   fi
   ensure_server_running "$node"
   wait_for_api_ready
