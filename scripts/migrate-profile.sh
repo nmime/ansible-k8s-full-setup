@@ -1690,14 +1690,46 @@ resize_node() {
 }
 
 stage_resize() {
-  local workers masters cp_type worker_type i
+  local workers masters cp_type worker_type i marker resume_node="" found=false
+  local -a nodes=() node_types=() node_roles=() in_progress_markers=()
   workers=$(yq -r '.infrastructure.workers.count' "$TARGET_CONFIG")
   masters=$(yq -r '.infrastructure.control_plane.count' "$TARGET_CONFIG")
   worker_type=$(yq -r '.infrastructure.workers.type' "$TARGET_CONFIG")
   cp_type=$(yq -r '.infrastructure.control_plane.type' "$TARGET_CONFIG")
-  for ((i=1; i<=workers; i++)); do resize_node "${PROJECT}-worker-${i}" "$worker_type" worker; done
-  for ((i=2; i<=masters; i++)); do resize_node "${PROJECT}-master-${i}" "$cp_type" master; done
-  resize_node "${PROJECT}-master-1" "$cp_type" master
+  for ((i=1; i<=workers; i++)); do
+    nodes+=("${PROJECT}-worker-${i}"); node_types+=("$worker_type"); node_roles+=(worker)
+  done
+  for ((i=2; i<=masters; i++)); do
+    nodes+=("${PROJECT}-master-${i}"); node_types+=("$cp_type"); node_roles+=(master)
+  done
+  nodes+=("${PROJECT}-master-1"); node_types+=("$cp_type"); node_roles+=(master)
+
+  mkdir -p "$STATE_DIR/resize-nodes"
+  while IFS= read -r marker; do
+    [[ -n "$marker" ]] && in_progress_markers+=("$marker")
+  done < <(find "$STATE_DIR/resize-nodes" -maxdepth 1 -type f -name '*.in-progress' -print | sort)
+  ((${#in_progress_markers[@]} <= 1)) \
+    || fail "multiple resize nodes are marked in progress; refusing concurrent recovery"
+  if ((${#in_progress_markers[@]} == 1)); then
+    marker="${in_progress_markers[0]}"
+    resume_node=$(basename "$marker" .in-progress)
+    # Recover the exact interrupted node before any completed/earlier node can
+    # run a global health gate that necessarily sees this node offline.
+    for i in "${!nodes[@]}"; do
+      if [[ "${nodes[$i]}" == "$resume_node" ]]; then
+        resize_node "${nodes[$i]}" "${node_types[$i]}" "${node_roles[$i]}"
+        found=true
+        break
+      fi
+    done
+    [[ "$found" == true ]] \
+      || fail "resize marker references unknown node: $resume_node"
+  fi
+
+  for i in "${!nodes[@]}"; do
+    [[ "${nodes[$i]}" == "$resume_node" ]] && continue
+    resize_node "${nodes[$i]}" "${node_types[$i]}" "${node_roles[$i]}"
+  done
 }
 
 control_plane_nodes() {
