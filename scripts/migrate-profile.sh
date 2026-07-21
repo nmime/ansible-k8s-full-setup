@@ -1610,7 +1610,7 @@ unseal_vault_members() {
 
 resize_node() {
   local node="$1" target_type="$2" role="$3" server_json current_type current_disk target_disk placement target_placement=""
-  local node_state_dir="$STATE_DIR/resize-nodes" in_progress done_marker node_unschedulable
+  local node_state_dir="$STATE_DIR/resize-nodes" in_progress done_marker node_unschedulable interrupted=false
   mkdir -p "$node_state_dir"
   in_progress="${node_state_dir}/${node}.in-progress"
   done_marker="${node_state_dir}/${node}.done"
@@ -1625,6 +1625,7 @@ resize_node() {
     # The cordon is also an upgrade-safe recovery signal for migrations that
     # were interrupted before per-node markers existed. Finish this node and
     # require the full post-gate before considering any subsequent drain.
+    interrupted=true
     log "resuming interrupted one-node resize for $node"
   else
     # A stage-level checkpoint is intentionally not enough here: on resume,
@@ -1648,12 +1649,19 @@ resize_node() {
     log "$node already converged at type=$target_type"
     return 0
   fi
-  wait_for_api_ready
-  unseal_vault_members
-  maintain_node_root_disk "$node"
-  [[ "$role" != master ]] || check_etcd_health "$node"
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$in_progress"
-  kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
+  if [[ "$interrupted" == false ]]; then
+    wait_for_api_ready
+    unseal_vault_members
+    maintain_node_root_disk "$node"
+    [[ "$role" != master ]] || check_etcd_health "$node"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$in_progress"
+    kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
+  else
+    # The durable marker is written only after all pre-drain checks and before
+    # kubectl drain. The node may already be off, so SSH/API work against that
+    # node must wait until provider reconciliation has started it again.
+    log "skipping completed pre-drain work for interrupted node $node"
+  fi
   # Power operations are asynchronous. Placement-group reconciliation can also
   # leave a server running, so provider status—not CLI completion—is the gate.
   ensure_server_stopped "$node"

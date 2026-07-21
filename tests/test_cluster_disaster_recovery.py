@@ -1796,6 +1796,23 @@ def test_resize_stage_recovers_exact_in_progress_node_before_ordered_loop():
     assert '[[ "${nodes[$i]}" == "$resume_node" ]] && continue' in stage
 
 
+def test_interrupted_resize_skips_pre_drain_ssh_until_server_is_recovered():
+    content = MIGRATE.read_text(encoding="utf-8")
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+    interrupted = resize.split('if [[ "$interrupted" == false ]]', 1)[1].split(
+        "ensure_server_stopped", 1
+    )[0]
+
+    assert "interrupted=false" in resize
+    assert "interrupted=true" in resize
+    assert 'maintain_node_root_disk "$node"' in interrupted
+    assert 'kubectl drain "$node"' in interrupted
+    assert "skipping completed pre-drain work for interrupted node" in interrupted
+    assert resize.index('if [[ "$interrupted" == false ]]') < resize.index(
+        'maintain_node_root_disk "$node"', resize.index('if [[ "$interrupted" == false ]]')
+    )
+
+
 def test_vmctl_migration_job_uses_restricted_pod_security():
     content = MIGRATE.read_text(encoding="utf-8")
     vmctl_job = content.split("run_vmctl_migration()", 1)[1].split(
