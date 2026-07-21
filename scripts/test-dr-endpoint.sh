@@ -200,6 +200,11 @@ SERVER_IP=$(hcloud server describe "$PROJECT" -o json | jq -r '.public_net.ipv4.
 [[ "$SERVER_IP" =~ ^[0-9.]+$ ]] || fail "server IPv4 was not assigned"
 hcloud zone rrset set-records --record "$SERVER_IP" "$DNS_ZONE" "$PROJECT" A >/dev/null
 
+# Hetzner can reassign the same public address after `down`. The server above
+# was just created through the authenticated provider API, so discard only that
+# exact address's obsolete key before accepting the new instance key.
+ssh-keygen -R "$SERVER_IP" -f "$KNOWN_HOSTS_FILE" >/dev/null 2>&1 || true
+
 for _ in $(seq 1 60); do
   if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" -o ConnectTimeout=5 "root@${SERVER_IP}" true 2>/dev/null; then break; fi
   sleep 5
