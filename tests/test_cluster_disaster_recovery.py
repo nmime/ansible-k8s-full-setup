@@ -1780,6 +1780,22 @@ def test_migration_retries_transient_provider_capacity_before_failing():
     assert 'change_server_type_with_retry "$node" "$target_type" "$target_disk"' in resize
 
 
+def test_resize_stage_recovers_exact_in_progress_node_before_ordered_loop():
+    content = MIGRATE.read_text(encoding="utf-8")
+    stage = content.split("stage_resize()", 1)[1].split(
+        "control_plane_nodes()", 1
+    )[0]
+
+    assert "*.in-progress" in stage
+    assert "multiple resize nodes are marked in progress" in stage
+    assert "resize marker references unknown node" in stage
+    assert 'resume_node=$(basename "$marker" .in-progress)' in stage
+    assert stage.index('resize_node "${nodes[$i]}"') < stage.rindex(
+        'for i in "${!nodes[@]}"'
+    )
+    assert '[[ "${nodes[$i]}" == "$resume_node" ]] && continue' in stage
+
+
 def test_vmctl_migration_job_uses_restricted_pod_security():
     content = MIGRATE.read_text(encoding="utf-8")
     vmctl_job = content.split("run_vmctl_migration()", 1)[1].split(
