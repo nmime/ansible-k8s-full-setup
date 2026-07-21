@@ -191,6 +191,9 @@ conflicting explicit path:
 ./platform-orchestrator/platform.sh migrate execute \
   --target production \
   --operator-state-root /state/cluster-a \
+  --ssh-key-path /home/operator/.ssh/id_ed25519 \
+  --ssh-known-hosts /state/controller-home/.ssh/known_hosts-cluster-a \
+  --api-port 16444 \
   --dr-endpoint "$BACKUP_DR_ENDPOINT" \
   --dr-bucket "$BACKUP_DR_BUCKET" \
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
@@ -202,6 +205,18 @@ instead when those files are stored separately. A mutating migration fails
 closed if either exact recovery input is missing or empty. If none of these
 options is supplied, the ordinary single-checkout files under `playbooks/`
 remain the default.
+
+The controller also resolves and persists the exact private SSH identity and
+project-specific known-hosts file. Pass `--ssh-key-path` when an isolated
+controller `HOME` does not contain the deployment key, and keep
+`--ssh-known-hosts` inside that controller's state rather than falling back to
+a shared `~/.ssh/known_hosts`. Resume, rollback, and finalize reject explicit
+paths that differ from the recorded values. The private key, its `.pub` file,
+and the known-hosts file must be regular readable files; symlinks fail closed.
+Pass the cluster's existing controller-local tunnel port with `--api-port` when
+it is not the default `16443`. The port is written to every generated migration
+config and persisted in state; later commands reject an explicit mismatch so a
+resume cannot replace or collide with another controller's API tunnel.
 
 Hetzner's API returns authoritative volume IDs and sizes but does not expose
 the account's GiB quota. Therefore live `execute` requires the exact account
