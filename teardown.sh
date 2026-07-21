@@ -181,7 +181,10 @@ if [[ -f "$TUNNEL_PID_FILE" ]]; then
   if [[ -n "$tunnel_pid" && "$tunnel_pid" =~ ^[0-9]+$ ]] && kill -0 "$tunnel_pid" 2>/dev/null; then
     log "Stopping managed Kubernetes API tunnel: $tunnel_pid"
     if kill "$tunnel_pid"; then
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
+      # The supervisor may be inside its 15-second health-check sleep. Bash
+      # defers the TERM trap until that foreground sleep returns, so allow one
+      # complete interval plus scheduling headroom before declaring failure.
+      for ((attempt = 0; attempt < 100; attempt++)); do
         kill -0 "$tunnel_pid" 2>/dev/null || break
         sleep 0.2
       done
