@@ -769,6 +769,17 @@ class TestResourceTierConsumers:
         assert 'hcloud volume delete "$volume_id"' in teardown
         assert 'hcloud volume describe "$volume_id"' in teardown
 
+    def test_teardown_waits_for_tunnel_supervisor_term_trap(self):
+        teardown = (REPO_ROOT / "teardown.sh").read_text(encoding="utf-8")
+        supervisor = (
+            REPO_ROOT / "scripts" / "kube-api-tunnel-supervisor.sh"
+        ).read_text(encoding="utf-8")
+
+        assert "CHECK_INTERVAL=15" in supervisor
+        assert "trap 'stop_child; exit 0' INT TERM EXIT" in supervisor
+        assert "attempt < 100" in teardown
+        assert "sleep 0.2" in teardown
+
     def test_hcloud_ccm_has_single_ownership_contract(self):
         tasks = (
             REPO_ROOT / "roles" / "k8s-cluster-management" / "tasks" / "main.yml"
