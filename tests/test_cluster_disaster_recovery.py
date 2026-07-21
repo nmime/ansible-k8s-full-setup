@@ -1761,6 +1761,25 @@ ensure_server_stopped worker-1
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_migration_retries_transient_provider_capacity_before_failing():
+    content = MIGRATE.read_text(encoding="utf-8")
+    helper = "change_server_type_with_retry()" + content.split(
+        "change_server_type_with_retry()", 1
+    )[1].split("ensure_server_running()", 1)[0]
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+
+    assert "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS" in content
+    assert "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS" in content
+    assert 'ensure_server_stopped "$node"' in helper
+    assert 'hcloud server change-type "$node" "$target_type"' in helper
+    assert helper.index('ensure_server_stopped "$node"') < helper.index(
+        'hcloud server change-type "$node" "$target_type"'
+    )
+    assert "attempt<=HCLOUD_CAPACITY_RETRY_ATTEMPTS" in helper
+    assert "delay > 60" in helper
+    assert 'change_server_type_with_retry "$node" "$target_type" "$target_disk"' in resize
+
+
 def test_vmctl_migration_job_uses_restricted_pod_security():
     content = MIGRATE.read_text(encoding="utf-8")
     vmctl_job = content.split("run_vmctl_migration()", 1)[1].split(
