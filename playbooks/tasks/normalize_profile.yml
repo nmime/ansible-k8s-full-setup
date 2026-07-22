@@ -91,12 +91,47 @@
       {{ secrets.vault.audit_storage_size |
          default(secrets.vault.storage_size | default(vault_storage_size)) }}
     eso_enabled: '{{ platform_eso_enabled }}'
+    eso_example_secret_enabled: >-
+      {{ (secrets.eso.example_secret.enabled |
+          default(eso_example_secret_enabled)) | bool }}
+    eso_example_secret_remote_key: >-
+      {{ secrets.eso.example_secret.remote_key |
+         default(eso_example_secret_remote_key) }}
+    eso_example_secret_remote_property: >-
+      {{ secrets.eso.example_secret.remote_property |
+         default(eso_example_secret_remote_property) }}
     postgresql_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas) }}'
     postgresql_proxy_replicas: >-
       {{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(1)) }}
     postgresql_storage: '{{ databases.postgresql.storage_size | default(postgresql_storage) }}'
+    database_container_default_resources: >-
+      {{ databases.container_defaults | default(database_container_default_resources) }}
+    postgresql_replica_cert_copy_resources: >-
+      {{ (databases.postgresql.resources | default({})).replica_cert_copy |
+         default(postgresql_replica_cert_copy_resources) }}
+    postgresql_pgbackrest_resources: >-
+      {{ (databases.postgresql.resources | default({})).pgbackrest |
+         default(postgresql_pgbackrest_resources) }}
+    postgresql_pgbackrest_config_resources: >-
+      {{ (databases.postgresql.resources | default({})).pgbackrest_config |
+         default(postgresql_pgbackrest_config_resources) }}
+    postgresql_pgbackrest_init_resources: >-
+      {{ (databases.postgresql.resources | default({})).pgbackrest_init |
+         default(postgresql_pgbackrest_init_resources) }}
+    postgresql_pgbackrest_repo_host_resources: >-
+      {{ (databases.postgresql.resources | default({})).pgbackrest_repo_host |
+         default(postgresql_pgbackrest_repo_host_resources) }}
+    postgresql_pgbackrest_job_resources: >-
+      {{ (databases.postgresql.resources | default({})).pgbackrest_job |
+         default(postgresql_pgbackrest_job_resources) }}
     mongodb_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(1)) }}'
     mongodb_storage: '{{ databases.mongodb.storage_size | default(mongodb_storage) }}'
+    mongodb_backup_resources: >-
+      {{ (databases.mongodb.resources | default({})).backup |
+         default(mongodb_backup_resources) }}
+    mongodb_pmm_resources: >-
+      {{ (databases.mongodb.resources | default({})).pmm |
+         default(mongodb_pmm_resources) }}
     gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1) }}'
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1) }}'
     gitlab_runner_concurrent_jobs: >-
@@ -190,6 +225,22 @@
     log_redaction_enabled: >-
       {{ compliance.hipaa.log_redaction_enabled | default(platform_hipaa_enabled) | bool }}
 
+- name: Validate the selected logging stack
+  ansible.builtin.assert:
+    that:
+      - log_stack in ['loki', 'elk', 'efk']
+    fail_msg: >-
+      Invalid observability.logging.stack={{ log_stack }}. Select exactly one
+      supported logging stack: loki, elk, or efk.
+
+- name: Validate the Elasticsearch logging dependency
+  ansible.builtin.assert:
+    that:
+      - log_stack not in ['elk', 'efk'] or platform_elasticsearch_enabled | bool
+    fail_msg: >-
+      observability.logging.stack={{ log_stack }} requires
+      elasticsearch.enabled=true. Select Loki or enable Elasticsearch.
+
 - name: Validate required private-cluster foundation features
   ansible.builtin.assert:
     that:
@@ -209,6 +260,7 @@
   ansible.builtin.assert:
     that:
       - not platform_eso_enabled | bool or platform_secrets_enabled | bool
+      - not eso_example_secret_enabled | bool or platform_eso_enabled | bool
       - not platform_postgresql_enabled | bool or platform_databases_enabled | bool
       - not platform_mongodb_enabled | bool or platform_databases_enabled | bool
       - not platform_gitlab_runner_enabled | bool or platform_gitlab_enabled | bool
@@ -220,7 +272,8 @@
       - not platform_observability_enabled | bool or observability.logging.enabled | default(true) | bool
       - not platform_observability_enabled | bool or observability.grafana.enabled | default(true) | bool
     fail_msg: >-
-      Invalid parent/child selection. ESO requires secrets; PostgreSQL and
+      Invalid parent/child selection. ESO requires secrets; the example
+      ExternalSecret demo fixture requires ESO; PostgreSQL and
       MongoDB require databases; the GitLab Runner requires GitLab; PMM,
       tracing, Blackbox, and Coroot require observability. The core observability role is one
       production bundle, so metrics, logging, and Grafana must stay enabled

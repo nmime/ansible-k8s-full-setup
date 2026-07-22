@@ -42,11 +42,11 @@ All application and platform namespaces are assigned Pod Security Admission labe
 | coroot | privileged enforce | eBPF/host-inspection node agent; exception scoped to this namespace |
 | keda | baseline enforce | Autoscaling |
 | temporal | baseline enforce | Workflow engine |
-| elasticsearch | privileged enforce | ELK needs host access |
+| elasticsearch | baseline enforce | Elasticsearch and Kibana do not receive node host access |
+| logging-agents | privileged enforce | Namespace-scoped hostPath exception for node-log collectors; no Docker/containerd control socket |
 | cilium-system | privileged enforce | CNI kernel-level components |
 | cilium-secrets | baseline enforce | TLS cert storage |
 | eso_ns | baseline enforce | External Secrets |
-| filebeat / elk | monitoring ns | Co-located logging components |
 | postal | baseline enforce | Email MTA |
 | gateway | baseline enforce | Ingress gateway |
 

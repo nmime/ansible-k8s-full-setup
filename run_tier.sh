@@ -42,8 +42,10 @@ Options:
   -h, --help             Show this help
 
 Secrets remain environment-only. HCLOUD_TOKEN, BACKUP_DR_ACCESS_KEY,
-BACKUP_DR_SECRET_KEY, and ANSIBLE_VAULT_PASSWORD_FILE are loaded from the
-repository .env when they are not already exported.
+BACKUP_DR_SECRET_KEY, GITLAB_RUNNER_TOKEN, and ANSIBLE_VAULT_PASSWORD_FILE are
+loaded from the repository .env when they are not already exported. Profiles
+with gitlab.runner.enabled=true require a GitLab-issued glrt- authentication
+token; it is retained in the encrypted platform secrets file.
 EOF
 }
 

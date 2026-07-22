@@ -53,7 +53,7 @@ Hetzner firewalls restrict internal services to private/VPN networks, and Cilium
 
 ### 1.5 RBAC and Pod Security
 
-Namespaces use pod-security admission labels. Privileged containers are limited to components that need host/kernel access, such as Elasticsearch sysctl init containers and CNI components.
+Namespaces use pod-security admission labels. Privileged containers are limited to components that need host/kernel access, such as CNI and Coroot eBPF agents. Node log collectors use a dedicated `logging-agents` namespace with privileged admission only for required hostPath access; collector containers remain non-privileged, host logs are read-only, and unused Docker socket/container-directory mounts are removed before apply.
 
 ### 1.6 License Compliance (CRITICAL - FIXED)
 

@@ -67,7 +67,7 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | on | on |
 | Dragonfly | `dragonfly.enabled` | Dragonfly operator and Redis-compatible cache | none | off | on | on | on | on |
 | GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | on | on | on | on |
-| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab | off | on | on | on | on |
+| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | on | on | on | on |
 | GitOps | `gitops.enabled` | Argo CD with scoped source/resource allowlists | none | on | on | on | on | on |
 | Observability core | `observability.enabled` | VictoriaMetrics, Grafana, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
 | PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | on | on |

@@ -931,6 +931,84 @@ def test_migration_waits_for_csi_detach_after_drain_before_poweroff():
     )
 
 
+def test_migration_temporarily_overrides_and_restores_singleton_gitaly_pdb():
+    content = MIGRATE.read_text(encoding="utf-8")
+    prepare = content.split("prepare_gitaly_pdb_override_for_node()", 1)[1].split(
+        "resize_node()", 1
+    )[0]
+    restore = content.split("restore_gitaly_pdb_override()", 1)[1].split(
+        "prepare_gitaly_pdb_override_for_node()", 1
+    )[0]
+    resize = content.split("resize_node()", 1)[1].split("stage_resize()", 1)[0]
+
+    assert 'GITALY_PDB_OVERRIDE_FILE="${STATE_DIR}/gitaly-pdb-override.json"' in content
+    assert '.spec.maxUnavailable == 0 and .spec.minAvailable == null' in prepare
+    assert '.items | length == 1' in prepare
+    assert '.status.disruptionsAllowed // 0' in prepare
+    assert 'value:1' in prepare
+    assert 'phase:"prepared"' in prepare
+    assert '.phase="overridden"' in prepare
+    assert 'chmod 0600 "$tmp"' in prepare
+
+    assert 'value:0' in restore
+    assert '.metadata.uid == $uid' in restore
+    assert 'gitaly-pdb-restored.json' in restore
+    assert 'rm -f "$GITALY_PDB_OVERRIDE_FILE"' in restore
+
+    drain = resize.split('if [[ "$interrupted" == false ]]', 1)[1].split(
+        "ensure_server_stopped", 1
+    )[0]
+    assert drain.index('prepare_gitaly_pdb_override_for_node "$node"') < drain.index(
+        'kubectl drain "$node"'
+    )
+    assert drain.index('kubectl drain "$node"') < drain.index(
+        "restore_gitaly_pdb_override"
+    )
+    assert "drain_status=$?" in drain
+    assert "checkpoint retained" in drain
+
+    assert "trap migration_process_cleanup EXIT" in content
+    assert "restore_gitaly_pdb_override" in content.split(
+        "migration_process_cleanup()", 1
+    )[1].split("trap migration_process_cleanup", 1)[0]
+    recovery = content.split(
+        '# A controller can be provisioned with a CLI-only bastion override', 1
+    )[1].split('if [[ "$COMMAND" == rollback ]]', 1)[0]
+    assert 'restore_gitaly_pdb_override' in recovery
+    assert 'before $COMMAND' in recovery
+
+
+def test_scale_in_reuses_checkpointed_gitaly_pdb_override_before_node_removal():
+    content = MIGRATE.read_text(encoding="utf-8")
+    remove = content.split("remove_cluster_node()", 1)[1].split(
+        "scale_in_nodes()", 1
+    )[0]
+
+    prepare = remove.index('prepare_gitaly_pdb_override_for_node "$node"')
+    drain = remove.index('kubectl drain "$node"')
+    restore = remove.index("restore_gitaly_pdb_override")
+    remove_node = remove.index('"$kubespray_dir/remove-node.yml"')
+    delete_server = remove.index('hcloud server delete "$node"')
+    assert prepare < drain < restore < remove_node < delete_server
+    assert "drain_status=0" in remove
+    assert "drain_status=$?" in remove
+    assert "checkpoint retained" in remove
+    assert "after restoring the Gitaly PDB" in remove
+
+    # A signal uses the same EXIT restoration path, while a resumed finalize
+    # or rollback restores the durable checkpoint before entering scale-in.
+    cleanup = content.split("migration_process_cleanup()", 1)[1].split(
+        "trap migration_process_cleanup EXIT", 1
+    )[0]
+    assert "restore_gitaly_pdb_override" in cleanup
+    assert "Gitaly PDB restoration needs resume/rollback" in cleanup
+    before_commands = content.split(
+        '# A controller can be provisioned with a CLI-only bastion override', 1
+    )[1].split('if [[ "$COMMAND" == rollback ]]', 1)[0]
+    assert '"$COMMAND" == rollback || "$COMMAND" == finalize' in before_commands
+    assert "restore_gitaly_pdb_override" in before_commands
+
+
 def test_migration_enforces_control_plane_schedulability_in_both_directions():
     content = MIGRATE.read_text(encoding="utf-8")
     assert 'reconcile_control_plane_schedulability "$TARGET_CONFIG"' in content
@@ -2726,7 +2804,15 @@ def test_mutating_migrations_are_single_writer_and_use_process_unique_temp_files
     assert 'MIGRATION_LOCK="${STATE_BASE}/.${PROJECT}-profile-migration.lock"' in content
     assert 'another migration process is active for $PROJECT' in content
     assert "kill -0 \"$lock_pid\"" in content
-    assert "trap 'rm -rf \"$MIGRATION_LOCK\"' EXIT INT TERM" in content
+    assert "migration_process_cleanup()" in content
+    cleanup = content.split("migration_process_cleanup()", 1)[1].split(
+        "trap migration_process_cleanup EXIT", 1
+    )[0]
+    assert 'rm -rf "$MIGRATION_LOCK"' in cleanup
+    assert "restore_gitaly_pdb_override" in cleanup
+    assert "trap migration_process_cleanup EXIT" in content
+    assert "trap 'exit 130' INT" in content
+    assert "trap 'exit 143' TERM" in content
     assert '${STATE_FILE}.tmp.$$' in content
     assert '$STATE_FILE.tmp"' not in content
 

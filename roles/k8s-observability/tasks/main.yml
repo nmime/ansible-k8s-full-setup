@@ -266,6 +266,13 @@
       spec:
         replicaCount: '{{ vm_replicas | int }}'
         selectAllByDefault: true
+        configReloaderResources:
+          requests:
+            cpu: 10m
+            memory: 25Mi
+          limits:
+            cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '200m' }}"
+            memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
         remoteWrite:
         - url: '{{ ''http://vminsert-vmcluster.'' + monitoring_namespace + ''.svc:8480/insert/0/prometheus/api/v1/write'' if tier in [''medium'', ''production''] else ''http://vmsingle-vmsingle.'' + monitoring_namespace
             + ''.svc:8429/api/v1/write'' }}'
@@ -288,7 +295,7 @@
   retries: 3
   delay: 10
   until: _r_add_grafana_helm_repository is not failed
-  when: log_stack in ["loki", "elk"]
+  when: log_stack in ["loki", "elk", "efk"]
 - name: Create Loki S3 credentials secret
   no_log: true
   kubernetes.core.k8s:
@@ -439,7 +446,7 @@
     release_namespace: '{{ monitoring_namespace }}'
     release_state: absent
     wait: true
-  when: log_stack in ["loki", "elk"]
+  when: log_stack in ["loki", "elk", "efk"]
 - name: Remove Promtail node agents when Loki is not the selected log backend
   kubernetes.core.helm:
     name: promtail
@@ -460,7 +467,7 @@
           pod-security.kubernetes.io/enforce: privileged
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted
-  when: log_stack in ["loki", "elk"]
+  when: log_stack in ["loki", "elk", "efk"]
 - name: Install Promtail for log collection
   kubernetes.core.helm:
     name: promtail
@@ -492,6 +499,29 @@
         limits:
           cpu: 200m
           memory: 256Mi
+      # The upstream chart also defaults to Docker's container directory.
+      # containerd CRI logs live under /var/log/pods, so declare only the
+      # runtime state and host-log mounts that Promtail actually consumes.
+      defaultVolumes:
+      - name: run
+        hostPath:
+          path: /run/promtail
+      - name: pods
+        hostPath:
+          path: /var/log/pods
+      defaultVolumeMounts:
+      - name: run
+        mountPath: /run/promtail
+      - name: pods
+        mountPath: /var/log/pods
+        readOnly: true
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
   register: _r_install_promtail_for_log_collection
   retries: 3
   delay: 10
@@ -506,7 +536,7 @@
       metadata:
         name: default-deny
         namespace: '{{ logging_agent_namespace }}'
-  when: log_stack in ["loki", "elk"]
+  when: log_stack in ["loki", "elk", "efk"]
 - name: Create default-deny NetworkPolicy for logging agents
   kubernetes.core.k8s:
     state: present
@@ -523,7 +553,7 @@
         - Egress
         ingress: []
         egress: []
-  when: log_stack in ["loki", "elk"]
+  when: log_stack in ["loki", "elk", "efk"]
 - name: Allow logging agents to reach the selected backend and Kubernetes discovery
   kubernetes.core.k8s:
     state: present
@@ -536,10 +566,27 @@
       spec:
         endpointSelector: {}
         egress:
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: kube-system
+              k8s:k8s-app: kube-dns
+          toPorts:
+          - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
         - toEntities:
-          - cluster
           - kube-apiserver
-  when: log_stack in ["loki", "elk"]
+        - toServices:
+          - k8sService:
+              serviceName: '{{ "loki-gateway" if log_stack == "loki" else "elasticsearch" }}'
+              namespace: '{{ monitoring_namespace if log_stack == "loki" else "elasticsearch" }}'
+          toPorts:
+          - ports:
+            - port: '{{ "80" if log_stack == "loki" else "9200" }}'
+              protocol: TCP
+  when: log_stack in ["loki", "elk", "efk"]
 - name: Fetch Elasticsearch credentials for Grafana datasource
   kubernetes.core.k8s_info:
     kind: Secret
@@ -684,7 +731,20 @@
         limits:
           cpu: 500m
           memory: 512Mi
+      initChownData:
+        resources:
+          requests: {cpu: 5m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 64Mi}
+      downloadDashboards:
+        resources:
+          requests: {cpu: 5m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 64Mi}
       sidecar:
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits:
+            cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '200m' }}"
+            memory: 128Mi
         dashboards:
           enabled: true
         datasources:
@@ -1297,8 +1357,35 @@
     release_namespace: elasticsearch
     release_state: absent
     wait: true
-  when: log_stack == "elk"
-- name: Read Elasticsearch secrets for the isolated Filebeat agent
+  when: log_stack in ["loki", "elk", "efk"]
+- name: Remove Filebeat node agents when ELK is not the selected log backend
+  kubernetes.core.helm:
+    name: filebeat
+    release_namespace: '{{ logging_agent_namespace }}'
+    release_state: absent
+    wait: true
+  when: log_stack != "elk"
+- name: Remove the legacy replicated Elasticsearch superuser secret
+  no_log: true
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    namespace: '{{ logging_agent_namespace }}'
+    name: es-credentials
+- name: Remove replicated logging credentials when Elasticsearch logging is deselected
+  no_log: true
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    namespace: '{{ logging_agent_namespace }}'
+    name: '{{ item }}'
+  loop:
+  - es-tls-certs
+  - logging-ingest-credentials
+  when: log_stack not in ["elk", "efk"]
+- name: Read Elasticsearch secrets for the selected isolated logging agent
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
@@ -1306,10 +1393,10 @@
     name: '{{ item }}'
   loop:
   - es-tls-certs
-  - es-credentials
+  - logging-ingest-credentials
   register: _r_filebeat_source_secrets
   no_log: true
-  when: log_stack == "elk"
+  when: log_stack in ["elk", "efk"]
 - name: Replicate the minimum Elasticsearch credentials into the agent namespace
   kubernetes.core.k8s:
     state: present
@@ -1325,11 +1412,12 @@
   - name: es-tls-certs
     data:
       ca.crt: '{{ _r_filebeat_source_secrets.results[0].resources[0].data["ca.crt"] }}'
-  - name: es-credentials
+  - name: logging-ingest-credentials
     data:
-      ELASTIC_PASSWORD: '{{ _r_filebeat_source_secrets.results[1].resources[0].data.ELASTIC_PASSWORD }}'
+      username: '{{ _r_filebeat_source_secrets.results[1].resources[0].data.username }}'
+      password: '{{ _r_filebeat_source_secrets.results[1].resources[0].data.password }}'
   no_log: true
-  when: log_stack == "elk"
+  when: log_stack in ["elk", "efk"]
 - name: Install Filebeat for log collection (ELK)
   kubernetes.core.helm:
     name: filebeat
@@ -1339,10 +1427,19 @@
     create_namespace: false
     release_state: present
     wait: false
+    post_renderer: '{{ playbook_dir }}/../scripts/filebeat-containerd-post-renderer.sh'
     values:
       imageTag: 9.4.3
       daemonset:
         enabled: true
+        securityContext:
+          runAsUser: 0
+          privileged: false
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          seccompProfile:
+            type: RuntimeDefault
         filebeatConfig:
           filebeat.yml: |
             filebeat.inputs:
@@ -1375,7 +1472,7 @@
             {% endif %}
             output.elasticsearch:
               hosts: ["https://elasticsearch.elasticsearch.svc.cluster.local:9200"]
-              username: elastic
+              username: ${ELASTICSEARCH_USERNAME}
               password: ${ELASTICSEARCH_PASSWORD}
               ssl.certificate_authorities: ["/usr/share/filebeat/config/certs/ca.crt"]
               index: "filebeat-%{[agent.version]}-%{+yyyy.MM.dd}"
@@ -1390,11 +1487,16 @@
           secretName: es-tls-certs
           path: /usr/share/filebeat/config/certs
         extraEnvs:
+        - name: ELASTICSEARCH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: logging-ingest-credentials
+              key: username
         - name: ELASTICSEARCH_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: es-credentials
-              key: ELASTIC_PASSWORD
+              name: logging-ingest-credentials
+              key: password
         resources:
           requests:
             cpu: 50m
@@ -1416,20 +1518,34 @@
   delay: 10
   until: _r_add_fluent_helm_repository is not failed
   when: log_stack == "efk"
+- name: Remove legacy Fluentd release from the baseline monitoring namespace
+  kubernetes.core.helm:
+    name: fluentd
+    release_namespace: '{{ monitoring_namespace }}'
+    release_state: absent
+    wait: true
+  when: log_stack in ["loki", "elk", "efk"]
+- name: Remove Fluentd node agents when EFK is not the selected log backend
+  kubernetes.core.helm:
+    name: fluentd
+    release_namespace: '{{ logging_agent_namespace }}'
+    release_state: absent
+    wait: true
+  when: log_stack != "efk"
 - name: Install Fluentd for log collection (EFK)
   kubernetes.core.helm:
     name: fluentd
     chart_ref: fluent/fluentd
     chart_version: 0.5.2
-    release_namespace: '{{ monitoring_namespace }}'
-    create_namespace: true
+    release_namespace: '{{ logging_agent_namespace }}'
+    create_namespace: false
     release_state: present
     wait: false
     values:
       kind: DaemonSet
       fileConfigs:
-        01_sources.conf: "<source>\n  @type tail\n  @id in_tail_container_logs\n  path /var/log/containers/*.log\n  pos_file /var/log/fluentd-containers.log.pos\n  tag kubernetes.*\n  read_from_head true\n\
-          \  <parse>\n    @type json\n    time_format %Y-%m-%dT%H:%M:%S.%NZ\n  </parse>\n</source>\n"
+        01_sources.conf: "<source>\n  @type tail\n  @id in_tail_container_logs\n  path /var/log/containers/*.log\n  pos_file /fluentd/state/fluentd-containers.log.pos\n  tag kubernetes.*\n  read_from_head true\n\
+          \  <parse>\n    @type regexp\n    expression /^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$/\n    time_format %Y-%m-%dT%H:%M:%S.%N%:z\n    keep_time_key true\n  </parse>\n</source>\n"
         02_filters.conf: |
           <filter kubernetes.**>
             @type kubernetes_metadata
@@ -1445,23 +1561,53 @@
           </filter>
           {% endif %}
         04_outputs.conf: "<match **>\n  @type elasticsearch\n  @id out_es\n  host elasticsearch.elasticsearch.svc.cluster.local\n  port 9200\n  scheme https\n  ssl_verify true\n  ca_file /fluentd/certs/ca.crt\n\
-          \  user elastic\n  password \"#{ENV['ELASTICSEARCH_PASSWORD']}\"\n  logstash_format true\n  logstash_prefix fluentd\n  <buffer>\n    @type file\n    path /var/log/fluentd-buffers/kubernetes.system.buffer\n\
+          \  user \"#{ENV['ELASTICSEARCH_USERNAME']}\"\n  password \"#{ENV['ELASTICSEARCH_PASSWORD']}\"\n  write_operation create\n  logstash_format true\n  logstash_prefix fluentd\n  <buffer>\n    @type file\n    path /fluentd/state/buffers/kubernetes.system.buffer\n\
           \    flush_mode interval\n    retry_type exponential_backoff\n    flush_interval 5s\n    retry_forever false\n    retry_max_interval 30\n    chunk_limit_size 2M\n    queue_limit_length 8\n   \
           \ overflow_action block\n  </buffer>\n</match>\n"
-      extraVolumes:
+      # Avoid the chart's Docker-era automatic mounts. The host logs stay
+      # read-only and collector state is isolated under /var/lib.
+      mountVarLogDirectory: false
+      mountDockerContainersDirectory: false
+      volumes:
       - name: elasticsearch-ca
         secret:
           secretName: es-tls-certs
-      extraVolumeMounts:
+      - name: host-logs
+        hostPath:
+          path: /var/log
+      - name: fluentd-state
+        hostPath:
+          path: /var/lib/fluentd-logging-agents-data
+          type: DirectoryOrCreate
+      volumeMounts:
       - name: elasticsearch-ca
         mountPath: /fluentd/certs
         readOnly: true
+      - name: host-logs
+        mountPath: /var/log
+        readOnly: true
+      - name: fluentd-state
+        mountPath: /fluentd/state
+      securityContext:
+        runAsUser: 0
+        privileged: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+        seccompProfile:
+          type: RuntimeDefault
       env:
+      - name: ELASTICSEARCH_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: logging-ingest-credentials
+            key: username
       - name: ELASTICSEARCH_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: es-credentials
-            key: ELASTIC_PASSWORD
+            name: logging-ingest-credentials
+            key: password
       resources:
         requests:
           cpu: 50m

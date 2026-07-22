@@ -297,7 +297,20 @@ if [[ "$COMMAND" != plan && "$COMMAND" != status && "$DRY_RUN" != true ]]; then
     mkdir "$MIGRATION_LOCK" || fail "could not acquire migration lock for $PROJECT"
   fi
   printf '%s\n' "$$" > "$MIGRATION_LOCK/pid"
-  trap 'rm -rf "$MIGRATION_LOCK"' EXIT INT TERM
+  migration_process_cleanup() {
+    local exit_status=$?
+    trap - EXIT INT TERM
+    if [[ -n "${GITALY_PDB_OVERRIDE_FILE:-}" && -f "${GITALY_PDB_OVERRIDE_FILE}" ]] \
+      && declare -F restore_gitaly_pdb_override >/dev/null; then
+      restore_gitaly_pdb_override \
+        || warn "Gitaly PDB restoration needs resume/rollback; durable override checkpoint retained"
+    fi
+    rm -rf "$MIGRATION_LOCK"
+    exit "$exit_status"
+  }
+  trap migration_process_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 fi
 ROLLBACK_CONFIG="${STATE_DIR}/rollback-platform.yaml"
 STORAGE_RETENTION_FILE="${STATE_DIR}/storage-retention.tsv"
@@ -307,6 +320,7 @@ BASTION_TYPE_RETENTION_FILE="${STATE_DIR}/bastion-type-retention.tsv"
 NODE_TYPE_OVERRIDE_FILE="${STATE_DIR}/node-type-overrides.tsv"
 SELECTION_RETENTION_FILE="${STATE_DIR}/selection-retention.tsv"
 CAPACITY_PLAN_FILE="${STATE_DIR}/volume-capacity-plan.json"
+GITALY_PDB_OVERRIDE_FILE="${STATE_DIR}/gitaly-pdb-override.json"
 
 restore_persisted_operator_state() {
   local recorded_root recorded_secrets recorded_vault recorded_ssh_key recorded_known_hosts recorded_api_port
@@ -1879,11 +1893,130 @@ unseal_vault_members() {
   done < <(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o name | sed 's#^pod/##')
 }
 
+# Gitaly is intentionally a singleton and its steady-state PDB therefore uses
+# maxUnavailable=0. A reviewed profile migration may briefly permit exactly
+# one voluntary eviction only while draining the node that currently hosts the
+# sole healthy Gitaly pod. The UID-bound checkpoint makes interruption,
+# resume, rollback, and process-exit recovery fail closed around that override.
+restore_gitaly_pdb_override() {
+  local namespace name uid node current patch checkpoint tmp
+  [[ -f "$GITALY_PDB_OVERRIDE_FILE" ]] || return 0
+  if ! jq -e '
+      .schema == 1 and .namespace == "gitlab" and
+      (.name | type == "string" and length > 0) and
+      (.uid | type == "string" and length > 0) and
+      (.node | test("^[A-Za-z0-9.-]+$")) and
+      .original.maxUnavailable == 0 and
+      .temporary.maxUnavailable == 1
+    ' "$GITALY_PDB_OVERRIDE_FILE" >/dev/null; then
+    warn "invalid Gitaly PDB override checkpoint: $GITALY_PDB_OVERRIDE_FILE"
+    return 1
+  fi
+  namespace=$(jq -r '.namespace' "$GITALY_PDB_OVERRIDE_FILE")
+  name=$(jq -r '.name' "$GITALY_PDB_OVERRIDE_FILE")
+  uid=$(jq -r '.uid' "$GITALY_PDB_OVERRIDE_FILE")
+  node=$(jq -r '.node' "$GITALY_PDB_OVERRIDE_FILE")
+  if ! current=$(kubectl get pdb "$name" -n "$namespace" -o json); then
+    warn "cannot restore checkpointed Gitaly PDB $namespace/$name"
+    return 1
+  fi
+  if ! jq -e --arg uid "$uid" '
+      .metadata.uid == $uid and .spec.minAvailable == null and
+      (.spec.maxUnavailable == 0 or .spec.maxUnavailable == 1)
+    ' <<<"$current" >/dev/null; then
+    warn "checkpointed Gitaly PDB identity or availability contract drifted"
+    return 1
+  fi
+  if [[ $(jq -r '.spec.maxUnavailable' <<<"$current") == 1 ]]; then
+    patch=$(jq -nc --arg uid "$uid" '[
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"replace",path:"/spec/maxUnavailable",value:0}
+    ]')
+    kubectl patch pdb "$name" -n "$namespace" --type=json -p "$patch" >/dev/null \
+      || { warn "failed to restore Gitaly PDB $namespace/$name"; return 1; }
+  fi
+  kubectl get pdb "$name" -n "$namespace" -o json \
+    | jq -e --arg uid "$uid" \
+      '.metadata.uid == $uid and .spec.maxUnavailable == 0 and .spec.minAvailable == null' \
+      >/dev/null \
+    || { warn "Gitaly PDB restoration verification failed"; return 1; }
+  checkpoint="${STATE_DIR}/resize-nodes/${node}.gitaly-pdb-restored.json"
+  mkdir -p "$(dirname "$checkpoint")"
+  tmp="${checkpoint}.tmp.$$"
+  jq -n --arg node "$node" --arg namespace "$namespace" --arg name "$name" \
+    --arg uid "$uid" '{schema:1,node:$node,namespace:$namespace,name:$name,uid:$uid,
+      maxUnavailable:0,restored_at:(now|todateiso8601)}' > "$tmp"
+  chmod 0600 "$tmp"
+  mv "$tmp" "$checkpoint"
+  rm -f "$GITALY_PDB_OVERRIDE_FILE"
+  log "restored fail-safe Gitaly PDB $namespace/$name after temporary drain override"
+}
+
+prepare_gitaly_pdb_override_for_node() {
+  local node="$1" pods node_pods pdbs pdb namespace name uid resource_version patch tmp
+  restore_gitaly_pdb_override \
+    || fail "a previous Gitaly PDB override could not be restored before draining $node"
+  kubectl get namespace gitlab >/dev/null 2>&1 || return 0
+  pods=$(kubectl get pods -n gitlab -l release=gitlab,app=gitaly -o json) \
+    || fail "could not inspect Gitaly placement before draining $node"
+  [[ $(jq '.items | length' <<<"$pods") != 0 ]] || return 0
+  jq -e '.items | length == 1 and .[0].status.phase == "Running" and
+    (.[0].status.conditions | any(.type == "Ready" and .status == "True"))' \
+    <<<"$pods" >/dev/null \
+    || fail "temporary Gitaly PDB override requires exactly one healthy singleton pod"
+  node_pods=$(jq --arg node "$node" '[.items[] | select(.spec.nodeName == $node)] | length' <<<"$pods")
+  [[ "$node_pods" == 1 ]] || return 0
+  pdbs=$(kubectl get pdb -n gitlab -o json)
+  pdb=$(jq -c '[.items[] | select(
+      .spec.selector.matchLabels.release == "gitlab" and
+      .spec.selector.matchLabels.app == "gitaly"
+    )] | if length == 1 then .[0] else empty end' <<<"$pdbs")
+  [[ -n "$pdb" ]] || fail "expected exactly one chart-managed Gitaly PDB before draining $node"
+  jq -e '.spec.maxUnavailable == 0 and .spec.minAvailable == null' <<<"$pdb" >/dev/null \
+    || fail "Gitaly PDB is not at the reviewed fail-safe maxUnavailable=0 contract"
+  namespace=$(jq -r '.metadata.namespace' <<<"$pdb")
+  name=$(jq -r '.metadata.name' <<<"$pdb")
+  uid=$(jq -r '.metadata.uid' <<<"$pdb")
+  resource_version=$(jq -r '.metadata.resourceVersion' <<<"$pdb")
+  tmp="${GITALY_PDB_OVERRIDE_FILE}.tmp.$$"
+  jq -n --arg node "$node" --arg namespace "$namespace" --arg name "$name" \
+    --arg uid "$uid" --arg resourceVersion "$resource_version" \
+    '{schema:1,node:$node,namespace:$namespace,name:$name,uid:$uid,
+      resourceVersion:$resourceVersion,original:{maxUnavailable:0},
+      temporary:{maxUnavailable:1},phase:"prepared",prepared_at:(now|todateiso8601)}' > "$tmp"
+  chmod 0600 "$tmp"
+  mv "$tmp" "$GITALY_PDB_OVERRIDE_FILE"
+  patch=$(jq -nc --arg uid "$uid" '[
+    {op:"test",path:"/metadata/uid",value:$uid},
+    {op:"test",path:"/spec/maxUnavailable",value:0},
+    {op:"replace",path:"/spec/maxUnavailable",value:1}
+  ]')
+  kubectl patch pdb "$name" -n "$namespace" --type=json -p "$patch" >/dev/null \
+    || fail "could not apply the checkpointed Gitaly PDB drain override"
+  jq '.phase="overridden" | .overridden_at=(now|todateiso8601)' \
+    "$GITALY_PDB_OVERRIDE_FILE" > "$tmp"
+  chmod 0600 "$tmp"
+  mv "$tmp" "$GITALY_PDB_OVERRIDE_FILE"
+  for _ in {1..60}; do
+    if kubectl get pdb "$name" -n "$namespace" -o json \
+      | jq -e --arg uid "$uid" \
+        '.metadata.uid == $uid and .spec.maxUnavailable == 1 and
+         .spec.minAvailable == null and (.status.disruptionsAllowed // 0) >= 1' \
+        >/dev/null; then
+      warn "temporarily allowing the reviewed singleton Gitaly eviction for node $node"
+      return 0
+    fi
+    sleep 2
+  done
+  restore_gitaly_pdb_override || true
+  fail "Gitaly PDB did not admit the checkpointed temporary eviction"
+}
+
 resize_node() {
   local node="$1" target_type="$2" role="$3" server_json current_type current_disk target_disk placement target_placement=""
   local requested_type="$target_type" configured_override fallback_type="" keep_disk=false
   local node_state_dir="$STATE_DIR/resize-nodes" in_progress done_marker node_unschedulable interrupted=false
-  local current_status provider_volumes
+  local current_status provider_volumes drain_status
   mkdir -p "$node_state_dir"
   in_progress="${node_state_dir}/${node}.in-progress"
   done_marker="${node_state_dir}/${node}.done"
@@ -1912,6 +2045,8 @@ resize_node() {
   node_unschedulable=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}' 2>/dev/null || true)
   requires_spread "$TARGET_CONFIG" && target_placement="${PROJECT}-spread"
   if [[ -f "$in_progress" || "$node_unschedulable" == true ]]; then
+    restore_gitaly_pdb_override \
+      || fail "interrupted Gitaly PDB override must be restored before resize resume"
     # The cordon is also an upgrade-safe recovery signal for migrations that
     # were interrupted before per-node markers existed. Finish this node and
     # require the full post-gate before considering any subsequent drain.
@@ -1946,7 +2081,13 @@ resize_node() {
     [[ "$role" != master ]] || check_etcd_health "$node"
     [[ "$role" != master ]] || check_control_plane_alternates_ready "$node" "$EXPANSION_CONFIG"
     date -u +%Y-%m-%dT%H:%M:%SZ > "$in_progress"
-    kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
+    prepare_gitaly_pdb_override_for_node "$node"
+    drain_status=0
+    kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m \
+      || drain_status=$?
+    restore_gitaly_pdb_override \
+      || fail "Gitaly PDB restore failed after draining $node; checkpoint retained"
+    (( drain_status == 0 )) || fail "kubectl drain failed for $node after restoring the Gitaly PDB"
   else
     # The durable marker is written only after all pre-drain checks and before
     # kubectl drain. The node may already be off, so SSH/API work against that
@@ -2296,6 +2437,8 @@ if [[ "$DRY_RUN" != true && ( "$COMMAND" == execute || "$COMMAND" == resume \
   || "$COMMAND" == rollback || "$COMMAND" == finalize ) ]]; then
   capture_live_bastion_type
   validate_generated_configs
+  restore_gitaly_pdb_override \
+    || fail "checkpointed Gitaly PDB override must be restored before $COMMAND"
 fi
 
 if [[ "$COMMAND" == rollback ]]; then
@@ -2401,7 +2544,7 @@ remove_inventory_node() {
 }
 
 remove_cluster_node() {
-  local node="$1" role="$2" inventory kubespray_dir
+  local node="$1" role="$2" inventory kubespray_dir drain_status
   inventory=$(kubespray_inventory); kubespray_dir="${PROJECT_ROOT}/playbooks/kubespray"
   [[ -f "$inventory" && -x "$kubespray_dir/.venv/bin/ansible-playbook" ]] || fail "Kubespray runtime or inventory is unavailable"
   if ! hcloud server describe "$node" >/dev/null 2>&1; then
@@ -2411,7 +2554,14 @@ remove_cluster_node() {
     return 0
   fi
   [[ "$role" != master ]] || check_etcd_health "$node"
-  kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m
+  prepare_gitaly_pdb_override_for_node "$node"
+  drain_status=0
+  kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m \
+    || drain_status=$?
+  restore_gitaly_pdb_override \
+    || fail "Gitaly PDB restore failed after scale-in drain of $node; checkpoint retained"
+  (( drain_status == 0 )) \
+    || fail "kubectl scale-in drain failed for $node after restoring the Gitaly PDB"
   unset ANSIBLE_CONFIG ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS
   ANSIBLE_CONFIG="$kubespray_dir/ansible.cfg" "$kubespray_dir/.venv/bin/ansible-playbook" \
     -i "$inventory" --become --become-user=root "$kubespray_dir/remove-node.yml" \

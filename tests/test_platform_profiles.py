@@ -1182,6 +1182,9 @@ class TestComponentLifecycle:
         profile["compliance"]["hipaa"]["enabled"] = False
         profile["secrets"]["eso"]["enabled"] = False
         profile["alerting"]["email"]["enabled"] = False
+        # Keep the unrelated logging dependency valid when a case deliberately
+        # disables Elasticsearch (for example the APM dependency assertion).
+        profile["observability"]["logging"]["stack"] = "loki"
         enabled_parent, enabled_key = enabled_path.rsplit(".", maxsplit=1)
         disabled_parent, disabled_key = disabled_path.rsplit(".", maxsplit=1)
 
@@ -1208,6 +1211,54 @@ class TestComponentLifecycle:
         )
         assert result.returncode != 0
         assert expected_message in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("invalid_stack", ["filebeat", "", "ELK"])
+    def test_invalid_logging_stack_fails_offline_validation(
+        self, tmp_path, invalid_stack
+    ):
+        profile = load_profile("medium")
+        profile["observability"]["logging"]["stack"] = invalid_stack
+        invalid_profile = tmp_path / "invalid-log-stack.yaml"
+        invalid_profile.write_text(yaml.safe_dump(profile), encoding="utf-8")
+        result = subprocess.run(
+            [
+                "ansible-playbook",
+                str(REPO_ROOT / "playbooks" / "validate_profile.yml"),
+                "-e",
+                f"@{invalid_profile}",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+        assert "Select exactly one supported logging stack" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("logging_stack", ["elk", "efk"])
+    def test_elasticsearch_logging_requires_elasticsearch(
+        self, tmp_path, logging_stack
+    ):
+        profile = load_profile("medium")
+        profile["observability"]["logging"]["stack"] = logging_stack
+        profile["elasticsearch"]["enabled"] = False
+        profile["apm"]["enabled"] = False
+        invalid_profile = tmp_path / "missing-logging-elasticsearch.yaml"
+        invalid_profile.write_text(yaml.safe_dump(profile), encoding="utf-8")
+        result = subprocess.run(
+            [
+                "ansible-playbook",
+                str(REPO_ROOT / "playbooks" / "validate_profile.yml"),
+                "-e",
+                f"@{invalid_profile}",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+        assert "requires elasticsearch.enabled=true" in result.stdout + result.stderr
 
     def test_removal_workflow_is_confirmation_and_data_guarded(self):
         playbook = (REPO_ROOT / "playbooks" / "remove_component.yml").read_text(

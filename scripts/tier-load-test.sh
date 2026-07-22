@@ -27,6 +27,7 @@ PG_TRANSACTIONS=""
 VAULT_OPERATIONS=""
 DRAGONFLY_REQUESTS=""
 PHASE_TIMEOUT=900
+S3_PHASE_TIMEOUT=""
 MAX_ERROR_PERCENT="1.0"
 MAX_RESTART_DELTA=10
 
@@ -54,11 +55,12 @@ Options:
   --http-url URL                Override the internal Grafana health URL
   --clients N                   Concurrent clients (1..64)
   --http-requests N             HTTP requests (1..1000000)
-  --s3-objects N                S3 write/read/delete cycles (1..10000)
+  --s3-objects N                S3 write/read/verify/delete cycles (1..10000)
   --pg-transactions N           PostgreSQL transactions (1..1000000)
   --vault-operations N          Vault write/read/delete cycles (1..10000)
   --dragonfly-requests N        Dragonfly SET and GET requests (1..1000000)
   --phase-timeout SECONDS       Per-phase hard stop (30..3600; default 900)
+  --s3-phase-timeout SECONDS    S3 hard stop (30..7200; adaptive by default)
   --max-error-percent PERCENT   Allowed operation errors (0..20; default 1.0)
   --max-restart-delta N         Hard stop on added container restarts (default 10)
   --dry-run                     Plan and write evidence without cluster access
@@ -93,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --vault-operations) VAULT_OPERATIONS="${2:?missing Vault operation count}"; shift 2 ;;
     --dragonfly-requests) DRAGONFLY_REQUESTS="${2:?missing Dragonfly request count}"; shift 2 ;;
     --phase-timeout) PHASE_TIMEOUT="${2:?missing phase timeout}"; shift 2 ;;
+    --s3-phase-timeout) S3_PHASE_TIMEOUT="${2:?missing S3 phase timeout}"; shift 2 ;;
     --max-error-percent) MAX_ERROR_PERCENT="${2:?missing error percent}"; shift 2 ;;
     --max-restart-delta) MAX_RESTART_DELTA="${2:?missing restart delta}"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -111,7 +114,10 @@ project=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
 profile=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 domain=$(yq -r '.global.domain // ""' "$CONFIG_FILE")
 safe_run_id=${RUN_ID//-/_}
-table_name="tier_load_${safe_run_id}"
+# Include controller process entropy so two otherwise valid invocations cannot
+# own the same PostgreSQL object even if an operator accidentally reuses a run
+# ID. The complete identifier remains below PostgreSQL's 63-byte limit.
+table_name="tier_load_${safe_run_id}_$$_$(printf '%08x' "$(((RANDOM << 15) | RANDOM))")"
 case "$profile" in
   minimal) defaults=(2 500 25 200 50 1000) ;;
   small) defaults=(4 2000 100 1000 200 5000) ;;
@@ -135,6 +141,15 @@ integer_in_range pg-transactions "$PG_TRANSACTIONS" 1 1000000
 integer_in_range vault-operations "$VAULT_OPERATIONS" 1 10000
 integer_in_range dragonfly-requests "$DRAGONFLY_REQUESTS" 1 1000000
 integer_in_range phase-timeout "$PHASE_TIMEOUT" 30 3600
+if [[ -z "$S3_PHASE_TIMEOUT" ]]; then
+  # Tiny S3 objects are request-bound. Keep the global timeout as the floor,
+  # then budget four complete object cycles per second plus five minutes for
+  # image startup, storage convergence, and cleanup. The bound remains finite.
+  S3_PHASE_TIMEOUT=$((S3_OBJECTS / 4 + 300))
+  (( S3_PHASE_TIMEOUT >= PHASE_TIMEOUT )) || S3_PHASE_TIMEOUT=$PHASE_TIMEOUT
+  (( S3_PHASE_TIMEOUT <= 7200 )) || S3_PHASE_TIMEOUT=7200
+fi
+integer_in_range s3-phase-timeout "$S3_PHASE_TIMEOUT" 30 7200
 integer_in_range max-restart-delta "$MAX_RESTART_DELTA" 0 10000
 [[ "$MAX_ERROR_PERCENT" =~ ^([0-9]+)(\.[0-9]{1,2})?$ ]] || fail "max-error-percent must be numeric"
 max_error_bps=$(awk -v value="$MAX_ERROR_PERCENT" 'BEGIN { printf "%d", value * 100 }')
@@ -230,12 +245,16 @@ cleanup_s3() {
 
 cleanup_postgresql() {
   $pg_started || return 0
-  local primary
+  local primary remaining
   primary=$("${K[@]}" get pods -n databases -l postgres-operator.crunchydata.com/role=primary \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   [[ -n "$primary" ]] || return 1
   "${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
-    -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS ${table_name}" >/dev/null 2>&1
+    -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public.${table_name}" >/dev/null 2>&1 || return 1
+  remaining=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
+    -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='${table_name}'" \
+    2>/dev/null || true)
+  [[ "$remaining" == 0 ]]
 }
 
 cleanup_vault() {
@@ -351,10 +370,10 @@ collect_settled_evidence() {
 }
 
 execute_job() {
-  local namespace="$1" name="$2" manifest="$3" log_file="$4"
+  local namespace="$1" name="$2" manifest="$3" log_file="$4" timeout="${5:-$PHASE_TIMEOUT}"
   active_job_ns="$namespace"; active_job_name="$name"
   "${K[@]}" apply -f "$manifest" >/dev/null
-  local deadline=$(( $(date +%s) + PHASE_TIMEOUT )) complete failed
+  local deadline=$(( $(date +%s) + timeout )) complete failed
   while (( $(date +%s) < deadline )); do
     complete=$("${K[@]}" get job -n "$namespace" "$name" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
     failed=$("${K[@]}" get job -n "$namespace" "$name" -o jsonpath='{.status.failed}' 2>/dev/null || true)
@@ -369,7 +388,7 @@ execute_job() {
   done
   if [[ "${complete:-0}" -lt 1 ]]; then
     "${K[@]}" logs -n "$namespace" "job/$name" --all-containers=true >"$log_file" 2>&1 || true
-    printf 'hard stop: phase timeout after %ss\n' "$PHASE_TIMEOUT" >>"$log_file"
+    printf 'hard stop: phase timeout after %ss\n' "$timeout" >>"$log_file"
     cleanup_job
     return 1
   fi
@@ -383,6 +402,15 @@ execute_job() {
 result_from_log() {
   local log_file="$1" line operations errors
   line=$(grep '^RESULT ' "$log_file" | tail -1) || return 1
+  operations=$(sed -n 's/.* operations=\([0-9][0-9]*\).*/\1/p' <<<"$line")
+  errors=$(sed -n 's/.* errors=\([0-9][0-9]*\).*/\1/p' <<<"$line")
+  [[ -n "$operations" && -n "$errors" ]] || return 1
+  printf '%s\t%s\n' "$operations" "$errors"
+}
+
+progress_from_log() {
+  local log_file="$1" line operations errors
+  line=$(grep '^PROGRESS ' "$log_file" | tail -1) || return 1
   operations=$(sed -n 's/.* operations=\([0-9][0-9]*\).*/\1/p' <<<"$line")
   errors=$(sed -n 's/.* errors=\([0-9][0-9]*\).*/\1/p' <<<"$line")
   [[ -n "$operations" && -n "$errors" ]] || return 1
@@ -458,7 +486,7 @@ metadata:
   labels: {app.kubernetes.io/name: tier-load-test, tier-load-run: "$RUN_ID"}
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: $PHASE_TIMEOUT
+  activeDeadlineSeconds: $S3_PHASE_TIMEOUT
   template:
     metadata: {labels: {app.kubernetes.io/name: tier-load-test, tier-load-run: "$RUN_ID"}}
     spec:
@@ -476,40 +504,175 @@ spec:
             - {name: CLIENTS, value: "$CLIENTS"}
             - {name: RUN_ID, value: "$RUN_ID"}
             - {name: MAX_ERROR_BPS, value: "$max_error_bps"}
+            - {name: BATCH_SIZE, value: "500"}
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
           resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: "$s3_cpu_limit", memory: "${s3_memory_limit_mi}Mi"}}
           command: ["/bin/sh", "-ec"]
           args:
             - |
               endpoint=http://seaweedfs-filer.storage.svc.cluster.local:8333
-              worker() {
-                id="\$1"; count="\$2"; errors=0; i=1
-                while [ "\$i" -le "\$count" ]; do
-                  object=\$((id+(i-1)*CLIENTS)); key="s3://backups/tier-load/\$RUN_ID/object-\$object"
-                  value="/tmp/value.\$id"; readback="/tmp/read.\$id"
-                  printf '%s:%s' "\$RUN_ID" "\$object" >"\$value"; rm -f "\$readback"
-                  aws --endpoint-url "\$endpoint" s3 cp "\$value" "\$key" >/dev/null || errors=\$((errors+1))
-                  aws --endpoint-url "\$endpoint" s3 cp "\$key" "\$readback" >/dev/null || errors=\$((errors+1))
-                  expected="\$RUN_ID:\$object"
-                  actual=\$(cat "\$readback" 2>/dev/null || true)
-                  [ "\$actual" = "\$expected" ] || errors=\$((errors+1))
-                  aws --endpoint-url "\$endpoint" s3 rm "\$key" >/dev/null || errors=\$((errors+1))
-                  i=\$((i+1))
-                done
-                printf '%s\n' "\$errors" >"/tmp/s3-result.\$id"
+              prefix="s3://backups/tier-load/\$RUN_ID"
+              source=/tmp/s3-source
+              readback=/tmp/s3-readback
+              aws_home=/tmp/aws-home
+              operations=0
+              errors=0
+              result_emitted=false
+              emit_progress() {
+                printf 'PROGRESS phase=s3 stage=%s operations=%s errors=%s\n' "\$1" "\$operations" "\$errors"
               }
-              base=\$((OBJECTS/CLIENTS)); remainder=\$((OBJECTS%CLIENTS)); client=1
-              while [ "\$client" -le "\$CLIENTS" ]; do
-                count="\$base"; [ "\$client" -le "\$remainder" ] && count=\$((count+1))
-                worker "\$client" "\$count" & client=\$((client+1))
+              emit_result() {
+                printf 'RESULT phase=s3 operations=%s errors=%s\n' "\$operations" "\$errors"
+                result_emitted=true
+              }
+              on_exit() {
+                rc="\$?"
+                trap - EXIT INT TERM
+                if [ "\$result_emitted" != true ]; then
+                  [ "\$errors" -gt 0 ] || errors=1
+                  emit_result
+                fi
+                exit "\$rc"
+              }
+              trap on_exit EXIT
+              trap 'exit 130' INT
+              trap 'exit 143' TERM
+              mkdir -p "\$source" "\$readback" "\$aws_home"
+              export HOME="\$aws_home" AWS_CONFIG_FILE="\$aws_home/config"
+              aws configure set default.s3.max_concurrent_requests "\$CLIENTS"
+              aws configure set default.s3.max_queue_size "\$((CLIENTS * 4))"
+              emit_progress preparing
+
+              object=1
+              batch_number=0
+              while [ "\$object" -le "\$OBJECTS" ]; do
+                batch_number=\$((batch_number+1))
+                batch=\$(printf 'batch-%05d' "\$batch_number")
+                batch_dir="\$source/\$batch"
+                mkdir -p "\$batch_dir"
+                batch_end=\$((object+BATCH_SIZE-1))
+                [ "\$batch_end" -le "\$OBJECTS" ] || batch_end="\$OBJECTS"
+                while [ "\$object" -le "\$batch_end" ]; do
+                  printf '%s:%s\n' "\$RUN_ID" "\$object" >"\$batch_dir/object-\$object"
+                  object=\$((object+1))
+                done
               done
-              wait; errors=0
-              for result in /tmp/s3-result.*; do errors=\$((errors+\$(cat "\$result"))); done
-              operations=\$((OBJECTS*4))
-              printf 'RESULT phase=s3 operations=%s errors=%s\n' "\$operations" "\$errors"
+
+              for batch_dir in "\$source"/batch-*; do
+                batch=\${batch_dir##*/}
+                count=\$(find "\$batch_dir" -type f | wc -l | tr -d ' ')
+                if ! aws --endpoint-url "\$endpoint" s3 cp "\$batch_dir/" "\$prefix/\$batch/" \
+                  --recursive --only-show-errors --no-progress; then
+                  errors=\$((errors+1)); emit_progress upload-failed; exit 1
+                fi
+                operations=\$((operations+count)); emit_progress uploaded
+              done
+
+              for batch_dir in "\$source"/batch-*; do
+                batch=\${batch_dir##*/}
+                target_dir="\$readback/\$batch"
+                mkdir -p "\$target_dir"
+                count=\$(find "\$batch_dir" -type f | wc -l | tr -d ' ')
+                if ! aws --endpoint-url "\$endpoint" s3 cp "\$prefix/\$batch/" "\$target_dir/" \
+                  --recursive --only-show-errors --no-progress; then
+                  errors=\$((errors+1)); emit_progress download-failed; exit 1
+                fi
+                operations=\$((operations+count)); emit_progress downloaded
+              done
+
+              object=1
+              batch_number=0
+              while [ "\$object" -le "\$OBJECTS" ]; do
+                batch_number=\$((batch_number+1))
+                batch=\$(printf 'batch-%05d' "\$batch_number")
+                batch_end=\$((object+BATCH_SIZE-1))
+                [ "\$batch_end" -le "\$OBJECTS" ] || batch_end="\$OBJECTS"
+                while [ "\$object" -le "\$batch_end" ]; do
+                  actual=
+                  IFS= read -r actual <"\$readback/\$batch/object-\$object" || true
+                  [ "\$actual" = "\$RUN_ID:\$object" ] || errors=\$((errors+1))
+                  operations=\$((operations+1))
+                  object=\$((object+1))
+                done
+                emit_progress verified
+              done
+
+              for batch_dir in "\$source"/batch-*; do
+                batch=\${batch_dir##*/}
+                count=\$(find "\$batch_dir" -type f | wc -l | tr -d ' ')
+                if ! aws --endpoint-url "\$endpoint" s3 rm "\$prefix/\$batch/" \
+                  --recursive --only-show-errors; then
+                  errors=\$((errors+1)); emit_progress delete-failed; exit 1
+                fi
+                if [ -n "\$(aws --endpoint-url "\$endpoint" s3 ls "\$prefix/\$batch/" --recursive)" ]; then
+                  errors=\$((errors+1)); emit_progress delete-verify-failed; exit 1
+                fi
+                operations=\$((operations+count)); emit_progress deleted
+              done
+              [ "\$operations" -eq "\$((OBJECTS*4))" ] || errors=\$((errors+1))
+              emit_result
               [ "\$((errors*10000))" -le "\$((operations*MAX_ERROR_BPS))" ]
 EOF
-  execute_job storage "$name" "$manifest" "$log_file"
+  execute_job storage "$name" "$manifest" "$log_file" "$S3_PHASE_TIMEOUT"
+}
+
+verify_postgresql_durability() {
+  local log_file="$1" primary replicas expected_standbys rows persistence target_lsn
+  local replayed=0 attempt write_path
+  primary=$("${K[@]}" get pods -n databases -l postgres-operator.crunchydata.com/role=primary \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [[ -n "$primary" ]] || { log "PostgreSQL durability gate: primary pod not found"; return 1; }
+
+  replicas=$(yq -r '.databases.postgresql.replicas // 1' "$CONFIG_FILE")
+  if [[ ! "$replicas" =~ ^[0-9]+$ ]] || (( replicas < 1 )); then
+    log "PostgreSQL durability gate: invalid replica count $replicas"
+    return 1
+  fi
+  expected_standbys=$((replicas - 1))
+
+  rows=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
+    -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM public.${table_name}" 2>/dev/null || true)
+  persistence=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
+    -v ON_ERROR_STOP=1 -At -c "SELECT c.relpersistence FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='${table_name}'" \
+    2>/dev/null || true)
+  target_lsn=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
+    -v ON_ERROR_STOP=1 -At -c 'SELECT pg_current_wal_flush_lsn()' 2>/dev/null || true)
+  [[ "$rows" == "$PG_TRANSACTIONS" && "$persistence" == p ]] || {
+    log "PostgreSQL durability gate: expected $PG_TRANSACTIONS permanent rows, got rows=${rows:-unknown} persistence=${persistence:-unknown}"
+    return 1
+  }
+  [[ "$target_lsn" =~ ^[0-9A-Fa-f]+/[0-9A-Fa-f]+$ ]] || {
+    log "PostgreSQL durability gate: invalid WAL flush LSN"
+    return 1
+  }
+
+  if (( expected_standbys > 0 )); then
+    # Require every configured standby to replay beyond the post-load flush
+    # point. This is bounded independently of the workload deadline.
+    for attempt in {1..12}; do
+      replayed=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
+        -v ON_ERROR_STOP=1 -v "target_lsn=$target_lsn" -At \
+        -c "SELECT count(*) FROM pg_stat_replication WHERE state='streaming' AND replay_lsn >= :'target_lsn'::pg_lsn" \
+        2>/dev/null || true)
+      [[ "$replayed" =~ ^[0-9]+$ ]] || replayed=0
+      (( replayed >= expected_standbys )) && break
+      (( attempt == 12 )) || sleep 5
+    done
+    if (( replayed >= expected_standbys )); then
+      write_path=wal-replicated
+    else
+      write_path=wal-replication-incomplete
+    fi
+  else
+    write_path=wal-logged-standalone
+  fi
+  printf 'EVIDENCE phase=postgresql write_path=%s table=%s rows=%s relpersistence=%s wal_flush_lsn=%s standby_required=%s standby_replayed=%s\n' \
+    "$write_path" "$table_name" "$rows" "$persistence" "$target_lsn" \
+    "$expected_standbys" "$replayed" >>"$log_file"
+  (( replayed >= expected_standbys )) || {
+    log "PostgreSQL durability gate: only $replayed/$expected_standbys standbys replayed $target_lsn"
+    return 1
+  }
 }
 
 phase_postgresql() {
@@ -548,10 +711,20 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - |
-              cleanup() { psql -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS \$TABLE_NAME" >/dev/null || true; }
-              trap cleanup EXIT
-              psql -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS \$TABLE_NAME; CREATE UNLOGGED TABLE \$TABLE_NAME(id bigserial PRIMARY KEY, value text NOT NULL)"
-              printf 'INSERT INTO %s(value) VALUES (md5(random()::text));\nSELECT value FROM %s ORDER BY id DESC LIMIT 1;\n' "\$TABLE_NAME" "\$TABLE_NAME" >/tmp/load.sql
+              completed=false
+              cleanup_on_exit() {
+                rc="\$?"
+                trap - EXIT INT TERM
+                if [ "\$completed" != true ]; then
+                  psql -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public.\$TABLE_NAME" >/dev/null || true
+                fi
+                exit "\$rc"
+              }
+              trap cleanup_on_exit EXIT
+              trap 'exit 130' INT
+              trap 'exit 143' TERM
+              psql -v ON_ERROR_STOP=1 -c "CREATE TABLE public.\$TABLE_NAME(id bigserial PRIMARY KEY, value text NOT NULL)"
+              printf 'INSERT INTO public.%s(value) VALUES (md5(random()::text));\nSELECT value FROM public.%s ORDER BY id DESC LIMIT 1;\n' "\$TABLE_NAME" "\$TABLE_NAME" >/tmp/load.sql
               base=\$((TRANSACTIONS/CLIENTS)); remainder=\$((TRANSACTIONS%CLIENTS)); jobs=0
               regular=\$((CLIENTS-remainder))
               if [ "\$base" -gt 0 ] && [ "\$regular" -gt 0 ]; then
@@ -568,9 +741,16 @@ spec:
               processed=\$(sed -n 's/^number of transactions actually processed: \([0-9][0-9]*\).*/\1/p' \
                 /tmp/pgbench.*.out | awk '{total += \$1} END {print total+0}')
               [ "\$processed" -eq "\$TRANSACTIONS" ]
+              rows=\$(psql -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM public.\$TABLE_NAME")
+              [ "\$rows" -eq "\$TRANSACTIONS" ]
+              persistence=\$(psql -v ON_ERROR_STOP=1 -At -c "SELECT c.relpersistence FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='\$TABLE_NAME'")
+              [ "\$persistence" = p ]
+              printf 'PROGRESS phase=postgresql stage=wal-committed operations=%s errors=0 rows=%s relpersistence=%s\n' "\$processed" "\$rows" "\$persistence"
+              completed=true
               printf 'RESULT phase=postgresql operations=%s errors=0\n' "\$processed"
 EOF
-  execute_job databases "$name" "$manifest" "$log_file"
+  execute_job databases "$name" "$manifest" "$log_file" || return 1
+  verify_postgresql_durability "$log_file"
 }
 
 phase_vault() {
@@ -705,7 +885,16 @@ run_phase() {
   start=$(date +%s)
   if ! "$function"; then
     end=$(date +%s); duration=$((end-start))
-    printf '%s\ttrue\tfailed\t0\t1\t100.00\t%s\t%s\n' "$phase" "$duration" "$log_file" >>"$PHASES_TSV"
+    result=$(result_from_log "$log_file" 2>/dev/null || progress_from_log "$log_file" 2>/dev/null || true)
+    if [[ -n "$result" ]]; then
+      IFS=$'\t' read -r operations errors <<<"$result"
+      (( errors > 0 )) || errors=1
+    else
+      operations=0; errors=1
+    fi
+    percent=$(awk -v e="$errors" -v n="$operations" 'BEGIN { if (n==0) print "100.00"; else printf "%.2f", e*100/n }')
+    printf '%s\ttrue\tfailed\t%s\t%s\t%s\t%s\t%s\n' \
+      "$phase" "$operations" "$errors" "$percent" "$duration" "$log_file" >>"$PHASES_TSV"
     return 1
   fi
   result=$(result_from_log "$log_file") || {
@@ -754,11 +943,12 @@ write_summary() {
     --arg final_evidence "$final_evidence" --argjson dry_run "$DRY_RUN" \
     --argjson clients "$CLIENTS" --argjson max_error_bps "$max_error_bps" \
     --argjson timeout "$PHASE_TIMEOUT" --argjson max_restart_delta "$MAX_RESTART_DELTA" \
+    --argjson s3_timeout "$S3_PHASE_TIMEOUT" \
     --slurpfile phases "$phases_json" \
     '{schema:$schema,run_id:$run_id,project:$project,profile:$profile,domain:$domain,status:$status,
       dry_run:$dry_run,config:$config,kubeconfig:$kubeconfig,
       limits:{clients:$clients,max_error_percent:($max_error_bps/100),phase_timeout_seconds:$timeout,
-        max_restart_delta:$max_restart_delta},images:{http:"curlimages/curl:8.17.0",
+        s3_phase_timeout_seconds:$s3_timeout,max_restart_delta:$max_restart_delta},images:{http:"curlimages/curl:8.17.0",
         s3:"amazon/aws-cli:2.34.48",postgresql:"postgres:18.2-alpine3.23",
         vault:"hashicorp/vault:2.0.3",dragonfly:"redis:7.4.7-alpine3.21"},
       phases:$phases[0],final_evidence:(if $final_evidence=="" then null else $final_evidence end)}' \

@@ -90,6 +90,15 @@ Promtail, Filebeat, or Fluentd configuration performs SSN/phone/email-shaped
 replacement before shipping. This is defense in depth; applications must still
 avoid logging sensitive data.
 
+Node log agents are isolated in the `logging-agents` namespace. Its privileged
+Pod Security level permits the required hostPath boundary, while Filebeat
+itself remains unprivileged and reads containerd CRI logs through a read-only
+`/var/log` mount. A fail-closed Helm post-renderer removes the upstream chart's
+unused Docker container-directory and Docker-socket mounts before apply;
+Promtail values similarly omit its upstream Docker-directory default. Fluentd
+uses the same namespace with read-only host logs and dedicated collector state. See
+[Logging Stack Selection](docs/LOGGING_STACK.md#node-agent-security-boundary).
+
 ## Discovery and validation
 
 The VictoriaMetrics path uses `VMServiceScrape` resources. Optional Prometheus

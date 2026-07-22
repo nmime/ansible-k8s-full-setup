@@ -22,6 +22,11 @@
 - Coroot uses pinned official operator/CE charts and pinned application,
   agent, and ClickHouse images. Its eBPF privilege exception is confined to
   the dedicated `coroot` namespace.
+- Node log collectors are confined to the `logging-agents` namespace, whose
+  privileged Pod Security level permits required hostPath log access. The
+  collectors are not privileged containers: host logs are read-only, state
+  uses dedicated writable paths, and Docker-era directories and control
+  sockets are removed from the rendered workloads.
 - Backup, upgrade, rollback, health, and teardown paths exit nonzero when a
   required operation or verification fails.
 

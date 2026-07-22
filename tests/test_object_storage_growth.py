@@ -25,7 +25,18 @@ def test_resource_efficient_seaweedfs_grows_one_logical_volume_at_a_time():
 
 def test_s3_load_verification_uses_tools_available_in_pinned_aws_image():
     load_test = (ROOT / "scripts/tier-load-test.sh").read_text()
+    s3_phase = load_test.split("phase_s3()", 1)[1].split("phase_postgresql()", 1)[0]
 
-    assert 'actual=\\$(cat "\\$readback" 2>/dev/null || true)' in load_test
-    assert '[ "\\$actual" = "\\$expected" ]' in load_test
-    assert "cmp -s" not in load_test
+    # The pinned AWS image supplies /bin/sh and the AWS CLI. Readback content
+    # verification therefore uses the shell read builtin rather than assuming
+    # optional cmp/diff packages are installed in the image.
+    assert 'IFS= read -r actual <"\\$readback/\\$batch/object-\\$object" || true' in s3_phase
+    assert '[ "\\$actual" = "\\$RUN_ID:\\$object" ]' in s3_phase
+    assert "cmp -s" not in s3_phase
+
+    # Preserve the full batched contract: every object is uploaded, downloaded,
+    # content-verified, deleted, and included in the exact operation total.
+    assert s3_phase.count("--recursive --only-show-errors --no-progress") == 2
+    assert 'operations=\\$((operations+1))' in s3_phase
+    assert '[ "\\$operations" -eq "\\$((OBJECTS*4))" ]' in s3_phase
+    assert 's3 ls "\\$prefix/\\$batch/" --recursive' in s3_phase

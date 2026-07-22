@@ -103,7 +103,10 @@ Pods → Filebeat (DaemonSet) → Elasticsearch (HTTPS + Auth)
    - ✅ X-Pack Security enabled (`xpack.security.enabled: true`)
    - ✅ Password-protected: `elastic` superuser with random 24-char password
    - ✅ Passwords stored in K8s Secrets (with `no_log: true` ✅)
-   - ✅ Filebeat uses credentials from Secret (env var `ELASTICSEARCH_PASSWORD`)
+   - ✅ Filebeat and Fluentd use the dedicated `platform_logging_ingest` user
+     from a namespace-local Secret; the `elastic` superuser is not replicated
+   - ✅ The ingest role is bounded to cluster monitoring, ILM/template setup,
+     and `filebeat-*`/`fluentd-*` index management and document creation
 
 3. **Network Policies**:
    - ✅ ES NetworkPolicy: Only allows:
@@ -111,9 +114,20 @@ Pods → Filebeat (DaemonSet) → Elasticsearch (HTTPS + Auth)
      - Kibana → ES (port 9200 HTTP)
      - Temporal namespace → ES (port 9200)
      - Opwerf namespace → ES (port 9200)
-   - ❌ **Missing**: Filebeat → ES explicit allow (relies on default allow)
+   - ✅ Filebeat/Fluentd → ES is explicitly allowed from the isolated
+     `logging-agents` namespace on port 9200
+   - ✅ `logging-agents` has default-deny ingress/egress plus explicit egress
+     only for DNS, Kubernetes metadata discovery, and the selected log backend
 
-4. **Access Control**:
+4. **Node host boundary**:
+   - ✅ Filebeat is a non-privileged container in the dedicated
+     `logging-agents` namespace
+   - ✅ `/var/log` is mounted read-only for containerd CRI logs
+   - ✅ The upstream chart's unused `/var/lib/docker/containers` and
+     `/var/run/docker.sock` mounts are removed before apply
+   - ✅ No Docker or containerd control socket is exposed to Filebeat
+
+5. **Access Control**:
    - ✅ Kibana exposed via Gateway API HTTPRoute
    - ✅ VPN-only: HTTPRoute uses `admin-gateway` (requires VPN connection)
    - ✅ Domain: `https://kibana.{domain}` with Let's Encrypt cert
@@ -140,7 +154,7 @@ xpack.security.transport.ssl.certificate_authorities: /usr/share/elasticsearch/c
 ```yaml
 output.elasticsearch:
   hosts: ["https://es-http.elasticsearch.svc.cluster.local:9200"]
-  username: "elastic"
+  username: "${ELASTICSEARCH_USERNAME}"
   password: "${ELASTICSEARCH_PASSWORD}"  # From K8s Secret
   ssl.certificate_authorities: ["/usr/share/filebeat/config/certs/ca.crt"]
 ```
@@ -158,8 +172,8 @@ ELASTICSEARCH_PASSWORD: <from-secret>
 
 **Minor improvements**:
 1. ✅ **DONE**: All secret-creating tasks have `no_log: true`
-2. **Consider**: Add explicit NetworkPolicy rule for `filebeat` → `elasticsearch` (currently relies on default allow)
-3. **Consider**: Implement role-based access control (RBAC) in Elasticsearch for different service accounts (currently all use `elastic` superuser)
+2. ✅ **DONE**: Filebeat → Elasticsearch has an explicit namespace-scoped policy
+3. ✅ **DONE**: Logging collectors use a dedicated bounded ingest role/user
 4. **Consider**: Enable audit logging in Elasticsearch for compliance:
    ```yaml
    xpack.security.audit.enabled: true
@@ -265,9 +279,8 @@ The logging stack captures **all** container logs. Applications MUST:
 ✅ All critical issues resolved.
 
 ### Short-term Improvements (Optional)
-1. **Add NetworkPolicy for Filebeat**: Explicit allow rule for `filebeat` → `elasticsearch`
-2. **Document secure logging practices**: Guide for application developers
-3. **Enable ES audit logging** (medium/production):
+1. **Document secure logging practices**: Guide for application developers
+2. **Enable ES audit logging** (medium/production):
    ```yaml
    xpack.security.audit.enabled: true
    xpack.security.audit.logfile.events.include: ["access_granted", "access_denied", "authentication_failed"]
@@ -276,7 +289,7 @@ The logging stack captures **all** container logs. Applications MUST:
 ### Long-term Hardening (For Compliance)
 1. **Loki authentication**: Enable `auth_enabled: true` + tenant headers
 2. **Loki TLS**: Configure HTTPS for Loki gateway
-3. **ES RBAC**: Create service-specific users (replace `elastic` superuser)
+3. **ES RBAC**: Continue separating any future integrations from the `elastic` superuser
 4. **Log redaction pipeline**: Implement PII/sensitive data scrubbing
 5. **Extend retention**: 90+ days for compliance audit trails
 

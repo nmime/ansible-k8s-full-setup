@@ -785,6 +785,83 @@
     (es_data_sts.resources | default([])) | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
   retries: 60
   delay: 15
+- name: Reconcile the least-privilege logging ingest role and user
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    role_payload=$(jq -cn '{
+      cluster: ["monitor", "manage_ilm", "manage_index_templates"],
+      indices: [{
+        names: ["filebeat-*", "fluentd-*"],
+        privileges: ["auto_configure", "create_doc", "create_index", "manage", "view_index_metadata"]
+      }]
+    }')
+    user_payload=$(jq -cn --arg password "$LOGGING_INGEST_PASSWORD" '{
+      password: $password,
+      roles: ["platform_logging_ingest"],
+      full_name: "Platform logging ingest"
+    }')
+    printf '%s' "$role_payload" | kubectl exec -i -n "{{ es_ns }}" es-master-0 -c elasticsearch -- \
+      sh -ec 'curl -fsk -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+        -X PUT https://localhost:9200/_security/role/platform_logging_ingest --data-binary @- >/dev/null'
+    printf '%s' "$user_payload" | kubectl exec -i -n "{{ es_ns }}" es-master-0 -c elasticsearch -- \
+      sh -ec 'curl -fsk -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+        -X PUT https://localhost:9200/_security/user/platform_logging_ingest --data-binary @- >/dev/null'
+  args:
+    executable: /bin/bash
+  environment:
+    LOGGING_INGEST_PASSWORD: '{{ es_logging_ingest_password }}'
+  register: _r_logging_ingest_principal
+  retries: 6
+  delay: 10
+  until: _r_logging_ingest_principal is not failed
+  when: log_stack | default('elk') in ['elk', 'efk']
+- name: Persist dedicated logging ingest credentials
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: logging-ingest-credentials
+        namespace: '{{ es_ns }}'
+      type: Opaque
+      stringData:
+        username: platform_logging_ingest
+        password: '{{ es_logging_ingest_password }}'
+  when: log_stack | default('elk') in ['elk', 'efk']
+- name: Remove the logging ingest principal when Elasticsearch logging is deselected
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for endpoint in \
+      _security/user/platform_logging_ingest \
+      _security/role/platform_logging_ingest; do
+      status=$(kubectl exec -n "{{ es_ns }}" es-master-0 -c elasticsearch -- \
+        sh -ec 'curl -sk -o /dev/null -w "%{http_code}" -u "elastic:${ELASTIC_PASSWORD}" \
+          -X DELETE "https://localhost:9200/$1"' -- "$endpoint")
+      case "$status" in
+        200|404) ;;
+        *) printf 'unexpected Elasticsearch delete status %s for %s\n' "$status" "$endpoint" >&2; exit 1 ;;
+      esac
+    done
+  args:
+    executable: /bin/bash
+  register: _r_remove_logging_ingest_principal
+  retries: 6
+  delay: 10
+  until: _r_remove_logging_ingest_principal is not failed
+  when: log_stack | default('elk') not in ['elk', 'efk']
+- name: Remove stored logging ingest credentials when Elasticsearch logging is deselected
+  no_log: true
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    namespace: '{{ es_ns }}'
+    name: logging-ingest-credentials
+  when: log_stack | default('elk') not in ['elk', 'efk']
 - name: Read the Kibana service-account token secret
   no_log: true
   kubernetes.core.k8s_info:
@@ -1173,17 +1250,36 @@
     - "  Kibana auth: elastic/kibana service account token"
     - "  Elasticsearch admin: elastic / (from es-credentials secret)"
     - "=========================================="
-- name: Create CiliumNetworkPolicy for Filebeat to Elasticsearch
+- name: Remove legacy Filebeat-only Elasticsearch ingress policy
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
         name: allow-filebeat-to-es
         namespace: '{{ es_ns }}'
+- name: Remove logging-agent Elasticsearch ingress when Elasticsearch logging is deselected
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-logging-agents-to-es
+        namespace: '{{ es_ns }}'
+  when: log_stack | default('elk') not in ['elk', 'efk']
+- name: Create CiliumNetworkPolicy for logging agents to Elasticsearch
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-logging-agents-to-es
+        namespace: '{{ es_ns }}'
       spec:
-        description: Allow Filebeat DaemonSet to push logs to Elasticsearch
+        description: Allow the selected node logging agent to push logs to Elasticsearch
         endpointSelector:
           matchLabels:
             app: elasticsearch

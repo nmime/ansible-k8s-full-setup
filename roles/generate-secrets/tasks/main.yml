@@ -80,6 +80,7 @@
     generated_daytona_api_key: "{{ lookup('env', 'DAYTONA_API_KEY') | default(saved_secrets.daytona_api_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=48')), true) }}"
     generated_daytona_encryption_key: "{{ saved_secrets.daytona_encryption_key | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
     generated_es_superuser_password: "{{ saved_secrets.es_superuser_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+    generated_es_logging_ingest_password: "{{ saved_secrets.es_logging_ingest_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
     generated_postal_db_password: "{{ saved_secrets.postal_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
     generated_postal_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
     generated_postal_admin_password: "{{ saved_secrets.postal_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=16')) }}"
@@ -91,6 +92,36 @@
     generated_alert_telegram_chat_id: "{{ lookup('env', 'ALERT_TELEGRAM_CHAT_ID') | default(saved_secrets.alert_telegram_chat_id | default(''), true) }}"
     generated_alert_email_to: "{{ lookup('env', 'ALERT_EMAIL_TO') | default(saved_secrets.alert_email_to | default('alerts@' + domain), true) }}"
   no_log: true
+
+- name: Resolve GitLab Runner authentication token
+  ansible.builtin.set_fact:
+    generated_gitlab_runner_token: >-
+      {{ lookup('env', 'GITLAB_RUNNER_TOKEN') |
+         default(saved_secrets.gitlab_runner_token | default(''), true) }}
+  no_log: true
+
+- name: Require encrypted persistence for the GitLab Runner token
+  ansible.builtin.assert:
+    that:
+      - not (platform_gitlab_runner_enabled | default(false) | bool) or
+        (vault_encrypt_secrets | default(true) | bool)
+    fail_msg: >-
+      gitlab.runner.enabled=true requires vault_encrypt_secrets=true so the
+      GitLab Runner authentication token is never persisted as plaintext.
+    quiet: true
+
+- name: Require a modern authentication token when GitLab Runner is selected
+  ansible.builtin.assert:
+    that:
+      - not (platform_gitlab_runner_enabled | default(false) | bool) or
+        (generated_gitlab_runner_token | string | trim | length > 20 and
+         generated_gitlab_runner_token | string is match('^glrt-[A-Za-z0-9_-]+$'))
+    fail_msg: >-
+      gitlab.runner.enabled=true requires GITLAB_RUNNER_TOKEN with a GitLab-issued
+      runner authentication token (glrt-...). Create an instance runner under
+      GitLab Admin > CI/CD > Runners and rerun. Legacy registration tokens are
+      intentionally unsupported; the Runner will not be silently omitted.
+    quiet: true
 
 - name: Set unified secret variables for all roles
   set_fact:
@@ -107,9 +138,11 @@
     daytona_api_key: "{{ generated_daytona_api_key }}"
     daytona_encryption_key: "{{ generated_daytona_encryption_key }}"
     es_superuser_password: "{{ generated_es_superuser_password }}"
+    es_logging_ingest_password: "{{ generated_es_logging_ingest_password }}"
     postal_db_password: "{{ generated_postal_db_password }}"
     postal_rails_secret: "{{ generated_postal_rails_secret }}"
     postal_admin_password: "{{ generated_postal_admin_password }}"
+    gitlab_runner_token: "{{ generated_gitlab_runner_token }}"
     alert_telegram_bot_token: "{{ generated_alert_telegram_bot_token }}"
     alert_telegram_chat_id: "{{ generated_alert_telegram_chat_id }}"
     alert_email_to: "{{ generated_alert_email_to }}"
@@ -134,9 +167,11 @@
       daytona_api_key: "{{ daytona_api_key }}"
       daytona_encryption_key: "{{ daytona_encryption_key }}"
       es_superuser_password: "{{ es_superuser_password }}"
+      es_logging_ingest_password: "{{ es_logging_ingest_password }}"
       postal_db_password: "{{ postal_db_password }}"
       postal_rails_secret: "{{ postal_rails_secret }}"
       postal_admin_password: "{{ postal_admin_password }}"
+      gitlab_runner_token: "{{ gitlab_runner_token }}"
       alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
       alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
       alert_email_to: "{{ alert_email_to }}"
@@ -168,9 +203,11 @@
           daytona_api_key: "{{ daytona_api_key }}"
           daytona_encryption_key: "{{ daytona_encryption_key }}"
           es_superuser_password: "{{ es_superuser_password }}"
+          es_logging_ingest_password: "{{ es_logging_ingest_password }}"
           postal_db_password: "{{ postal_db_password }}"
           postal_rails_secret: "{{ postal_rails_secret }}"
           postal_admin_password: "{{ postal_admin_password }}"
+          gitlab_runner_token: "{{ gitlab_runner_token }}"
           alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
           alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
           alert_email_to: "{{ alert_email_to }}"
@@ -244,6 +281,7 @@
       - "  Daytona API key: {{ 'configured' if daytona_api_key | length > 0 else 'NOT SET' }}"
       - "  ES password: ****"
       - "  Postal admin: ****"
+      - "  GitLab Runner token: {{ 'configured' if gitlab_runner_token | length > 0 else 'NOT SET' }}"
       - "  Alert Telegram: {{ 'configured' if alert_telegram_bot_token | length > 0 else 'NOT SET (silent)' }}"
       - "  Alert email to: {{ alert_email_to }}"
       - "============================================"

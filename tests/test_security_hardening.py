@@ -309,6 +309,113 @@ class TestVaultTLS:
         assert "failed_when: false" not in reconcile
         assert reconcile.count("no_log: true") >= 6
 
+    def test_example_externalsecret_is_opt_in_and_removed_when_disabled(self):
+        defaults = yaml.safe_load(read("defaults/main.yml"))
+        assert defaults["eso_example_secret_enabled"] is False
+        assert defaults["eso_example_secret_remote_key"] == ""
+        assert defaults["eso_example_secret_remote_property"] == "password"
+
+        tasks = yaml.safe_load(self.content)
+        by_name = {task.get("name"): task for task in tasks}
+        cleanup = by_name["Remove the disabled example ExternalSecret"]
+        assert cleanup["kubernetes.core.k8s"] == {
+            "state": "absent",
+            "api_version": "external-secrets.io/v1",
+            "kind": "ExternalSecret",
+            "name": "example-secret",
+            "namespace": "default",
+            "wait": True,
+            "wait_timeout": 60,
+        }
+        assert "not (eso_example_secret_enabled | bool)" in cleanup["when"]
+        assert (
+            "(_eso_example_externalsecret_crd.resources | default([]) | length) == 1"
+            in cleanup["when"]
+        )
+        assert "_eso_example_externalsecret_managed | bool" in cleanup["when"]
+
+        target_cleanup = by_name["Remove the disabled example target Secret"]
+        assert target_cleanup["kubernetes.core.k8s"]["state"] == "absent"
+        assert target_cleanup["kubernetes.core.k8s"]["kind"] == "Secret"
+        assert target_cleanup["no_log"] is True
+        assert target_cleanup["when"] == [
+            "not (eso_example_secret_enabled | bool)",
+            "_eso_example_target_secret_managed | bool",
+        ]
+
+        classification = by_name["Classify managed example fixture ownership"]
+        ownership = " ".join(classification["ansible.builtin.set_fact"].values())
+        assert 'platform.example.com/fixture' in ownership
+        assert "secretStoreRef.name" in ownership
+        assert "remoteRef.key" in ownership
+        assert "metadata.ownerReferences" in ownership
+        assert "selectattr('uid', 'equalto'" in ownership
+        assert classification["no_log"] is True
+
+        for gate_name in (
+            "Refuse to delete an unmanaged example ExternalSecret collision",
+            "Refuse to delete an unmanaged example target Secret collision",
+        ):
+            gate = by_name[gate_name]
+            assert gate["no_log"] is True
+            assert "left unchanged" in gate["ansible.builtin.assert"]["fail_msg"]
+
+        create = by_name["Create the opt-in example ExternalSecret"]
+        assert create["when"] == "eso_example_secret_enabled | bool"
+        definition = create["kubernetes.core.k8s"]["definition"]
+        assert definition["metadata"]["labels"]["platform.example.com/fixture"] == (
+            "example-secret"
+        )
+        assert definition["spec"]["target"]["template"]["metadata"]["labels"][
+            "platform.example.com/fixture"
+        ] == "example-secret"
+        remote = definition["spec"]["data"][0]["remoteRef"]
+        assert remote == {
+            "key": "{{ eso_example_secret_remote_key }}",
+            "property": "{{ eso_example_secret_remote_property }}",
+        }
+
+    def test_example_externalsecret_requires_an_existing_vault_source(self):
+        tasks = yaml.safe_load(self.content)
+        by_name = {task.get("name"): task for task in tasks}
+
+        contract = by_name["Validate the opt-in example ExternalSecret contract"]
+        requirements = contract["ansible.builtin.assert"]["that"]
+        assert "eso_enabled | bool" in requirements
+        assert "vault_init_data is defined" in requirements
+        assert any("eso_example_secret_remote_key" in item for item in requirements)
+        assert any("eso_example_secret_remote_property" in item for item in requirements)
+
+        verify = by_name["Verify the opt-in example source key exists in Vault"]
+        assert 'vault kv get -format=json "secret/$2"' in verify[
+            "kubernetes.core.k8s_exec"
+        ]["command"]
+        assert verify["no_log"] is True
+        assert verify["when"] == "eso_example_secret_enabled | bool"
+
+        property_gate = by_name[
+            "Require the opt-in example source property to exist in Vault"
+        ]
+        assert property_gate["no_log"] is True
+        assert "data.data[eso_example_secret_remote_property] is defined" in " ".join(
+            property_gate["ansible.builtin.assert"]["that"]
+        )
+
+        normalized = read("playbooks/tasks/normalize_profile.yml")
+        assert "secrets.eso.example_secret.enabled" in normalized
+        assert "not eso_example_secret_enabled | bool or platform_eso_enabled | bool" in normalized
+
+        example = yaml.safe_load(read("platform-orchestrator/platform.example.yaml"))
+        assert example["secrets"]["eso"]["example_secret"] == {
+            "enabled": False,
+            "remote_key": "",
+            "remote_property": "password",
+        }
+
+        readme = read("README.md")
+        assert "vault kv put secret/demo/app" in readme
+        assert "Reconciliation fails closed if the source key or property does not exist" in readme
+
     def test_vault_internal_certificate_secures_local_cli_operations(self):
         tls = read("roles/k8s-secrets/tasks/vault_tls.yml")
         assert "ipAddresses:" in tls
@@ -603,6 +710,21 @@ def test_filebeat_is_isolated_in_the_privileged_agent_namespace():
     assert "release_namespace: '{{ logging_agent_namespace }}'" in filebeat
     assert "name: Remove legacy Filebeat release from Elasticsearch namespace" in observability
     assert "name: Replicate the minimum Elasticsearch credentials into the agent namespace" in observability
+    assert "name: Remove the legacy replicated Elasticsearch superuser secret" in observability
+    assert "logging-ingest-credentials" in observability
+    assert "platform_logging_ingest" in elasticsearch
+    legacy_cleanup = observability.split(
+        "- name: Remove the legacy replicated Elasticsearch superuser secret", 1
+    )[1].split(
+        "- name: Remove replicated logging credentials when Elasticsearch logging is deselected",
+        1,
+    )[0]
+    replicated_cleanup = observability.split(
+        "- name: Remove replicated logging credentials when Elasticsearch logging is deselected",
+        1,
+    )[1].split("- name: Read Elasticsearch secrets", 1)[0]
+    assert "no_log: true" in legacy_cleanup
+    assert "no_log: true" in replicated_cleanup
     assert "pod-security.kubernetes.io/enforce: baseline" in elasticsearch
     assert "k8s:io.kubernetes.pod.namespace: logging-agents" in elasticsearch
     assert "name: Check Filebeat node coverage" in health
@@ -719,6 +841,85 @@ def test_postgresql_operator_config_uses_current_secure_schema():
     assert "percona/percona-pgbackrest:2.58.0-2" in databases
     assert "percona/pmm-client:3.8.1" in databases
     assert "PMM_SERVER_TOKEN" in databases
+
+
+def test_operator_injected_database_containers_have_tier_aware_resources():
+    defaults = yaml.safe_load(read("defaults/main.yml"))
+    normalized = read("playbooks/tasks/normalize_profile.yml")
+    database_tasks = yaml.safe_load(read("roles/k8s-databases/tasks/main.yml"))
+
+    resource_defaults = (
+        "database_container_default_resources",
+        "postgresql_replica_cert_copy_resources",
+        "postgresql_pgbackrest_resources",
+        "postgresql_pgbackrest_config_resources",
+        "postgresql_pgbackrest_init_resources",
+        "postgresql_pgbackrest_repo_host_resources",
+        "postgresql_pgbackrest_job_resources",
+        "mongodb_backup_resources",
+        "mongodb_pmm_resources",
+    )
+    for variable in resource_defaults:
+        resources = defaults[variable]
+        assert set(resources) == {"requests", "limits"}
+        assert set(resources["requests"]) == {"cpu", "memory"}
+        assert set(resources["limits"]) == {"cpu", "memory"}
+        assert "resource_tier" in resources["requests"]["cpu"]
+        assert variable in normalized
+
+    limit_range_task = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Bound operator-created database helper containers at admission"
+    )
+    limit_range = limit_range_task["kubernetes.core.k8s"]["definition"]
+    assert limit_range["kind"] == "LimitRange"
+    container_defaults = limit_range["spec"]["limits"][0]
+    assert container_defaults["type"] == "Container"
+    assert container_defaults["default"] == (
+        "{{ database_container_default_resources.limits }}"
+    )
+    assert container_defaults["defaultRequest"] == (
+        "{{ database_container_default_resources.requests }}"
+    )
+
+    pg_task = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
+    )
+    pg_spec = pg_task["kubernetes.core.k8s"]["definition"]["spec"]
+    assert pg_spec["instances"][0]["containers"]["replicaCertCopy"]["resources"] == (
+        "{{ postgresql_replica_cert_copy_resources }}"
+    )
+    pgbackrest = pg_spec["backups"]["pgbackrest"]
+    assert pgbackrest["containers"]["pgbackrest"]["resources"] == (
+        "{{ postgresql_pgbackrest_resources }}"
+    )
+    assert pgbackrest["containers"]["pgbackrestConfig"]["resources"] == (
+        "{{ postgresql_pgbackrest_config_resources }}"
+    )
+    assert pgbackrest["initContainer"]["resources"] == (
+        "{{ postgresql_pgbackrest_init_resources }}"
+    )
+    assert pgbackrest["initContainer"]["image"] == (
+        "docker.io/percona/percona-postgresql-operator:{{ pg_operator_ver }}"
+    )
+    assert pgbackrest["jobs"]["resources"] == (
+        "{{ postgresql_pgbackrest_job_resources }}"
+    )
+    assert pgbackrest["repoHost"]["resources"] == (
+        "{{ postgresql_pgbackrest_repo_host_resources }}"
+    )
+
+    mongo_task = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Create MongoDB cluster"
+    )
+    mongo_spec = mongo_task["kubernetes.core.k8s"]["definition"]["spec"]
+    assert mongo_spec["backup"]["resources"] == "{{ mongodb_backup_resources }}"
+    assert mongo_spec["pmm"]["resources"] == "{{ mongodb_pmm_resources }}"
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():

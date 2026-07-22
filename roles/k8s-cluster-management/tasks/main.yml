@@ -236,6 +236,25 @@
       cilium_enable_health_checking: true
       cilium_enable_bandwidth_manager: true
       cilium_enable_ipv4_masquerade: true
+      # Keep control-plane networking components schedulable on compact nodes.
+      # Kubespray passes this dictionary directly to the pinned Cilium chart.
+      cilium_extra_values:
+        operator:
+          resources:
+            requests:
+              cpu: {{ '25m' if resource_tier in ['minimal', 'small'] else '50m' }}
+              memory: {{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}
+            limits:
+              cpu: {{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}
+              memory: {{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}
+        envoy:
+          resources:
+            requests:
+              cpu: {{ '20m' if resource_tier in ['minimal', 'small'] else '50m' }}
+              memory: {{ '32Mi' if resource_tier in ['minimal', 'small'] else '64Mi' }}
+            limits:
+              cpu: {{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}
+              memory: {{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}
       # Containerd registry mirrors - route private registry through internal service
       containerd_registries_mirrors:
         - prefix: docker.io
@@ -509,6 +528,58 @@
   become: false
   changed_when: false
 
+- name: Reconcile Cilium operator resource bounds after Kubespray
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cilium-operator
+        namespace: kube-system
+      spec:
+        template:
+          spec:
+            containers:
+              - name: cilium-operator
+                resources:
+                  requests:
+                    cpu: "{{ '25m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+                    memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
+                  limits:
+                    cpu: "{{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+                    memory: "{{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}"
+  register: _r_bound_cilium_operator
+  retries: 3
+  delay: 10
+  until: _r_bound_cilium_operator is not failed
+
+- name: Reconcile Cilium Envoy resource bounds after Kubespray
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: cilium-envoy
+        namespace: kube-system
+      spec:
+        template:
+          spec:
+            containers:
+              - name: cilium-envoy
+                resources:
+                  requests:
+                    cpu: "{{ '20m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+                    memory: "{{ '32Mi' if resource_tier in ['minimal', 'small'] else '64Mi' }}"
+                  limits:
+                    cpu: "{{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+                    memory: "{{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}"
+  register: _r_bound_cilium_envoy
+  retries: 3
+  delay: 10
+  until: _r_bound_cilium_envoy is not failed
+
 - name: Enforce dedicated control-plane scheduling contract
   ansible.builtin.shell: |
     set -euo pipefail
@@ -613,6 +684,32 @@
   delegate_to: localhost
   become: false
   changed_when: true
+
+- name: Reconcile NodeLocal DNS complete resource bounds
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: nodelocaldns
+        namespace: kube-system
+      spec:
+        template:
+          spec:
+            containers:
+              - name: node-cache
+                resources:
+                  requests:
+                    cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"
+                    memory: "{{ '40Mi' if resource_tier in ['minimal', 'small'] else '70Mi' }}"
+                  limits:
+                    cpu: "{{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+                    memory: "{{ '128Mi' if resource_tier in ['minimal', 'small'] else '200Mi' }}"
+  register: _r_bound_nodelocaldns
+  retries: 3
+  delay: 10
+  until: _r_bound_nodelocaldns is not failed
 
 # ============================================
 
@@ -720,6 +817,15 @@
       - op: replace
         path: /spec/template/spec/containers/0/env
         value: "{{ ccm_controller_policy_env }}"
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: "{{ '25m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+            memory: "{{ '32Mi' if resource_tier in ['minimal', 'small'] else '64Mi' }}"
+          limits:
+            cpu: "{{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+            memory: "{{ '128Mi' if resource_tier in ['minimal', 'small'] else '256Mi' }}"
   register: _r_patch_ccm_progress_deadline
   retries: 3
   delay: 10
@@ -855,6 +961,74 @@
   retries: 3
   delay: 10
   until: _r_install_hetzner_csi_driver is not failed
+
+- name: Reconcile Hetzner CSI controller resource bounds
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hcloud-csi-controller
+        namespace: kube-system
+      spec:
+        template:
+          spec:
+            containers:
+              - name: hcloud-csi-driver
+                resources:
+                  requests: {cpu: "{{ '25m' if resource_tier in ['minimal', 'small'] else '50m' }}", memory: 64Mi}
+                  limits: {cpu: 500m, memory: 256Mi}
+              - name: csi-attacher
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 200m, memory: 128Mi}
+              - name: csi-resizer
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 200m, memory: 128Mi}
+              - name: csi-provisioner
+                resources:
+                  requests: {cpu: 20m, memory: 32Mi}
+                  limits: {cpu: 250m, memory: 128Mi}
+              - name: liveness-probe
+                resources:
+                  requests: {cpu: 5m, memory: 16Mi}
+                  limits: {cpu: 100m, memory: 64Mi}
+  register: _r_bound_hcloud_csi_controller
+  retries: 3
+  delay: 10
+  until: _r_bound_hcloud_csi_controller is not failed
+
+- name: Reconcile Hetzner CSI node resource bounds
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: hcloud-csi-node
+        namespace: kube-system
+      spec:
+        template:
+          spec:
+            containers:
+              - name: csi-node-driver-registrar
+                resources:
+                  requests: {cpu: 5m, memory: 16Mi}
+                  limits: {cpu: 100m, memory: 64Mi}
+              - name: liveness-probe
+                resources:
+                  requests: {cpu: 5m, memory: 16Mi}
+                  limits: {cpu: 100m, memory: 64Mi}
+              - name: hcloud-csi-driver
+                resources:
+                  requests: {cpu: "{{ '20m' if resource_tier in ['minimal', 'small'] else '50m' }}", memory: 64Mi}
+                  limits: {cpu: 500m, memory: 256Mi}
+  register: _r_bound_hcloud_csi_node
+  retries: 3
+  delay: 10
+  until: _r_bound_hcloud_csi_node is not failed
 
 - name: Increase CSI progressDeadlineSeconds for slow image pulls
   kubernetes.core.k8s_json_patch:
@@ -1869,10 +2043,71 @@
     create_namespace: true
     release_state: present
     wait: true
+    values:
+      controller:
+        resources:
+          requests:
+            cpu: "{{ '20m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+            memory: 64Mi
+          limits: {cpu: 250m, memory: 256Mi}
+      speaker:
+        resources:
+          requests:
+            cpu: "{{ '20m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+            memory: 64Mi
+          limits: {cpu: 250m, memory: 256Mi}
+      frr-k8s:
+        frrk8s:
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          frr:
+            resources:
+              requests: {cpu: 25m, memory: 64Mi}
+              limits: {cpu: 300m, memory: 256Mi}
+          reloader:
+            resources:
+              requests: {cpu: 5m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
+          frrMetrics:
+            resources:
+              requests: {cpu: 5m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
+          frrStatus:
+            resources:
+              requests: {cpu: 5m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
   register: _r_install_metallb
   retries: 3
   delay: 10
   until: _r_install_metallb is not failed
+
+- name: Reconcile MetalLB FRR-K8s init-container resource bounds
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: metallb-frr-k8s
+        namespace: metallb-system
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: "{{ item }}"
+                resources:
+                  requests: {cpu: 5m, memory: 8Mi}
+                  limits: {cpu: 100m, memory: 64Mi}
+  loop:
+    - cp-frr-files
+    - cp-reloader
+    - cp-metrics
+    - cp-frr-status
+  register: _r_bound_metallb_frr_init
+  retries: 3
+  delay: 10
+  until: _r_bound_metallb_frr_init is not failed
 
 - name: Configure MetalLB IPAddressPool
   kubernetes.core.k8s:
