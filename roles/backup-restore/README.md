@@ -12,6 +12,7 @@ Idempotent backup scheduling and verification for enabled platform components.
 | SeaweedFS   | Topology check + Velero/Kopia PVC data | `seaweedfs-backup-check` / `full-cluster` | `storage` / `velero` |
 | GitLab data | Official chart Toolbox job | `gitlab-toolbox-backup`   | `gitlab`    |
 | GitLab Rails secrets | Secret export to S3 | `gitlab-rails-secrets-backup` | `gitlab` |
+| Kubernetes resources and PVCs | Velero + Kopia node-agent | `full-cluster` | `velero` |
 
 On-demand cluster backups require the schema-v2 native catalog. PostgreSQL
 records the exact pgBackRest repo2 set, MongoDB the operator-reported PBM
@@ -19,7 +20,6 @@ destination, and the Vault, SeaweedFS, GitLab Rails, and Toolbox Jobs record
 the exact final S3 object URI/key. The catalog uses the fixed recovery order
 `seaweedfs`, `vault`, `postgresql`, `mongodb`, `gitlab-secrets`, `gitlab`; its
 SHA-256 is included in the independently published cluster completion receipt.
-| Kubernetes resources and PVCs | Velero + Kopia node-agent | `full-cluster` | `velero` |
 
 ## Usage
 

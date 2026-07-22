@@ -396,3 +396,16 @@ The acceptance results remain under the gitignored
 remain under the adjacent private migration state until operator cleanup. The
 repository documentation and tests describe how to repeat every check without
 depending on these ephemeral local paths.
+
+## Post-cutoff source status — 2026-07-22
+
+The recovery implementation through commit `6d6fbef` completed a focused
+327-test validation run. The repository-wide `scripts/validate-local.sh` gate
+then passed all 10 checks, including the complete pytest suite, and local
+`main` exactly matched published `origin/main` at that commit.
+
+These results supersede only the source-validation boundary recorded at the
+2026-07-21 evidence cutoff. A full Velero plus application-native replay into a
+separately provisioned replacement cluster was still in progress when this
+appendix was written. No replacement-cluster recovery, post-recovery load, or
+final cleanup outcome is claimed here.

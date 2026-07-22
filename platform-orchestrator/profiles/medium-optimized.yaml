@@ -11,7 +11,10 @@
 platform_profile: medium-optimized
 tier: medium
 resource_tier: small
-cost_estimate: "Provider-price dependent: 3 x cx33 control plane, 4 x cx33 worker, cx23 bastion, lb11"
+cost_estimate: >-
+  Provider-price dependent: 3 x cx33 control plane, 4 x cx33 worker, cx23
+  bastion, lb11, and 680 GiB billable persistent volumes (660 GiB data claims
+  plus 20 GiB GitLab backup staging)
 
 global:
   project: k8s
