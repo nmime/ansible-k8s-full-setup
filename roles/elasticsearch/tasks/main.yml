@@ -785,6 +785,31 @@
     (es_data_sts.resources | default([])) | length > 0 and (es_data_sts.resources[0].status.readyReplicas | default(0) | int) >= (es_data_replicas | int)
   retries: 60
   delay: 15
+- name: Require green Elasticsearch cluster health after data-node reconciliation
+  no_log: true
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - '{{ es_ns }}'
+      - es-master-0
+      - -c
+      - elasticsearch
+      - --
+      - sh
+      - -ec
+      - >-
+        curl -fsk -u "elastic:${ELASTIC_PASSWORD}"
+        "https://localhost:9200/_cluster/health?wait_for_status=green&timeout=30s"
+  register: _r_es_green_health
+  changed_when: false
+  retries: 12
+  delay: 10
+  until:
+    - (_r_es_green_health.stdout | from_json).status == 'green'
+    - not ((_r_es_green_health.stdout | from_json).timed_out | bool)
+    - (_r_es_green_health.stdout | from_json).unassigned_shards | int == 0
 - name: Reconcile the least-privilege logging ingest role and user
   no_log: true
   ansible.builtin.shell: |

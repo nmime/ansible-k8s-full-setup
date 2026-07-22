@@ -1,6 +1,20 @@
 ---
 # Observability component health checks
 
+- name: Read the nodes intended for log collection
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _r_logging_nodes
+  when: log_stack in ['loki', 'elk', 'efk']
+
+- name: Require at least one node for log collection
+  ansible.builtin.assert:
+    that:
+      - _r_logging_nodes.resources | length > 0
+    fail_msg: No Kubernetes nodes are available for node-level log collection.
+  when: log_stack in ['loki', 'elk', 'efk']
+
 - name: Check VictoriaMetrics Operator health
   kubernetes.core.k8s_info:
     api_version: v1
@@ -58,6 +72,21 @@
     - _r_check_loki.resources[0].status.phase | default('') == 'Running'
   when: log_stack == 'loki'
 
+- name: Check Promtail node coverage
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: '{{ logging_agent_namespace | default("logging-agents") }}'
+    name: promtail
+  register: _r_check_promtail
+  retries: 10
+  delay: 10
+  until:
+    - _r_check_promtail.resources | length > 0
+    - _r_check_promtail.resources[0].status.desiredNumberScheduled | default(0) | int == _r_logging_nodes.resources | length
+    - _r_check_promtail.resources[0].status.numberReady | default(0) | int == _r_logging_nodes.resources | length
+  when: log_stack == 'loki'
+
 - name: Check Filebeat node coverage
   kubernetes.core.k8s_info:
     api_version: apps/v1
@@ -69,8 +98,8 @@
   delay: 10
   until:
     - _r_check_filebeat.resources | length > 0
-    - _r_check_filebeat.resources[0].status.desiredNumberScheduled | default(0) | int > 0
-    - _r_check_filebeat.resources[0].status.numberReady | default(0) | int == _r_check_filebeat.resources[0].status.desiredNumberScheduled | int
+    - _r_check_filebeat.resources[0].status.desiredNumberScheduled | default(0) | int == _r_logging_nodes.resources | length
+    - _r_check_filebeat.resources[0].status.numberReady | default(0) | int == _r_logging_nodes.resources | length
   when: log_stack == 'elk'
 
 - name: Check Fluentd node coverage
@@ -84,8 +113,8 @@
   delay: 10
   until:
     - _r_check_fluentd.resources | length > 0
-    - _r_check_fluentd.resources[0].status.desiredNumberScheduled | default(0) | int > 0
-    - _r_check_fluentd.resources[0].status.numberReady | default(0) | int == _r_check_fluentd.resources[0].status.desiredNumberScheduled | int
+    - _r_check_fluentd.resources[0].status.desiredNumberScheduled | default(0) | int == _r_logging_nodes.resources | length
+    - _r_check_fluentd.resources[0].status.numberReady | default(0) | int == _r_logging_nodes.resources | length
   when: log_stack == 'efk'
 
 - name: Check Grafana health

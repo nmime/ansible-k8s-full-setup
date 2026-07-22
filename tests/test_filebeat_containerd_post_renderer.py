@@ -128,6 +128,9 @@ def test_role_installs_filebeat_through_the_containerd_post_renderer():
     assert "allowPrivilegeEscalation: false" in filebeat_task
     assert "drop: [ALL]" in filebeat_task
     assert "type: RuntimeDefault" in filebeat_task
+    assert "key: node-role.kubernetes.io/control-plane" in filebeat_task
+    assert "key: node-role.kubernetes.io/master" in filebeat_task
+    assert filebeat_task.count("effect: NoSchedule") >= 2
 
 
 def test_nonvendored_workload_roles_do_not_mount_docker_runtime_paths():
@@ -183,6 +186,9 @@ def test_fluentd_uses_the_isolated_containerd_host_log_boundary():
     assert "drop: [ALL]" in fluentd_task
     assert "readOnlyRootFilesystem: true" in fluentd_task
     assert "type: RuntimeDefault" in fluentd_task
+    assert "key: node-role.kubernetes.io/control-plane" in fluentd_task
+    assert "key: node-role.kubernetes.io/master" in fluentd_task
+    assert fluentd_task.count("effect: NoSchedule") >= 2
     assert "path /fluentd/state/buffers/kubernetes.system.buffer" in fluentd_task
     assert "pos_file /fluentd/state/fluentd-containers.log.pos" in fluentd_task
     assert "@type regexp" in fluentd_task
@@ -207,6 +213,9 @@ def test_efk_gets_agent_namespace_secrets_policies_and_health_check():
     assert "name: Check Fluentd node coverage" in health
     assert "status.desiredNumberScheduled" in health
     assert "status.numberReady" in health
+    assert "name: Read the nodes intended for log collection" in health
+    assert "name: Check Promtail node coverage" in health
+    assert health.count("_r_logging_nodes.resources | length") >= 7
     assert "name: allow-logging-agents-to-es" in elasticsearch
     assert "name: Remove legacy Filebeat-only Elasticsearch ingress policy" in elasticsearch
     legacy_policy_cleanup = elasticsearch.split(

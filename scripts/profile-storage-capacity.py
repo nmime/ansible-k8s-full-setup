@@ -72,6 +72,10 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
         add("object-storage/volume", volumes,
             nested(config, "storage.size_per_replica", nested(config, "storage.size", default_volume)),
             "SeaweedFS volume")
+        if enabled(config, "storage.index_persistent", True):
+            add("object-storage/index", volumes,
+                nested(config, "storage.index_size", "4Gi"),
+                "SeaweedFS volume indexes")
         add("object-storage/filer", filers, nested(config, "storage.filer_size", "10Gi"), "SeaweedFS filer")
 
     if enabled(config, "secrets.enabled", True):

@@ -1913,19 +1913,19 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
         "source-declared\tcpx22\ttarget-requested\tcx23\tretained\tcpx22\n"
     )
     capacity = json.loads((state / "volume-capacity-plan.json").read_text())
-    assert capacity["source"]["persistent_total_gib"] == 240
-    assert capacity["target"]["persistent_total_gib"] == 1310
-    assert capacity["target_delta_gib"] == 1100
+    assert capacity["source"]["persistent_total_gib"] == 250
+    assert capacity["target"]["persistent_total_gib"] == 1440
+    assert capacity["target_delta_gib"] == 1220
     assert capacity["migration_scratch_gib"] == 50
-    assert capacity["required_additional_gib"] == 1150
+    assert capacity["required_additional_gib"] == 1270
     assert capacity["planning_inputs"] == {
         "configured_account_quota_gib": None,
         "safety_margin_gib": 100,
         "live_account_usage_required": True,
     }
-    assert capacity["minimum_required_headroom_gib"] == 1250
+    assert capacity["minimum_required_headroom_gib"] == 1370
     assert capacity["offline_result"] == "quota-required-before-execute"
-    assert "Required additional capacity before safety margin: 1150 GiB" in result.stdout
+    assert "Required additional capacity before safety margin: 1270 GiB" in result.stdout
 
 
 @pytest.mark.parametrize(

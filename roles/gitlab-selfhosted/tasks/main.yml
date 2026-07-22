@@ -27,7 +27,8 @@
     that:
       - vault_encrypt_secrets | default(true) | bool
       - gitlab_runner_token | default('') | string | trim | length > 20
-      - gitlab_runner_token | default('') | string is match('^glrt-[A-Za-z0-9_-]+$')
+      - gitlab_runner_token | default('') | string is match(
+          '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
     fail_msg: >-
       gitlab.runner.enabled=true requires an existing GitLab Runner authentication
       token (glrt-...). Create an instance runner in GitLab Admin > CI/CD > Runners,

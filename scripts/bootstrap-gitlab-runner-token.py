@@ -11,6 +11,7 @@ never command arguments or terminal output.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -20,11 +21,16 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from urllib.parse import urlparse
+import uuid
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TOKEN_RE = re.compile(r"^glrt-[A-Za-z0-9_-]{16,}$")
+TOKEN_RE = re.compile(
+    r"^glrt-(?=.{16,}$)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$"
+)
 ENV_ASSIGNMENT_RE = re.compile(
     r"^(?:export\s+)?GITLAB_RUNNER_TOKEN=(?P<value>.*)$", re.MULTILINE
 )
@@ -40,12 +46,37 @@ class BootstrapError(RuntimeError):
     """Expected, safely reportable bootstrap failure."""
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def kubernetes_timestamp(value: datetime) -> str:
+    # coordination.k8s.io Lease acquireTime/renewTime use metav1.MicroTime,
+    # whose JSON decoder requires exactly six fractional-second digits.
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def parse_kubernetes_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise BootstrapError("bootstrap Lease has no valid renewal timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise BootstrapError("bootstrap Lease has an invalid renewal timestamp") from error
+    if parsed.tzinfo is None:
+        raise BootstrapError("bootstrap Lease renewal timestamp has no timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 def run_command(
     argv: list[str],
     *,
     stdin: str | None = None,
     sensitive: bool = False,
     check: bool = True,
+    label: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         argv,
@@ -57,7 +88,8 @@ def run_command(
     )
     if check and result.returncode != 0:
         detail = "sensitive command output suppressed" if sensitive else result.stderr.strip()
-        raise BootstrapError(f"{Path(argv[0]).name} failed: {detail or 'no diagnostic'}")
+        stage = label or Path(argv[0]).name
+        raise BootstrapError(f"{stage} failed: {detail or 'no diagnostic'}")
     return result
 
 
@@ -158,6 +190,192 @@ def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
             pass
 
 
+class KubernetesLeaseLock:
+    """Cluster-wide, renewable serialization for runner bootstrap mutations."""
+
+    def __init__(
+        self,
+        kubectl: list[str],
+        *,
+        name: str = "ansible-k8s-runner-bootstrap",
+        duration_seconds: int = 900,
+        renew_interval_seconds: int = 60,
+    ) -> None:
+        self.kubectl = kubectl
+        self.name = name
+        self.duration_seconds = duration_seconds
+        self.renew_interval_seconds = renew_interval_seconds
+        self.holder = f"runner-bootstrap-{uuid.uuid4()}"
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._renew_error: BootstrapError | None = None
+
+    def _manifest(self, *, resource_version: str | None = None, released: bool = False) -> dict:
+        now = utc_now()
+        metadata = {"name": self.name}
+        if resource_version:
+            metadata["resourceVersion"] = resource_version
+        spec = {
+            "leaseDurationSeconds": 1 if released else self.duration_seconds,
+            "acquireTime": kubernetes_timestamp(now),
+            "renewTime": kubernetes_timestamp(now),
+        }
+        if not released:
+            spec["holderIdentity"] = self.holder
+        return {
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": metadata,
+            "spec": spec,
+        }
+
+    def _apply(self, action: str, manifest: dict, *, check: bool) -> subprocess.CompletedProcess[str]:
+        return run_command(
+            self.kubectl + [action, "--filename=-", "--output=json"],
+            stdin=json.dumps(manifest, separators=(",", ":")),
+            check=check,
+            label=f"GitLab bootstrap Lease {action}",
+        )
+
+    def _get(self, *, allow_absent: bool = False) -> dict | None:
+        argv = self.kubectl + ["get", "lease", self.name, "--output=json"]
+        if allow_absent:
+            argv.append("--ignore-not-found")
+        result = run_command(
+            argv,
+            label="GitLab bootstrap Lease read",
+        )
+        if allow_absent and not result.stdout.strip():
+            return None
+        try:
+            lease = json.loads(result.stdout)
+            if lease["metadata"]["name"] != self.name:
+                raise KeyError("name")
+            return lease
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise BootstrapError("GitLab bootstrap Lease returned invalid metadata") from error
+
+    def _is_available(self, lease: dict) -> bool:
+        spec = lease.get("spec", {})
+        holder = spec.get("holderIdentity") or ""
+        if not holder:
+            return True
+        try:
+            duration = int(spec["leaseDurationSeconds"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise BootstrapError("bootstrap Lease has no valid duration") from error
+        if duration < 1:
+            raise BootstrapError("bootstrap Lease duration must be positive")
+        renewed = parse_kubernetes_timestamp(spec.get("renewTime") or spec.get("acquireTime"))
+        return renewed + timedelta(seconds=duration) <= utc_now()
+
+    def acquire(self) -> None:
+        acquired = False
+        last_create_error = "no diagnostic"
+        saw_existing_lease = False
+        for attempt in range(4):
+            created = self._apply("create", self._manifest(), check=False)
+            if created.returncode == 0:
+                acquired = True
+                break
+            last_create_error = created.stderr.strip() or "no diagnostic"
+            lease = self._get(allow_absent=True)
+            if lease is None:
+                # The create failure was not AlreadyExists. Retry atomically in
+                # case the apiserver transiently rejected or lost the request;
+                # --ignore-not-found avoids locale-dependent stderr parsing.
+                if attempt < 3:
+                    time.sleep(0.2)
+                continue
+            saw_existing_lease = True
+            if not self._is_available(lease):
+                raise BootstrapError("another GitLab Runner bootstrap currently holds the Lease")
+            resource_version = lease.get("metadata", {}).get("resourceVersion")
+            if not isinstance(resource_version, str) or not resource_version:
+                raise BootstrapError("bootstrap Lease has no resourceVersion for safe takeover")
+            replaced = self._apply(
+                "replace",
+                self._manifest(resource_version=resource_version),
+                check=False,
+            )
+            if replaced.returncode == 0:
+                acquired = True
+                break
+        if not acquired:
+            if saw_existing_lease:
+                raise BootstrapError("could not atomically take over the stale bootstrap Lease")
+            raise BootstrapError(
+                f"could not atomically create the absent bootstrap Lease: {last_create_error}"
+            )
+        self.assert_held()
+        self._thread = threading.Thread(
+            target=self._renew_loop,
+            name="gitlab-runner-bootstrap-lease",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _renew_once(self) -> None:
+        lease = self._get()
+        if lease.get("spec", {}).get("holderIdentity") != self.holder:
+            raise BootstrapError("GitLab bootstrap Lease ownership was lost")
+        resource_version = lease.get("metadata", {}).get("resourceVersion")
+        if not isinstance(resource_version, str) or not resource_version:
+            raise BootstrapError("bootstrap Lease has no resourceVersion for renewal")
+        self._apply(
+            "replace",
+            self._manifest(resource_version=resource_version),
+            check=True,
+        )
+
+    def _renew_loop(self) -> None:
+        while not self._stop.wait(self.renew_interval_seconds):
+            try:
+                self._renew_once()
+            except BootstrapError as error:
+                self._renew_error = error
+                self._stop.set()
+                return
+
+    def assert_held(self) -> None:
+        if self._renew_error:
+            raise BootstrapError(f"GitLab bootstrap Lease renewal failed: {self._renew_error}")
+        lease = self._get()
+        spec = lease.get("spec", {})
+        if spec.get("holderIdentity") != self.holder:
+            raise BootstrapError("GitLab bootstrap Lease ownership was lost")
+        if self._is_available(lease):
+            raise BootstrapError("GitLab bootstrap Lease expired before the protected operation")
+
+    def release(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=max(1, self.renew_interval_seconds + 1))
+        try:
+            lease = self._get()
+        except BootstrapError:
+            return
+        if lease.get("spec", {}).get("holderIdentity") != self.holder:
+            return
+        resource_version = lease.get("metadata", {}).get("resourceVersion")
+        if not isinstance(resource_version, str) or not resource_version:
+            return
+        # Releasing by optimistic replace, rather than delete, can never remove a
+        # successor that acquired the Lease after our final ownership read.
+        self._apply(
+            "replace",
+            self._manifest(resource_version=resource_version, released=True),
+            check=False,
+        )
+
+    def __enter__(self) -> "KubernetesLeaseLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        self.release()
+
+
 class Bootstrapper:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -172,7 +390,8 @@ class Bootstrapper:
                 "--selector=release=gitlab,app=toolbox",
                 "--field-selector=status.phase=Running",
                 "--output=json",
-            ]
+            ],
+            label="GitLab Toolbox Pod discovery",
         )
         try:
             pods = json.loads(result.stdout)["items"]
@@ -190,16 +409,28 @@ class Bootstrapper:
             raise BootstrapError(f"expected exactly one Ready GitLab toolbox Pod, found {len(ready)}")
         return ready[0]["metadata"]["name"]
 
-    def rails(self, pod: str, source: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def rails(
+        self,
+        pod: str,
+        source: str,
+        *,
+        stage: str,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
         return run_command(
             self.kubectl + ["exec", "-i", pod, "--", "gitlab-rails", "runner", "-"],
             stdin=source,
             sensitive=True,
             check=check,
+            label=stage,
         )
 
     def require_compatible_version(self, pod: str) -> str:
-        result = self.rails(pod, "STDOUT.write(Gitlab::VERSION)\n")
+        result = self.rails(
+            pod,
+            "STDOUT.write(Gitlab::VERSION)\n",
+            stage="GitLab version compatibility check",
+        )
         version = result.stdout.strip()
         match = re.fullmatch(r"(\d+)\.(\d+)(?:\.\d+)?(?:[-+].*)?", version)
         if not match:
@@ -213,13 +444,110 @@ class Bootstrapper:
 
     def verify_token(self, pod: str, token: str) -> bool:
         source = f"""
+require 'json'
 require 'net/http'
 require 'uri'
 uri = URI({json.dumps(self.args.gitlab_internal_url + '/api/v4/runners/verify')})
 response = Net::HTTP.post_form(uri, {{'token' => {json.dumps(token)}, 'system_id' => 's_ansible_k8s_bootstrap'}})
-exit(response.code == '200' ? 0 : 3)
+STDOUT.write(JSON.generate({{'status' => response.code.to_i}}))
 """
-        return self.rails(pod, source, check=False).returncode == 0
+        result = self.rails(
+            pod,
+            source,
+            stage="GitLab Runner token verification",
+        )
+        try:
+            status = int(json.loads(result.stdout)["status"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            raise BootstrapError("GitLab Runner token verification returned invalid metadata") from error
+        if status == 200:
+            return True
+        if status == 403:
+            return False
+        raise BootstrapError(f"GitLab Runner token verification returned unexpected HTTP {status}")
+
+    def recover_managed_runner_token(self, pod: str) -> str | None:
+        source = f"""
+require 'json'
+runners = Ci::Runner.where(description: {json.dumps(self.args.runner_description)}).to_a
+payload = {{'count' => runners.length}}
+payload['token'] = runners.first.token if runners.length == 1
+STDOUT.write(JSON.generate(payload))
+"""
+        result = self.rails(
+            pod,
+            source,
+            stage="managed GitLab Runner recovery",
+        )
+        try:
+            payload = json.loads(result.stdout)
+            count = int(payload["count"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            raise BootstrapError("managed GitLab Runner recovery returned invalid metadata") from error
+        if count > 1:
+            raise BootstrapError(
+                f"found {count} runners with managed description {self.args.runner_description!r}; "
+                "refusing to choose one"
+            )
+        if count == 0:
+            return None
+        token = payload.get("token")
+        if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+            raise BootstrapError("the single managed GitLab Runner has no recoverable glrt token")
+        return token
+
+    def assert_bootstrap_pat_revoked(self, pod: str, pat_name: str) -> None:
+        source = f"""
+require 'json'
+user = User.find_by_username('root') || raise('root user not found')
+tokens = user.personal_access_tokens.where(name: {json.dumps(pat_name)}).to_a
+payload = {{'count' => tokens.length}}
+if tokens.length == 1
+  payload['id'] = tokens.first.id
+  payload['revoked'] = tokens.first.revoked?
+end
+STDOUT.write(JSON.generate(payload))
+"""
+        result = self.rails(
+            pod,
+            source,
+            stage="bootstrap PAT revoked-state assertion",
+        )
+        try:
+            payload = json.loads(result.stdout)
+            count = int(payload["count"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            raise BootstrapError("bootstrap PAT revoked-state assertion returned invalid metadata") from error
+        if count != 1:
+            raise BootstrapError(
+                f"expected exactly one bootstrap PAT for revoked-state proof, found {count}"
+            )
+        if payload.get("revoked") is not True:
+            raise BootstrapError("the exact bootstrap PAT is not revoked")
+
+    def revoke_bootstrap_pat(self, pod: str, pat_name: str) -> None:
+        source = f"""
+user = User.find_by_username('root') || raise('root user not found')
+tokens = user.personal_access_tokens.where(name: {json.dumps(pat_name)}).to_a
+raise('duplicate bootstrap PAT name') if tokens.length > 1
+token = tokens.first
+token.revoke! if token && !token.revoked?
+"""
+        result = self.rails(
+            pod,
+            source,
+            stage="bootstrap PAT revocation",
+            check=False,
+        )
+        try:
+            self.assert_bootstrap_pat_revoked(pod, pat_name)
+        except BootstrapError as error:
+            if result.returncode != 0:
+                raise BootstrapError(
+                    "bootstrap PAT revocation exited nonzero and the exact PAT's revoked state "
+                    "could not be proven"
+                ) from error
+            raise
 
     def create_runner_token(self, pod: str) -> str:
         pat = "glpat-" + secrets.token_urlsafe(32)
@@ -234,8 +562,29 @@ token = user.personal_access_tokens.create(
 token.set_token({json.dumps(pat)})
 token.save!
 """
-        self.rails(pod, create_pat)
         try:
+            create_pat_result = self.rails(
+                pod,
+                create_pat,
+                stage="bootstrap create_runner-scoped PAT creation",
+                check=False,
+            )
+            if create_pat_result.returncode != 0:
+                pat_state = f"""
+user = User.find_by_username('root') || raise('root user not found')
+tokens = user.personal_access_tokens.where(name: {json.dumps(pat_name)}).to_a
+exit(tokens.length == 1 && !tokens.first.revoked? ? 0 : 4)
+"""
+                proof = self.rails(
+                    pod,
+                    pat_state,
+                    stage="bootstrap PAT creation-state assertion",
+                    check=False,
+                )
+                if proof.returncode != 0:
+                    raise BootstrapError(
+                        "bootstrap PAT creation exited nonzero and active state could not be proven"
+                    )
             create_runner = f"""
 require 'json'
 require 'net/http'
@@ -256,20 +605,20 @@ http.use_ssl = uri.scheme == 'https'
 response = http.request(request)
 raise("runner API returned HTTP #{{response.code}}") unless response.code == '201'
 runner_token = JSON.parse(response.body).fetch('token')
-raise('runner API returned an invalid authentication token') unless runner_token.match?(/\\Aglrt-[A-Za-z0-9_-]+\\z/)
+raise('runner API returned an invalid authentication token') unless runner_token.match?(/\\Aglrt-[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*\\z/)
 STDOUT.write(runner_token)
 """
-            result = self.rails(pod, create_runner)
+            result = self.rails(
+                pod,
+                create_runner,
+                stage="GitLab instance Runner API creation",
+            )
             token = result.stdout.strip()
             if not TOKEN_RE.fullmatch(token):
                 raise BootstrapError("GitLab did not return a valid runner authentication token")
             return token
         finally:
-            revoke_pat = f"""
-token = PersonalAccessToken.find_by_token({json.dumps(pat)})
-token.revoke! if token
-"""
-            self.rails(pod, revoke_pat)
+            self.revoke_bootstrap_pat(pod, pat_name)
 
 
 def decrypt_secrets(path: Path, password_file: Path) -> str:
@@ -282,6 +631,7 @@ def decrypt_secrets(path: Path, password_file: Path) -> str:
             str(path),
         ],
         sensitive=True,
+        label="Ansible Vault platform-secret decryption",
     )
     return result.stdout
 
@@ -306,6 +656,7 @@ def encrypt_secrets(path: Path, password_file: Path, plaintext: str) -> None:
                 str(plain_path),
             ],
             sensitive=True,
+            label="Ansible Vault platform-secret encryption",
         )
         os.chmod(encrypted_path, 0o600)
         os.replace(encrypted_path, path)
@@ -371,35 +722,55 @@ def main() -> int:
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
             raise BootstrapError("--gitlab-internal-url must be an HTTP(S) URL")
 
-        vault_plaintext = decrypt_secrets(args.secrets_file, args.vault_password_file)
-        env_content = args.env_file.read_text(encoding="utf-8") if args.env_file.exists() else ""
-        candidates = {
-            token
-            for token in (parse_yaml_token(vault_plaintext), parse_env_token(env_content))
-            if token and TOKEN_RE.fullmatch(token)
-        }
-
         bootstrapper = Bootstrapper(args)
         pod = bootstrapper.toolbox_pod()
         version = bootstrapper.require_compatible_version(pod)
-        valid = [token for token in candidates if bootstrapper.verify_token(pod, token)]
-        if len(valid) > 1:
-            raise BootstrapError(
-                "the encrypted secrets file and .env contain different valid runner tokens"
+        with KubernetesLeaseLock(bootstrapper.kubectl) as bootstrap_lock:
+            vault_plaintext = decrypt_secrets(args.secrets_file, args.vault_password_file)
+            env_content = (
+                args.env_file.read_text(encoding="utf-8") if args.env_file.exists() else ""
             )
-        if valid:
-            runner_token = valid[0]
-            action = "reused the existing live runner token"
-        else:
-            runner_token = bootstrapper.create_runner_token(pod)
-            action = "created a new instance runner token"
+            candidates = {
+                token
+                for token in (parse_yaml_token(vault_plaintext), parse_env_token(env_content))
+                if token and TOKEN_RE.fullmatch(token)
+            }
 
-        encrypt_secrets(
-            args.secrets_file,
-            args.vault_password_file,
-            replace_yaml_token(vault_plaintext, runner_token),
-        )
-        atomic_write(args.env_file, replace_env_token(env_content, runner_token))
+            managed_token = bootstrapper.recover_managed_runner_token(pod)
+            valid = {token for token in candidates if bootstrapper.verify_token(pod, token)}
+            if managed_token:
+                if not bootstrapper.verify_token(pod, managed_token):
+                    raise BootstrapError(
+                        "the single managed GitLab Runner token was recovered but failed live "
+                        "verification"
+                    )
+                valid.add(managed_token)
+            if len(valid) > 1:
+                raise BootstrapError(
+                    "local state and the managed GitLab Runner resolve to different valid tokens"
+                )
+            if valid:
+                runner_token = next(iter(valid))
+                action = (
+                    "recovered and reused the managed live runner token"
+                    if managed_token
+                    else "reused the existing live runner token"
+                )
+            else:
+                bootstrap_lock.assert_held()
+                runner_token = bootstrapper.create_runner_token(pod)
+                if not bootstrapper.verify_token(pod, runner_token):
+                    raise BootstrapError("the newly created GitLab Runner token failed live verification")
+                action = "created a new instance runner token"
+
+            bootstrap_lock.assert_held()
+            encrypt_secrets(
+                args.secrets_file,
+                args.vault_password_file,
+                replace_yaml_token(vault_plaintext, runner_token),
+            )
+            atomic_write(args.env_file, replace_env_token(env_content, runner_token))
+            bootstrap_lock.assert_held()
         print(f"GitLab {version}: {action}; encrypted secrets and ignored .env are synchronized.")
         print("The authentication token was not printed or passed in a command argument.")
         return 0

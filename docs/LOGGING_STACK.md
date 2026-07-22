@@ -42,6 +42,10 @@ upstream Docker-directory default is likewise replaced with only
 Fluentd also disables both upstream automatic host mounts, receives `/var/log`
 read-only, and writes positions/buffers only to its dedicated
 `/var/lib/fluentd-logging-agents-data` hostPath.
+Filebeat and Fluentd explicitly tolerate both current and legacy Kubernetes
+control-plane `NoSchedule` taints. Health checks compare each selected logging
+DaemonSet's desired and ready counts with the complete registered node count,
+so silently collecting logs from workers only is a deployment failure.
 
 The namespace has default-deny ingress/egress plus explicit egress only to
 cluster DNS, the Kubernetes API used for metadata discovery, and the selected

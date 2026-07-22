@@ -71,6 +71,10 @@ storage:
   replicas: 1
   storage_class: hcloud-volumes
   size: 100Gi
+  # Normal deployments keep a separate durable index claim per volume replica.
+  # Only disposable --minimum-storage campaigns colocate indexes with data.
+  index_size: 4Gi
+  index_persistent: true
 
 secrets:
   enabled: true

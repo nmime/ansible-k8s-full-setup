@@ -1,6 +1,7 @@
 # GitLab Runner authentication bootstrap
 
-The platform uses GitLab's runner authentication tokens (`glrt-...`), not the
+The platform uses GitLab's runner authentication tokens (`glrt-...`), including
+the dot-segmented tokens issued by GitLab 19, not the
 legacy registration-token workflow removed from current GitLab releases. An
 enabled `gitlab.runner.enabled` selector fails closed until a valid token is
 available in the process environment or encrypted platform secrets.
@@ -30,19 +31,30 @@ and whether it reused or created a credential; it never prints token values.
 
 The idempotent workflow is:
 
-1. Decrypt the platform secrets into controller memory and compare the token
+1. Atomically acquire the `ansible-k8s-runner-bootstrap` Kubernetes Lease in
+   the GitLab namespace. Its holder is a random, non-secret UUID, it is renewed
+   every 60 seconds, and it expires after 15 minutes without renewal.
+2. Decrypt the platform secrets into controller memory and compare the token
    with the ignored `.env` value.
-2. Verify each candidate through `POST /api/v4/runners/verify`, including the
+3. Verify each candidate through `POST /api/v4/runners/verify`, including the
    system ID required for `glrt-` tokens. A valid single candidate is reused.
-3. If no candidate is live, run the documented Rails token operation inside
+4. If no candidate is live, run the documented Rails token operation inside
    the Toolbox Pod to create a one-day root personal access token restricted to
    the `create_runner` scope.
-4. Call GitLab's supported `POST /api/v4/user/runners` endpoint from inside the
+5. Call GitLab's supported `POST /api/v4/user/runners` endpoint from inside the
    Toolbox Pod to create an auditable instance runner and receive its one-time
    authentication token.
-5. Revoke the short-lived personal access token in an unconditional cleanup
+6. Revoke the short-lived personal access token in an unconditional cleanup
    step, then atomically update the Ansible Vault-encrypted secrets file and
    Git-ignored `.env`.
+
+The Lease covers recovery, creation, verification, and both persistence
+targets. A concurrent helper fails before inspecting or creating runners. A
+crashed holder is taken over only after expiry and with Kubernetes
+`resourceVersion` optimistic concurrency. Normal cleanup releases by replacing
+the exact owned Lease with an immediately available record; it never deletes a
+Lease and therefore cannot remove a successor's lock. No credential is stored
+in the Lease or appears in its holder identity.
 
 Rails source and all secret values travel over `kubectl exec -i` standard
 input. API responses and Vault plaintext are captured pipes. No PAT or runner

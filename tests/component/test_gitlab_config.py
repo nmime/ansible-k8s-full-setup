@@ -108,7 +108,7 @@ class TestChart10ValuesStructure:
         install = self.content.split("- name: Install GitLab Runner with Helm", 1)[1].split(
             "- name: Create S3 cache secret for GitLab Runner", 1
         )[0]
-        assert "^glrt-[A-Za-z0-9_-]+$" in gate
+        assert "^glrt-[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$" in gate
         assert "vault_encrypt_secrets | default(true) | bool" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate

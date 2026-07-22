@@ -409,3 +409,15 @@ These results supersede only the source-validation boundary recorded at the
 separately provisioned replacement cluster was still in progress when this
 appendix was written. No replacement-cluster recovery, post-recovery load, or
 final cleanup outcome is claimed here.
+
+## Medium-optimized cost audit — 2026-07-22
+
+The authenticated Hetzner pricing API returned `cx33` at €8.49/month,
+`cx23` at €5.49/month, `lb11` at €7.49/month, the bastion IPv4 at €0.50/month,
+and volumes at €0.0572/GiB-month, net with 0% VAT for the queried account.
+Repository source resolves the profile to seven `cx33` nodes, one `cx23`
+bastion, one `lb11`, one paid IPv4, 730 GiB of operational persistent claims,
+and 20 GiB of GitLab backup staging. The exact full-month total is therefore
+€115.810 net (€115.81 rounded). External DR storage, snapshots, excess traffic,
+domain registration, and non-zero customer VAT are excluded. The reconciled
+claim inventory and arithmetic are maintained in [the cost model](COST_MODEL.md).
