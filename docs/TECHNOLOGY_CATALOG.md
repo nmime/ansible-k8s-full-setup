@@ -15,7 +15,7 @@ architecture depends on them.
 | Cloud | Hetzner Cloud network, subnets, firewalls, placement groups, SSH key, bastion, control-plane/worker servers, load balancer, volumes, and selected DNS records | `deploy infra`, `deploy dns` |
 | Host OS and security | Ubuntu 24.04, SSH key-only access, UFW, fail2ban, auditd, unattended upgrades, kernel/sysctl tuning, and node-exporter | `deploy network` |
 | Private access | Headscale, embedded DERP/STUN, Caddy TLS termination behind an HAProxy SNI edge, private routes, and bastion NAT | `deploy network` |
-| Kubernetes | Kubespray, Kubernetes, containerd, three topology shapes, encrypted secrets at rest, and schedulable-control-plane policy by profile | `deploy cluster` |
+| Kubernetes | Kubespray, Kubernetes, containerd, five named-profile node topologies, encrypted secrets at rest, and schedulable-control-plane policy by profile | `deploy cluster` |
 | Networking | Cilium CNI, transparent pod-network encryption, Hubble Relay/UI, network policies, and Cilium Gateway API | `deploy cluster`, `deploy network` |
 | Traffic and TLS | Gateway API CRDs, public/admin Gateways, controller-owned NodePort discovery, Hetzner LB port/health convergence, minimal-tier bastion ingress, cert-manager, Hetzner DNS webhook, ClusterIssuers, Hetzner CCM/CSI, and MetalLB | `deploy cluster`, `deploy tls` |
 | Secret bootstrap | Strong generated credentials persisted only in Ansible-Vault-encrypted local state | every deployment (`always` tag) |

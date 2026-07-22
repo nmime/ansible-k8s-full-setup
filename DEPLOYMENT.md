@@ -60,11 +60,13 @@ For the budget production-oriented deployment:
 ```
 
 This profile uses three schedulable `cx33` control planes, four `cx33` workers,
-a `cx23` bastion, and `lb11`. Stateful quorum/data services remain replicated;
-stateless services default to one replica with bounded autoscaling. Choose the
-`production` profile when stateless workload continuity during node maintenance
-is required. Production backups must also be copied to storage outside this
-cluster.
+a `cx23` bastion, and `lb11`. Critical quorum services remain replicated;
+recoverable stateless services default to one replica with bounded autoscaling.
+VictoriaMetrics storage, the Elasticsearch data node, Gitaly, Grafana, Postal
+MariaDB, and Coroot/ClickHouse retain documented singleton recovery boundaries.
+Choose the `production` profile when stateless workload continuity during node
+maintenance is required. Production backups must also be copied to storage
+outside this cluster.
 
 Its three SeaweedFS volume servers use placement `001`, not SeaweedFS's unsafe
 single-copy `000` default. Reconciliation upgrades old volumes in bounded

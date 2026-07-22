@@ -380,7 +380,8 @@ ansible-playbook playbooks/validate_profile.yml \
   --vault-init-file /secure/state/.vault-init-k8s.json \
   --recipient age1... --force
 ./platform-orchestrator/platform.sh restore-cluster \
-  --archive /secure/k8s-cluster-....tar.gz.age --mode verify
+  --archive /secure/k8s-cluster-....tar.gz.age --mode verify \
+  --identity /secure/age-identity.txt
 ./platform-orchestrator/platform.sh restore-cluster \
   --archive /secure/k8s-cluster-....tar.gz.age --mode operator-state \
   --identity /secure/age-identity.txt --output-dir /secure/recovery/k8s
