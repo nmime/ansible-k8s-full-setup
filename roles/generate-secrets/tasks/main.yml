@@ -115,7 +115,8 @@
     that:
       - not (platform_gitlab_runner_enabled | default(false) | bool) or
         (generated_gitlab_runner_token | string | trim | length > 20 and
-         generated_gitlab_runner_token | string is match('^glrt-[A-Za-z0-9_-]+$'))
+         generated_gitlab_runner_token | string is match(
+           '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'))
     fail_msg: >-
       gitlab.runner.enabled=true requires GITLAB_RUNNER_TOKEN with a GitLab-issued
       runner authentication token (glrt-...). Create an instance runner under

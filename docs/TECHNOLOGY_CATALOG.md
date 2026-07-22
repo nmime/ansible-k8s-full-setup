@@ -43,12 +43,18 @@ replication factor `2`, even though its pod request envelope is `small`.
 `medium-optimized` intentionally keeps one `vmstorage` replica and replication
 factor `1`; resource sizing therefore cannot silently change metrics durability.
 
-`production` is not universal active-active HA. Gitaly, the Elasticsearch data
-node, Grafana's SQLite/RWO deployment, Postal web/MariaDB, and Coroot with its
+`production` is not universal active-active HA. Gitaly, Grafana's SQLite/RWO
+deployment, Postal web/MariaDB, and Coroot with its
 ClickHouse data path remain intentional singletons. Their recovery contract is
 backup/PVC restoration (or an explicitly accepted telemetry rebuild for
 Coroot), followed by component health gates; they do not provide immediate
 replica failover.
+
+Medium, medium-optimized, and production use two Elasticsearch data replicas.
+This keeps the default one shard replica assigned and makes Elasticsearch
+health gates truthfully require green status. For medium-optimized, the second
+40 GiB data claim is included in the current 730 GiB persistent-capacity report
+(plus the unchanged 20 GiB GitLab backup-staging peak).
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
@@ -97,6 +103,12 @@ orphans the immutable StatefulSet, proves restart-safe pods plus a pre-existing
 S3 sentinel read, and only then deletes exact obsolete standalone index claims.
 Loki claims are retained independently of StatefulSet scale/delete and are
 retired only by the checkpointed migration finalizer.
+
+Capacity planning counts every persistent index claim separately. For
+`medium-optimized`, three 2 GiB index requests are each billed at Hetzner's
+10 GiB volume minimum, contributing 30 GiB to the profile's 730 GiB operational
+data total. GitLab backup staging adds another 20 GiB; see
+[the current cost model](COST_MODEL.md).
 
 Alert transports are settings rather than removable workloads:
 `alerting.telegram.enabled` requires `ALERT_TELEGRAM_BOT_TOKEN` and

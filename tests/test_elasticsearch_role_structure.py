@@ -147,6 +147,15 @@ class TestTasks(unittest.TestCase):
         self.assertIn("es-credentials", self.content,
                       "Must create credentials secret")
 
+    def test_requires_green_cluster_health_without_unassigned_shards(self):
+        self.assertIn(
+            "Require green Elasticsearch cluster health after data-node reconciliation",
+            self.content,
+        )
+        self.assertIn("wait_for_status=green", self.content)
+        self.assertIn("unassigned_shards", self.content)
+        self.assertIn("timed_out", self.content)
+
     def test_workloads_have_compact_node_startup_probes(self):
         """Slow first boots must not be killed by liveness before quorum forms."""
         self.assertEqual(self.content.count("startupProbe:"), 3)

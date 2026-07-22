@@ -182,6 +182,14 @@ class TestNamedProfileContract:
         for path in COMPONENT_PATHS + ALERT_CHANNEL_PATHS:
             assert isinstance(get_path(profile, path), bool)
 
+    @pytest.mark.parametrize(
+        "profile_name", ["medium", "medium-optimized", "production"]
+    )
+    def test_elasticsearch_backed_logging_has_two_data_replicas(self, profile_name):
+        profile = load_profile(profile_name)
+        assert profile["observability"]["logging"]["stack"] == "elk"
+        assert profile["elasticsearch"]["data"]["replicas"] == 2
+
     @pytest.mark.parametrize("profile_name", EXPECTED_PROFILE_TIERS)
     def test_gitlab_dependencies_are_enabled_together(self, profile_name):
         profile = load_profile(profile_name)
@@ -240,6 +248,7 @@ class TestNamedProfileContract:
         assert profile["alerting"]["vmalert_replicas"] == 2
         assert profile["alerting"]["storage_size"] == "10Gi"
         assert profile["blackbox"]["replicas"] == 2
+        assert profile["elasticsearch"]["data"]["replicas"] == 2
         assert profile["tracing"]["collector_replicas"] == 2
         assert profile["glitchtip"]["web_replicas"] == 2
         assert profile["glitchtip"]["worker_replicas"] == 2
@@ -299,6 +308,7 @@ class TestMediumOptimizedContract:
         assert self.profile["storage"]["master_replicas"] == 3
         assert self.profile["storage"]["volume_replicas"] == 3
         assert self.profile["elasticsearch"]["master"]["replicas"] == 3
+        assert self.profile["elasticsearch"]["data"]["replicas"] == 2
 
     def test_uses_compact_stateless_baselines(self):
         replica_paths = (
@@ -1259,6 +1269,28 @@ class TestComponentLifecycle:
         )
         assert result.returncode != 0
         assert "requires elasticsearch.enabled=true" in result.stdout + result.stderr
+
+    def test_elasticsearch_logging_rejects_a_single_data_node(self, tmp_path):
+        profile = load_profile("medium-optimized")
+        profile["elasticsearch"]["data"]["replicas"] = 1
+        invalid_profile = tmp_path / "single-elasticsearch-data-node.yaml"
+        invalid_profile.write_text(yaml.safe_dump(profile), encoding="utf-8")
+        result = subprocess.run(
+            [
+                "ansible-playbook",
+                str(REPO_ROOT / "playbooks" / "validate_profile.yml"),
+                "-e",
+                f"@{invalid_profile}",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+        assert "requires at least two Elasticsearch data replicas" in (
+            result.stdout + result.stderr
+        )
 
     def test_removal_workflow_is_confirmation_and_data_guarded(self):
         playbook = (REPO_ROOT / "playbooks" / "remove_component.yml").read_text(

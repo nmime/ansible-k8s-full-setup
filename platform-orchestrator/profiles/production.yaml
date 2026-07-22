@@ -4,8 +4,9 @@
 # Best for: Selective critical HA with a small production resource envelope
 # Nodes: 6 x cx43 16Gi-class nodes (3 masters, 3 workers) + cx23 bastion + lb11
 # HA: Three-way control plane plus explicit quorum and selected workload replicas
-# Recovery: Gitaly, Elasticsearch data, Grafana, Postal MariaDB/web, and Coroot
-# retain intentional singleton boundaries and require backup-driven recovery.
+# Recovery: Gitaly, Grafana, Postal MariaDB/web, and Coroot retain intentional
+# singleton boundaries and require backup-driven recovery. Elasticsearch data
+# uses two replicas so one shard replica can remain assigned.
 # Storage: resource-efficient HA defaults with online grow-only expansion
 # Scheduling: application requests are deliberately sized to leave failover
 # headroom on three 16Gi workers while the three control planes stay dedicated.
@@ -201,7 +202,7 @@ elasticsearch:
     cpu_limit: 1
     heap: 512m
   data:
-    replicas: 1
+    replicas: 2
     storage_size: 100Gi
     memory_request: 1Gi
     memory_limit: 2Gi

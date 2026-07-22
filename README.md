@@ -31,6 +31,14 @@ The runtime has four capability tiers and five named profiles:
 | `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
+The current audited `medium-optimized` Hetzner shape is approximately
+**€115.81/month net** at the 2026-07-22 API prices: seven `cx33` nodes, one
+`cx23` bastion, `lb11`, one bastion IPv4, and 750 GiB of billable volumes. The
+volume total includes two Elasticsearch data replicas, three separately
+persistent SeaweedFS index claims, and 20 GiB of GitLab backup staging. See the
+exact arithmetic, hourly boundary, and exclusions in
+[the cost model](docs/COST_MODEL.md).
+
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
 what lets `medium-optimized` retain the full medium toolset without silently

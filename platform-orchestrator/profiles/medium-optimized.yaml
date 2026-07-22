@@ -13,8 +13,8 @@ tier: medium
 resource_tier: small
 cost_estimate: >-
   Provider-price dependent: 3 x cx33 control plane, 4 x cx33 worker, cx23
-  bastion, lb11, and 680 GiB billable persistent volumes (660 GiB data claims
-  plus 20 GiB GitLab backup staging)
+  bastion, lb11, one bastion IPv4, and 750 GiB billable persistent volumes
+  (730 GiB data claims plus 20 GiB GitLab backup staging). See docs/COST_MODEL.md.
 
 global:
   project: k8s
@@ -89,6 +89,7 @@ storage:
   master_size: 2Gi
   size_per_replica: 40Gi
   index_size: 2Gi
+  index_persistent: true
   filer_size: 5Gi
 
 # ---------------------------------------------
@@ -184,7 +185,7 @@ elasticsearch:
     heap: 512m
     storage_size: 10Gi
   data:
-    replicas: 1
+    replicas: 2
     cpu_request: 250m
     cpu_limit: 1000m
     memory_request: 1536Mi

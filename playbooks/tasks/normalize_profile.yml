@@ -241,6 +241,18 @@
       observability.logging.stack={{ log_stack }} requires
       elasticsearch.enabled=true. Select Loki or enable Elasticsearch.
 
+- name: Validate Elasticsearch data redundancy for Elasticsearch-backed logging
+  ansible.builtin.assert:
+    that:
+      - >-
+        log_stack not in ['elk', 'efk'] or
+        (elasticsearch.data.replicas |
+         default(2 if resource_tier == 'production' else 1) | int) >= 2
+    fail_msg: >-
+      observability.logging.stack={{ log_stack }} requires at least two
+      Elasticsearch data replicas so the default shard replica remains
+      assigned. Set elasticsearch.data.replicas=2 or select Loki.
+
 - name: Validate required private-cluster foundation features
   ansible.builtin.assert:
     that:

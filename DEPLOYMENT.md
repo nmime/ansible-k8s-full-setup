@@ -62,11 +62,20 @@ For the budget production-oriented deployment:
 This profile uses three schedulable `cx33` control planes, four `cx33` workers,
 a `cx23` bastion, and `lb11`. Critical quorum services remain replicated;
 recoverable stateless services default to one replica with bounded autoscaling.
-VictoriaMetrics storage, the Elasticsearch data node, Gitaly, Grafana, Postal
+VictoriaMetrics storage, Gitaly, Grafana, Postal
 MariaDB, and Coroot/ClickHouse retain documented singleton recovery boundaries.
+Elasticsearch uses two compact data replicas so its default shard replica is
+assigned instead of leaving the cluster yellow.
 Choose the `production` profile when stateless workload continuity during node
 maintenance is required. Production backups must also be copied to storage
 outside this cluster.
+
+At the authenticated Hetzner API prices audited on 2026-07-22, this default
+shape is €115.810/month net (€115.81 rounded), including its bastion IPv4 and
+750 GiB of billable persistent volumes. That storage is 730 GiB of operational
+data claims, including two Elasticsearch data claims and three durable
+SeaweedFS index claims, plus 20 GiB of GitLab backup staging. External DR
+storage and traffic overages are separate; see [the cost model](docs/COST_MODEL.md).
 
 Its three SeaweedFS volume servers use placement `001`, not SeaweedFS's unsafe
 single-copy `000` default. Reconciliation upgrades old volumes in bounded

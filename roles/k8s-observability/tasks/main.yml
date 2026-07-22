@@ -1440,6 +1440,13 @@
             drop: [ALL]
           seccompProfile:
             type: RuntimeDefault
+        tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
         filebeatConfig:
           filebeat.yml: |
             filebeat.inputs:
@@ -1597,6 +1604,13 @@
         readOnlyRootFilesystem: true
         seccompProfile:
           type: RuntimeDefault
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
       env:
       - name: ELASTICSEARCH_USERNAME
         valueFrom:
