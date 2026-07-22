@@ -136,6 +136,12 @@ def test_postgresql_and_dragonfly_load_verify_exact_operations_and_round_trip():
 
     assert r"base=\$((TRANSACTIONS/CLIENTS))" in postgresql
     assert r'[ "\$processed" -eq "\$TRANSACTIONS" ]' in postgresql
+    assert "CREATE UNLOGGED TABLE" not in postgresql
+    assert 'CREATE TABLE public.\$TABLE_NAME' in postgresql
+    assert 'SELECT count(*) FROM public.\$TABLE_NAME' in postgresql
+    assert r'[ "\$rows" -eq "\$TRANSACTIONS" ]' in postgresql
+    assert "c.relpersistence" in postgresql
+    assert r'[ "\$persistence" = p ]' in postgresql
     assert "per_client=" not in postgresql
     assert r'redis-cli -h dragonfly get "\$key"' in dragonfly
     assert "redis-cli -h dragonfly --raw" in dragonfly
@@ -143,6 +149,37 @@ def test_postgresql_and_dragonfly_load_verify_exact_operations_and_round_trip():
     assert "/tmp/redis-result." in dragonfly
     assert "actual_lines" in dragonfly
     assert r'redis-cli -h dragonfly exists "\$key"' in dragonfly
+
+
+def test_postgresql_load_proves_wal_replay_and_cleans_its_unique_table():
+    content = LOAD.read_text()
+    durability = function_source(
+        content, "verify_postgresql_durability", "phase_postgresql"
+    )
+    postgresql = function_source(content, "phase_postgresql", "phase_vault")
+    cleanup = function_source(content, "cleanup_postgresql", "cleanup_vault")
+
+    assert 'table_name="tier_load_${safe_run_id}_$$_' in content
+    assert "pg_current_wal_flush_lsn()" in durability
+    assert ".databases.postgresql.replicas // 1" in durability
+    assert "expected_standbys=$((replicas - 1))" in durability
+    assert "FROM pg_stat_replication" in durability
+    assert "state='streaming'" in durability
+    assert "replay_lsn >= :'target_lsn'::pg_lsn" in durability
+    assert "for attempt in {1..12}" in durability
+    assert "write_path=wal-replicated" in durability
+    assert "write_path=wal-replication-incomplete" in durability
+    assert "write_path=wal-logged-standalone" in durability
+    assert "standby_required=%s standby_replayed=%s" in durability
+
+    assert "cleanup_on_exit" in postgresql
+    assert "completed=false" in postgresql
+    assert "completed=true" in postgresql
+    assert "DROP TABLE IF EXISTS public.\$TABLE_NAME" in postgresql
+    assert 'verify_postgresql_durability "$log_file"' in postgresql
+    assert "DROP TABLE IF EXISTS public.${table_name}" in cleanup
+    assert "SELECT count(*) FROM pg_class" in cleanup
+    assert '[[ "$remaining" == 0 ]]' in cleanup
 
 
 def test_failed_job_deletion_is_reported_and_ownership_is_preserved(tmp_path: Path):
@@ -295,10 +332,113 @@ def test_load_generator_scales_s3_memory_and_waits_for_controller_convergence():
     assert "s3_cpu_limit=$CLIENTS" in content
     assert "(( s3_cpu_limit <= 4 )) || s3_cpu_limit=4" in content
     assert 'limits: {cpu: "$s3_cpu_limit"' in content
+    assert 'S3_PHASE_TIMEOUT=$((S3_OBJECTS / 4 + 300))' in content
+    assert 'execute_job storage "$name" "$manifest" "$log_file" "$S3_PHASE_TIMEOUT"' in content
+    assert 'activeDeadlineSeconds: $S3_PHASE_TIMEOUT' in content
+    assert 'integer_in_range s3-phase-timeout "$S3_PHASE_TIMEOUT" 30 7200' in content
     assert "collect_settled_evidence()" in content
     assert "for attempt in 1 2 3 4 5 6 7" in content
     settled = content.split("collect_settled_evidence()", 1)[1].split("execute_job()", 1)[0]
     assert "printf '%s\\n' \"$evidence\"" in settled
+
+
+def test_s3_load_batches_cli_calls_and_reports_confirmed_progress():
+    content = LOAD.read_text()
+    s3 = function_source(content, "phase_s3", "phase_postgresql")
+
+    assert 'name: BATCH_SIZE, value: "500"' in s3
+    assert 'aws configure set default.s3.max_concurrent_requests "\\$CLIENTS"' in s3
+    assert '--recursive --only-show-errors --no-progress' in s3
+    assert "PROGRESS phase=s3" in s3
+    assert "emit_progress uploaded" in s3
+    assert "emit_progress downloaded" in s3
+    assert "emit_progress verified" in s3
+    assert "emit_progress deleted" in s3
+    assert '[ "\\$operations" -eq "\\$((OBJECTS*4))" ]' in s3
+    assert 's3 cp "\\$value" "\\$key"' not in s3
+    assert 'for result in /tmp/s3-result.*' not in s3
+
+
+def test_s3_batch_payload_completes_exact_round_trips_with_bounded_cli_calls(tmp_path: Path):
+    content = LOAD.read_text()
+    s3 = function_source(content, "phase_s3", "phase_postgresql")
+    render = tmp_path / "render.sh"
+    manifest = tmp_path / "s3-job.yaml"
+    render.write_text(
+        "set -eu\n" + s3 + "\n"
+        f'OUTPUT_DIR="{tmp_path}"\nRUN_ID=unit-s3\nS3_IMAGE=test/aws\n'
+        "S3_OBJECTS=7\nCLIENTS=3\nmax_error_bps=0\n"
+        "s3_cpu_limit=1\ns3_memory_limit_mi=256\nS3_PHASE_TIMEOUT=90\n"
+        "execute_job(){ :; }\nphase_s3\n"
+    )
+    rendered = run("bash", str(render))
+    assert rendered.returncode == 0, rendered.stderr
+    payload_result = run(
+        "yq", "-r", ".spec.template.spec.containers[0].args[0]", str(manifest)
+    )
+    assert payload_result.returncode == 0, payload_result.stderr
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_aws = fake_bin / "aws"
+    fake_aws.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, pathlib, shutil, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['FAKE_AWS_LOG'], 'a') as log: log.write(' '.join(args) + '\\n')\n"
+        "if args[:2] == ['configure', 'set']: raise SystemExit(0)\n"
+        "if args[:1] == ['--endpoint-url']: args = args[2:]\n"
+        "root = pathlib.Path(os.environ['FAKE_S3_ROOT'])\n"
+        "def path(value):\n"
+        "  return root / value.removeprefix('s3://') if value.startswith('s3://') else pathlib.Path(value)\n"
+        "action, source = args[1], args[2]\n"
+        "if action == 'cp':\n"
+        "  target = path(args[3]); source = path(source); target.mkdir(parents=True, exist_ok=True)\n"
+        "  for item in source.rglob('*'):\n"
+        "    if item.is_file():\n"
+        "      destination = target / item.relative_to(source); destination.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(item, destination)\n"
+        "elif action == 'rm': shutil.rmtree(path(source), ignore_errors=True)\n"
+        "elif action == 'ls':\n"
+        "  source = path(source)\n"
+        "  if source.exists():\n"
+        "    for item in source.rglob('*'):\n"
+        "      if item.is_file(): print(item)\n"
+        "else: raise SystemExit(2)\n"
+    )
+    fake_aws.chmod(0o755)
+    payload = payload_result.stdout.replace(
+        "/tmp/s3-source", str(tmp_path / "source")
+    ).replace(
+        "/tmp/s3-readback", str(tmp_path / "readback")
+    ).replace(
+        "/tmp/aws-home", str(tmp_path / "aws-home")
+    )
+    result = subprocess.run(
+        ["sh", "-ec", payload], text=True, capture_output=True, check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "OBJECTS": "7", "CLIENTS": "3", "RUN_ID": "unit-s3",
+            "MAX_ERROR_BPS": "0", "BATCH_SIZE": "2",
+            "FAKE_AWS_LOG": str(tmp_path / "aws.log"),
+            "FAKE_S3_ROOT": str(tmp_path / "remote"),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert "RESULT phase=s3 operations=28 errors=0" in result.stdout
+    assert "PROGRESS phase=s3 stage=uploaded operations=7 errors=0" in result.stdout
+    assert "PROGRESS phase=s3 stage=deleted operations=28 errors=0" in result.stdout
+    calls = (tmp_path / "aws.log").read_text().splitlines()
+    assert len(calls) == 18  # 2 config + 4 batches * (upload, download, delete, verify)
+    assert not list((tmp_path / "remote").rglob("object-*"))
+
+
+def test_failed_phase_uses_last_confirmed_progress_instead_of_claiming_zero():
+    content = LOAD.read_text()
+    run_phase = function_source(content, "run_phase", "write_summary")
+    assert 'progress_from_log "$log_file"' in run_phase
+    assert '(( errors > 0 )) || errors=1' in run_phase
+    assert "duration=$((end-start))" in run_phase
 
 
 def test_dragonfly_load_uses_env_auth_and_verifies_every_worker():
@@ -331,6 +471,7 @@ def test_evidence_redacts_url_parser_credential_fragments():
     "arguments",
     [
         ("--clients", "0"), ("--clients", "65"), ("--phase-timeout", "29"),
+        ("--s3-phase-timeout", "7201"),
         ("--max-error-percent", "20.01"),
         ("--run-id", "Test-1"),
         ("--run-id", "trailing-"),

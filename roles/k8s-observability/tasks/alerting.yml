@@ -126,6 +126,11 @@
       spec:
         replicaCount: "{{ alerting.replicas | default(2 if tier in ['medium', 'production'] else 1) }}"
         configSecret: platform-alertmanager-config
+        configReloaderResources:
+          requests: { cpu: 10m, memory: 25Mi }
+          limits:
+            cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '200m' }}"
+            memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
         secrets:
           - alert-secrets
         resources:
@@ -154,6 +159,11 @@
         namespace: '{{ monitoring_namespace }}'
       spec:
         replicaCount: "{{ alerting.vmalert_replicas | default(2 if tier == 'production' else 1) }}"
+        configReloaderResources:
+          requests: { cpu: 10m, memory: 25Mi }
+          limits:
+            cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '200m' }}"
+            memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
         datasource:
           url: >-
             {{ 'http://vmselect-vmcluster.' + monitoring_namespace + '.svc.cluster.local:8481/select/0/prometheus'

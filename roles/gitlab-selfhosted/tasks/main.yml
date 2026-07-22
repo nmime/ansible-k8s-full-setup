@@ -22,6 +22,20 @@
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
+- name: Require a GitLab Runner authentication token when Runner is selected
+  ansible.builtin.assert:
+    that:
+      - vault_encrypt_secrets | default(true) | bool
+      - gitlab_runner_token | default('') | string | trim | length > 20
+      - gitlab_runner_token | default('') | string is match('^glrt-[A-Za-z0-9_-]+$')
+    fail_msg: >-
+      gitlab.runner.enabled=true requires an existing GitLab Runner authentication
+      token (glrt-...). Create an instance runner in GitLab Admin > CI/CD > Runners,
+      export GITLAB_RUNNER_TOKEN=glrt-..., and rerun the playbook. The token is
+      persisted only in the Ansible Vault-encrypted platform secrets file. Legacy
+      runner registration tokens are intentionally unsupported.
+    quiet: true
+  when: gitlab_runner_enabled | bool
 - name: Create GitLab namespace
   kubernetes.core.k8s:
     state: present
@@ -699,13 +713,23 @@
             tmpBucket: gitlab-tmp
       gitlab:
         webservice:
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
           replicaCount: '{{ gitlab_webservice_replicas | int }}'
           minReplicas: '{{ gitlab_webservice_replicas | int }}'
           maxReplicas: '{{ gitlab_webservice_max_replicas | int }}'
+          deployment:
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxUnavailable: 0
+                maxSurge: 1
           topologySpreadConstraints:
             - maxSkew: 1
               topologyKey: kubernetes.io/hostname
-              whenUnsatisfiable: ScheduleAnyway
+              whenUnsatisfiable: DoNotSchedule
               labelSelector:
                 matchExpressions:
                   - key: release
@@ -716,7 +740,6 @@
                     operator: In
                     values:
                       - webservice
-                      - sidekiq
           resources:
             requests:
               cpu: '{{ ''100m'' if gitlab_mode == ''light'' else ''300m'' }}'
@@ -724,15 +747,29 @@
             limits:
               cpu: '{{ ''1500m'' if gitlab_mode == ''light'' else ''2000m'' }}'
               memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''5Gi'' }}'
+          workhorse:
+            resources:
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: 500m, memory: 256Mi}
           workerProcesses: '{{ gitlab_webservice_worker_processes | int }}'
         sidekiq:
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
           replicaCount: '{{ gitlab_sidekiq_replicas | int }}'
           minReplicas: '{{ gitlab_sidekiq_replicas | int }}'
           maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'
+          deployment:
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxUnavailable: 0
+                maxSurge: 1
           topologySpreadConstraints:
             - maxSkew: 1
               topologyKey: kubernetes.io/hostname
-              whenUnsatisfiable: ScheduleAnyway
+              whenUnsatisfiable: DoNotSchedule
               labelSelector:
                 matchExpressions:
                   - key: release
@@ -742,7 +779,6 @@
                   - key: app
                     operator: In
                     values:
-                      - webservice
                       - sidekiq
           resources:
             requests:
@@ -752,6 +788,10 @@
               cpu: '{{ ''1000m'' if gitlab_mode == ''light'' else ''1500m'' }}'
               memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''3Gi'' }}'
         gitlab-shell:
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
           replicaCount: '{{ gitlab_webservice_replicas | int }}'
           minReplicas: '{{ gitlab_webservice_replicas | int }}'
           resources:
@@ -762,6 +802,15 @@
               cpu: 500m
               memory: 256Mi
         gitaly:
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
+          # Gitaly is an intentional singleton. The chart always renders its
+          # PDB, so fail safe: voluntary eviction must not remove the only pod.
+          # Operators must explicitly migrate/scale or temporarily override
+          # this gate for planned maintenance; this is not node-failure HA.
+          maxUnavailable: 0
           persistence:
             enabled: true
             size: '{{ gitlab_gitaly_storage_size }}'
@@ -775,6 +824,10 @@
               memory: '{{ ''1Gi'' if gitlab_mode == ''light'' else ''2Gi'' }}'
         kas:
           enabled: true
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
           minReplicas: '{{ gitlab_webservice_replicas | int }}'
           resources:
             requests:
@@ -785,6 +838,10 @@
               memory: 1Gi
         toolbox:
           enabled: true
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
           resources:
             requests:
               cpu: 50m
@@ -817,6 +874,9 @@
               concurrencyPolicy: Forbid
               successfulJobsHistoryLimit: 3
               failedJobsHistoryLimit: 1
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 500m, memory: 1Gi}
               extraArgs: >-
                 --skip db
                 --s3tool awscli
@@ -828,8 +888,28 @@
                 enabled: '{{ gitlab_backup_persistence_enabled | bool }}'
                 storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
                 size: '{{ gitlab_backup_persistence_size }}'
+        gitlab-exporter:
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+        migrations:
+          init:
+            resources:
+              requests: {cpu: 10m, memory: 16Mi}
+              limits: {cpu: 100m, memory: 64Mi}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 1, memory: 1Gi}
       registry:
         enabled: true
+        init:
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
         replicaCount: '{{ gitlab_webservice_replicas | int }}'
         hpa:
           minReplicas: '{{ gitlab_webservice_replicas | int }}'
@@ -848,6 +928,10 @@
           limits:
             cpu: 500m
             memory: 256Mi
+      upgradeCheck:
+        resources:
+          requests: {cpu: 10m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 64Mi}
       prometheus:
         install: false
       grafana:
@@ -859,6 +943,9 @@
         install: false
       shared-secrets:
         enabled: true
+        resources:
+          requests: {cpu: 10m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 128Mi}
         rbac:
           create: true
   when: tier is defined and tier | default('medium') in ['minimal', 'small', 'medium', 'production']
@@ -1028,7 +1115,7 @@
 
           Warning events (last timestamp, reason, object kind, object name, count):
           {{ _gitlab_readiness_warning_events.stdout | default('none', true) }}
-- name: Add cross-component anti-affinity to GitLab Rails workloads
+- name: Add preferred cross-component anti-affinity to GitLab Rails workloads
   kubernetes.core.k8s:
     state: present
     merge_type: strategic-merge
@@ -1036,7 +1123,7 @@
       apiVersion: apps/v1
       kind: Deployment
       metadata:
-        name: '{{ item }}'
+        name: '{{ item.deployment }}'
         namespace: '{{ gitlab_namespace }}'
       spec:
         template:
@@ -1059,8 +1146,10 @@
                               - sidekiq
                       topologyKey: kubernetes.io/hostname
   loop:
-    - gitlab-webservice-default
-    - gitlab-sidekiq-all-in-1-v2
+    - deployment: gitlab-webservice-default
+      component: webservice
+    - deployment: gitlab-sidekiq-all-in-1-v2
+      component: sidekiq
   register: gitlab_rails_affinity
 - name: Wait for optimized GitLab Rails workload rollouts
   ansible.builtin.command:
@@ -1070,11 +1159,13 @@
       - status
       - --namespace
       - '{{ gitlab_namespace }}'
-      - 'deployment/{{ item }}'
+      - 'deployment/{{ item.deployment }}'
       - --timeout=10m
   loop:
-    - gitlab-webservice-default
-    - gitlab-sidekiq-all-in-1-v2
+    - deployment: gitlab-webservice-default
+      component: webservice
+    - deployment: gitlab-sidekiq-all-in-1-v2
+      component: sidekiq
   register: _r_wait_for_gitlab_rails_rollouts
   retries: 3
   delay: 10
@@ -1238,7 +1329,7 @@
     wait: true
     values:
       gitlabUrl: https://{{ gitlab_domain }}
-      runnerToken: '{{ gitlab_runner_token | default('''') }}'
+      runnerToken: '{{ gitlab_runner_token }}'
       concurrent: '{{ gitlab_runner_concurrent }}'
       checkInterval: 3
       rbac:
@@ -1247,8 +1338,8 @@
       runners:
         config: "[[runners]]\n  [runners.kubernetes]\n    namespace = \"{{ gitlab_namespace }}\"\n    image = \"ubuntu:22.04\"\n    privileged = false\n    [runners.kubernetes.pod_security_context]\n  \
           \    run_as_non_root = true\n      run_as_user = 1000\n    [runners.kubernetes.build_container_resources]\n      cpu_request = \"500m\"\n      cpu_limit = \"2000m\"\n      memory_request = \"\
-          1Gi\"\n      memory_limit = \"4Gi\"\n    [runners.kubernetes.service_container_resources]\n      cpu_request = \"200m\"\n      memory_request = \"512Mi\"\n    [runners.kubernetes.helper_container_resources]\n\
-          \      cpu_request = \"100m\"\n      memory_request = \"128Mi\"\n"
+          1Gi\"\n      memory_limit = \"4Gi\"\n    [runners.kubernetes.service_container_resources]\n      cpu_request = \"200m\"\n      cpu_limit = \"1000m\"\n      memory_request = \"512Mi\"\n      memory_limit = \"2Gi\"\n    [runners.kubernetes.helper_container_resources]\n\
+          \      cpu_request = \"100m\"\n      cpu_limit = \"500m\"\n      memory_request = \"128Mi\"\n      memory_limit = \"512Mi\"\n"
         tags: kubernetes,docker,k8s
         runUntagged: true
       podAnnotations:
@@ -1261,10 +1352,8 @@
         limits:
           cpu: 500m
           memory: 256Mi
-  when:
-    - gitlab_runner_enabled | bool
-    - gitlab_runner_token is defined
-    - gitlab_runner_token != ''
+  when: gitlab_runner_enabled | bool
+  no_log: true
   register: _r_install_gitlab_runner_with_helm
   retries: 3
   delay: 10
@@ -1273,8 +1362,6 @@
   no_log: true
   when:
     - gitlab_runner_enabled | bool
-    - gitlab_runner_token is defined
-    - gitlab_runner_token != ''
   kubernetes.core.k8s:
     state: present
     definition:

@@ -1,9 +1,12 @@
 """Component tests: GitLab Helm values structure vs chart 10.x."""
-import os, re, pytest
+import os, re, pytest, yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GITLAB_TASKS_PATH = os.path.join(REPO_ROOT, "roles", "gitlab-selfhosted", "tasks", "main.yml")
 DEFAULTS_PATH = os.path.join(REPO_ROOT, "defaults", "main.yml")
+GENERATE_SECRETS_PATH = os.path.join(
+    REPO_ROOT, "roles", "generate-secrets", "tasks", "main.yml"
+)
 
 def read(path):
     with open(path) as f:
@@ -53,14 +56,78 @@ class TestChart10ValuesStructure:
         assert "maxReplicas: '{{ gitlab_registry_max_replicas | int }}'" in self.content
 
     def test_heavy_rails_workloads_prefer_different_nodes(self):
-        assert self.content.count("topologySpreadConstraints:") >= 2
-        assert self.content.count("whenUnsatisfiable: ScheduleAnyway") >= 2
-        assert self.content.count("- webservice") >= 2
-        assert self.content.count("- sidekiq") >= 2
-        assert self.content.count("topologyKey: kubernetes.io/hostname") >= 2
-        assert "Add cross-component anti-affinity to GitLab Rails workloads" in self.content
-        assert "weight: 100" in self.content
+        tasks = yaml.safe_load(self.content)
+        install = next(task for task in tasks if task.get("name") == "Install GitLab with Helm")
+        rails = install["kubernetes.core.helm"]["values"]["gitlab"]
+        for component in ("webservice", "sidekiq"):
+            strategy = rails[component]["deployment"]["strategy"]
+            assert strategy == {
+                "type": "RollingUpdate",
+                "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
+            }
+            spread = rails[component]["topologySpreadConstraints"]
+            assert len(spread) == 1
+            assert spread[0]["topologyKey"] == "kubernetes.io/hostname"
+            assert spread[0]["whenUnsatisfiable"] == "DoNotSchedule"
+            expressions = spread[0]["labelSelector"]["matchExpressions"]
+            assert expressions[0]["values"] == ["gitlab"]
+            assert expressions[1]["values"] == [component]
+
+            # With three production workers, hard maxSkew=1 keeps the normal
+            # two-replica floor on separate nodes while still admitting the
+            # configured four-replica cap as a 2/1/1 distribution.
+            assert max([1, 1, 0]) - min([1, 1, 0]) <= spread[0]["maxSkew"]
+            assert max([2, 1, 1]) - min([2, 1, 1]) <= spread[0]["maxSkew"]
+
+        affinity = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Add preferred cross-component anti-affinity to GitLab Rails workloads"
+        )
+        assert affinity["loop"] == [
+            {"deployment": "gitlab-webservice-default", "component": "webservice"},
+            {"deployment": "gitlab-sidekiq-all-in-1-v2", "component": "sidekiq"},
+        ]
+        definition = affinity["kubernetes.core.k8s"]["definition"]
+        assert definition["metadata"]["name"] == "{{ item.deployment }}"
+        anti_affinity = definition["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]
+        assert "requiredDuringSchedulingIgnoredDuringExecution" not in anti_affinity
+        preferred = anti_affinity["preferredDuringSchedulingIgnoredDuringExecution"]
+        assert preferred[0]["weight"] == 100
+        assert preferred[0]["podAffinityTerm"]["labelSelector"]["matchExpressions"][1][
+            "values"
+        ] == ["webservice", "sidekiq"]
         assert "Rebalance GitLab Rails workloads when a rolling update co-locates them" in self.content
+
+    def test_enabled_runner_requires_modern_authentication_token(self):
+        gate = self.content.split(
+            "- name: Require a GitLab Runner authentication token when Runner is selected",
+            1,
+        )[1].split("- name: Create GitLab namespace", 1)[0]
+        install = self.content.split("- name: Install GitLab Runner with Helm", 1)[1].split(
+            "- name: Create S3 cache secret for GitLab Runner", 1
+        )[0]
+        assert "^glrt-[A-Za-z0-9_-]+$" in gate
+        assert "vault_encrypt_secrets | default(true) | bool" in gate
+        assert "when: gitlab_runner_enabled | bool" in gate
+        assert "quiet: true" in gate
+        assert "runnerToken: '{{ gitlab_runner_token }}'" in install
+        assert "gitlab_runner_token is defined" not in install
+        assert "gitlab_runner_token != ''" not in install
+        assert "no_log: true" in install
+
+        secrets = read(GENERATE_SECRETS_PATH)
+        resolution = secrets.split("- name: Resolve GitLab Runner authentication token", 1)[
+            1
+        ].split("- name: Require encrypted persistence", 1)[0]
+        assert "lookup('env', 'GITLAB_RUNNER_TOKEN')" in resolution
+        assert "saved_secrets.gitlab_runner_token" in resolution
+        assert "no_log: true" in resolution
+        assert secrets.count('gitlab_runner_token: "{{ gitlab_runner_token }}"') == 2
+        assert "requires vault_encrypt_secrets=true" in secrets
+        assert "Require a modern authentication token when GitLab Runner is selected" in secrets
+        assert "the Runner will not be silently omitted" in secrets
 
     @pytest.mark.component
     def test_gitlab_shell_configured(self):
@@ -201,11 +268,25 @@ class TestChart10ValuesStructure:
 
     def test_chart_10_gitaly_persistence_contract_uses_rendered_values_path(self):
         gitaly = self.content.split("        gitaly:", 1)[1].split("        kas:", 1)[0]
+        assert "          maxUnavailable: 0" in gitaly
+        assert "minAvailable:" not in gitaly
         assert "          persistence:" in gitaly
         assert "            enabled: true" in gitaly
         assert "            size: '{{ gitlab_gitaly_storage_size }}'" in gitaly
         assert "            storageClass: '{{ storage_class" in gitaly
         assert "persistentVolumeClaim:" not in gitaly
+
+    def test_singleton_gitaly_pdb_blocks_voluntary_total_outage(self):
+        tasks = yaml.safe_load(self.content)
+        install = next(task for task in tasks if task.get("name") == "Install GitLab with Helm")
+        gitaly = install["kubernetes.core.helm"]["values"]["gitlab"]["gitaly"]
+        assert gitaly["maxUnavailable"] == 0
+        assert "minAvailable" not in gitaly
+
+        readme = read(os.path.join(REPO_ROOT, "README.md"))
+        assert "equivalent to `minAvailable: 1`" in readme
+        assert "This does\nnot provide node-failure HA" in readme
+        assert "temporarily override the PDB" in readme
 
     def test_unbound_gitaly_size_drift_has_conservative_recovery(self):
         recovery = self.content.split("- name: Inspect existing Gitaly storage", 1)[1].split(

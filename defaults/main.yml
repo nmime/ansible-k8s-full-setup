@@ -138,6 +138,12 @@ vault_chart_version: "0.34.0"
 vault_replicas: "{{ 3 if resource_tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 20Gi
 eso_enabled: true
+# The `default/example-secret` ExternalSecret is only a demonstration fixture.
+# Production reconciliation removes it unless an operator explicitly enables
+# the fixture and points it at an existing Vault KV-v2 key/property.
+eso_example_secret_enabled: false
+eso_example_secret_remote_key: ""
+eso_example_secret_remote_property: password
 vault_tls_disabled: false
 vault_verify_tls: true
 vault_encrypt_secrets: true
@@ -151,6 +157,74 @@ postgresql_replicas: "{{ 2 if resource_tier in ['medium', 'production'] else 1 }
 postgresql_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
 mongodb_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
+
+# Operator-injected database containers need explicit reservations as well as
+# the primary database containers. The constrained envelope is deliberately
+# selected by resource_tier (including medium-optimized and production, which
+# both map to small) while every dictionary remains profile-overridable.
+database_container_default_resources:
+  requests:
+    cpu: "{{ '5m' if resource_tier in ['minimal', 'small'] else '10m' }}"
+    memory: "{{ '16Mi' if resource_tier in ['minimal', 'small'] else '32Mi' }}"
+  limits:
+    cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
+    memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+postgresql_replica_cert_copy_resources:
+  requests:
+    cpu: "{{ '5m' if resource_tier in ['minimal', 'small'] else '10m' }}"
+    memory: "{{ '16Mi' if resource_tier in ['minimal', 'small'] else '32Mi' }}"
+  limits:
+    cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"
+    memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
+postgresql_pgbackrest_resources:
+  requests:
+    cpu: "{{ '25m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+    memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
+  limits:
+    cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
+    memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+postgresql_pgbackrest_config_resources:
+  requests:
+    cpu: "{{ '5m' if resource_tier in ['minimal', 'small'] else '10m' }}"
+    memory: "{{ '16Mi' if resource_tier in ['minimal', 'small'] else '32Mi' }}"
+  limits:
+    cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '200m' }}"
+    memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
+postgresql_pgbackrest_init_resources:
+  requests:
+    cpu: "{{ '10m' if resource_tier in ['minimal', 'small'] else '25m' }}"
+    memory: "{{ '32Mi' if resource_tier in ['minimal', 'small'] else '64Mi' }}"
+  limits:
+    cpu: "{{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+    memory: "{{ '128Mi' if resource_tier in ['minimal', 'small'] else '256Mi' }}"
+postgresql_pgbackrest_repo_host_resources:
+  requests:
+    cpu: "{{ '25m' if resource_tier in ['minimal', 'small'] else '50m' }}"
+    memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
+  limits:
+    cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
+    memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+postgresql_pgbackrest_job_resources:
+  requests:
+    cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"
+    memory: "{{ '96Mi' if resource_tier in ['minimal', 'small'] else '256Mi' }}"
+  limits:
+    cpu: "{{ '1' if resource_tier in ['minimal', 'small'] else '2' }}"
+    memory: "{{ '1Gi' if resource_tier in ['minimal', 'small'] else '2Gi' }}"
+mongodb_backup_resources:
+  requests:
+    cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"
+    memory: "{{ '96Mi' if resource_tier in ['minimal', 'small'] else '256Mi' }}"
+  limits:
+    cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
+    memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+mongodb_pmm_resources:
+  requests:
+    cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"
+    memory: "{{ '64Mi' if resource_tier in ['minimal', 'small'] else '128Mi' }}"
+  limits:
+    cpu: "{{ '200m' if resource_tier in ['minimal', 'small'] else '500m' }}"
+    memory: "{{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}"
 
 # GitLab
 # renovate: datasource=helm depName=gitlab

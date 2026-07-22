@@ -35,14 +35,15 @@ Features **not** included in Basic (requires paid commercial licenses):
 
 - Namespace (`elasticsearch`)
 - TLS certificates (generated on first run)
-- Secrets: `es-tls-certs`, `es-credentials`
+- Secrets: `es-tls-certs`, `es-credentials`, `logging-ingest-credentials`
 - Services: `es-master-headless`, `es-data-headless`, `elasticsearch`
 - StatefulSets: `es-master`, `es-data`
 - Deployment: `kibana`
 - HTTPRoute: `kibana` (admin-gateway)
 - PDBs: `es-master-pdb`, `es-data-pdb`
 - NetworkPolicy: `es-allow-internal`
-- CiliumNetworkPolicy: `allow-filebeat-to-es`
+- CiliumNetworkPolicy: `allow-logging-agents-to-es` permits only the selected
+  collector in the isolated `logging-agents` namespace to reach port 9200
 - VMServiceScrape: `elasticsearch`
 
 ## Security
@@ -54,4 +55,5 @@ Features **not** included in Basic (requires paid commercial licenses):
 - Credentials stored in Kubernetes secrets with `no_log: true`
 - Elasticsearch remains at the Pod Security baseline; host-log collectors run
   separately in the explicitly privileged `logging-agents` namespace with only
-  the CA certificate and Elasticsearch password replicated there.
+  the CA certificate and a dedicated `platform_logging_ingest` credential
+  replicated there. The `elastic` superuser secret never crosses namespaces.

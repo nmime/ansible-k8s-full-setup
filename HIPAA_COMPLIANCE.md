@@ -105,7 +105,7 @@ ssh root@BASTION 'auditctl -l'
 # Collector values: inspect whichever stack the profile selected
 helm get values promtail -n monitoring -o yaml
 helm get values filebeat -n elasticsearch -o yaml
-helm get values fluentd -n monitoring -o yaml
+helm get values fluentd -n logging-agents -o yaml
 ```
 
 Use synthetic values only when testing redaction. Confirm that the stored log

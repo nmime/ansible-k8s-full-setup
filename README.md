@@ -335,6 +335,73 @@ the pinned official operator and sized explicitly for `medium-optimized`.
 Alertmanager creates Telegram/email routes only for
 enabled channels; its email channel requires the selected Postal service.
 
+ESO does not create a sample application secret by default. Every reconcile
+removes the legacy `default/example-secret` ExternalSecret and its generated
+Secret while `secrets.eso.example_secret.enabled` is false. For an explicit
+demo, first create the source KV-v2 value below Vault's `secret/` mount, then
+set its key and property in the profile:
+
+```bash
+vault kv put secret/demo/app password='replace-with-a-demo-value'
+```
+
+```yaml
+secrets:
+  eso:
+    example_secret:
+      enabled: true
+      remote_key: demo/app
+      remote_property: password
+```
+
+Reconciliation fails closed if the source key or property does not exist. The
+fixture is for integration demonstrations only; applications should define
+their own namespace-scoped ExternalSecrets and Vault paths.
+
+GitLab Gitaly remains a singleton in every bundled profile. Its chart-managed
+PDB is pinned to `maxUnavailable: 0` (equivalent to `minAvailable: 1`) so a
+voluntary eviction cannot take the only repository-storage pod down. This does
+not provide node-failure HA. Before planned maintenance of its node, explicitly
+migrate/scale Gitaly or temporarily override the PDB under a reviewed procedure,
+then restore the fail-safe value immediately afterward.
+The supported `scripts/migrate-profile.sh` workflow performs that exception
+automatically only for the node hosting the healthy singleton: it writes a
+UID-bound mode-0600 checkpoint, permits one eviction, and restores and verifies
+`maxUnavailable: 0` after drain failure or success and again on process exit,
+resume, or rollback. Do not patch the PDB manually during that workflow.
+
+Profiles that select GitLab Runner require a GitLab-issued runner
+authentication token (the modern `glrt-...` form). Create an instance runner
+under **GitLab Admin > CI/CD > Runners**, then provide the token once before
+deployment:
+
+```bash
+export GITLAB_RUNNER_TOKEN='glrt-...'
+```
+
+`platform.sh` and `run_tier.sh` also load it from the gitignored repository
+`.env`. The value is retained in `.platform-secrets.yml` under Ansible Vault
+encryption for later reconciliations. An enabled Runner with a missing or
+legacy registration token fails during secret preflight, before infrastructure
+or platform roles change the cluster;
+it is never silently omitted. Keep `vault_encrypt_secrets=true`.
+
+For an existing healthy self-hosted GitLab, bootstrap and persist the token
+without displaying it:
+
+```bash
+scripts/bootstrap-gitlab-runner-token.py \
+  --kubeconfig "$KUBECONFIG" \
+  --secrets-file playbooks/.platform-secrets.yml \
+  --vault-password-file "$ANSIBLE_VAULT_PASSWORD_FILE"
+```
+
+The command is idempotent: it verifies and reuses a live persisted token, or
+creates a new instance runner through GitLab's supported API and synchronizes
+the result into the ignored `.env` and encrypted secrets file. See
+[GitLab Runner token bootstrap](docs/GITLAB_RUNNER_BOOTSTRAP.md) for first-cluster
+sequencing, compatibility, and the no-disclosure guarantees.
+
 ## Operations
 
 ```bash

@@ -26,9 +26,31 @@
   delay: 10
   until: _r_create_databases_namespace is not failed
   when: >-
-    (pmm_enabled | default(false) | bool)
-    and ((platform_postgresql_enabled | default(true) | bool)
-    or (platform_mongodb_enabled | default(true) | bool))
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
+- name: Bound operator-created database helper containers at admission
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: database-container-defaults
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/part-of: databases
+      spec:
+        limits:
+        - type: Container
+          default: '{{ database_container_default_resources.limits }}'
+          defaultRequest: '{{ database_container_default_resources.requests }}'
+  register: _r_bound_operator_created_database_helpers
+  retries: 3
+  delay: 10
+  until: _r_bound_operator_created_database_helpers is not failed
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Add Percona Helm repository
   kubernetes.core.helm_repository:
     name: percona
@@ -258,6 +280,9 @@
             limits:
               cpu: '{{ ''500m'' if resource_tier in [''minimal'', ''small''] else ''1'' }}'
               memory: '{{ ''1Gi'' if resource_tier in [''minimal'', ''small''] else ''2Gi'' }}'
+          containers:
+            replicaCertCopy:
+              resources: '{{ postgresql_replica_cert_copy_resources }}'
           affinity:
             podAntiAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
@@ -292,6 +317,18 @@
         backups:
           pgbackrest:
             image: percona/percona-pgbackrest:2.58.0-2
+            containers:
+              pgbackrest:
+                resources: '{{ postgresql_pgbackrest_resources }}'
+              pgbackrestConfig:
+                resources: '{{ postgresql_pgbackrest_config_resources }}'
+            initContainer:
+              image: docker.io/percona/percona-postgresql-operator:{{ pg_operator_ver }}
+              resources: '{{ postgresql_pgbackrest_init_resources }}'
+            jobs:
+              resources: '{{ postgresql_pgbackrest_job_resources }}'
+            repoHost:
+              resources: '{{ postgresql_pgbackrest_repo_host_resources }}'
             configuration:
             - secret:
                 name: pgbackrest-s3-creds
@@ -555,6 +592,7 @@
         backup:
           enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
           image: percona/percona-backup-mongodb:2.13.0
+          resources: '{{ mongodb_backup_resources }}'
           storages:
             s3-object-storage:
               type: s3
@@ -586,6 +624,7 @@
           enabled: '{{ pmm_enabled | default(false) | bool }}'
           image: percona/pmm-client:3.8.1
           serverHost: pmm-server.monitoring.svc.cluster.local
+          resources: '{{ mongodb_pmm_resources }}'
   register: _r_create_mongodb_cluster
   retries: 3
   delay: 10

@@ -79,19 +79,47 @@ secrets:
     storage_size: 20Gi
   eso:
     enabled: true
+    # Disabled by default. To opt into the demo fixture, first create the
+    # source value (for example `vault kv put secret/demo/app password=...`),
+    # then set all three fields below. Reconciliation verifies the key and
+    # property before creating `default/example-secret`.
+    example_secret:
+      enabled: false
+      remote_key: ""       # KV-v2 path below `secret/`, e.g. demo/app
+      remote_property: password
 
 databases:
   enabled: true
+  # Admission defaults cover operator-generated init containers whose CRDs do
+  # not expose a resource field. Explicit component resources below win.
+  # container_defaults:
+  #   requests: {cpu: 5m, memory: 16Mi}
+  #   limits: {cpu: 500m, memory: 512Mi}
   postgresql:
     enabled: true
     version: 18
     replicas: 1
     storage_size: 30Gi
+    # Operator-created helper containers use tier-aware defaults. Any helper
+    # can be tuned independently with the same requests/limits dictionary:
+    # resources:
+    #   pgbackrest_job:
+    #     requests: {cpu: 50m, memory: 96Mi}
+    #     limits: {cpu: "1", memory: 1Gi}
+    # Supported keys: replica_cert_copy, pgbackrest, pgbackrest_config,
+    # pgbackrest_init, pgbackrest_repo_host, and pgbackrest_job.
   mongodb:
     enabled: false
     version: "8.0"
     replicas: 1
     storage_size: 30Gi
+    # resources:
+    #   backup:
+    #     requests: {cpu: 50m, memory: 96Mi}
+    #     limits: {cpu: 500m, memory: 512Mi}
+    #   pmm:
+    #     requests: {cpu: 50m, memory: 64Mi}
+    #     limits: {cpu: 200m, memory: 256Mi}
 
 gitlab:
   enabled: true
