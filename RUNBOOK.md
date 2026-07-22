@@ -25,6 +25,23 @@ kubectl get cronjob -A
 Investigate any non-Ready node, failed Helm release, missing required component,
 expired certificate, or missed backup before continuing maintenance.
 
+### Controller API tunnel recovery
+
+The managed controller tunnel keeps a stable loopback listener in front of the
+reconnecting SSH forward. New Kubernetes and Helm connections are held for at
+most 60 seconds while the supervisor rotates between control-plane endpoints.
+Only bytes sent before the upstream TLS response are replayed; after the API
+server responds, the connection uses normal fail-fast transport semantics.
+The proxy never manufactures or caches a Kubernetes response. If no API server
+becomes reachable within the bound, the operation fails closed and Ansible
+stops normally.
+
+The supervisor process owns both the retry proxy and SSH child. Its TERM trap
+reaps both and removes the private Unix socket. An unexpected proxy exit is a
+hard supervisor failure. This applies centrally to every client using the
+generated kubeconfig, including Helm, `kubernetes.core` modules, and `kubectl`;
+component-specific retries must not be used to hide chart or validation errors.
+
 ## Bounded live load and evidence
 
 Plan the exact profile-aware load first. Dry-run writes the evidence schema and

@@ -92,6 +92,9 @@ else
   info "Storage reachable"
 fi
 TS=$(date -u +%Y%m%dT%H%M%SZ)
+BACKUP_RUN_ID="${BACKUP_RUN_ID:-${PROJECT_NAME:-k8s}-native-${TS}}"
+[[ "$BACKUP_RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$ ]] \
+  || { error "BACKUP_RUN_ID contains unsafe characters"; exit 1; }
 # Multi-cluster controllers can start several backups in the same second.
 # Keep each audit trail independent even for two runs of the same project.
 RESULT_PROJECT=$(printf '%s' "${PROJECT_NAME:-k8s}" | tr -c 'A-Za-z0-9._-' '-')
@@ -112,17 +115,29 @@ catalog_record() {
       restore_contract:$contract,artifact_locator:$locator,repository:$repository,
       recorded_at:$recordedAt}' >> "$CATALOG_RECORDS"
 }
+job_artifact_locator() {
+  local namespace="$1" job="$2" logs locator
+  logs=$(kubectl logs "job/${job}" -n "$namespace" --all-containers 2>/dev/null || true)
+  locator=$(printf '%s\n' "$logs" \
+    | sed -n 's/^BACKUP_ARTIFACT_URI=\(s3:\/\/[^[:space:]][^[:space:]]*\)$/\1/p' \
+    | sort -u)
+  [[ $(printf '%s\n' "$locator" | sed '/^$/d' | wc -l | tr -d ' ') == 1 ]] \
+    || return 1
+  printf '%s\n' "$locator"
+}
 write_catalog() {
   [[ -n "$RESULT_JSON" ]] || return 0
   mkdir -p "$(dirname "$RESULT_JSON")"
-  jq -s --arg project "${PROJECT_NAME:-k8s}" --arg createdAt "$TS" \
+  jq -s --arg project "${PROJECT_NAME:-k8s}" --arg backupId "$BACKUP_RUN_ID" \
+    --arg createdAt "$TS" \
     --argjson expected "$TOTAL" --argjson passed "$PASSED" \
     --argjson failed "$FAILED" --argjson skipped "$SKIPPED" \
-    '{schema_version:1,project:$project,created_at:$createdAt,
+    '{schema_version:2,project:$project,backup_id:$backupId,created_at:$createdAt,
       summary:{expected:$expected,passed:$passed,failed:$failed,skipped:$skipped},
       completeness:(if length == $expected and $failed == 0 and
         all(.[]; .state == "completed" or .state == "velero-fallback" or .state == "disabled")
         then "complete" else "incomplete" end),
+      restore_order:["seaweedfs","vault","postgresql","mongodb","gitlab-secrets","gitlab"],
       artifacts:.}' "$CATALOG_RECORDS" > "${RESULT_JSON}.tmp"
   mv "${RESULT_JSON}.tmp" "$RESULT_JSON"
   chmod 600 "$RESULT_JSON"
@@ -191,12 +206,35 @@ run_backup() {
         return 0
       fi
     fi
+    local artifact_locator=""
+    case "$comp" in
+      vault|seaweedfs|gitlab-secrets)
+        artifact_locator=$(job_artifact_locator "$ns" "$job") || {
+          error "${comp} backup completed without exactly one final object URI"
+          FAILED=$((FAILED+1)); echo "${comp}: FAIL-missing-artifact" >> "$RF"
+          catalog_record "$comp" "$ns" Job "$job" failed missing-artifact
+          return 0
+        }
+        ;;
+      gitlab)
+        gitlab_logs=$(kubectl logs "job/${job}" -n "$ns" --all-containers 2>&1)
+        artifact_locator=$(printf '%s\n' "$gitlab_logs" \
+          | grep -Eo '[A-Za-z0-9._-]+_gitlab_backup\.tar' | sort -u)
+        [[ $(printf '%s\n' "$artifact_locator" | sed '/^$/d' | wc -l | tr -d ' ') == 1 ]] || {
+          error "GitLab backup completed without exactly one Toolbox archive key"
+          FAILED=$((FAILED+1)); echo "${comp}: FAIL-missing-artifact" >> "$RF"
+          catalog_record "$comp" "$ns" Job "$job" failed missing-artifact
+          return 0
+        }
+        artifact_locator="s3://gitlab-backups/${artifact_locator}"
+        ;;
+    esac
     PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"
     case "$comp" in
-      vault) catalog_record "$comp" "$ns" Job "$job" completed vault-raft "s3://backups/${PROJECT_NAME:-k8s}/vault/" ;;
-      seaweedfs) catalog_record "$comp" "$ns" Job "$job" completed seaweedfs-topology "s3://backups/${PROJECT_NAME:-k8s}/seaweedfs/" ;;
-      gitlab) catalog_record "$comp" "$ns" Job "$job" completed gitlab-toolbox "s3://gitlab-backups/" ;;
-      gitlab-secrets) catalog_record "$comp" "$ns" Job "$job" completed gitlab-rails-secrets "s3://backups/${PROJECT_NAME:-k8s}/gitlab-secrets/" ;;
+      vault) catalog_record "$comp" "$ns" Job "$job" completed vault-raft "$artifact_locator" ;;
+      seaweedfs) catalog_record "$comp" "$ns" Job "$job" completed seaweedfs-topology "$artifact_locator" ;;
+      gitlab) catalog_record "$comp" "$ns" Job "$job" completed gitlab-toolbox "$artifact_locator" ;;
+      gitlab-secrets) catalog_record "$comp" "$ns" Job "$job" completed gitlab-rails-secrets "$artifact_locator" ;;
     esac
   else
     kubectl logs "job/${job}" -n "$ns" --all-containers --tail=200 2>&1 | tee -a "$RF" || true
@@ -207,7 +245,7 @@ run_backup() {
 echo "Timestamp: ${TS}" > "$RF"
 run_mongodb_backup() {
   local comp=mongodb ns=databases cluster="${PROJECT_NAME:-k8s}-mongo"
-  local backup
+  local backup destination
   backup="${cluster}-manual-$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')"
   TOTAL=$((TOTAL+1))
   if dry_run_component_is_disabled "$comp"; then
@@ -249,7 +287,19 @@ EOF
     state=$(kubectl get perconaservermongodbbackup "$backup" -n "$ns" -o jsonpath='{.status.state}' 2>/dev/null || echo pending)
     state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
     case "$state_lower" in
-      ready|successful) PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"; catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" completed pbm "s3-object-storage"; return 0 ;;
+      ready|successful)
+        destination=$(kubectl get perconaservermongodbbackup "$backup" -n "$ns" \
+          -o jsonpath='{.status.destination}' 2>/dev/null || true)
+        [[ "$destination" == *://* ]] || {
+          error "MongoDB backup ${ns}/${backup} has no exact operator-reported destination"
+          FAILED=$((FAILED+1)); echo "${comp}: FAIL-missing-destination" >> "$RF"
+          catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" failed missing-destination
+          return 0
+        }
+        PASSED=$((PASSED+1)); echo "${comp}: PASS" >> "$RF"
+        catalog_record "$comp" "$ns" PerconaServerMongoDBBackup "$backup" completed pbm "$destination" "s3-object-storage"
+        return 0
+        ;;
       error|failed) break ;;
     esac
     attempts=$((attempts+1)); sleep 10

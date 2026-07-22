@@ -384,6 +384,10 @@ ansible-playbook playbooks/validate_profile.yml \
 ./platform-orchestrator/platform.sh restore-cluster \
   --archive /secure/k8s-cluster-....tar.gz.age --mode operator-state \
   --identity /secure/age-identity.txt --output-dir /secure/recovery/k8s
+# After checking out repository.bundle at repository/git-revision.txt and
+# applying worktree.patch, restore only validated, non-colliding untracked files.
+./scripts/restore-repository-untracked.sh \
+  /secure/recovery/k8s/repository /path/to/checkout
 
 # Capture rollback baseline and inspect an upgrade
 ./scripts/upgrade-platform.sh snapshot
@@ -419,6 +423,11 @@ remote receipt, checksum, and archive before its first provider operation. Use
 the recovered exact config/secrets/repository state with the `velero-bootstrap`
 tag, then run strict Velero restore and the structured native backup catalog.
 See [Backup and restore](BACKUP_RESTORE.md) for the ordered recovery commands.
+Application consistency is a separate destructive gate: new backups bind the
+schema-v2 native catalog hash into that receipt, and `scripts/native-restore.sh`
+replays exact native artifacts in dependency order with replacement-UID-bound,
+resumable checkpoints. A successful Velero restore alone is not a completed
+production recovery.
 
 The platform CLI also loads the DR values from the mode-`0600`, gitignored
 `.env`. Blank named-profile endpoint/bucket fields fall back to that

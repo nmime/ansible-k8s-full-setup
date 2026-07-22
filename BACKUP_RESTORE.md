@@ -181,11 +181,22 @@ store the decryption identity separately.
 Source recovery includes the `HEAD` Git bundle, one binary patch from `HEAD`
 to the final working tree (therefore including both staged and unstaged tracked
 changes), and a tar archive of safe non-ignored untracked files. Ignored files
-and credential-like untracked paths are never added; generated secrets and
+and credential-like paths, symlinks, and special untracked files are never added; generated secrets and
 Vault initialization material use their dedicated guarded paths instead. The
 manifest records the paths, untracked count, and SHA-256 digest of every source
-recovery artifact. After restoring the Git bundle, apply `worktree.patch`, then
-extract `repository-untracked.tar` at the checkout root.
+recovery artifact. It also records the effective bastion, control-plane, and
+worker machine types from the generated platform state. After restoring the Git
+bundle at the revision in `git-revision.txt` and applying `worktree.patch`, use
+the guarded replay command instead of extracting the untracked tar directly:
+
+```bash
+./scripts/restore-repository-untracked.sh "$STATE/repository" /path/to/checkout
+```
+
+The replay validates the archive against its path inventory and count before
+writing, accepts nested regular files, and rejects absolute/traversal names,
+links, special members, symlinked parents, tracked destinations, and every
+pre-existing destination.
 
 `--secrets-file` prevents a multi-cluster controller from falling back to a
 different checkout's generated secret set. The default remains
@@ -275,9 +286,13 @@ backup names, DNS, and object prefixes.
 ./teardown.sh k8s --confirm k8s \
   --require-backup-receipt /secure/BACKUP.tar.gz.age.manifest.json
 
-# 3. Check out the bundled repository revision/patch, then build only the
-# replacement foundation and external Velero control plane from exact state.
+# 3. Check out the bundled repository revision and apply its tracked patch.
+# Then safely replay untracked regular files before building the replacement
+# foundation and external Velero control plane from exact state.
 STATE=/secure/recovery/k8s
+REVISION=$(<"$STATE/repository/git-revision.txt")
+# Clone/fetch repository.bundle, check out $REVISION, then apply worktree.patch.
+./scripts/restore-repository-untracked.sh "$STATE/repository" /path/to/checkout
 PROJECT=$(yq -r .global.project "$STATE/platform.yaml")
 DOMAIN=$(yq -r .global.domain "$STATE/platform.yaml")
 EMAIL=$(yq -r .global.email "$STATE/platform.yaml")
@@ -297,19 +312,62 @@ ansible-playbook playbooks/deploy_platform.yml -e @"$STATE/platform.yaml" \
 
 `operator-state` creates a new mode-`0700` directory and mode-`0600` files,
 including `platform.yaml`, `.platform-secrets.yml`, encrypted Vault init state,
-the native catalog, manifest, and bundled Git recovery inputs. It rejects link,
+the native catalog, manifest, `git-revision.txt`, and bundled Git recovery inputs. It rejects link,
 device, absolute, and traversal archive members and refuses to overwrite an
 existing destination. `run_tier.sh` is not the recovery bootstrap command: it
 copies a named profile over its configured output. Use the exact bundled config
 as shown above.
 
 Velero restores Kubernetes objects and filesystem-backed PVC bytes. It does not
-replace application-native replay. After the strict Velero gate, consume
-`native-backups.json` in the recorded `restore_order`: pgBackRest for
-PostgreSQL, PBM for MongoDB, Vault Raft snapshot when recorded (or the explicit
-Velero fallback), GitLab Toolbox plus Rails secrets, and the SeaweedFS topology
-contract. Run component integrity checks, `live-tier-smoke.sh`, bounded load,
-and a new complete cluster backup before declaring recovery complete.
+replace application-native replay. A new complete backup writes a schema-v2
+`native-backups.json`: its backup ID and SHA-256 are bound into the schema-v2
+remote completion receipt. Enabled technologies must have one completed exact
+artifact; `latest`, prefix-only Job artifacts, duplicate components, missing
+components, and legacy catalogs are rejected by production replay.
+
+After strict Velero restore, plan native replay against the replacement cluster:
+
+```bash
+STATE=/secure/recovery/k8s
+ARCHIVE=/secure/BACKUP.tar.gz.age
+RECEIPT=${ARCHIVE}.manifest.json
+NATIVE_STATE=/secure/recovery/native-restore-state.json
+
+./scripts/native-restore.sh \
+  --catalog "$STATE/native-backups.json" \
+  --receipt "$RECEIPT" --archive "$ARCHIVE" \
+  --config "$STATE/platform.yaml" --state-file "$NATIVE_STATE" \
+  --vault-init-file "$STATE/.vault-init-${PROJECT}.json" \
+  --mode plan
+```
+
+The plan prints a confirmation bound to the logical project, backup ID, and
+replacement `kube-system` namespace UID. Execute it literally:
+
+```bash
+./scripts/native-restore.sh \
+  --catalog "$STATE/native-backups.json" \
+  --receipt "$RECEIPT" --archive "$ARCHIVE" \
+  --config "$STATE/platform.yaml" --state-file "$NATIVE_STATE" \
+  --vault-init-file "$STATE/.vault-init-${PROJECT}.json" \
+  --mode execute \
+  --confirm "RESTORE_NATIVE_${PROJECT}_${BACKUP_ID}_${TARGET_CLUSTER_UID}"
+```
+
+If the controller or API connection stops, inspect the mode-`0600` state and
+rerun the identical command with `--resume`. The script rejects a different
+archive hash, catalog hash, source UID, target UID, project, or backup ID. Its
+application-consistent order is SeaweedFS topology/object and Velero-data
+verification, Vault Raft (or the explicitly recorded Velero fallback),
+PostgreSQL exact pgBackRest repo2 set, MongoDB exact PBM destination, GitLab
+Rails secrets, then the exact GitLab Toolbox archive. Vault, MongoDB, and
+GitLab use deterministic Job/CR checkpoints; PostgreSQL preserves its original
+CR, operator secrets, and PVC inventory alongside the state before replacing
+data. No selected enabled technology is silently skipped. Full platform health
+gates must pass before the state becomes `completed`.
+
+Then run component integrity checks, `live-tier-smoke.sh`, bounded load, and a
+new complete cluster backup before declaring recovery complete.
 
 The generic `restore-drill.sh` dispatcher supports PostgreSQL, MongoDB, Vault,
 SeaweedFS, and GitLab.

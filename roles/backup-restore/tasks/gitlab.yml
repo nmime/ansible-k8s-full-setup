@@ -95,6 +95,7 @@
                         destination="s3://${BACKUP_BUCKET}/${BACKUP_PROJECT}/gitlab-secrets/${ts}-secrets.yml"
                         aws --endpoint-url="$AWS_ENDPOINT_URL" s3 cp /rails/secrets.yml "$destination"
                         aws --endpoint-url="$AWS_ENDPOINT_URL" s3 ls "$destination" >/dev/null
+                        printf 'BACKUP_ARTIFACT_URI=%s\n' "$destination"
                     env:
                       - name: BACKUP_BUCKET
                         value: "{{ _backup_bucket }}"

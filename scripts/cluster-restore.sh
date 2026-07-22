@@ -39,7 +39,7 @@ Modes:
 
 Options:
   --archive FILE          Encrypted .age or .enc cluster bundle
-  --mode MODE             verify|velero|etcd (default: verify)
+  --mode MODE             verify|operator-state|velero|etcd (default: verify)
   --identity FILE         age identity file
   --output-dir DIR        New destination directory for operator-state mode
   --velero-backup NAME    Override the backup name recorded in the bundle
@@ -103,6 +103,11 @@ verify_external_checksum() {
   if command -v sha256sum >/dev/null; then actual=$(sha256sum "$ARCHIVE" | awk '{print $1}'); else actual=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}'); fi
   [[ "$expected" == "$actual" ]] || fail "encrypted archive checksum mismatch"
   ARCHIVE_SHA256="$actual"
+}
+
+sha256_file() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
 
 decrypt_archive() {
@@ -220,11 +225,22 @@ if [[ "$BUNDLE_SCHEMA" == 2 && "$RECEIPT_SCHEMA" == 2 ]]; then
     ' "$RECEIPT_PATH" >/dev/null \
     || fail "schema-v2 receipt identity does not match the encrypted bundle"
 fi
+NATIVE_CATALOG_SHA=$(jq -r '.native_backup_catalog.sha256 // ""' "$BUNDLE_DIR/MANIFEST.json")
+if [[ -n "$NATIVE_CATALOG_SHA" ]]; then
+  BUNDLED_NATIVE_CATALOG="$BUNDLE_DIR/application-backups/native-backups.json"
+  [[ -f "$BUNDLED_NATIVE_CATALOG" ]] || fail "bundle native catalog is missing"
+  [[ "$(sha256_file "$BUNDLED_NATIVE_CATALOG")" == "$NATIVE_CATALOG_SHA" ]] \
+    || fail "bundle native catalog SHA-256 does not match its manifest"
+  if [[ "$RECEIPT_SCHEMA" == 2 ]]; then
+    [[ "$(jq -r '.native_backup_catalog_sha256 // ""' "$RECEIPT_PATH")" == "$NATIVE_CATALOG_SHA" ]] \
+      || fail "completion receipt does not bind the exact native catalog"
+  fi
+fi
 log "verified bundle $(jq -r '.backup_id' "$BUNDLE_DIR/MANIFEST.json") for project $PROJECT"
 
 if [[ "$MODE" == verify ]]; then
   jq '{backup_id,created_at,project,domain,profile,source_context,source_cluster_uid,completeness,
-    velero_backup_name,velero_storage_prefix,native_backup_catalog,contains,
+    provider_machine_types,velero_backup_name,velero_storage_prefix,native_backup_catalog,contains,
     recovery_dependencies,restore_order}' \
     "$BUNDLE_DIR/MANIFEST.json"
   exit 0
@@ -249,7 +265,7 @@ if [[ "$MODE" == operator-state ]]; then
   fi
   install -d -m 0700 "$STAGED_OUTPUT/repository"
   for repository_file in repository.bundle worktree.patch repository-untracked.tar \
-    repository-untracked-files.txt repository-untracked-count.txt git-status.txt; do
+    repository-untracked-files.txt repository-untracked-count.txt git-status.txt git-revision.txt; do
     [[ -f "$BUNDLE_DIR/config/$repository_file" ]] \
       || fail "bundle is missing repository recovery input: $repository_file"
     install -m 0600 "$BUNDLE_DIR/config/$repository_file" "$STAGED_OUTPUT/repository/$repository_file"
@@ -261,7 +277,7 @@ if [[ "$MODE" == operator-state ]]; then
   fi
   jq '{schema_version:1,backup_id,created_at,project,domain,profile,
       source_context,source_cluster_uid,velero_backup_name,velero_storage_prefix,
-      native_backup_catalog,recovery_dependencies,restore_order}' \
+      provider_machine_types,native_backup_catalog,recovery_dependencies,restore_order}' \
     "$BUNDLE_DIR/MANIFEST.json" > "$STAGED_OUTPUT/recovery-state.json"
   chmod 0600 "$STAGED_OUTPUT/recovery-state.json"
   mv "$STAGED_OUTPUT" "${OUTPUT_PARENT}/${OUTPUT_NAME}"
@@ -291,8 +307,9 @@ if [[ "$MODE" == velero ]]; then
     .native_backup_catalog.included == true
   ' "$BUNDLE_DIR/MANIFEST.json" >/dev/null \
     || fail "bundle did not pass its Velero, PVC, and native-backup completeness gates"
-  jq -e --arg project "$PROJECT" '
-    .schema_version == 1 and .project == $project and .completeness == "complete" and
+  jq -e --arg project "$PROJECT" --arg backupId "$BACKUP_ID" '
+    (.schema_version == 1 or .schema_version == 2) and .project == $project and
+    (.schema_version == 1 or .backup_id == $backupId) and .completeness == "complete" and
     .summary.failed == 0 and .summary.expected == (.artifacts | length) and
     all(.artifacts[]; .state == "completed" or .state == "velero-fallback" or .state == "disabled")
   ' "$NATIVE_CATALOG" >/dev/null || fail "native backup catalog is incomplete or belongs to another project"

@@ -109,6 +109,7 @@
                         FILE="topology-${TS}.json"
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 cp "/backup/${FILE}" "s3://${BUCKET}/${BP}/${FILE}"
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${BUCKET}/${BP}/${FILE}" >/dev/null
+                        printf 'BACKUP_ARTIFACT_URI=s3://%s/%s/%s\n' "$BUCKET" "$BP" "$FILE"
                         RETENTION=${_BACKUP_RETENTION:-30}
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${BUCKET}/${BP}/" 2>/dev/null | awk '{print $4}' | while read -r F; do
                           D=$(echo "$F" | grep -oP '\d{8}T\d{6}Z' || echo "")

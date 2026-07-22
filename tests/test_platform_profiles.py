@@ -851,7 +851,9 @@ class TestResourceTierConsumers:
         ).read_text(encoding="utf-8")
 
         assert "CHECK_INTERVAL=15" in supervisor
-        assert "trap 'stop_child; exit 0' INT TERM EXIT" in supervisor
+        assert "trap 'stop_child; exit 0' INT TERM" in supervisor
+        assert "trap cleanup_exit EXIT" in supervisor
+        assert 'exit "$status"' in supervisor
         assert "attempt < 100" in teardown
         assert "sleep 0.2" in teardown
 
