@@ -150,10 +150,17 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
             "medium-optimized": "32",
             "production": "42",
         }[profile]
+        assert data["network"]["bastion"]["server_type"] == "cpx22"
+        assert data["infrastructure"]["workers"]["type"] == f"cpx{expected_size}"
         assert "hetzner_bastion_type=cpx22" in console
         assert f"hetzner_worker_type=cpx{expected_size}" in console
         if profile == "minimal":
+            assert data["infrastructure"]["control_plane"]["type"] == "cpx32"
             assert "hetzner_cp_type=cpx32" in console
+        status_types = status["provider_machine_types"]
+        assert status_types["bastion"] == data["network"]["bastion"]["server_type"]
+        assert status_types["control_plane"] == data["infrastructure"]["control_plane"]["type"]
+        assert status_types["worker"] == data["infrastructure"]["workers"]["type"]
 
     assert len(projects) == 5
     assert ports == set(range(18443, 18448))

@@ -165,6 +165,7 @@
                         test -s "$SF"
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 cp "$SF" "s3://${SNAPSHOT_BUCKET}/vault-${TS}.snap"
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${SNAPSHOT_BUCKET}/vault-${TS}.snap" >/dev/null
+                        printf 'BACKUP_ARTIFACT_URI=s3://%s/vault-%s.snap\n' "$SNAPSHOT_BUCKET" "$TS"
                         RETENTION=${SNAPSHOT_RETENTION:-30}
                         aws --endpoint-url="${AWS_ENDPOINT_URL}" s3 ls "s3://${SNAPSHOT_BUCKET}/" 2>/dev/null | awk '{print $4}' | while read -r F; do
                           D=$(echo "$F" | grep -oP '\d{8}T\d{6}Z' || echo "")

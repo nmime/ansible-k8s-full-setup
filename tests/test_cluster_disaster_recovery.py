@@ -1,6 +1,7 @@
 """Contract and offline workflow tests for full-cluster DR and migration."""
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -22,12 +23,14 @@ MIGRATE = SCRIPTS / "migrate-profile.sh"
 STORAGE_CAPACITY = SCRIPTS / "profile-storage-capacity.py"
 VAULT_MIGRATE = SCRIPTS / "vault-storage-migrate.sh"
 CAPTURE_REPOSITORY = SCRIPTS / "capture-repository-state.sh"
+RESTORE_UNTRACKED = SCRIPTS / "restore-repository-untracked.sh"
 VELERO = ROOT / "roles" / "backup-restore" / "tasks" / "velero.yml"
 TEARDOWN = ROOT / "teardown.sh"
 
 
 @pytest.mark.parametrize(
-    "script", (BACKUP, RESTORE, MIGRATE, VAULT_MIGRATE, CAPTURE_REPOSITORY)
+    "script",
+    (BACKUP, RESTORE, MIGRATE, VAULT_MIGRATE, CAPTURE_REPOSITORY, RESTORE_UNTRACKED),
 )
 def test_scripts_are_executable_and_parse(script):
     assert script.is_file()
@@ -88,6 +91,202 @@ def test_repository_capture_recovers_index_worktree_and_safe_untracked_files(tmp
     )
     assert rejected.returncode != 0
     assert "credential-like untracked file" in rejected.stderr
+
+
+@pytest.mark.parametrize("kind", ("symlink", "fifo"))
+def test_repository_capture_never_archives_untracked_links_or_special_files(tmp_path, kind):
+    repository = tmp_path / "repository"
+    destination = tmp_path / "capture"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    unsafe = repository / "nested" / "unsafe"
+    unsafe.parent.mkdir()
+    if kind == "symlink":
+        unsafe.symlink_to(repository / "tracked.txt")
+    else:
+        os.mkfifo(unsafe)
+
+    result = subprocess.run(
+        [str(CAPTURE_REPOSITORY), str(repository), str(destination)],
+        capture_output=True,
+        text=True,
+    )
+    if kind == "symlink":
+        assert result.returncode != 0
+        assert "non-regular untracked file: nested/unsafe" in result.stderr
+    else:
+        # Git does not report filesystem special files in its untracked-file
+        # inventory; successful capture must still prove the FIFO was omitted.
+        assert result.returncode == 0, result.stderr
+        assert (destination / "repository-untracked-count.txt").read_text() == "0\n"
+        with tarfile.open(destination / "repository-untracked.tar", "r:") as archive:
+            assert archive.getmembers() == []
+
+
+def test_repository_untracked_replay_restores_nested_files_and_refuses_collisions(tmp_path):
+    source = tmp_path / "source"
+    capture = tmp_path / "capture"
+    checkout = tmp_path / "checkout"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    (source / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    nested = source / "roles" / "new" / "script.sh"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("#!/bin/sh\necho recovered\n", encoding="utf-8")
+    nested.chmod(0o755)
+    subprocess.run([str(CAPTURE_REPOSITORY), str(source), str(capture)], check=True)
+    subprocess.run(["git", "clone", "-q", str(capture / "repository.bundle"), str(checkout)], check=True)
+
+    restored = subprocess.run(
+        [str(RESTORE_UNTRACKED), str(capture), str(checkout)],
+        capture_output=True,
+        text=True,
+    )
+    assert restored.returncode == 0, restored.stderr
+    restored_nested = checkout / "roles" / "new" / "script.sh"
+    assert restored_nested.read_text(encoding="utf-8").endswith("echo recovered\n")
+    assert stat.S_IMODE(restored_nested.stat().st_mode) == 0o755
+
+    collision = tmp_path / "collision"
+    collision.mkdir()
+    (collision / "repository-untracked-files.txt").write_text("tracked.txt\n", encoding="utf-8")
+    (collision / "repository-untracked-count.txt").write_text("1\n", encoding="utf-8")
+    with tarfile.open(collision / "repository-untracked.tar", "w:") as archive:
+        archive.add(source / "tracked.txt", arcname="tracked.txt")
+    refused = subprocess.run(
+        [str(RESTORE_UNTRACKED), str(collision), str(checkout)],
+        capture_output=True,
+        text=True,
+    )
+    assert refused.returncode != 0
+    assert "destination path is tracked: 'tracked.txt'" in refused.stderr
+    assert (checkout / "tracked.txt").read_text(encoding="utf-8") == "base\n"
+
+
+@pytest.mark.parametrize("member_name", ("../outside.txt", "nested/link"))
+def test_repository_untracked_replay_rejects_traversal_and_link_members(tmp_path, member_name):
+    checkout = tmp_path / "checkout"
+    state = tmp_path / "state"
+    checkout.mkdir()
+    state.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    (state / "repository-untracked-files.txt").write_text(f"{member_name}\n", encoding="utf-8")
+    (state / "repository-untracked-count.txt").write_text("1\n", encoding="utf-8")
+    with tarfile.open(state / "repository-untracked.tar", "w:") as archive:
+        info = tarfile.TarInfo(member_name)
+        if member_name == "nested/link":
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/etc/passwd"
+        else:
+            payload = b"outside\n"
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        if member_name == "nested/link":
+            archive.addfile(info)
+
+    result = subprocess.run(
+        [str(RESTORE_UNTRACKED), str(state), str(checkout)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    expected = "unsafe path" if member_name.startswith("..") else "not a regular file"
+    assert expected in result.stderr
+    assert not (tmp_path / "outside.txt").exists()
+
+
+def test_repository_untracked_replay_rejects_symlinked_destination_parent(tmp_path):
+    checkout = tmp_path / "checkout"
+    outside = tmp_path / "outside"
+    state = tmp_path / "state"
+    checkout.mkdir()
+    outside.mkdir()
+    state.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "nested").symlink_to(outside, target_is_directory=True)
+    member_name = "nested/file.txt"
+    (state / "repository-untracked-files.txt").write_text(
+        f"{member_name}\n", encoding="utf-8"
+    )
+    (state / "repository-untracked-count.txt").write_text("1\n", encoding="utf-8")
+    with tarfile.open(state / "repository-untracked.tar", "w:") as archive:
+        payload = b"must stay contained\n"
+        info = tarfile.TarInfo(member_name)
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    result = subprocess.run(
+        [str(RESTORE_UNTRACKED), str(state), str(checkout)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "destination parent is not a real directory" in result.stderr
+    assert not (outside / "file.txt").exists()
+
+
+def test_repository_untracked_replay_rejects_deleted_tracked_parent(tmp_path):
+    checkout = tmp_path / "checkout"
+    state = tmp_path / "state"
+    checkout.mkdir()
+    state.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    tracked_parent = checkout / "nested"
+    tracked_parent.symlink_to("tracked-target")
+    subprocess.run(["git", "-C", str(checkout), "add", "nested"], check=True)
+    tracked_parent.unlink()
+    member_name = "nested/file.txt"
+    (state / "repository-untracked-files.txt").write_text(
+        f"{member_name}\n", encoding="utf-8"
+    )
+    (state / "repository-untracked-count.txt").write_text("1\n", encoding="utf-8")
+    with tarfile.open(state / "repository-untracked.tar", "w:") as archive:
+        payload = b"must not replace tracked parent\n"
+        info = tarfile.TarInfo(member_name)
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    result = subprocess.run(
+        [str(RESTORE_UNTRACKED), str(state), str(checkout)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "destination parent is tracked: 'nested'" in result.stderr
+    assert not tracked_parent.exists()
 
 
 @pytest.mark.parametrize(
@@ -189,10 +388,13 @@ def test_cluster_manifest_records_repository_recovery_checksums():
     assert '"$SCRIPT_DIR/capture-repository-state.sh"' in content
     assert "REPOSITORY_BUNDLE_SHA256=" in content
     assert "WORKTREE_PATCH_SHA256=" in content
+    assert "GIT_REVISION_SHA256=" in content
     assert "UNTRACKED_ARCHIVE_SHA256=" in content
     assert 'tracked_patch_scope:"HEAD-to-working-tree-including-index"' in content
     assert 'untracked_archive_path:"config/repository-untracked.tar"' in content
+    assert 'revision_path:"config/git-revision.txt"' in content
     assert "untracked_file_count:$untrackedFileCount" in content
+    assert "provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType" in content
 
 
 def test_operational_shell_scripts_do_not_require_bash_4_case_conversion():
@@ -514,6 +716,8 @@ def test_complete_bundle_requires_a_structured_native_backup_catalog():
     assert "restore_contract:$contract" in orchestrator
     assert "artifact_locator:$locator" in orchestrator
     assert "repository:$repository" in orchestrator
+    assert "native_backup_catalog_sha256:$nativeCatalogSha" in backup
+    assert "completion receipt does not bind the exact native catalog" in RESTORE.read_text()
 
 
 def test_backup_all_emits_process_isolated_structured_catalog_in_dry_run(tmp_path):
@@ -534,7 +738,16 @@ def test_backup_all_emits_process_isolated_structured_catalog_in_dry_run(tmp_pat
     )
     assert result.returncode == 0, result.stdout + result.stderr
     data = json.loads(catalog.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
+    assert data["backup_id"]
+    assert data["restore_order"] == [
+        "seaweedfs",
+        "vault",
+        "postgresql",
+        "mongodb",
+        "gitlab-secrets",
+        "gitlab",
+    ]
     assert data["summary"]["expected"] == len(data["artifacts"]) == 6
     assert data["completeness"] == "incomplete"
     assert {artifact["component"] for artifact in data["artifacts"]} == {
@@ -828,6 +1041,11 @@ def _make_encrypted_fixture(
         "profile": "production",
         "source_context": "source",
         "source_cluster_uid": "11111111-2222-3333-4444-555555555555",
+        "provider_machine_types": {
+            "bastion": "cpx22",
+            "control_plane": "cpx42",
+            "worker": "cpx42",
+        },
         "completeness": "complete",
         "velero_backup": "completed",
         "velero_backup_name": "test-backup",
@@ -866,7 +1084,9 @@ def _make_encrypted_fixture(
     config = bundle / "config"
     config.mkdir(exist_ok=True)
     (config / "platform.yaml").write_text(
-        "global:\n  project: test\n  domain: test.example.invalid\n  email: ops@example.invalid\n",
+        "global:\n  project: test\n  domain: test.example.invalid\n  email: ops@example.invalid\n"
+        "network:\n  bastion:\n    server_type: cpx22\n"
+        "infrastructure:\n  control_plane:\n    type: cpx42\n  workers:\n    type: cpx42\n",
         encoding="utf-8",
     )
     (config / "platform-secrets.yml").write_text(
@@ -879,6 +1099,7 @@ def _make_encrypted_fixture(
         "repository-untracked-files.txt": "",
         "repository-untracked-count.txt": "0\n",
         "git-status.txt": "",
+        "git-revision.txt": "0123456789abcdef0123456789abcdef01234567\n",
     }.items():
         (config / name).write_text(value, encoding="utf-8")
     application = bundle / "application-backups"
@@ -1106,6 +1327,15 @@ def test_restore_materializes_exact_private_operator_state(tmp_path):
         "recovery-state.json",
     }
     assert expected <= {path.name for path in output.iterdir()}
+    assert (output / "repository" / "git-revision.txt").read_text() == (
+        "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    recovery_state = json.loads((output / "recovery-state.json").read_text())
+    assert recovery_state["provider_machine_types"] == {
+        "bastion": "cpx22",
+        "control_plane": "cpx42",
+        "worker": "cpx42",
+    }
     for path in output.rglob("*"):
         expected_mode = 0o700 if path.is_dir() else 0o600
         assert stat.S_IMODE(path.stat().st_mode) == expected_mode, path

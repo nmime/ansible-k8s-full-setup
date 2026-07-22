@@ -31,8 +31,17 @@ while IFS= read -r -d '' path; do
   # names and common credential/key material rather than putting them in even
   # an encrypted recovery archive. Generated platform secrets are captured by
   # the dedicated, permission-restricted bundle paths instead.
-  [[ "$path" != /* && "$path" != ../* && "$path" != */../* && "$path" != *$'\n'* ]] || {
+  [[ "$path" != /* && "$path" != . && "$path" != ./* && "$path" != ../* \
+    && "$path" != */../* && "$path" != */./* && "$path" != *//* \
+    && "$path" != *$'\n'* ]] || {
     echo "Unsafe untracked path cannot be captured: $path" >&2
+    exit 1
+  }
+  # The recovery format contains file contents only. A symlink can redirect a
+  # later extraction, while FIFOs/devices/sockets can block or access resources
+  # outside the repository. Nested ordinary files remain fully supported.
+  [[ ! -L "$repository/$path" && -f "$repository/$path" ]] || {
+    echo "Refusing to capture non-regular untracked file: $path" >&2
     exit 1
   }
   case "$path" in
@@ -59,8 +68,8 @@ while IFS= read -r -d '' path; do
   untracked_count=$((untracked_count + 1))
 done < "$untracked_nul"
 
-# --null preserves spaces and shell metacharacters without evaluation. Symlinks
-# are archived as links (tar is not asked to dereference them).
+# --null preserves spaces and shell metacharacters without evaluation. Every
+# source inventory member was already proven to be a regular, non-link file.
 COPYFILE_DISABLE=1 tar -C "$repository" --null -T "$untracked_nul" -cf \
   "$destination/repository-untracked.tar"
 printf '%s\n' "$untracked_count" > "$destination/repository-untracked-count.txt"

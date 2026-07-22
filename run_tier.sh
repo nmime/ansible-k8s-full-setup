@@ -217,6 +217,18 @@ yq -i '
   .backup.disaster_recovery.bucket = strenv(DR_BUCKET) |
   .backup.disaster_recovery.prefix = strenv(DR_PREFIX)
 ' "$CONFIG_FILE"
+if [[ -n "$BASTION_TYPE" ]]; then
+  BASTION_TYPE="$BASTION_TYPE" yq -i \
+    '.network.bastion.server_type = strenv(BASTION_TYPE)' "$CONFIG_FILE"
+fi
+if [[ -n "$CP_TYPE" ]]; then
+  CP_TYPE="$CP_TYPE" yq -i \
+    '.infrastructure.control_plane.type = strenv(CP_TYPE)' "$CONFIG_FILE"
+fi
+if [[ -n "$WORKER_TYPE" ]]; then
+  WORKER_TYPE="$WORKER_TYPE" yq -i \
+    '.infrastructure.workers.type = strenv(WORKER_TYPE)' "$CONFIG_FILE"
+fi
 
 # Supplying an external DR target is an explicit request to protect this
 # campaign, including named profiles whose ordinary low-cost defaults leave
@@ -231,6 +243,13 @@ if [[ -n "$DR_ENDPOINT" || -n "$DR_BUCKET" ]]; then
     .backup.disaster_recovery.enabled = true
   ' "$CONFIG_FILE"
 fi
+
+# Read back the effective provider choices from the generated desired state.
+# These values, rather than transient CLI arguments, are persisted in both the
+# runtime profile and status record consumed by operators and DR automation.
+EFFECTIVE_BASTION_TYPE=$(yq -r '.network.bastion.server_type // ""' "$CONFIG_FILE")
+EFFECTIVE_CP_TYPE=$(yq -r '.infrastructure.control_plane.type // ""' "$CONFIG_FILE")
+EFFECTIVE_WORKER_TYPE=$(yq -r '.infrastructure.workers.type // ""' "$CONFIG_FILE")
 
 if $MINIMUM_STORAGE; then
   yq -i '
@@ -287,9 +306,12 @@ write_status() {
   jq -n \
     --arg campaign "$CAMPAIGN_ID" --arg profile "$PROFILE" --arg project "$PROJECT" \
     --arg domain "$DOMAIN" --arg state "$state" --arg config "$CONFIG_FILE" \
-    --arg log "$LOG_FILE" --argjson api_port "$API_PORT" --argjson rc "$rc" \
+    --arg log "$LOG_FILE" --arg bastionType "$EFFECTIVE_BASTION_TYPE" \
+    --arg controlPlaneType "$EFFECTIVE_CP_TYPE" --arg workerType "$EFFECTIVE_WORKER_TYPE" \
+    --argjson api_port "$API_PORT" --argjson rc "$rc" \
     '{campaign_id:$campaign,profile:$profile,project:$project,domain:$domain,state:$state,
       api_port:$api_port,config:$config,log:$log,exit_code:$rc,
+      provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType,worker:$workerType},
       updated_at:(now|todateiso8601)}' >"${STATUS_FILE}.tmp"
   mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
 }

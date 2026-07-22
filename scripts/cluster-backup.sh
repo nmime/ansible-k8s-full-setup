@@ -161,6 +161,9 @@ else
   fail "global.domain must equal or be a subdomain of hetzner_dns_zone"
 fi
 PROFILE=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
+BASTION_SERVER_TYPE=$(yq -r '.network.bastion.server_type // ""' "$CONFIG_FILE")
+CONTROL_PLANE_SERVER_TYPE=$(yq -r '.infrastructure.control_plane.type // ""' "$CONFIG_FILE")
+WORKER_SERVER_TYPE=$(yq -r '.infrastructure.workers.type // ""' "$CONFIG_FILE")
 [[ -n "$DR_ENDPOINT" ]] || DR_ENDPOINT=$(yq -r '.backup.disaster_recovery.endpoint // ""' "$CONFIG_FILE")
 [[ -n "$DR_BUCKET" ]] || DR_BUCKET=$(yq -r '.backup.disaster_recovery.bucket // ""' "$CONFIG_FILE")
 VELERO_DR_PREFIX=$(yq -r '.backup.disaster_recovery.prefix // "k8s/velero"' "$CONFIG_FILE")
@@ -424,6 +427,8 @@ kubectl config view --raw --flatten > "$STAGE_DIR/config/admin.kubeconfig"
 "$SCRIPT_DIR/capture-repository-state.sh" "$PROJECT_ROOT" "$STAGE_DIR/config"
 REPOSITORY_BUNDLE_SHA256=$(sha256_file "$STAGE_DIR/config/repository.bundle" | awk '{print $1}')
 WORKTREE_PATCH_SHA256=$(sha256_file "$STAGE_DIR/config/worktree.patch" | awk '{print $1}')
+GIT_REVISION=$(<"$STAGE_DIR/config/git-revision.txt")
+GIT_REVISION_SHA256=$(sha256_file "$STAGE_DIR/config/git-revision.txt" | awk '{print $1}')
 UNTRACKED_ARCHIVE_SHA256=$(sha256_file "$STAGE_DIR/config/repository-untracked.tar" | awk '{print $1}')
 UNTRACKED_PATHS_SHA256=$(sha256_file "$STAGE_DIR/config/repository-untracked-files.txt" | awk '{print $1}')
 UNTRACKED_FILE_COUNT=$(<"$STAGE_DIR/config/repository-untracked-count.txt")
@@ -649,19 +654,21 @@ if [[ "$SKIP_CLOUD" != true ]]; then
 fi
 
 APP_BACKUP_RESULT=skipped
+NATIVE_CATALOG_SHA256=""
 if [[ "$RUN_APP_BACKUPS" == true ]]; then
   log "triggering application-consistent backups"
-  PROJECT_NAME="$PROJECT" BACKUP_ALLOW_VELERO_VAULT_FALLBACK=true \
+  PROJECT_NAME="$PROJECT" BACKUP_RUN_ID="$BACKUP_ID" BACKUP_ALLOW_VELERO_VAULT_FALLBACK=true \
     "$SCRIPT_DIR/backup-all.sh" --config "$CONFIG_FILE" \
     --result-json "$STAGE_DIR/application-backups/native-backups.json" --force \
     | tee "$STAGE_DIR/application-backups/backup-all.log"
-  jq -e --arg project "$PROJECT" '
-    .schema_version == 1 and .project == $project and
+  jq -e --arg project "$PROJECT" --arg backupId "$BACKUP_ID" '
+    .schema_version == 2 and .project == $project and .backup_id == $backupId and
     .completeness == "complete" and .summary.failed == 0 and
     .summary.expected == (.artifacts | length) and (.artifacts | type == "array") and
     all(.artifacts[]; .state == "completed" or .state == "velero-fallback" or .state == "disabled")
   ' "$STAGE_DIR/application-backups/native-backups.json" >/dev/null \
     || fail "structured native backup catalog is missing, incomplete, or belongs to another project"
+  NATIVE_CATALOG_SHA256=$(sha256_file "$STAGE_DIR/application-backups/native-backups.json" | awk '{print $1}')
   APP_BACKUP_RESULT=completed
 fi
 
@@ -761,6 +768,8 @@ HAS_CLOUD=true
 jq -n \
   --arg id "$BACKUP_ID" --arg timestamp "$TIMESTAMP" --arg project "$PROJECT" \
   --arg domain "$DOMAIN" --arg profile "$PROFILE" --arg context "$CONTEXT" \
+  --arg bastionType "$BASTION_SERVER_TYPE" --arg controlPlaneType "$CONTROL_PLANE_SERVER_TYPE" \
+  --arg workerType "$WORKER_SERVER_TYPE" \
   --arg sourceClusterUid "$SOURCE_CLUSTER_UID" \
   --arg completeness "$COMPLETENESS" --arg app "$APP_BACKUP_RESULT" \
   --arg velero "$VELERO_BACKUP_RESULT" --arg veleroName "$VELERO_BACKUP_NAME" \
@@ -770,17 +779,22 @@ jq -n \
   --argjson hasVaultInit "$VAULT_INIT_INCLUDED" \
   --arg repositoryBundleSha "$REPOSITORY_BUNDLE_SHA256" \
   --arg worktreePatchSha "$WORKTREE_PATCH_SHA256" \
+  --arg gitRevision "$GIT_REVISION" --arg gitRevisionSha "$GIT_REVISION_SHA256" \
   --arg untrackedArchiveSha "$UNTRACKED_ARCHIVE_SHA256" \
   --arg untrackedPathsSha "$UNTRACKED_PATHS_SHA256" \
+  --arg nativeCatalogSha "$NATIVE_CATALOG_SHA256" \
   --argjson untrackedFileCount "$UNTRACKED_FILE_COUNT" \
   --arg veleroPrefix "$VELERO_DR_PREFIX" \
   '{schema_version:2,backup_id:$id,created_at:$timestamp,project:$project,domain:$domain,
     profile:$profile,source_context:$context,source_cluster_uid:$sourceClusterUid,
+    provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType,
+      worker:$workerType},
     completeness:$completeness,
     application_backups:$app,velero_backup:$velero,velero_backup_name:$veleroName,
     velero_storage_prefix:$veleroPrefix,
     native_backup_catalog:{included:($app == "completed"),
-      bundle_path:(if $app == "completed" then "application-backups/native-backups.json" else null end)},
+      bundle_path:(if $app == "completed" then "application-backups/native-backups.json" else null end),
+      sha256:(if $app == "completed" then $nativeCatalogSha else null end)},
     pvc_protection_gate:{status:$pvcGate,failures:$pvcGateFailures,
       evidence:"application-backups/pvc-protection-evidence.json"},
     kubernetes_resource_export_failures:$resourceFailures,
@@ -789,12 +803,13 @@ jq -n \
       control_plane_pki:$hasControlPlane,cloud_state:$hasCloud,
       vault_init_material:$hasVaultInit},
     repository_state:{bundle_path:"config/repository.bundle",
+      revision_path:"config/git-revision.txt",revision:$gitRevision,
       tracked_patch_path:"config/worktree.patch",
       tracked_patch_scope:"HEAD-to-working-tree-including-index",
       untracked_archive_path:"config/repository-untracked.tar",
       untracked_paths_path:"config/repository-untracked-files.txt",
       untracked_file_count:$untrackedFileCount,
-      sha256:{bundle:$repositoryBundleSha,tracked_patch:$worktreePatchSha,
+      sha256:{bundle:$repositoryBundleSha,revision:$gitRevisionSha,tracked_patch:$worktreePatchSha,
         untracked_archive:$untrackedArchiveSha,untracked_paths:$untrackedPathsSha}},
     recovery_dependencies:{vault_init:{required:$vaultInitRequired,
       included:$hasVaultInit,
@@ -851,10 +866,12 @@ write_completion_receipt() {
     --arg project "$PROJECT" --arg domain "$DOMAIN" --arg profile "$PROFILE" \
     --arg sourceContext "$CONTEXT" --arg sourceClusterUid "$SOURCE_CLUSTER_UID" \
     --arg veleroPrefix "$VELERO_DR_PREFIX" \
+    --arg nativeCatalogSha "$NATIVE_CATALOG_SHA256" \
     '{schema_version:2,receipt_type:"encrypted-cluster-backup",backup_id:$backupId,
       created_at:$createdAt,project:$project,domain:$domain,profile:$profile,
       source_context:$sourceContext,source_cluster_uid:$sourceClusterUid,
       velero_storage_prefix:$veleroPrefix,
+      native_backup_catalog_sha256:$nativeCatalogSha,
       archive:$archive,encryption:$encryption,
       completeness:$completeness,velero_backup_name:$veleroBackup,sha256:$sha256,
       remote:{published:$remotePublished,download_sha256_verified:$remoteVerified,
