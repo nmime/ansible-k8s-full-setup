@@ -31,13 +31,16 @@ The runtime has four capability tiers and five named profiles:
 | `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
-The current audited `medium-optimized` Hetzner shape is approximately
-**€115.81/month net** at the 2026-07-23 API prices: seven `cx33` nodes, one
-`cx23` bastion, `lb11`, one bastion IPv4, and 750 GiB of billable volumes. The
-volume total includes two Elasticsearch data replicas, three separately
-persistent SeaweedFS index claims, and 20 GiB of GitLab backup staging. See the
-exact arithmetic, hourly boundary, and exclusions in
-[the cost model](docs/COST_MODEL.md).
+The current deployable `medium-optimized` balanced tariff is approximately
+**€318.81/month net** at the authenticated 2026-07-23 prices: seven `cpx32`
+nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, and 750 GiB of billable
+volumes. The former CX economy mapping remains **€115.81/month net**, but its
+required server types were unavailable for new `hel1` placement. The volume
+total includes two Elasticsearch data replicas, three separately persistent
+SeaweedFS index claims, and 20 GiB of GitLab backup staging. See the exact
+arithmetic in [the cost model](docs/COST_MODEL.md) and the complete live CX,
+CAX, CPX, and CCX matrix in
+[Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md).
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
@@ -249,15 +252,26 @@ keeps `vpn.<domain>` on Caddy/Headscale and passes all other HTTP/TLS traffic to
 the same discovered Gateway ports. This preserves the small resource envelope
 without leaving the tier's public DNS disconnected from Kubernetes.
 
-If Hetzner reports `resource_unavailable` for the default `cx` pool, add
-`--capacity-family cpx`. The runner substitutes `cpx22`, `cpx32`, and `cpx42`
-at the same 2/4, 4/8, and 8/16 vCPU/GiB floors. Minimal uses `cpx32` for both
-Kubernetes nodes: live full-recovery testing proved that 2/4 nodes cannot keep
-the core stack and one Velero node agent per node schedulable. It does not change node counts,
-HA, replicas, or enabled technologies. Explicit per-controller
-`--bastion-type`, `--cp-type`, and `--worker-type` overrides are also available
-and are rejected by the infrastructure role if they fall below a profile's
-capacity floor.
+New named-profile plans default to the current `cpx` balanced tariff.
+`--capacity-family cx`, `cax`, `cpx`, or `ccx` selects the economy x86,
+economy ARM64, balanced x86, or dedicated x86 mapping without changing node
+counts, HA, replicas, or enabled technologies. CX remains capacity-limited.
+CAX is planning-only and is rejected before live deployment until the complete
+selected container/runtime set passes an ARM64 production gate. Minimal uses
+`cpx32` for both Kubernetes nodes: live full-recovery testing proved that 2/4
+nodes cannot keep the core stack and one Velero node agent per node schedulable.
+Explicit per-controller `--bastion-type`, `--cp-type`, and `--worker-type`
+overrides are also available, cannot be combined with a family selection, and
+are rejected by the infrastructure role if they fall below a profile's capacity
+floor.
+
+Refresh every server type, live location availability, price, and five-profile
+total directly from the authenticated provider APIs:
+
+```bash
+./scripts/hetzner-capacity-report.sh --location hel1
+./scripts/hetzner-capacity-report.sh --location hel1 --format json
+```
 
 After logs prove Kubespray completed with zero failed or unreachable hosts, a
 campaign interrupted in later platform roles can resume with
@@ -576,6 +590,7 @@ requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 - [Upgrade runbook](UPGRADE_RUNBOOK.md)
 - [GitLab 18.11 to 19.1 plan](docs/GITLAB_UPGRADE_PLAN.md)
 - [Validation and CI](docs/CI_AUTOMATION.md)
+- [Hetzner server catalog and capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md)
 - [Five-profile live test report (2026-07-21)](docs/FIVE_TIER_LIVE_TEST_2026-07-21.md)
 
 ## Validation scope

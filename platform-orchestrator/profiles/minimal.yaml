@@ -3,14 +3,14 @@
 # ============================================
 # Best for: Development, learning, testing
 # Kubernetes nodes: 2 (1 master+worker, 1 worker)
-# Extra servers: 1 cx23 bastion
+# Extra servers: 1 cpx22 bastion
 # HA: No
 # ============================================
 
 platform_profile: minimal
 tier: minimal
 resource_tier: minimal
-cost_estimate: "Provider-price dependent: 1 x cx33 control plane, 1 x cx33 worker, cx23 bastion"
+cost_estimate: "Current balanced tariff: 1 x cpx32 control plane, 1 x cpx32 worker, cpx22 bastion"
 
 global:
   project: k8s
@@ -27,12 +27,12 @@ infrastructure:
 
   control_plane:
     count: 1
-    type: cx33
+    type: cpx32
     schedulable: true  # Master also runs workloads
 
   workers:
     count: 1
-    type: cx33
+    type: cpx32
 
 # ---------------------------------------------
 # Network
@@ -40,7 +40,7 @@ infrastructure:
 network:
   bastion:
     enabled: true
-    server_type: cx23
+    server_type: cpx22
 
   load_balancer:
     enabled: false  # Avoid the separately billed load balancer; bastion proxies

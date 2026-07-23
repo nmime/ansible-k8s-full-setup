@@ -2,7 +2,7 @@
 # MEDIUM TIER - standard full-platform footprint
 # ============================================
 # Best for: Small-medium traffic, teams
-# Nodes: 5 x cx43 16Gi-class nodes (3 schedulable masters HA, 2 workers) + cx23 bastion + lb11
+# Nodes: 5 x cpx42 16Gi-class nodes (3 schedulable masters HA, 2 workers) + cpx22 bastion + lb11
 # HA: Yes (control plane)
 # Storage: 3x100Gi object storage, 50Gi PostgreSQL, 100Gi metrics
 # Costs vary with current Hetzner pricing, region, traffic, and backups/snapshots.
@@ -11,7 +11,7 @@
 platform_profile: medium
 tier: medium
 resource_tier: medium
-cost_estimate: "Provider-price dependent: 3 x cx43 control plane, 2 x cx43 worker, cx23 bastion, lb11"
+cost_estimate: "Current balanced tariff: 3 x cpx42 control plane, 2 x cpx42 workers, cpx22 bastion, lb11"
 
 global:
   project: k8s
@@ -28,7 +28,7 @@ infrastructure:
 
   control_plane:
     count: 3
-    type: cx43
+    type: cpx42
     # The full medium stack does not fit safely on only two 16Gi workers and
     # can also exceed per-node volume attachment limits. Keep the three HA
     # control-plane nodes schedulable; production is the dedicated-CP tier.
@@ -36,7 +36,7 @@ infrastructure:
 
   workers:
     count: 2
-    type: cx43
+    type: cpx42
 
 # ---------------------------------------------
 # Network
@@ -44,7 +44,7 @@ infrastructure:
 network:
   bastion:
     enabled: true
-    server_type: cx23
+    server_type: cpx22
 
   load_balancer:
     enabled: true

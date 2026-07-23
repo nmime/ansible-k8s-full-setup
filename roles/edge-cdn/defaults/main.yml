@@ -59,19 +59,19 @@ edge_regions:
     continents: ["EU"]
     countries: []
     hetzner_location: "fsn1"
-    server_type: "cx21"
+    server_type: "cpx12"
   us:
     name: "North America"
     continents: ["NA"]
     countries: []
     hetzner_location: "ash"
-    server_type: "cx21"
+    server_type: "cpx12"
   apac:
     name: "Asia Pacific"
     continents: ["AS", "OC"]
     countries: []
     hetzner_location: "sin"
-    server_type: "cx21"
+    server_type: "cpx12"
 
 # Health check configuration
 edge_health_check_path: "/health"

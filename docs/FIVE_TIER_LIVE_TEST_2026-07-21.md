@@ -418,15 +418,22 @@ hash in this file.
 The authenticated Hetzner pricing API returned `cx33` at €8.49/month,
 `cx23` at €5.49/month, `lb11` at €7.49/month, the bastion IPv4 at €0.50/month,
 and volumes at €0.0572/GiB-month, net with 0% VAT for the queried account.
-Repository source resolves the profile to seven `cx33` nodes, one `cx23`
+The campaign commit resolved the profile to seven `cx33` nodes, one `cx23`
 bastion, one `lb11`, one paid IPv4, 730 GiB of operational persistent claims,
-and 20 GiB of GitLab backup staging. The exact full-month total is therefore
+and 20 GiB of GitLab backup staging. The exact historical full-month total is
+therefore
 €115.810 net (€115.81 rounded). External DR storage, snapshots, excess traffic,
 domain registration, and non-zero customer VAT are excluded. The reconciled
 claim inventory and arithmetic are maintained in [the cost model](COST_MODEL.md).
 At the same query time, `hel1` marked the relevant `cx23`, `cx33`, and `cx43`
 types unavailable for new placement, so the price is not a current capacity
 guarantee.
+
+After this campaign, the named profiles moved their purchase defaults to the
+currently available CPX generation. The legacy CX arithmetic remains a
+historical/existing-server reference; current mappings and live refresh
+commands are documented in
+[Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
 
 ## Completed replacement-recovery campaign — 2026-07-23
 

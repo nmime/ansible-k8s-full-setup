@@ -226,6 +226,69 @@ def test_certificate_issuer_help_documents_safe_profile_defaults():
     assert "production uses letsencrypt-prod; others staging" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("family", "bastion", "control_plane", "worker"),
+    (
+        ("cx", "cx23", "cx33", "cx33"),
+        ("cax", "cax11", "cax21", "cax21"),
+        ("cpx", "cpx22", "cpx32", "cpx32"),
+        ("ccx", "ccx13", "ccx23", "ccx23"),
+    ),
+)
+def test_one_profile_can_plan_every_capacity_tariff(
+    tmp_path, family, bastion, control_plane, worker
+):
+    config = tmp_path / family / "platform.yaml"
+    result = subprocess.run(
+        [
+            str(RUN_TIER),
+            "minimal",
+            "--campaign-id",
+            f"tariff-{family}",
+            "--project",
+            f"tariff-{family}",
+            "--domain",
+            f"{family}.example.invalid",
+            "--capacity-family",
+            family,
+            "--run-root",
+            str(tmp_path / family),
+            "--config",
+            str(config),
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        env=safe_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    profile = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert profile["network"]["bastion"]["server_type"] == bastion
+    assert profile["infrastructure"]["control_plane"]["type"] == control_plane
+    assert profile["infrastructure"]["workers"]["type"] == worker
+
+
+def test_arm_capacity_tariff_is_rejected_before_live_deployment():
+    result = subprocess.run(
+        [
+            str(RUN_TIER),
+            "minimal",
+            "--capacity-family",
+            "cax",
+        ],
+        cwd=ROOT,
+        env=safe_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "planning-only" in result.stderr
+    assert "ARM64 production attestation" in result.stderr
+
+
 def test_certificate_issuer_can_be_loaded_from_the_protected_project_env(tmp_path):
     project_env = tmp_path / ".env"
     project_env.write_text("CERT_MANAGER_CLUSTER_ISSUER=env-file-issuer\n", encoding="utf-8")

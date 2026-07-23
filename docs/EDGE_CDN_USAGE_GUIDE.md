@@ -431,7 +431,7 @@ With CDN (80% hit rate):
   80,000 requests cached at edge = 40 GB/day from cache
   20,000 requests to origin = 10 GB/day from K8s
   → Hetzner egress: €0.10/mo
-  → Edge servers: €15/mo (3× cx21 servers)
+  → Edge servers: €34.47/mo at the audited price (3× cpx12 servers)
   → Net savings: ~€0 (break-even at low volume)
 
 With CDN (at scale):

@@ -2,7 +2,7 @@
 # PRODUCTION TIER - higher-availability platform footprint
 # ============================================
 # Best for: Selective critical HA with a small production resource envelope
-# Nodes: 6 x cx43 16Gi-class nodes (3 masters, 3 workers) + cx23 bastion + lb11
+# Nodes: 6 x cpx42 16Gi-class nodes (3 masters, 3 workers) + cpx22 bastion + lb11
 # HA: Three-way control plane plus explicit quorum and selected workload replicas
 # Recovery: Gitaly, Grafana, Postal MariaDB/web, and Coroot retain intentional
 # singleton boundaries and require backup-driven recovery. Elasticsearch data
@@ -19,7 +19,7 @@ tier: production
 # envelope used by medium-optimized. Critical replica counts are explicit below
 # so reducing reservations never silently reduces availability.
 resource_tier: small
-cost_estimate: "Provider-price dependent: 3 x cx43 control plane, 3 x cx43 worker, cx23 bastion, lb11"
+cost_estimate: "Current balanced tariff: 3 x cpx42 control plane, 3 x cpx42 workers, cpx22 bastion, lb11"
 
 global:
   project: k8s
@@ -36,12 +36,12 @@ infrastructure:
 
   control_plane:
     count: 3
-    type: cx43
+    type: cpx42
     schedulable: false
 
   workers:
     count: 3
-    type: cx43
+    type: cpx42
 
 # ---------------------------------------------
 # Network
@@ -49,7 +49,7 @@ infrastructure:
 network:
   bastion:
     enabled: true
-    server_type: cx23
+    server_type: cpx22
 
   load_balancer:
     enabled: true

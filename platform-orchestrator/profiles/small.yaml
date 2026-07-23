@@ -2,15 +2,15 @@
 # SMALL TIER - compact staging/startup footprint
 # ============================================
 # Best for: Startups, small teams, staging
-# Kubernetes nodes: 3 (1 x cx23 control plane, 2 x cx33 workers)
-# Extra servers: 1 cx23 bastion, 1 lb11 load balancer
+# Kubernetes nodes: 3 (1 x cpx22 control plane, 2 x cpx32 workers)
+# Extra servers: 1 cpx22 bastion, 1 lb11 load balancer
 # HA: No (single master)
 # ============================================
 
 platform_profile: small
 tier: small
 resource_tier: small
-cost_estimate: "Provider-price dependent: 1 x cx23 control plane, 2 x cx33 worker, cx23 bastion, lb11"
+cost_estimate: "Current balanced tariff: 1 x cpx22 control plane, 2 x cpx32 workers, cpx22 bastion, lb11"
 
 global:
   project: k8s
@@ -27,12 +27,12 @@ infrastructure:
 
   control_plane:
     count: 1
-    type: cx23
+    type: cpx22
     schedulable: false
 
   workers:
     count: 2
-    type: cx33
+    type: cpx32
 
 # ---------------------------------------------
 # Network
@@ -40,7 +40,7 @@ infrastructure:
 network:
   bastion:
     enabled: true
-    server_type: cx23
+    server_type: cpx22
 
   load_balancer:
     enabled: true
