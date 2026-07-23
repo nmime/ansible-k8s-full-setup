@@ -93,7 +93,7 @@ cleanup_drill() {
 }
 
 # Invoked indirectly by the EXIT trap below.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup_on_exit() {
   local rc=$?
   if [[ "$SKIP_CLEANUP" == false ]]; then cleanup_drill; fi

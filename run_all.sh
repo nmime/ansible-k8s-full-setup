@@ -139,7 +139,7 @@ HOMES=()
 CONFIGS=()
 DEPLOY_LOGS=()
 
-# shellcheck disable=SC2329 # Invoked by the INT/TERM trap.
+# shellcheck disable=SC2317,SC2329 # Invoked by the INT/TERM trap.
 terminate_children() {
   local pid
   printf '\nInterrupt received; stopping campaign controller processes only. Cloud resources are retained.\n' >&2
