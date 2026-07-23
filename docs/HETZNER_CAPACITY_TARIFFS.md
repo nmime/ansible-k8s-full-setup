@@ -19,7 +19,7 @@ monthly totals.
 
 | Tariff | Hetzner family | Architecture | Deployment policy |
 |---|---|---|---|
-| Economy x86 | `CX` | x86 shared | Existing-capacity or explicitly selected only; limited availability |
+| Cost-optimized x86 | `CX` | x86 shared | Opt-in; availability is intermittent and must be queried immediately before creation |
 | Economy ARM | `CAX` | ARM64 shared | Planning only until the complete selected image/runtime set is attested on ARM64 |
 | Balanced | `CPX` | x86 shared | Default for all new named-profile deployments |
 | Dedicated | `CCX` | x86 dedicated | Opt-in for sustained CPU and predictable performance |
@@ -97,10 +97,13 @@ domains, support, and non-zero customer VAT.
 | `medium-optimized` | 750 GiB | €115.81 | €130.31 | **€318.81** | €695.81 |
 | `production` | 1,490 GiB | €194.65 | €225.15 | **€529.65** | €652.15 |
 
-CX figures are useful for existing servers and capacity planning but were not
-placeable in `hel1` at capture time. CAX figures are not an approved production
-deployment. CPX is the current default and was placeable. CCX is available but
-should be chosen for CPU predictability, not storage savings.
+CX figures are valid purchase prices whenever the complete mapping reappears;
+the required shapes were temporarily not placeable in `hel1` at capture time.
+Selecting CX never silently falls back to CPX, because that would change the
+approved cost. Retry later or choose CPX explicitly. CAX figures are not an
+approved production deployment. CPX is the current default and was placeable.
+CCX is available but should be chosen for CPU predictability, not storage
+savings.
 
 `medium-optimized` is a resource-envelope variant of the full medium toolset,
 not a linear tier between `medium` and `production`. It uses more small nodes

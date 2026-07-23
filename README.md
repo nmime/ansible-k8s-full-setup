@@ -34,8 +34,9 @@ The runtime has four capability tiers and five named profiles:
 The current deployable `medium-optimized` balanced tariff is approximately
 **€318.81/month net** at the authenticated 2026-07-23 prices: seven `cpx32`
 nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, and 750 GiB of billable
-volumes. The former CX economy mapping remains **€115.81/month net**, but its
-required server types were unavailable for new `hel1` placement. The volume
+volumes. The intermittent CX cost-optimized mapping remains **€115.81/month
+net** whenever its required server types are placeable. They were temporarily
+unavailable in `hel1` at audit time. The volume
 total includes two Elasticsearch data replicas, three separately persistent
 SeaweedFS index claims, and 20 GiB of GitLab backup staging. See the exact
 arithmetic in [the cost model](docs/COST_MODEL.md) and the complete live CX,
@@ -255,7 +256,9 @@ without leaving the tier's public DNS disconnected from Kubernetes.
 New named-profile plans default to the current `cpx` balanced tariff.
 `--capacity-family cx`, `cax`, `cpx`, or `ccx` selects the economy x86,
 economy ARM64, balanced x86, or dedicated x86 mapping without changing node
-counts, HA, replicas, or enabled technologies. CX remains capacity-limited.
+counts, HA, replicas, or enabled technologies. CX availability is intermittent,
+so re-query immediately before creation and retry later when the complete
+mapping is absent.
 CAX is planning-only and is rejected before live deployment until the complete
 selected container/runtime set passes an ARM64 production gate. Minimal uses
 `cpx32` for both Kubernetes nodes: live full-recovery testing proved that 2/4

@@ -5,7 +5,7 @@
 # Server type overrides — set these to pick exact Hetzner server types.
 # Leave empty to auto-select the cheapest available type per tier.
 # Current examples: cpx22, cpx32, cpx42, ccx13, and ccx23.
-# Legacy CX and planning-only CAX types remain valid explicit catalog names.
+# Intermittent CX and planning-only CAX types remain valid explicit catalog names.
 hetzner_bastion_type: '{{ network.bastion.server_type | default("") }}'
 hetzner_cp_type: '{{ infrastructure.control_plane.type | default("") }}'
 hetzner_worker_type: '{{ infrastructure.workers.type | default("") }}'

@@ -79,15 +79,15 @@ backups, domain registration, support, and any VAT applicable to another
 customer. Private networks, firewalls, and placement groups have no separate
 line item in this calculation.
 
-## Legacy economy reference
+## Intermittent cost-optimized reference
 
-The former mapping of seven `cx33` nodes and one `cx23` bastion still calculates
-to **€115.81/month net**, including the same 750 GiB of volumes. It is retained
-as an existing-server and migration/rollback reference, not the default
-purchase plan. At audit time, `hel1` marked the required CX types unavailable
-for new placement.
+The mapping of seven `cx33` nodes and one `cx23` bastion still calculates to
+**€115.81/month net**, including the same 750 GiB of volumes. It is retained as
+an opportunistic purchase option, existing-server reference, and
+migration/rollback reference. CX capacity appears intermittently; at audit time,
+`hel1` marked the required types temporarily unavailable for new placement.
 
-The default named profile now uses the available CPX mapping. Existing CX
+The default named profile uses the predictably available CPX mapping. Existing CX
 clusters are not resized by an ordinary reconcile: the infrastructure role
 fails closed on type drift, and `scripts/migrate-profile.sh` owns backed-up,
 one-node-at-a-time type migration.

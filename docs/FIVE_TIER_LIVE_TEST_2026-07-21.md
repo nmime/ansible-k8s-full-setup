@@ -430,9 +430,9 @@ types unavailable for new placement, so the price is not a current capacity
 guarantee.
 
 After this campaign, the named profiles moved their purchase defaults to the
-currently available CPX generation. The legacy CX arithmetic remains a
-historical/existing-server reference; current mappings and live refresh
-commands are documented in
+predictably available CPX generation. The intermittent CX arithmetic remains a
+valid opportunistic-placement and existing-server reference; current mappings
+and live refresh commands are documented in
 [Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
 
 ## Completed replacement-recovery campaign — 2026-07-23

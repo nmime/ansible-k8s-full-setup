@@ -99,7 +99,7 @@ def test_current_medium_optimized_totals_and_safety_statuses():
     }
 
     assert selected["cx"]["total_monthly_net"] == "115.81"
-    assert selected["cx"]["deployment_status"] == "capacity-unavailable"
+    assert selected["cx"]["deployment_status"] == "temporarily-unavailable"
     assert selected["cax"]["total_monthly_net"] == "130.31"
     assert selected["cax"]["deployment_status"] == "planning-only-arm64-unattested"
     assert selected["cpx"]["infrastructure_monthly_net"] == "275.91"

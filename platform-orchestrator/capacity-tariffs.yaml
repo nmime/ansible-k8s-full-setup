@@ -2,10 +2,10 @@ schema_version: 1
 
 families:
   cx:
-    label: CX economy x86
+    label: CX cost-optimized x86
     architecture: x86
     live_deployment: true
-    availability: limited
+    availability: intermittent
   cax:
     label: CAX economy ARM64
     architecture: arm
