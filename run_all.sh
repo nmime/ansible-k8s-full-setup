@@ -21,7 +21,7 @@ Options:
   --dr-endpoint URL      External S3-compatible DR endpoint
   --dr-bucket NAME       External DR bucket; prefixes remain per-project
   --certificate-issuer   ClusterIssuer (default: letsencrypt-staging)
-  --capacity-family NAME Use capacity-equivalent server family (supported: cpx)
+  --capacity-family NAME Hetzner tariff: cx, cax, cpx, or ccx (default: cpx)
   --manage-dns           Permit each profile deployment to manage DNS
   --minimum-storage      Use 10Gi profile-controlled PVC requests
   --skip-kubespray       Resume all five after verified successful Kubespray
@@ -51,7 +51,7 @@ MINIMUM_STORAGE=false
 SKIP_KUBESPRAY=false
 CONTROLLER_FORKS="${CONTROLLER_FORKS:-1}"
 CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-letsencrypt-staging}"
-CAPACITY_FAMILY=""
+CAPACITY_FAMILY="cpx"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -82,8 +82,11 @@ done
   || die "invalid base domain '$BASE_DOMAIN'"
 [[ "$EMAIL" == *@*.* ]] || die "invalid email '$EMAIL'"
 [[ "$CERTIFICATE_ISSUER" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "invalid certificate issuer"
-[[ -z "$CAPACITY_FAMILY" || "$CAPACITY_FAMILY" == cpx ]] \
-  || die "unsupported capacity family '$CAPACITY_FAMILY' (supported: cpx)"
+[[ "$CAPACITY_FAMILY" =~ ^(cx|cax|cpx|ccx)$ ]] \
+  || die "unsupported capacity family '$CAPACITY_FAMILY' (supported: cx, cax, cpx, ccx)"
+if [[ "$CAPACITY_FAMILY" == cax && "$DRY_RUN" != true ]]; then
+  die "cax is planning-only: the complete selected image set has no ARM64 production attestation"
+fi
 if [[ ! "$API_PORT_BASE" =~ ^[0-9]+$ ]] || ((API_PORT_BASE < 1024 || API_PORT_BASE > 65531)); then
   die "invalid API port base '$API_PORT_BASE'"
 fi
@@ -223,19 +226,7 @@ for profile in $PROFILES; do
     --controller-forks "$CONTROLLER_FORKS"
     --operator-state-root "${SCRIPT_DIR}/.campaign-state/${project}"
   )
-  if [[ "$CAPACITY_FAMILY" == cpx ]]; then
-    args+=(--bastion-type cpx22)
-    case "$profile" in
-      # The minimal control plane is schedulable and the worker carries the
-      # complete core platform. 2 vCPU/4 GiB nodes leave no room for the
-      # Velero node agent (and measured less than 5% memory headroom), so keep
-      # the smallest live-tested 4 vCPU/8 GiB floor for both nodes.
-      minimal) args+=(--cp-type cpx32 --worker-type cpx32) ;;
-      small) args+=(--cp-type cpx22 --worker-type cpx32) ;;
-      medium|production) args+=(--cp-type cpx42 --worker-type cpx42) ;;
-      medium-optimized) args+=(--cp-type cpx32 --worker-type cpx32) ;;
-    esac
-  fi
+  args+=(--capacity-family "$CAPACITY_FAMILY")
   [[ -z "$DR_ENDPOINT" ]] || args+=(--dr-endpoint "$DR_ENDPOINT")
   [[ -z "$DR_BUCKET" ]] || args+=(--dr-bucket "$DR_BUCKET")
   $MANAGE_DNS && args+=(--manage-dns)

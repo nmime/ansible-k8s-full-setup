@@ -205,7 +205,7 @@ class TestNamedProfileContract:
             assert profile["dragonfly"]["enabled"]
 
     def test_small_workers_meet_the_declared_eight_gib_floor(self):
-        assert load_profile("small")["infrastructure"]["workers"]["type"] == "cx33"
+        assert load_profile("small")["infrastructure"]["workers"]["type"] == "cpx32"
 
     def test_full_stack_scheduling_contract_matches_available_capacity(self):
         medium = load_profile("medium")
@@ -307,8 +307,8 @@ class TestMediumOptimizedContract:
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
-        assert self.profile["infrastructure"]["control_plane"]["type"] == "cx33"
-        assert self.profile["infrastructure"]["workers"]["type"] == "cx33"
+        assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
+        assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
         assert self.profile["secrets"]["vault"]["replicas"] == 3
         assert self.profile["databases"]["postgresql"]["replicas"] == 3
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
@@ -544,8 +544,8 @@ class TestResourceTierConsumers:
                 encoding="utf-8"
             )
         )
-        assert profile["infrastructure"]["control_plane"]["type"] == "cx33"
-        assert profile["infrastructure"]["workers"]["type"] == "cx33"
+        assert profile["infrastructure"]["control_plane"]["type"] == "cpx32"
+        assert profile["infrastructure"]["workers"]["type"] == "cpx32"
 
     def test_server_create_uses_argument_safe_ssh_key_values(self):
         content = (

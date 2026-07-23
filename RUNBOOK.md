@@ -129,11 +129,14 @@ For concurrent tier campaigns, give every invocation a distinct kubeconfig,
 run ID, and output directory. Never point parallel processes at a shared active
 context.
 
-The repository's five-profile controller does this automatically. When the
-default Hetzner `cx` pool returns `resource_unavailable`, rerun with
-`./run_all.sh --capacity-family cpx ...`; the mapping preserves each profile's
-CPU/RAM floor and topology. Do not compensate for provider capacity by lowering
-node counts or selecting a type that the role's capacity assertions reject.
+The repository's five-profile controller does this automatically and defaults
+to the current `cpx` balanced tariff. Use
+`./run_all.sh --capacity-family cx|cax|cpx|ccx ...` to produce an explicit
+economy x86, planning-only ARM64, balanced x86, or dedicated x86 mapping. Every
+mapping preserves the profile's CPU/RAM floor and topology; live CAX deployment
+is rejected until the full platform has an ARM64 production attestation. Do not
+compensate for provider capacity by lowering node counts or selecting a type
+that the role's capacity assertions reject.
 After evidence capture, parallel teardown is safe because resource selection
 uses the exact `project` label; always verify that no campaign-labeled resources
 or campaign DNS records remain.

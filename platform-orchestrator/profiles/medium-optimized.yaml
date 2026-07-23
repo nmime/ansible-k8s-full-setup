@@ -1,8 +1,8 @@
 # ============================================
 # MEDIUM-OPTIMIZED PROFILE - full medium toolset, small resource envelope
 # ============================================
-# Best for: Full platform toolset on a constrained CX23/CX33 budget shape
-# Nodes: 3 x cx33 control plane + 4 x cx33 workers + 1 x cx23 bastion + lb11
+# Best for: Full platform toolset on a constrained current-generation x86 shape
+# Nodes: 3 x cpx32 control plane + 4 x cpx32 workers + 1 x cpx22 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -12,7 +12,7 @@ platform_profile: medium-optimized
 tier: medium
 resource_tier: small
 cost_estimate: >-
-  Provider-price dependent: 3 x cx33 control plane, 4 x cx33 worker, cx23
+  Current balanced tariff: 3 x cpx32 control plane, 4 x cpx32 workers, cpx22
   bastion, lb11, one bastion IPv4, and 750 GiB billable persistent volumes
   (730 GiB data claims plus 20 GiB GitLab backup staging). See docs/COST_MODEL.md.
 
@@ -28,8 +28,8 @@ global:
 hetzner_tier_specs:
   medium:
     cp_count: 3
-    cp_min_cores: 2
-    cp_min_memory: 4
+    cp_min_cores: 4
+    cp_min_memory: 8
     cp_schedulable: true
     worker_count: 4
     worker_min_cores: 4
@@ -42,11 +42,11 @@ infrastructure:
   region: hel1
   control_plane:
     count: 3
-    type: cx33
+    type: cpx32
     schedulable: true
   workers:
     count: 4
-    type: cx33
+    type: cpx32
 
 # ---------------------------------------------
 # Network
@@ -54,7 +54,7 @@ infrastructure:
 network:
   bastion:
     enabled: true
-    server_type: cx23
+    server_type: cpx22
 
   load_balancer:
     enabled: true

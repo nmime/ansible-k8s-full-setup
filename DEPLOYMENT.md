@@ -59,8 +59,9 @@ For the budget production-oriented deployment:
 ./platform.sh init medium-optimized
 ```
 
-This profile uses three schedulable `cx33` control planes, four `cx33` workers,
-a `cx23` bastion, and `lb11`. Critical quorum services remain replicated;
+This profile uses three schedulable `cpx32` control planes, four `cpx32`
+workers, a `cpx22` bastion, and `lb11`. Critical quorum services remain
+replicated;
 recoverable stateless services default to one replica with bounded autoscaling.
 VictoriaMetrics storage, Gitaly, Grafana, Postal
 MariaDB, and Coroot/ClickHouse retain documented singleton recovery boundaries.
@@ -70,12 +71,15 @@ Choose the `production` profile when stateless workload continuity during node
 maintenance is required. Production backups must also be copied to storage
 outside this cluster.
 
-At the authenticated Hetzner API prices audited on 2026-07-22, this default
-shape is €115.810/month net (€115.81 rounded), including its bastion IPv4 and
-750 GiB of billable persistent volumes. That storage is 730 GiB of operational
-data claims, including two Elasticsearch data claims and three durable
-SeaweedFS index claims, plus 20 GiB of GitLab backup staging. External DR
-storage and traffic overages are separate; see [the cost model](docs/COST_MODEL.md).
+At the authenticated Hetzner API prices audited on 2026-07-23, this currently
+placeable balanced shape is €318.810/month net (€318.81 rounded), including its
+bastion IPv4 and 750 GiB of billable persistent volumes. The legacy CX economy
+mapping remains €115.81/month but was unavailable for new `hel1` placement at
+audit time. Storage is 730 GiB of operational data claims, including two
+Elasticsearch data claims and three durable SeaweedFS index claims, plus 20 GiB
+of GitLab backup staging. External DR storage and traffic overages are separate;
+see [the cost model](docs/COST_MODEL.md) and
+[Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md).
 
 Its three SeaweedFS volume servers use placement `001`, not SeaweedFS's unsafe
 single-copy `000` default. Reconciliation upgrades old volumes in bounded

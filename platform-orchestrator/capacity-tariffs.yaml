@@ -1,0 +1,53 @@
+schema_version: 1
+
+families:
+  cx:
+    label: CX economy x86
+    architecture: x86
+    live_deployment: true
+    availability: limited
+  cax:
+    label: CAX economy ARM64
+    architecture: arm
+    live_deployment: false
+    availability: limited
+    blocked_reason: The complete selected image set has no ARM64 production attestation.
+  cpx:
+    label: CPX balanced x86
+    architecture: x86
+    live_deployment: true
+    availability: current
+  ccx:
+    label: CCX dedicated x86
+    architecture: x86
+    live_deployment: true
+    availability: current
+
+# Mappings preserve each profile's tested or declared role capacity floor.
+# Dedicated vCPU mappings use fewer vCPUs only where that floor permits it.
+profiles:
+  minimal:
+    cx: {bastion: cx23, control_plane: cx33, worker: cx33}
+    cax: {bastion: cax11, control_plane: cax21, worker: cax21}
+    cpx: {bastion: cpx22, control_plane: cpx32, worker: cpx32}
+    ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}
+  small:
+    cx: {bastion: cx23, control_plane: cx23, worker: cx33}
+    cax: {bastion: cax11, control_plane: cax11, worker: cax21}
+    cpx: {bastion: cpx22, control_plane: cpx22, worker: cpx32}
+    ccx: {bastion: ccx13, control_plane: ccx13, worker: ccx23}
+  medium:
+    cx: {bastion: cx23, control_plane: cx43, worker: cx43}
+    cax: {bastion: cax11, control_plane: cax31, worker: cax31}
+    cpx: {bastion: cpx22, control_plane: cpx42, worker: cpx42}
+    ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}
+  medium-optimized:
+    cx: {bastion: cx23, control_plane: cx33, worker: cx33}
+    cax: {bastion: cax11, control_plane: cax21, worker: cax21}
+    cpx: {bastion: cpx22, control_plane: cpx32, worker: cpx32}
+    ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}
+  production:
+    cx: {bastion: cx23, control_plane: cx43, worker: cx43}
+    cax: {bastion: cax11, control_plane: cax31, worker: cax31}
+    cpx: {bastion: cpx22, control_plane: cpx42, worker: cpx42}
+    ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}

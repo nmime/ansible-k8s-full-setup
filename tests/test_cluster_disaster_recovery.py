@@ -1989,7 +1989,7 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
         generated = yaml.safe_load((state / generated_name).read_text())
         assert generated["network"]["bastion"]["server_type"] == "cpx22"
     assert (state / "bastion-type-retention.tsv").read_text() == (
-        "source-declared\tcpx22\ttarget-requested\tcx23\tretained\tcpx22\n"
+        "source-declared\tcpx22\ttarget-requested\tcpx22\tretained\tcpx22\n"
     )
     capacity = json.loads((state / "volume-capacity-plan.json").read_text())
     assert capacity["source"]["persistent_total_gib"] == 250

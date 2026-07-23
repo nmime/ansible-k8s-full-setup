@@ -30,6 +30,7 @@ Options:
   --dr-prefix PREFIX     Unique bucket prefix (default: PROJECT/velero)
   --dns-zone DOMAIN      Authoritative Hetzner parent zone
   --certificate-issuer   ClusterIssuer (default: production uses letsencrypt-prod; others staging)
+  --capacity-family NAME Hetzner tariff: cx, cax, cpx, or ccx
   --bastion-type TYPE    Capacity-equivalent bastion server type override
   --cp-type TYPE         Capacity-equivalent control-plane type override
   --worker-type TYPE     Capacity-equivalent worker server type override
@@ -80,6 +81,7 @@ DR_PREFIX="${BACKUP_DR_PREFIX:-}"
 DNS_ZONE="${HETZNER_DNS_ZONE:-}"
 CERTIFICATE_ISSUER="${CERT_MANAGER_CLUSTER_ISSUER:-}"
 CERTIFICATE_ISSUER_FROM_OPTION=false
+CAPACITY_FAMILY=""
 BASTION_TYPE=""
 CP_TYPE=""
 WORKER_TYPE=""
@@ -107,6 +109,7 @@ while [[ $# -gt 0 ]]; do
     --dr-prefix) require_value "$1" "${2:-}"; DR_PREFIX="$2"; shift 2 ;;
     --dns-zone) require_value "$1" "${2:-}"; DNS_ZONE="$2"; shift 2 ;;
     --certificate-issuer) require_value "$1" "${2:-}"; CERTIFICATE_ISSUER="$2"; CERTIFICATE_ISSUER_FROM_OPTION=true; shift 2 ;;
+    --capacity-family) require_value "$1" "${2:-}"; CAPACITY_FAMILY="$2"; shift 2 ;;
     --bastion-type) require_value "$1" "${2:-}"; BASTION_TYPE="$2"; shift 2 ;;
     --cp-type) require_value "$1" "${2:-}"; CP_TYPE="$2"; shift 2 ;;
     --worker-type) require_value "$1" "${2:-}"; WORKER_TYPE="$2"; shift 2 ;;
@@ -122,6 +125,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$CAMPAIGN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid campaign id '$CAMPAIGN_ID'"
+[[ -z "$CAPACITY_FAMILY" || "$CAPACITY_FAMILY" =~ ^(cx|cax|cpx|ccx)$ ]] \
+  || die "unsupported capacity family '$CAPACITY_FAMILY' (supported: cx, cax, cpx, ccx)"
+if [[ -n "$CAPACITY_FAMILY" && ( -n "$BASTION_TYPE" || -n "$CP_TYPE" || -n "$WORKER_TYPE" ) ]]; then
+  die "--capacity-family cannot be combined with explicit server-type overrides"
+fi
+if [[ "$CAPACITY_FAMILY" == cax && "$DRY_RUN" != true ]]; then
+  die "cax is planning-only: the complete selected image set has no ARM64 production attestation"
+fi
 PROJECT="${PROJECT:-t5-${CAMPAIGN_ID}-${PROFILE}}"
 DOMAIN="${DOMAIN:-${PROFILE}.${BASE_DOMAIN:-n0xeid.xyz}}"
 DNS_ZONE="${DNS_ZONE:-${DOMAIN}}"
@@ -131,6 +142,7 @@ CONFIG_FILE="${CONFIG_FILE:-${RUN_ROOT}/platform.yaml}"
 LOG_FILE="${LOG_FILE:-${RUN_ROOT}/logs/deploy.log}"
 DR_PREFIX="${DR_PREFIX:-${PROJECT}/velero}"
 PROFILE_FILE="${PROFILES_DIR}/${PROFILE}.yaml"
+CAPACITY_TARIFFS_FILE="${SCRIPT_DIR}/platform-orchestrator/capacity-tariffs.yaml"
 STATUS_FILE="${RUN_ROOT}/status.json"
 
 [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9-]{1,47}$ ]] || die "project must be 2-48 lowercase letters, numbers, or hyphens"
@@ -151,6 +163,7 @@ if [[ ! "$CONTROLLER_FORKS" =~ ^[0-9]+$ ]] || ((CONTROLLER_FORKS < 1 || CONTROLL
 fi
 [[ "$SSH_KEY_PATH" == /* ]] || die "SSH key path must be absolute"
 [[ -f "$PROFILE_FILE" ]] || die "profile source is missing: $PROFILE_FILE"
+[[ -f "$CAPACITY_TARIFFS_FILE" ]] || die "capacity tariff catalog is missing: $CAPACITY_TARIFFS_FILE"
 command -v yq >/dev/null 2>&1 || die "yq v4 is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
@@ -205,6 +218,17 @@ DR_SECRET_KEY="${BACKUP_DR_SECRET_KEY:-}"
 if [[ -x "${SCRIPT_DIR}/.venv/bin/ansible-playbook" ]]; then
   PATH="${SCRIPT_DIR}/.venv/bin:${PATH}"
   export PATH
+fi
+
+if [[ -n "$CAPACITY_FAMILY" ]]; then
+  tariff_mapping=$(PROFILE="$PROFILE" FAMILY="$CAPACITY_FAMILY" yq -o=json -I=0 \
+    '.profiles[strenv(PROFILE)][strenv(FAMILY)] // {}' "$CAPACITY_TARIFFS_FILE")
+  [[ "$(jq -r 'keys | sort | join(",")' <<<"$tariff_mapping")" == \
+      "bastion,control_plane,worker" ]] \
+    || die "no complete capacity mapping for family=$CAPACITY_FAMILY profile=$PROFILE"
+  BASTION_TYPE=$(jq -r '.bastion' <<<"$tariff_mapping")
+  CP_TYPE=$(jq -r '.control_plane' <<<"$tariff_mapping")
+  WORKER_TYPE=$(jq -r '.worker' <<<"$tariff_mapping")
 fi
 
 cp "$PROFILE_FILE" "$CONFIG_FILE"
@@ -307,11 +331,13 @@ write_status() {
   local state="$1" rc="$2"
   jq -n \
     --arg campaign "$CAMPAIGN_ID" --arg profile "$PROFILE" --arg project "$PROJECT" \
+    --arg capacityFamily "${CAPACITY_FAMILY:-cpx}" \
     --arg domain "$DOMAIN" --arg state "$state" --arg config "$CONFIG_FILE" \
     --arg log "$LOG_FILE" --arg bastionType "$EFFECTIVE_BASTION_TYPE" \
     --arg controlPlaneType "$EFFECTIVE_CP_TYPE" --arg workerType "$EFFECTIVE_WORKER_TYPE" \
     --argjson api_port "$API_PORT" --argjson rc "$rc" \
     '{campaign_id:$campaign,profile:$profile,project:$project,domain:$domain,state:$state,
+      capacity_family:$capacityFamily,
       api_port:$api_port,config:$config,log:$log,exit_code:$rc,
       provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType,worker:$workerType},
       updated_at:(now|todateiso8601)}' >"${STATUS_FILE}.tmp"

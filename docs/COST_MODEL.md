@@ -1,20 +1,24 @@
 # Medium-optimized Hetzner cost model
 
-This is the repository's audited cost baseline for the default
-`medium-optimized` profile. Prices were read from Hetzner Cloud's authenticated
-`/v1/pricing` API on 2026-07-23. They are net EUR values for the queried account,
-whose API response reported 0% VAT. Re-query before purchasing because provider
-prices, tax, and included traffic can change.
+This is the repository's audited cost baseline for the default, currently
+placeable `medium-optimized` profile. Prices and availability were read from
+Hetzner Cloud's authenticated APIs on 2026-07-23. They are net EUR values for
+the queried account, whose API response reported 0% VAT. Re-query before
+purchasing because provider prices, tax, and included traffic can change:
+
+```bash
+./scripts/hetzner-capacity-report.sh --location hel1
+```
 
 ## Infrastructure
 
 | Resource | Quantity | Hourly each | Monthly each | Monthly total |
 |---|---:|---:|---:|---:|
-| `cx33` control-plane and worker servers in `hel1` | 7 | €0.0136 | €8.49 | €59.43 |
-| `cx23` bastion in `hel1` | 1 | €0.0088 | €5.49 | €5.49 |
+| `cpx32` control-plane and worker servers in `hel1` | 7 | €0.0569 | €35.49 | €248.43 |
+| `cpx22` bastion in `hel1` | 1 | €0.0312 | €19.49 | €19.49 |
 | `lb11` in `hel1` | 1 | €0.0120 | €7.49 | €7.49 |
 | Bastion Primary IPv4 | 1 | €0.0008 | €0.50 | €0.50 |
-| **Infrastructure subtotal** | | **€0.1168** | | **€72.91** |
+| **Infrastructure subtotal** | | **€0.4423** | | **€275.91** |
 
 Control-plane and worker servers are created without public IPv4 or IPv6;
 only the bastion receives the separately billed Primary IPv4. The load
@@ -58,15 +62,15 @@ costs €1.144/month. Total volume cost is €42.900/month.
 The full-month default is:
 
 ```text
-€72.910 infrastructure + €42.900 volumes = €115.810/month net
+€275.910 infrastructure + €42.900 volumes = €318.810/month net
 ```
 
-That is **€115.81/month net** rounded to cents. Hetzner's API supplies explicit
+That is **€318.81/month net** rounded to cents. Hetzner's API supplies explicit
 hourly rates for servers, the load balancer, and Primary IPv4, giving a direct
-infrastructure rate of **€0.1168/hour**. It supplies volumes as a monthly
-GiB price, not an hourly tariff. Dividing the complete monthly total by 730
-hours gives **€0.15864/hour** as a planning equivalent only; it is not a
-provider-quoted hourly price.
+uncapped infrastructure rate of **€0.4423/hour**. It supplies volumes as a
+monthly GiB price, not an hourly tariff. Dividing the complete monthly-capped
+total by 730 hours gives **€0.43673/hour** as a planning equivalent only; it is
+not a provider-quoted hourly price.
 
 The API response listed 20 TiB included traffic and €1/TB excess traffic for
 the relevant server and load-balancer price entries. This baseline excludes
@@ -75,8 +79,19 @@ backups, domain registration, support, and any VAT applicable to another
 customer. Private networks, firewalls, and placement groups have no separate
 line item in this calculation.
 
-At the same audit time, the authenticated `hel1` server-type catalog marked
-`cx23`, `cx33`, and `cx43` unavailable for new placement. The price calculation
-is therefore a capacity plan, not a placement guarantee; re-check location
-availability immediately before provisioning or select an approved alternate
-location/type mapping.
+## Legacy economy reference
+
+The former mapping of seven `cx33` nodes and one `cx23` bastion still calculates
+to **€115.81/month net**, including the same 750 GiB of volumes. It is retained
+as an existing-server and migration/rollback reference, not the default
+purchase plan. At audit time, `hel1` marked the required CX types unavailable
+for new placement.
+
+The default named profile now uses the available CPX mapping. Existing CX
+clusters are not resized by an ordinary reconcile: the infrastructure role
+fails closed on type drift, and `scripts/migrate-profile.sh` owns backed-up,
+one-node-at-a-time type migration.
+
+The full CX, CAX, CPX, and CCX catalog, availability state, mappings, and totals
+for all five profiles are maintained in
+[Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
