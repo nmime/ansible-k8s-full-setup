@@ -101,7 +101,7 @@ RESULT_PROJECT=$(printf '%s' "${PROJECT_NAME:-k8s}" | tr -c 'A-Za-z0-9._-' '-')
 RF="${PROJECT_ROOT}/.backup-results-${RESULT_PROJECT}-${TS}-$$.log"
 CATALOG_RECORDS=$(mktemp "${TMPDIR:-/tmp}/native-backup-catalog.XXXXXX")
 # Invoked indirectly by the EXIT/INT/TERM trap below.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup_catalog() { rm -f "$CATALOG_RECORDS"; }
 trap cleanup_catalog EXIT INT TERM
 catalog_record() {
@@ -313,8 +313,11 @@ run_postgresql_backup() {
   local comp=postgresql ns=databases cluster="${PROJECT_NAME:-k8s}-pg"
   local backup state state_lower job_name backup_set attempts=0 repo="${BACKUP_POSTGRESQL_REPO:-repo2}"
   local timeout_seconds="${BACKUP_POSTGRESQL_TIMEOUT_SECONDS:-1800}" max_attempts
-  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] && [ "$timeout_seconds" -ge 10 ] \
-    || { error "BACKUP_POSTGRESQL_TIMEOUT_SECONDS must be an integer >= 10"; FAILED=$((FAILED+1)); return 0; }
+  if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]] || [ "$timeout_seconds" -lt 10 ]; then
+    error "BACKUP_POSTGRESQL_TIMEOUT_SECONDS must be an integer >= 10"
+    FAILED=$((FAILED+1))
+    return 0
+  fi
   max_attempts=$((timeout_seconds / 10))
   backup="${cluster}-manual-$(printf '%s' "$TS" | tr '[:upper:]' '[:lower:]')"
   TOTAL=$((TOTAL+1))
