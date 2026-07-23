@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Bounded, profile-aware live load test for an explicitly disposable cluster.
+# shellcheck disable=SC2016 # Single-quoted programs expand only inside target pods.
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -118,6 +119,7 @@ safe_run_id=${RUN_ID//-/_}
 # own the same PostgreSQL object even if an operator accidentally reuses a run
 # ID. The complete identifier remains below PostgreSQL's 63-byte limit.
 table_name="tier_load_${safe_run_id}_$$_$(printf '%08x' "$(((RANDOM << 15) | RANDOM))")"
+schema_name="$table_name"
 case "$profile" in
   minimal) defaults=(2 500 25 200 50 1000) ;;
   small) defaults=(4 2000 100 1000 200 5000) ;;
@@ -183,14 +185,11 @@ if ! $DRY_RUN; then
   if [[ -n "$KUBECONFIG_FILE" ]]; then
     [[ -f "$KUBECONFIG_FILE" ]] || fail "kubeconfig not found: $KUBECONFIG_FILE"
     K=(kubectl --kubeconfig "$KUBECONFIG_FILE" --request-timeout=30s)
-    K_VAULT=(kubectl --kubeconfig "$KUBECONFIG_FILE" --request-timeout="${PHASE_TIMEOUT}s")
   else
     K=(kubectl --request-timeout=30s)
-    K_VAULT=(kubectl --request-timeout="${PHASE_TIMEOUT}s")
   fi
 else
   K=(kubectl)
-  K_VAULT=(kubectl)
 fi
 
 enabled() { [[ "$(yq -r "$1 // false" "$CONFIG_FILE")" == true ]]; }
@@ -250,9 +249,9 @@ cleanup_postgresql() {
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   [[ -n "$primary" ]] || return 1
   "${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
-    -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public.${table_name}" >/dev/null 2>&1 || return 1
+    -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS ${schema_name} CASCADE" >/dev/null 2>&1 || return 1
   remaining=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
-    -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='${table_name}'" \
+    -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM pg_namespace WHERE nspname='${schema_name}'" \
     2>/dev/null || true)
   [[ "$remaining" == 0 ]]
 }
@@ -631,9 +630,9 @@ verify_postgresql_durability() {
   expected_standbys=$((replicas - 1))
 
   rows=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
-    -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM public.${table_name}" 2>/dev/null || true)
+    -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM ${schema_name}.${table_name}" 2>/dev/null || true)
   persistence=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
-    -v ON_ERROR_STOP=1 -At -c "SELECT c.relpersistence FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='${table_name}'" \
+    -v ON_ERROR_STOP=1 -At -c "SELECT c.relpersistence FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='${schema_name}' AND c.relname='${table_name}'" \
     2>/dev/null || true)
   target_lsn=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
     -v ON_ERROR_STOP=1 -At -c 'SELECT pg_current_wal_flush_lsn()' 2>/dev/null || true)
@@ -651,8 +650,8 @@ verify_postgresql_durability() {
     # point. This is bounded independently of the workload deadline.
     for attempt in {1..12}; do
       replayed=$("${K[@]}" exec -n databases "$primary" -c database -- psql -U postgres -d myapp \
-        -v ON_ERROR_STOP=1 -v "target_lsn=$target_lsn" -At \
-        -c "SELECT count(*) FROM pg_stat_replication WHERE state='streaming' AND replay_lsn >= :'target_lsn'::pg_lsn" \
+        -v ON_ERROR_STOP=1 -At \
+        -c "SELECT count(*) FROM pg_stat_replication WHERE state='streaming' AND replay_lsn >= '${target_lsn}'::pg_lsn" \
         2>/dev/null || true)
       [[ "$replayed" =~ ^[0-9]+$ ]] || replayed=0
       (( replayed >= expected_standbys )) && break
@@ -666,8 +665,8 @@ verify_postgresql_durability() {
   else
     write_path=wal-logged-standalone
   fi
-  printf 'EVIDENCE phase=postgresql write_path=%s table=%s rows=%s relpersistence=%s wal_flush_lsn=%s standby_required=%s standby_replayed=%s\n' \
-    "$write_path" "$table_name" "$rows" "$persistence" "$target_lsn" \
+  printf 'EVIDENCE phase=postgresql write_path=%s schema=%s table=%s rows=%s relpersistence=%s wal_flush_lsn=%s standby_required=%s standby_replayed=%s\n' \
+    "$write_path" "$schema_name" "$table_name" "$rows" "$persistence" "$target_lsn" \
     "$expected_standbys" "$replayed" >>"$log_file"
   (( replayed >= expected_standbys )) || {
     log "PostgreSQL durability gate: only $replayed/$expected_standbys standbys replayed $target_lsn"
@@ -705,6 +704,7 @@ spec:
             - {name: PGDATABASE, valueFrom: {secretKeyRef: {name: ${project}-pg-pguser-myapp, key: dbname}}}
             - {name: TRANSACTIONS, value: "$PG_TRANSACTIONS"}
             - {name: CLIENTS, value: "$CLIENTS"}
+            - {name: SCHEMA_NAME, value: "$schema_name"}
             - {name: TABLE_NAME, value: "$table_name"}
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
           resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: "2", memory: 512Mi}}
@@ -716,15 +716,16 @@ spec:
                 rc="\$?"
                 trap - EXIT INT TERM
                 if [ "\$completed" != true ]; then
-                  psql -v ON_ERROR_STOP=1 -c "DROP TABLE IF EXISTS public.\$TABLE_NAME" >/dev/null || true
+                  psql -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS \$SCHEMA_NAME CASCADE" >/dev/null || true
                 fi
                 exit "\$rc"
               }
               trap cleanup_on_exit EXIT
               trap 'exit 130' INT
               trap 'exit 143' TERM
-              psql -v ON_ERROR_STOP=1 -c "CREATE TABLE public.\$TABLE_NAME(id bigserial PRIMARY KEY, value text NOT NULL)"
-              printf 'INSERT INTO public.%s(value) VALUES (md5(random()::text));\nSELECT value FROM public.%s ORDER BY id DESC LIMIT 1;\n' "\$TABLE_NAME" "\$TABLE_NAME" >/tmp/load.sql
+              psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA \$SCHEMA_NAME AUTHORIZATION CURRENT_USER"
+              psql -v ON_ERROR_STOP=1 -c "CREATE TABLE \$SCHEMA_NAME.\$TABLE_NAME(id bigserial PRIMARY KEY, value text NOT NULL)"
+              printf 'INSERT INTO %s.%s(value) VALUES (md5(random()::text));\nSELECT value FROM %s.%s ORDER BY id DESC LIMIT 1;\n' "\$SCHEMA_NAME" "\$TABLE_NAME" "\$SCHEMA_NAME" "\$TABLE_NAME" >/tmp/load.sql
               base=\$((TRANSACTIONS/CLIENTS)); remainder=\$((TRANSACTIONS%CLIENTS)); jobs=0
               regular=\$((CLIENTS-remainder))
               if [ "\$base" -gt 0 ] && [ "\$regular" -gt 0 ]; then
@@ -741,9 +742,9 @@ spec:
               processed=\$(sed -n 's/^number of transactions actually processed: \([0-9][0-9]*\).*/\1/p' \
                 /tmp/pgbench.*.out | awk '{total += \$1} END {print total+0}')
               [ "\$processed" -eq "\$TRANSACTIONS" ]
-              rows=\$(psql -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM public.\$TABLE_NAME")
+              rows=\$(psql -v ON_ERROR_STOP=1 -At -c "SELECT count(*) FROM \$SCHEMA_NAME.\$TABLE_NAME")
               [ "\$rows" -eq "\$TRANSACTIONS" ]
-              persistence=\$(psql -v ON_ERROR_STOP=1 -At -c "SELECT c.relpersistence FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='\$TABLE_NAME'")
+              persistence=\$(psql -v ON_ERROR_STOP=1 -At -c "SELECT c.relpersistence FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='\$SCHEMA_NAME' AND c.relname='\$TABLE_NAME'")
               [ "\$persistence" = p ]
               printf 'PROGRESS phase=postgresql stage=wal-committed operations=%s errors=0 rows=%s relpersistence=%s\n' "\$processed" "\$rows" "\$persistence"
               completed=true
@@ -754,7 +755,7 @@ EOF
 }
 
 phase_vault() {
-  local log_file="$OUTPUT_DIR/logs/vault.log" actual_image
+  local log_file="$OUTPUT_DIR/logs/vault.log" actual_image remote_prefix status deadline rc
   vault_started=true
   actual_image=$("${K[@]}" get pod -n vault vault-0 -o jsonpath='{.spec.containers[?(@.name=="vault")].image}')
   [[ "$actual_image" == "$VAULT_IMAGE" ]] || {
@@ -766,35 +767,116 @@ phase_vault() {
   vault_token=$(ansible-vault view --vault-password-file "$ANSIBLE_VAULT_PASSWORD_FILE" "$VAULT_INIT_FILE" | jq -r .root_token)
   [[ -n "$vault_token" && "$vault_token" != null ]] || return 1
   # shellcheck disable=SC2016 # The program expands only inside the Vault pod.
-  printf '%s\n' "$vault_token" | "${K_VAULT[@]}" exec -i -n vault vault-0 -- \
+  remote_prefix="/tmp/vault-$RUN_ID"
+  if ! printf '%s\n' "$vault_token" | "${K[@]}" exec -i -n vault vault-0 -- \
     env RUN_ID="$RUN_ID" OPERATIONS="$VAULT_OPERATIONS" CLIENTS="$CLIENTS" \
-    MAX_ERROR_BPS="$max_error_bps" sh -ec '
+    MAX_ERROR_BPS="$max_error_bps" PHASE_TIMEOUT="$PHASE_TIMEOUT" sh -ec '
       IFS= read -r VAULT_TOKEN
       export VAULT_TOKEN
+      export SSL_CERT_FILE=/vault/tls/ca.crt
+      # Address the elected active node directly. Sending write-heavy traffic
+      # through the all-pods service makes standbys proxy every request and can
+      # exhaust the small production profile under concurrent TLS handshakes.
+      base=https://vault-active.vault.svc:8200/v1
+      tmp_prefix=/tmp/vault-$RUN_ID
+      timeout_file=$tmp_prefix-timeout
+      status_file=$tmp_prefix.status
+      remote_log=$tmp_prefix.log
+      supervisor_file=$tmp_prefix.supervisor
+      workers_file=$tmp_prefix.workers
+      rm -f "$tmp_prefix"-result.* "$tmp_prefix"-write.* "$tmp_prefix"-read.* \
+        "$tmp_prefix"-delete.* "$timeout_file" "$status_file" "$remote_log" \
+        "$supervisor_file" "$workers_file"
+      (
+      finish() {
+        rc=$?
+        printf "%s\n" "$rc" >"$status_file"
+      }
+      trap finish EXIT
       worker() {
         id="$1"; count="$2"; errors=0; i=1; path="secret/tier-load/$RUN_ID/$id"
         while [ "$i" -le "$count" ]; do
           value="$RUN_ID:$id:$i"
-          vault kv put "$path" value="$value" >/dev/null || errors=$((errors+1))
-          actual=$(vault kv get -field=value "$path" 2>/dev/null || true)
-          [ "$actual" = "$value" ] || errors=$((errors+1))
-          vault kv delete "$path" >/dev/null || errors=$((errors+1))
+          api_path="tier-load/$RUN_ID/$id"
+          wget -qO "$tmp_prefix-write.$id" -T 20 \
+            --header "X-Vault-Token: $VAULT_TOKEN" \
+            --header "Content-Type: application/json" \
+            --post-data "{\"data\":{\"value\":\"$value\"}}" \
+            "$base/secret/data/$api_path" || errors=$((errors+1))
+          wget -qO "$tmp_prefix-read.$id" -T 20 \
+            --header "X-Vault-Token: $VAULT_TOKEN" \
+            "$base/secret/data/$api_path" || errors=$((errors+1))
+          grep -q "\"value\":\"$value\"" "$tmp_prefix-read.$id" \
+            || errors=$((errors+1))
+          wget -qO "$tmp_prefix-delete.$id" -T 20 \
+            --header "X-Vault-Token: $VAULT_TOKEN" \
+            --header "Content-Type: application/json" \
+            --post-data "{\"versions\":[$i]}" \
+            "$base/secret/delete/$api_path" || errors=$((errors+1))
           i=$((i+1))
         done
-        vault kv metadata delete "$path" >/dev/null || true
-        printf "%s\n" "$errors" >"/tmp/vault-result.$id"
+        vault kv metadata delete "$path" >/dev/null || errors=$((errors+1))
+        rm -f "$tmp_prefix-write.$id" "$tmp_prefix-read.$id" "$tmp_prefix-delete.$id"
+        printf "%s\n" "$errors" >"$tmp_prefix-result.$id"
       }
-      base=$((OPERATIONS/CLIENTS)); remainder=$((OPERATIONS%CLIENTS)); client=1
+      per_client=$((OPERATIONS/CLIENTS)); remainder=$((OPERATIONS%CLIENTS)); client=1; pids=""
       while [ "$client" -le "$CLIENTS" ]; do
-        count="$base"; [ "$client" -le "$remainder" ] && count=$((count+1))
-        worker "$client" "$count" & client=$((client+1))
+        count="$per_client"; [ "$client" -le "$remainder" ] && count=$((count+1))
+        worker "$client" "$count" & pids="$pids $!"; client=$((client+1))
       done
-      wait; errors=0
-      for result in /tmp/vault-result.*; do errors=$((errors+$(cat "$result"))); done
+      printf "%s\n" "$pids" >"$workers_file"
+      (
+        sleep "$PHASE_TIMEOUT"
+        : >"$timeout_file"
+        kill $pids 2>/dev/null || true
+      ) & watchdog=$!
+      worker_failed=0
+      for pid in $pids; do wait "$pid" || worker_failed=1; done
+      kill "$watchdog" 2>/dev/null || true
+      wait "$watchdog" 2>/dev/null || true
+      if [ -f "$timeout_file" ]; then
+        printf "hard stop: Vault phase timeout after %ss\n" "$PHASE_TIMEOUT"
+        rm -f "$timeout_file"
+        exit 124
+      fi
+      [ "$worker_failed" -eq 0 ]
+      errors=0
+      for result in "$tmp_prefix"-result.*; do errors=$((errors+$(cat "$result"))); done
+      rm -f "$tmp_prefix"-result.*
       total=$((OPERATIONS*3))
       printf "RESULT phase=vault operations=%s errors=%s\n" "$total" "$errors"
       [ "$((errors*10000))" -le "$((total*MAX_ERROR_BPS))" ]
-    ' >"$log_file" 2>&1
+      ) >"$remote_log" 2>&1 </dev/null &
+      printf "%s\n" "$!" >"$supervisor_file"
+    ' >>"$log_file" 2>&1; then
+    return 1
+  fi
+
+  # A long kubectl exec stream is vulnerable to transient API tunnel resets.
+  # Run inside the pod and poll only run-scoped status files over short calls.
+  deadline=$(( $(date +%s) + PHASE_TIMEOUT ))
+  status=""
+  while (( $(date +%s) <= deadline )); do
+    status=$("${K[@]}" exec -n vault vault-0 -- sh -c \
+      'test -f "$1.status" && cat "$1.status" || true' sh "$remote_prefix" 2>/dev/null || true)
+    [[ "$status" =~ ^[0-9]+$ ]] && break
+    sleep 5
+  done
+  if [[ ! "$status" =~ ^[0-9]+$ ]]; then
+    "${K[@]}" exec -n vault vault-0 -- sh -c '
+      prefix="$1"
+      test ! -f "$prefix.workers" || kill $(cat "$prefix.workers") 2>/dev/null || true
+      test ! -f "$prefix.supervisor" || kill "$(cat "$prefix.supervisor")" 2>/dev/null || true
+    ' sh "$remote_prefix" >/dev/null 2>&1 || true
+    printf 'hard stop: Vault phase timeout after %ss\n' "$PHASE_TIMEOUT" >>"$log_file"
+    return 1
+  fi
+  rc="$status"
+  "${K[@]}" exec -n vault vault-0 -- cat "$remote_prefix.log" >>"$log_file" 2>&1 || return 1
+  "${K[@]}" exec -n vault vault-0 -- sh -c \
+    'rm -f "$1".log "$1".status "$1".supervisor "$1".workers "$1"-timeout' \
+    sh "$remote_prefix" >/dev/null 2>&1 || return 1
+  [[ "$rc" -eq 0 ]]
 }
 
 phase_dragonfly() {

@@ -1086,6 +1086,113 @@
   delay: 15
   until: _r_install_external_secrets_operator_via_he is not failed
   when: eso_enabled | bool
+- name: Remove legacy invalid Cilium default-deny for External Secrets namespace
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ eso_ns }}'
+  when: eso_enabled | bool
+- name: Create default-deny NetworkPolicy for External Secrets namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ eso_ns }}'
+      spec:
+        podSelector: {}
+        policyTypes:
+        - Ingress
+        - Egress
+        ingress: []
+        egress: []
+  when: eso_enabled | bool
+- name: Allow only required External Secrets reconciliation traffic
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-external-secrets-required-traffic
+        namespace: '{{ eso_ns }}'
+      spec:
+        endpointSelector: {}
+        ingress:
+        - fromEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: '{{ eso_ns }}'
+        - fromEntities:
+          - kube-apiserver
+          toPorts:
+          - ports:
+            - port: '10250'
+              protocol: TCP
+        - fromEntities:
+          - host
+          - remote-node
+          toPorts:
+          - ports:
+            - port: '8080'
+              protocol: TCP
+            - port: '8081'
+              protocol: TCP
+            - port: '10250'
+              protocol: TCP
+        - fromEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: monitoring
+          toPorts:
+          - ports:
+            - port: '8080'
+              protocol: TCP
+        egress:
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: kube-system
+              k8s:k8s-app: kube-dns
+          toPorts:
+          - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
+        - toCIDR:
+          - 169.254.25.10/32
+          toPorts:
+          - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
+        - toEntities:
+          - host
+          toPorts:
+          - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
+        - toEntities:
+          - kube-apiserver
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: '{{ eso_ns }}'
+        - toServices:
+          - k8sService:
+              serviceName: vault
+              namespace: '{{ vault_ns }}'
+          toPorts:
+          - ports:
+            - port: '8200'
+              protocol: TCP
+  when: eso_enabled | bool
 - name: Wait for ESO to be ready
   kubernetes.core.k8s_info:
     kind: Deployment

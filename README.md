@@ -32,7 +32,7 @@ The runtime has four capability tiers and five named profiles:
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 The current audited `medium-optimized` Hetzner shape is approximately
-**€115.81/month net** at the 2026-07-22 API prices: seven `cx33` nodes, one
+**€115.81/month net** at the 2026-07-23 API prices: seven `cx33` nodes, one
 `cx23` bastion, `lb11`, one bastion IPv4, and 750 GiB of billable volumes. The
 volume total includes two Elasticsearch data replicas, three separately
 persistent SeaweedFS index claims, and 20 GiB of GitLab backup staging. See the
@@ -61,8 +61,9 @@ footprint retains these intentional singleton recovery boundaries:
 
 - GitLab Gitaly uses one RWO data claim. Recover it from the verified GitLab
   application backup and cluster/PVC backup before reopening repository writes.
-- Elasticsearch has three masters but one data node. It has no data-replica
-  failover; restore its data claim from a verified cluster backup.
+- Elasticsearch has three masters and two data nodes. Its default shard replica
+  stays assigned, providing shard availability through one data-pod loss when
+  the surviving node has capacity; backups remain required for data recovery.
 - Grafana uses one SQLite/RWO instance. Reapply declarative data sources and
   dashboards and restore its claim when local UI state must be retained.
 - Postal has one web instance and one MariaDB data path. Redeploying the web
@@ -74,12 +75,25 @@ These boundaries reduce steady-state requests on three 16 GiB workers; backup
 and restore gates provide recovery, not instant failover, for the listed data
 paths.
 
+Production GitLab Webservice uses a `2Gi` memory request and `3Gi` limit per
+pod. The limit leaves bounded headroom above the approximately `1.96Gi` working
+set observed during the five-profile live campaign without returning the complete
+stack to GitLab's larger default envelope. Webservice and Sidekiq use a hard
+`DoNotSchedule` hostname spread with `minDomains: 2` and per-component selectors:
+their two-replica floors cannot be placed on one node, while `maxSkew: 1` still
+allows the production HPA cap of four across three workers. The constraint
+honors node affinity and taints, so dedicated control-plane nodes are not counted
+as empty workload domains. Cross-component anti-affinity remains a preference
+so it cannot deadlock a rolling update.
+
 The optimized profile keeps three-way control-plane, Vault, PostgreSQL,
 MongoDB, SeaweedFS, and Elasticsearch-master topology. Recoverable stateless
 services run one replica by default and autoscaling is capped at four. It is a
 production-oriented budget profile, but it does not provide the same workload
 availability during maintenance as the `production` profile. Store production
-backups outside the cluster for disaster recovery.
+backups outside the cluster for disaster recovery. Its single baseline GitLab
+Webservice pod uses the same `2Gi` request and `3Gi` limit; when its HPA adds a
+second pod, the same hard topology rule requires a second eligible node.
 
 Every multi-volume SeaweedFS profile uses replica placement `001`: each object
 volume has a second copy on another volume server. Existing `000` volumes are
@@ -204,7 +218,27 @@ The backup checkpoint captures its Helm rollback baseline with the migration's
 exact generated source config, not the repository default. Both the config and
 snapshot root are passed explicitly, and the baseline is retained under the
 durable per-migration state directory so `resume` and `rollback` use the same
-isolated controller state.
+isolated controller state. Every pre-migration, post-migration, and finalization
+backup also persists its exact backup ID, local archive/receipt paths, archive
+and receipt SHA-256 hashes, and remote object keys in `state.json`. `resume`,
+`rollback`, and `finalize` re-download and compare the remote receipt, checksum,
+and encrypted archive before trusting a completed backup marker. Any local,
+remote, endpoint, bucket, identity, or hash drift fails closed.
+
+Finalization refreshes this verified recovery point at the start of every
+invocation that still has destructive retirement work pending. The fresh gate
+is therefore complete before services, old observability data, excess nodes,
+temporary backup infrastructure, or cloud placement resources are removed;
+its default maximum age is 24 hours and can be tightened with
+`PROFILE_MIGRATION_FINAL_BACKUP_MAX_AGE_SECONDS`.
+
+VictoriaMetrics topology changes have an independent data gate. Migration
+writes a deterministic one-hour historical sentinel, requires its exact value
+and millisecond timestamp from source and destination, and binds that proof to
+the migration descriptor. Finalization re-queries the live destination before
+retiring the old resource and immediately before deleting its PVCs. Rollback
+copies post-switch samples back and proves an exact delta sentinel on both
+sides; a completed copy Job alone never authorizes data deletion.
 
 Public ingress follows the Cilium-owned Gateway Service instead of mutating
 that controller-owned object. After Cilium's reconciliation loop settles, the
@@ -303,11 +337,16 @@ Technology selection is available without hand-editing dotted YAML paths:
 ```
 
 You can enable a technology later and rerun its targeted deployment or
-`deploy all`; Ansible reconciles it idempotently. Disabling changes desired
-state but intentionally leaves existing Kubernetes resources running. Explicit
-removal is a separate, confirmation-gated command, and PVC-backed components
-also require `--delete-data`. This prevents a selector edit from becoming an
-accidental data deletion.
+`deploy all`; Ansible reconciles it idempotently. Validate that the active node
+topology has enough allocatable CPU, memory, and storage for the added workload;
+use the named-profile migration or an approved node-resize workflow when it does
+not. Disabling changes desired state but intentionally leaves existing
+Kubernetes resources running. Explicit removal is a separate,
+confirmation-gated command, and PVC-backed components also require
+`--delete-data`. This prevents a selector edit from becoming an accidental data
+deletion. Re-enabling a component removed with `--delete-data` creates fresh
+storage; it does not automatically select or replay an old backup. Use the
+component's documented restore procedure when retained data is required.
 
 `backup` selects the application-native backup jobs. `disaster-recovery`
 selects the external whole-cluster layer and automatically enables `backup`
@@ -537,7 +576,7 @@ requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 - [Upgrade runbook](UPGRADE_RUNBOOK.md)
 - [GitLab 18.11 to 19.1 plan](docs/GITLAB_UPGRADE_PLAN.md)
 - [Validation and CI](docs/CI_AUTOMATION.md)
-- [Five-tier live test report (2026-07-21)](docs/FIVE_TIER_LIVE_TEST_2026-07-21.md)
+- [Five-profile live test report (2026-07-21)](docs/FIVE_TIER_LIVE_TEST_2026-07-21.md)
 
 ## Validation scope
 

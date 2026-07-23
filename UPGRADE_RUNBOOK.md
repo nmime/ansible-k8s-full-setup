@@ -261,9 +261,13 @@ The durable stages are:
 6. `apply-target` — reconcile target cluster policy and selected services while
    retaining the expanded topology until sign-off.
 7. `migrate-data` — copy VictoriaMetrics history between VMSingle and VMCluster
-   in either direction when the topology changes. A deterministic Job is kept
-   for resume; a failed partial import is never silently rerun. Loki objects
-   remain an external archive when moving to Elasticsearch.
+   in either direction when the topology changes. Before the copy, the workflow
+   writes a persisted, one-hour-old sentinel to the source and records its exact
+   queried value and millisecond timestamp. The stage checkpoint advances only
+   after the destination returns that same series, value, and timestamp. A
+   deterministic Job is kept for resume; a failed partial import is never
+   silently rerun. Loki objects remain an external archive when moving to
+   Elasticsearch.
 8. `validate` — require Ready nodes, healthy etcd/platform, Bound PVCs, and an
    available external Velero location. Every Deployment/StatefulSet/DaemonSet
    must be fully rolled out, every active Helm release deployed, selected
@@ -289,15 +293,16 @@ applications are accepted, finalize the transition:
   --backup-recipient "$CLUSTER_BACKUP_AGE_RECIPIENT"
 ```
 
-Finalization has its own resumable checkpoints. It removes disabled dependants
-in dependency order, retires VMSingle or VMCluster plus exact obsolete PVCs,
-keeps external Loki objects, removes excess workers and then highest-index
-control planes with Kubespray `remove-node.yml`, checks etcd around each
-control-plane removal, reconciles the named target, captures a final encrypted
-native+Velero+control-plane backup, removes Velero last when the target disables
-backup, and deletes an unused spread group. After any destructive finalize
-checkpoint, rollback is refused and the pre-finalize recovery bundle is the
-recovery path.
+Finalization has its own resumable checkpoints. Before every invocation with
+destructive work still pending, it refreshes and verifies the final encrypted
+native+Velero+control-plane backup. It then removes disabled dependants in
+dependency order, retires VMSingle or VMCluster plus exact obsolete PVCs, keeps
+external Loki objects, removes excess workers and then highest-index control
+planes with Kubespray `remove-node.yml`, checks etcd around each control-plane
+removal, and reconciles the named target. Velero is removed near the end when
+the target disables backup, before unused cloud resources are cleaned. After
+any destructive finalize checkpoint, rollback is refused and the verified
+pre-finalize recovery bundle is the recovery path.
 
 Existing PVC requests that exceed the target are preserved as explicit target
 overrides and listed in `storage-retention.tsv`; Kubernetes cannot shrink a
@@ -305,7 +310,10 @@ PVC in place. Data-bearing SeaweedFS, Vault Raft, and an in-place VMCluster are
 also never blindly scaled down: required replica overrides are recorded in
 `stateful-retention.tsv`. This does not retain superseded component or
 metrics-topology PVCs, which are deleted only after the backup and confirmation
-gates.
+gates. Immediately before deleting the old VictoriaMetrics resource or any of
+its PVCs, finalization validates the persisted proof and repeats the exact
+historical query against the active destination. A completed `vmctl` Job or
+stage marker alone never authorizes data deletion.
 
 ## Rollback
 
@@ -329,9 +337,12 @@ not a database restore.
 ```
 
 Before destructive finalization, migration rollback copies metrics written
-after the target switch back to the source topology, restores the recorded
-Helm baseline, removes target-only components in dependency order, and selects
-the source profile on the expanded/resized servers. If Vault has already moved
+after the target switch back to the source topology. It writes and verifies a
+post-switch rollback sentinel on the target, copies from the recorded switch
+time, and requires the exact value/timestamp query from the source before it
+restores the recorded Helm baseline. It then removes target-only components in
+dependency order and selects the source profile on the expanded/resized
+servers. If Vault has already moved
 from file storage to Raft, rollback retains that safer storage mode and restores
 every non-Vault Helm revision from the baseline. It never deletes nodes.
 
@@ -365,6 +376,9 @@ pending stages, but the `plan` command should always be reviewed first.
 - `<project>-active-profile-migration` lets lifecycle commands find state after
   the active config becomes transitional.
 - `stage-<name>.done` and `finalize-<name>.done` are resumable checkpoints.
+- `victoriametrics-{forward,rollback}-sentinel.json` stores the deterministic
+  sample descriptor and source query evidence; the corresponding `-proof.json`
+  stores exact source/target value and timestamp evidence.
 - `storage-retention.tsv` explains every larger existing PVC request retained
   in the named target config.
 - `stateful-retention.tsv` explains data-bearing replica counts retained until

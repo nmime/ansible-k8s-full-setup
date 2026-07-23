@@ -9,8 +9,9 @@
     gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
     gitlab_webservice_max_replicas: '{{ gitlab.webservice_max_replicas | default(10) }}'
     gitlab_webservice_worker_processes: '{{ gitlab.worker_processes | default(2) }}'
-    gitlab_webservice_memory_request: '{{ gitlab.webservice_memory_request | default("1Gi" if gitlab.mode | default("light") == "light" else "2.5Gi") }}'
-    gitlab_sidekiq_memory_request: '{{ gitlab.sidekiq_memory_request | default("1Gi" if gitlab.mode | default("light") == "light" else "1.5Gi") }}'
+    gitlab_webservice_memory_request: '{{ gitlab.webservice_memory_request | default("1Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "2.5Gi") }}'
+    gitlab_webservice_memory_limit: '{{ gitlab.webservice_memory_limit | default("2Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "5Gi") }}'
+    gitlab_sidekiq_memory_request: '{{ gitlab.sidekiq_memory_request | default("1Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "1.5Gi") }}'
     gitlab_kas_memory_request: '{{ gitlab.kas_memory_request | default("256Mi") }}'
     gitlab_toolbox_memory_request: '{{ gitlab.toolbox_memory_request | default("350M") }}'
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
@@ -29,12 +30,14 @@
       - gitlab_runner_token | default('') | string | trim | length > 20
       - gitlab_runner_token | default('') | string is match(
           '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
+      - gitlab_runner_concurrent | int > 0
     fail_msg: >-
-      gitlab.runner.enabled=true requires an existing GitLab Runner authentication
-      token (glrt-...). Create an instance runner in GitLab Admin > CI/CD > Runners,
-      export GITLAB_RUNNER_TOKEN=glrt-..., and rerun the playbook. The token is
-      persisted only in the Ansible Vault-encrypted platform secrets file. Legacy
-      runner registration tokens are intentionally unsupported.
+      gitlab.runner.enabled=true requires a positive runner.concurrent_jobs value
+      and an existing GitLab Runner authentication token (glrt-...). Create an
+      instance runner in GitLab Admin > CI/CD > Runners, export
+      GITLAB_RUNNER_TOKEN=glrt-..., and rerun the playbook. The token is persisted
+      only in the Ansible Vault-encrypted platform secrets file. Legacy runner
+      registration tokens are intentionally unsupported.
     quiet: true
   when: gitlab_runner_enabled | bool
 - name: Create GitLab namespace
@@ -729,8 +732,11 @@
                 maxSurge: 1
           topologySpreadConstraints:
             - maxSkew: 1
+              minDomains: 2
               topologyKey: kubernetes.io/hostname
               whenUnsatisfiable: DoNotSchedule
+              nodeAffinityPolicy: Honor
+              nodeTaintsPolicy: Honor
               labelSelector:
                 matchExpressions:
                   - key: release
@@ -747,7 +753,7 @@
               memory: '{{ gitlab_webservice_memory_request }}'
             limits:
               cpu: '{{ ''1500m'' if gitlab_mode == ''light'' else ''2000m'' }}'
-              memory: '{{ ''2Gi'' if gitlab_mode == ''light'' else ''5Gi'' }}'
+              memory: '{{ gitlab_webservice_memory_limit }}'
           workhorse:
             resources:
               requests: {cpu: 50m, memory: 64Mi}
@@ -769,8 +775,11 @@
                 maxSurge: 1
           topologySpreadConstraints:
             - maxSkew: 1
+              minDomains: 2
               topologyKey: kubernetes.io/hostname
               whenUnsatisfiable: DoNotSchedule
+              nodeAffinityPolicy: Honor
+              nodeTaintsPolicy: Honor
               labelSelector:
                 matchExpressions:
                   - key: release
@@ -1046,6 +1055,69 @@
       args:
         executable: /bin/bash
       changed_when: false
+
+    - name: Require hard per-component topology spread for GitLab Rails workloads
+      ansible.builtin.assert:
+        that:
+          - >-
+            (((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              default([])) | length) == 1
+          - >-
+            ((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).topologyKey == 'kubernetes.io/hostname'
+          - >-
+            (((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).maxSkew | int) == 1
+          - >-
+            (((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).minDomains | default(0) | int) == 2
+          - >-
+            ((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).whenUnsatisfiable == 'DoNotSchedule'
+          - >-
+            ((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).nodeAffinityPolicy == 'Honor'
+          - >-
+            ((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).nodeTaintsPolicy == 'Honor'
+          - >-
+            ((((item.resources | first).spec.template.spec.topologySpreadConstraints |
+              first).labelSelector.matchExpressions |
+              selectattr('key', 'equalto', 'app') |
+              map(attribute='values') | first | default([])) == [item.item.app])
+        fail_msg: >-
+          GitLab {{ item.item.app }} does not have the required hard,
+          per-component hostname topology spread; refusing to report a
+          successful reconcile that can co-locate its two-replica floor.
+      loop: '{{ _gitlab_required_controller_discovery.results }}'
+      loop_control:
+        label: 'Deployment/app={{ item.item.app }}'
+      when: item.item.app in ['webservice', 'sidekiq']
+
+    - name: Discover singleton Gitaly PodDisruptionBudget
+      kubernetes.core.k8s_info:
+        api_version: policy/v1
+        kind: PodDisruptionBudget
+        namespace: '{{ gitlab_namespace }}'
+        name: gitlab-gitaly
+      register: _gitlab_gitaly_pdb
+
+    - name: Require the singleton Gitaly PodDisruptionBudget to exist
+      ansible.builtin.assert:
+        that:
+          - (_gitlab_gitaly_pdb.resources | default([]) | length) == 1
+        fail_msg: >-
+          The chart-managed gitlab-gitaly PodDisruptionBudget was not found;
+          refusing to report a successful singleton Gitaly reconcile.
+
+    - name: Require the singleton Gitaly disruption budget to fail safe
+      ansible.builtin.assert:
+        that:
+          - ((_gitlab_gitaly_pdb.resources | first).spec.maxUnavailable | int) == 0
+          - (_gitlab_gitaly_pdb.resources | first).spec.minAvailable is not defined
+        fail_msg: >-
+          gitlab-gitaly must retain maxUnavailable=0 with no competing
+          minAvailable value so voluntary disruption cannot remove its only pod.
 
   rescue:
     - name: Collect sanitized GitLab PVC readiness metadata
@@ -1329,18 +1401,52 @@
     release_state: present
     wait: true
     values:
-      gitlabUrl: https://{{ gitlab_domain }}
+      # The public Gateway is VPN-only, so in-cluster runners must register and
+      # clone through the namespace-local Webservice instead of hairpinning
+      # through the external load balancer (which intentionally returns 404).
+      gitlabUrl: http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
       runnerToken: '{{ gitlab_runner_token }}'
-      concurrent: '{{ gitlab_runner_concurrent }}'
+      concurrent: '{{ gitlab_runner_concurrent | int }}'
       checkInterval: 3
+      metrics:
+        enabled: true
       rbac:
         create: true
         clusterWideAccess: false
+      podSecurityContext:
+        runAsUser: 100
+        fsGroup: 65533
+        seccompProfile:
+          type: RuntimeDefault
       runners:
-        config: "[[runners]]\n  [runners.kubernetes]\n    namespace = \"{{ gitlab_namespace }}\"\n    image = \"ubuntu:22.04\"\n    privileged = false\n    [runners.kubernetes.pod_security_context]\n  \
-          \    run_as_non_root = true\n      run_as_user = 1000\n    [runners.kubernetes.build_container_resources]\n      cpu_request = \"500m\"\n      cpu_limit = \"2000m\"\n      memory_request = \"\
-          1Gi\"\n      memory_limit = \"4Gi\"\n    [runners.kubernetes.service_container_resources]\n      cpu_request = \"200m\"\n      cpu_limit = \"1000m\"\n      memory_request = \"512Mi\"\n      memory_limit = \"2Gi\"\n    [runners.kubernetes.helper_container_resources]\n\
-          \      cpu_request = \"100m\"\n      cpu_limit = \"500m\"\n      memory_request = \"128Mi\"\n      memory_limit = \"512Mi\"\n"
+        config: |
+          [[runners]]
+            clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
+            request_concurrency = {{ gitlab_runner_concurrent | int }}
+            [runners.kubernetes]
+              namespace = "{{ gitlab_namespace }}"
+              image = "ubuntu:22.04"
+              privileged = false
+              [runners.kubernetes.pod_security_context]
+                run_as_non_root = true
+                run_as_user = 1000
+                [runners.kubernetes.pod_security_context.seccomp_profile]
+                  type = "RuntimeDefault"
+              [runners.kubernetes.build_container_resources]
+                cpu_request = "500m"
+                cpu_limit = "2000m"
+                memory_request = "1Gi"
+                memory_limit = "4Gi"
+              [runners.kubernetes.service_container_resources]
+                cpu_request = "200m"
+                cpu_limit = "1000m"
+                memory_request = "512Mi"
+                memory_limit = "2Gi"
+              [runners.kubernetes.helper_container_resources]
+                cpu_request = "100m"
+                cpu_limit = "500m"
+                memory_request = "128Mi"
+                memory_limit = "512Mi"
         tags: kubernetes,docker,k8s
         runUntagged: true
       podAnnotations:
@@ -1359,6 +1465,30 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_runner_with_helm is not failed
+- name: Wait for the enabled GitLab Runner deployment to converge
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ gitlab_namespace }}'
+    name: gitlab-runner
+  register: _gitlab_runner_deployment
+  until: >-
+    ((_gitlab_runner_deployment.resources | default([]) | length) == 1) and
+    (((_gitlab_runner_deployment.resources | first).status.observedGeneration |
+      default(0) | int) >=
+     ((_gitlab_runner_deployment.resources | first).metadata.generation | int)) and
+    (((_gitlab_runner_deployment.resources | first).status.readyReplicas |
+      default(0) | int) ==
+     ((_gitlab_runner_deployment.resources | first).spec.replicas | int)) and
+    (((_gitlab_runner_deployment.resources | first).status.availableReplicas |
+      default(0) | int) ==
+     ((_gitlab_runner_deployment.resources | first).spec.replicas | int)) and
+    (((_gitlab_runner_deployment.resources | first).status.updatedReplicas |
+      default(0) | int) ==
+     ((_gitlab_runner_deployment.resources | first).spec.replicas | int))
+  retries: 60
+  delay: 10
+  when: gitlab_runner_enabled | bool
 - name: Create S3 cache secret for GitLab Runner
   no_log: true
   when:
@@ -1404,6 +1534,30 @@
         - Egress
         ingress: []
         egress: []
+- name: Allow VictoriaMetrics to scrape GitLab Runner metrics
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-gitlab-runner-metrics
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: gitlab-runner
+        ingress:
+        - fromEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: monitoring
+          toPorts:
+          - ports:
+            - port: '9252'
+              protocol: TCP
+  when:
+    - gitlab_runner_enabled | bool
+    - platform_observability_enabled | default(false) | bool
 - name: Allow GitLab ingress from gateway
   kubernetes.core.k8s:
     state: present
@@ -1528,6 +1682,28 @@
           interval: 30s
           path: /-/metrics
   when: platform_observability_enabled | default(false) | bool
+- name: Create GitLab Runner VMPodScrape
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMPodScrape
+      metadata:
+        name: gitlab-runner
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            app: gitlab-runner
+        podMetricsEndpoints:
+        - port: metrics
+          interval: 30s
+          path: /metrics
+  when:
+    - gitlab_runner_enabled | bool
+    - platform_observability_enabled | default(false) | bool
 - name: Display GitLab deployment info
   debug:
     msg:

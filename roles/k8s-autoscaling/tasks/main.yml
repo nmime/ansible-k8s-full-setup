@@ -46,6 +46,10 @@
         replicaCount: '{{ keda_replicas | int }}'
       webhooks:
         replicaCount: '{{ keda_replicas | int }}'
+        # Scaling changes are security-sensitive. Reject invalid KEDA custom
+        # resources when the owned webhook is unavailable instead of silently
+        # accepting them without validation.
+        failurePolicy: Fail
       podSecurityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -256,3 +260,45 @@
         - toEntities:
           - cluster
           - kube-apiserver
+- name: Allow Kubernetes API and monitoring traffic to KEDA endpoints
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-keda-ingress
+        namespace: keda
+      spec:
+        endpointSelector: {}
+        ingress:
+        - fromEntities:
+          - kube-apiserver
+          toPorts:
+          - ports:
+            - port: '6443'
+              protocol: TCP
+            - port: '9443'
+              protocol: TCP
+        - fromEntities:
+          - host
+          - remote-node
+          toPorts:
+          - ports:
+            - port: '8080'
+              protocol: TCP
+            - port: '8081'
+              protocol: TCP
+            - port: '6443'
+              protocol: TCP
+            - port: '9443'
+              protocol: TCP
+        - fromEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: monitoring
+          toPorts:
+          - ports:
+            - port: '8080'
+              protocol: TCP
+            - port: '9022'
+              protocol: TCP

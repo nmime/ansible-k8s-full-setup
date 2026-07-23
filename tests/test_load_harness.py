@@ -106,7 +106,7 @@ def test_harness_has_bounded_hard_stops_and_cleanup_for_every_mutating_system():
     ):
         assert contract in content
     assert "errors*10000" in content
-    assert "DROP TABLE IF EXISTS" in content
+    assert "DROP SCHEMA IF EXISTS" in content
     assert "kv metadata delete" in content
     assert "kv metadata get" in content
     assert "prefix=s3://backups/tier-load/" in content
@@ -137,8 +137,9 @@ def test_postgresql_and_dragonfly_load_verify_exact_operations_and_round_trip():
     assert r"base=\$((TRANSACTIONS/CLIENTS))" in postgresql
     assert r'[ "\$processed" -eq "\$TRANSACTIONS" ]' in postgresql
     assert "CREATE UNLOGGED TABLE" not in postgresql
-    assert 'CREATE TABLE public.\$TABLE_NAME' in postgresql
-    assert 'SELECT count(*) FROM public.\$TABLE_NAME' in postgresql
+    assert 'CREATE SCHEMA \$SCHEMA_NAME AUTHORIZATION CURRENT_USER' in postgresql
+    assert 'CREATE TABLE \$SCHEMA_NAME.\$TABLE_NAME' in postgresql
+    assert 'SELECT count(*) FROM \$SCHEMA_NAME.\$TABLE_NAME' in postgresql
     assert r'[ "\$rows" -eq "\$TRANSACTIONS" ]' in postgresql
     assert "c.relpersistence" in postgresql
     assert r'[ "\$persistence" = p ]' in postgresql
@@ -165,7 +166,9 @@ def test_postgresql_load_proves_wal_replay_and_cleans_its_unique_table():
     assert "expected_standbys=$((replicas - 1))" in durability
     assert "FROM pg_stat_replication" in durability
     assert "state='streaming'" in durability
-    assert "replay_lsn >= :'target_lsn'::pg_lsn" in durability
+    assert "[[ \"$target_lsn\" =~ ^[0-9A-Fa-f]+/[0-9A-Fa-f]+$ ]]" in durability
+    assert "replay_lsn >= '${target_lsn}'::pg_lsn" in durability
+    assert ":'target_lsn'" not in durability
     assert "for attempt in {1..12}" in durability
     assert "write_path=wal-replicated" in durability
     assert "write_path=wal-replication-incomplete" in durability
@@ -175,10 +178,10 @@ def test_postgresql_load_proves_wal_replay_and_cleans_its_unique_table():
     assert "cleanup_on_exit" in postgresql
     assert "completed=false" in postgresql
     assert "completed=true" in postgresql
-    assert "DROP TABLE IF EXISTS public.\$TABLE_NAME" in postgresql
+    assert "DROP SCHEMA IF EXISTS \$SCHEMA_NAME CASCADE" in postgresql
     assert 'verify_postgresql_durability "$log_file"' in postgresql
-    assert "DROP TABLE IF EXISTS public.${table_name}" in cleanup
-    assert "SELECT count(*) FROM pg_class" in cleanup
+    assert "DROP SCHEMA IF EXISTS ${schema_name} CASCADE" in cleanup
+    assert "SELECT count(*) FROM pg_namespace" in cleanup
     assert '[[ "$remaining" == 0 ]]' in cleanup
 
 
@@ -239,12 +242,32 @@ def test_vault_cleanup_accepts_only_verified_absence(tmp_path: Path):
 
 def test_vault_token_is_streamed_over_stdin_and_never_put_in_kubectl_argv(tmp_path: Path):
     content = LOAD.read_text()
+    vault = function_source(content, "phase_vault", "phase_dragonfly")
     cleanup = function_source(content, "cleanup_vault", "cleanup_dragonfly")
     assert 'VAULT_TOKEN="$vault_token"' not in content
     assert 'env VAULT_TOKEN=' not in content
     assert content.count("printf '%s\\n' \"$vault_token\" |") >= 3
     assert "IFS= read -r VAULT_TOKEN" in content
     assert "export VAULT_TOKEN" in content
+    assert "SSL_CERT_FILE=/vault/tls/ca.crt" in vault
+    assert "https://vault-active.vault.svc:8200/v1" in vault
+    assert "per_client=$((OPERATIONS/CLIENTS))" in vault
+    assert "base=$((OPERATIONS/CLIENTS))" not in vault
+    assert 'PHASE_TIMEOUT="$PHASE_TIMEOUT"' in vault
+    assert 'printf "hard stop: Vault phase timeout after %ss\\n"' in vault
+    assert 'status_file=$tmp_prefix.status' in vault
+    assert ') >"$remote_log" 2>&1 </dev/null &' in vault
+    assert 'test -f "$1.status" && cat "$1.status" || true' in vault
+    assert 'cat "$remote_prefix.log"' in vault
+    assert '--header "X-Vault-Token: $VAULT_TOKEN"' in vault
+    assert '"$base/secret/data/$api_path"' in vault
+    assert '"$base/secret/delete/$api_path"' in vault
+    assert "tmp_prefix=/tmp/vault-$RUN_ID" in vault
+    assert 'rm -f "$tmp_prefix"-result.*' in vault
+    assert '"$tmp_prefix-result.$id"' in vault
+    assert vault.count("-T 20") == 3
+    assert 'vault kv put "$path"' not in vault
+    assert 'vault kv get -field=value "$path"' not in vault
 
     fake = tmp_path / "kubectl"
     fake.write_text(

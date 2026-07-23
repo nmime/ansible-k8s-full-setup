@@ -93,7 +93,9 @@ same cluster is not disaster recovery. Use object lock/versioning and a
 separate failure domain where the provider supports them.
 
 `minimal` and `small` leave both scheduled native backups and external DR off
-by default, but both can be added later without rebuilding the cluster:
+by default. Both can be selected later without rebuilding the foundation when
+the active nodes have enough allocatable CPU, memory, and storage; otherwise,
+expand or resize through the supported profile-migration workflow first:
 
 ```bash
 cd platform-orchestrator
@@ -219,10 +221,12 @@ hard-coded quota.
 Every named-profile transition, including a downgrade to `minimal` or `small`,
 temporarily bootstraps the same independent Velero target and requires a
 complete encrypted cluster bundle before topology or service changes. A second
-bundle is required after target reconciliation. `migrate finalize` will not
-retire services, PVCs, or nodes without that post-migration checkpoint; it then
-takes a third recovery point after scale-in and before removing Velero when the
-target profile disables scheduled backup.
+bundle is required after target reconciliation. Before each finalization
+invocation that still has destructive work pending, `migrate finalize` refreshes
+and verifies the final encrypted native+Velero+control-plane recovery point. It
+will not retire services, PVCs, or nodes unless that final backup is complete
+and fresh. Destructive stages then run from the resumable checkpoint sequence;
+Velero is removed only near the end when the target disables scheduled backup.
 
 The migration state stores backup identifiers and generated configs, never the
 age identity or passphrase. External backup objects and Loki archive buckets
@@ -231,7 +235,14 @@ place; larger safe requests are recorded in `storage-retention.tsv`. SeaweedFS,
 Vault Raft, and same-topology VMCluster replica reductions are likewise retained
 in `stateful-retention.tsv` instead of risking quorum or shard loss. Obsolete
 source-topology PVCs are deleted only after backup and explicit `FINALIZE`
-confirmation.
+confirmation. VictoriaMetrics topology retirement has an additional independent
+data gate: migration writes a deterministic historical sentinel, records exact
+source and destination query evidence, and re-queries its value and millisecond
+timestamp from the destination immediately before deleting the old CR or PVCs.
+Rollback applies the same proof to a post-switch sentinel copied through the
+delta window before restoring the old Helm baseline. Backup receipts are not a
+substitute for these metrics data proofs, and a completed `vmctl` Job alone is
+not accepted as proof.
 
 ## Configuration
 
@@ -302,13 +313,45 @@ ansible-playbook playbooks/deploy_platform.yml -e @"$STATE/platform.yaml" \
   -e "vault_init_output_file=$STATE/.vault-init-${PROJECT}.json" \
   --tags infrastructure,network,cluster,velero-bootstrap
 
-# 4. Restore. The command requires a Completed source Backup, explicit warning
-# allowances, complete PVR coverage, every expected PVC Bound and mounted, and
-# all platform health gates. Warning allowances default to zero.
+# 4. Restore Kubernetes resources and PVC bytes. The command requires a
+# Completed source Backup, explicit warning allowances, complete PVR coverage,
+# every expected PVC Bound and mounted, Ready replacement nodes, and a fully
+# rolled-out Velero controller/node-agent with an Available storage location.
+# Warning allowances default to zero.
 ./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.age \
   --identity /secure/age-identity.txt --mode velero \
   --confirm "RESTORE_${PROJECT}"
 ```
+
+Warning allowances are exact numeric review gates, not a blanket ignore switch.
+Inspect the Backup/Restore JSON first, classify every warning, then pass only
+the reviewed counts:
+
+```bash
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.age \
+  --identity /secure/age-identity.txt --mode velero \
+  --allow-backup-warnings 0 --allow-restore-warnings 17 \
+  --confirm "RESTORE_${PROJECT}"
+```
+
+If the controller stops after the Restore was created, do not create a second
+Restore or replay PVC data. Resume validation of that exact object:
+
+```bash
+./scripts/cluster-restore.sh --archive /secure/BACKUP.tar.gz.age \
+  --identity /secure/age-identity.txt --mode velero \
+  --resume-restore "$EXISTING_RESTORE" \
+  --allow-backup-warnings 0 --allow-restore-warnings 17 \
+  --confirm "RESTORE_${PROJECT}"
+```
+
+Resume rejects a deleting object, a different Backup, or any Restore whose PV,
+resource exclusions, timeout, namespace/resource scope, node-port, or
+existing-resource policy differs from the full replacement contract.
+The replacement Restore deliberately excludes cert-manager
+`CertificateRequest` objects and Kubernetes `Lease` objects: both contain
+cluster-local, short-lived coordination state that must be reissued or
+reacquired on the replacement instead of replayed from the source.
 
 `operator-state` creates a new mode-`0700` directory and mode-`0600` files,
 including `platform.yaml`, `.platform-secrets.yml`, encrypted Vault init state,
@@ -319,13 +362,24 @@ copies a named profile over its configured output. Use the exact bundled config
 as shown above.
 
 Velero restores Kubernetes objects and filesystem-backed PVC bytes. It does not
-replace application-native replay. A new complete backup writes a schema-v2
-`native-backups.json`: its backup ID and SHA-256 are bound into the schema-v2
+replace application-native replay. It intentionally does not run the full
+platform health suite: Shamir-sealed Vault and databases/applications may remain
+unready until their exact native artifacts are replayed. The Velero phase stops
+only after strict Restore, PodVolumeRestore, PVC mount, replacement-node, and
+Velero control-plane gates pass. `native-restore.sh` is the sole owner of the
+full profile-aware health gate after native recovery. A new complete backup
+writes a schema-v2 `native-backups.json`: its backup ID and SHA-256 are bound into the schema-v2
 remote completion receipt. Enabled technologies must have one completed exact
 artifact; `latest`, prefix-only Job artifacts, duplicate components, missing
 components, and legacy catalogs are rejected by production replay.
 
 After strict Velero restore, plan native replay against the replacement cluster:
+
+`ansible-vault` must be installed, and `ANSIBLE_VAULT_PASSWORD_FILE` must name
+a protected regular file able to decrypt the separately protected Vault init
+artifact. The replay never disables Vault TLS verification: it uses the
+restored internal CA, streams unseal shares over stdin, unseals every restored
+member, and waits for an active endpoint before replaying the Raft snapshot.
 
 ```bash
 STATE=/secure/recovery/k8s
@@ -356,7 +410,9 @@ replacement `kube-system` namespace UID. Execute it literally:
 
 If the controller or API connection stops, inspect the mode-`0600` state and
 rerun the identical command with `--resume`. The script rejects a different
-archive hash, catalog hash, source UID, target UID, project, or backup ID. Its
+archive hash, catalog hash, receipt hash, config hash, source UID, target UID,
+project, or backup ID. Persisted PostgreSQL and GitLab sidecars are also
+hash-bound before reuse. Its
 application-consistent order is SeaweedFS topology/object and Velero-data
 verification, Vault Raft (or the explicitly recorded Velero fallback),
 PostgreSQL exact pgBackRest repo2 set, MongoDB exact PBM destination, GitLab
@@ -365,6 +421,18 @@ GitLab use deterministic Job/CR checkpoints; PostgreSQL preserves its original
 CR, operator secrets, and PVC inventory alongside the state before replacing
 data. No selected enabled technology is silently skipped. Full platform health
 gates must pass before the state becomes `completed`.
+
+PostgreSQL proof is taken from a live `pgbackrest info` query against repo2 and
+the exact catalogued set; restored Backup-CR status is not treated as portable
+evidence. MongoDB similarly proves the exact catalogued PBM metadata object
+because the operator may reconcile and rewrite a restored Backup CR status.
+
+When the accepted backup predates a later credential rotation, preserve the
+newer encrypted operator secret files outside the backup. Restore the exact
+historical point and all native data first, then run a controlled declarative
+reconcile with those retained credentials and repeat authenticated service
+checks. Re-enabling a technology or replaying data does not itself rotate
+credentials.
 
 Then run component integrity checks, `live-tier-smoke.sh`, bounded load, and a
 new complete cluster backup before declaring recovery complete.

@@ -79,6 +79,8 @@ sha256_file() {
 short_hash() { printf '%s' "$1" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print substr($1,1,12)}'; }
 ARCHIVE_SHA=$(sha256_file "$ARCHIVE")
 CATALOG_SHA=$(sha256_file "$CATALOG")
+CONFIG_SHA=$(sha256_file "$CONFIG")
+RECEIPT_SHA=$(sha256_file "$RECEIPT")
 PROJECT=$(jq -r '.project // ""' "$CATALOG")
 BACKUP_ID=$(jq -r '.backup_id // ""' "$CATALOG")
 SOURCE_UID=$(jq -r '.source_cluster_uid // ""' "$RECEIPT")
@@ -173,8 +175,11 @@ cleanup() {
   trap - EXIT INT TERM
   if [[ "$GITLAB_SCALED" == true && -f "$GITLAB_REPLICAS_FILE" ]]; then
     while IFS=$'\t' read -r deployment replicas; do
-      [[ -z "$deployment" ]] || kubectl scale deployment "$deployment" -n gitlab \
-        --replicas="$replicas" >/dev/null 2>&1 || true
+      [[ -z "$deployment" ]] && continue
+      if [[ "$deployment" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "$replicas" =~ ^[0-9]+$ ]]; then
+        kubectl scale deployment "$deployment" -n gitlab \
+          --replicas="$replicas" >/dev/null 2>&1 || true
+      fi
     done < <(jq -r '.[] | [.name,.replicas] | @tsv' "$GITLAB_REPLICAS_FILE")
   fi
   if [[ -n "$TEMP_VAULT_SECRET" ]]; then
@@ -197,23 +202,28 @@ if [[ -e "$STATE_FILE" ]]; then
   [[ "$RESUME" == true ]] || fail "state exists; use --resume after inspection: $STATE_FILE"
   jq -e --arg project "$PROJECT" --arg backupId "$BACKUP_ID" \
     --arg archiveSha "$ARCHIVE_SHA" --arg catalogSha "$CATALOG_SHA" \
+    --arg configSha "$CONFIG_SHA" --arg receiptSha "$RECEIPT_SHA" \
     --arg sourceUid "$SOURCE_UID" --arg targetUid "$TARGET_UID" '
-      .schema_version == 1 and .project == $project and .backup_id == $backupId and
+      .schema_version == 2 and .project == $project and .backup_id == $backupId and
       .archive_sha256 == $archiveSha and .catalog_sha256 == $catalogSha and
+      .config_sha256 == $configSha and .receipt_sha256 == $receiptSha and
       .source_cluster_uid == $sourceUid and .target_cluster_uid == $targetUid
     ' "$STATE_FILE" >/dev/null || fail "resume state is not bound to these exact inputs and target"
 else
   [[ "$RESUME" == false ]] || fail "--resume requested but state file does not exist"
   jq -n --arg project "$PROJECT" --arg backupId "$BACKUP_ID" \
     --arg archiveSha "$ARCHIVE_SHA" --arg catalogSha "$CATALOG_SHA" \
+    --arg configSha "$CONFIG_SHA" --arg receiptSha "$RECEIPT_SHA" \
     --arg sourceUid "$SOURCE_UID" --arg targetUid "$TARGET_UID" \
     --arg context "$TARGET_CONTEXT" --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson order "$EXPECTED_ORDER" '
-      {schema_version:1,project:$project,backup_id:$backupId,
+      {schema_version:2,project:$project,backup_id:$backupId,
        archive_sha256:$archiveSha,catalog_sha256:$catalogSha,
+       config_sha256:$configSha,receipt_sha256:$receiptSha,
        source_cluster_uid:$sourceUid,target_cluster_uid:$targetUid,target_context:$context,
        created_at:$createdAt,updated_at:$createdAt,status:"running",restore_order:$order,
-       components:($order | map({key:.,value:{state:"pending"}}) | from_entries)}
+       components:($order | map({key:.,value:{state:"pending"}}) | from_entries),
+       sidecars:{},sidecar_capture:{postgresql:"pending",gitlab:"pending"}}
     ' > "$STATE_FILE"
   chmod 600 "$STATE_FILE"
 fi
@@ -228,6 +238,15 @@ checkpoint() {
 }
 
 component_done() { [[ $(jq -r --arg c "$1" '.components[$c].state' "$STATE_FILE") == completed ]]; }
+
+verify_sidecar_hash() {
+  local key="$1" file="$2" expected actual
+  [[ -f "$file" && ! -L "$file" ]] || fail "sidecar is not a regular file: $file"
+  expected=$(jq -er --arg key "$key" '.sidecars[$key]' "$STATE_FILE") \
+    || fail "state has no hash for sidecar $key"
+  actual=$(sha256_file "$file")
+  [[ "$actual" == "$expected" ]] || fail "sidecar hash mismatch: $key"
+}
 wait_json_state() {
   local resource="$1" name="$2" namespace="$3" desired="$4" deadline state
   deadline=$((SECONDS + TIMEOUT_SECONDS))
@@ -241,45 +260,67 @@ wait_json_state() {
   return 1
 }
 
+wait_job_complete() {
+  local name="$1" namespace="$2" deadline job_json
+  deadline=$((SECONDS + TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    job_json=$(kubectl get job "$name" -n "$namespace" -o json 2>/dev/null || true)
+    if [[ -n "$job_json" ]]; then
+      jq -e 'any(.status.conditions[]?; .type == "Complete" and .status == "True")' \
+        <<<"$job_json" >/dev/null && return 0
+      jq -e 'any(.status.conditions[]?; .type == "Failed" and .status == "True")' \
+        <<<"$job_json" >/dev/null && return 1
+    fi
+    sleep 10
+  done
+  return 1
+}
+
 parse_s3_uri() {
   local uri="$1"
   [[ "$uri" =~ ^s3://([^/]+)/(.+)$ ]] || return 1
   S3_BUCKET="${BASH_REMATCH[1]}"
   S3_KEY="${BASH_REMATCH[2]}"
   [[ "$S3_BUCKET" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,62}$ ]] || return 1
-  [[ "$S3_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._/+=:@-]{0,1023}$ ]] || return 1
+  (( ${#S3_KEY} >= 1 && ${#S3_KEY} <= 1024 )) || return 1
+  # macOS ships Bash 3.2, whose regex engine rejects repetition bounds above
+  # 255. Enforce the S3 key length arithmetically, then validate characters
+  # with a portable one-or-more expression.
+  [[ "$S3_KEY" =~ ^[A-Za-z0-9][A-Za-z0-9._/+=:@-]*$ ]] || return 1
 }
 
 head_s3_object() {
-  local component="$1" namespace="$2" secret="$3" uri="$4"
+  local component="$1" namespace="$2" secret="$3" uri="$4" endpoint="${5:-}"
   local pod
   pod="native-head-${component}-$(short_hash "$BACKUP_ID")"
   parse_s3_uri "$uri" || fail "$component artifact is not an exact S3 URI"
   kubectl delete pod "$pod" -n "$namespace" --ignore-not-found --wait=true >/dev/null
-  kubectl apply -n "$namespace" -f - >/dev/null <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${pod}
-  labels: {backup-restore.io/native-restore: "true"}
-spec:
-  restartPolicy: Never
-  activeDeadlineSeconds: 300
-  automountServiceAccountToken: false
-  securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
-  containers:
-    - name: head
-      image: amazon/aws-cli:2.34.48
-      command: [/bin/sh, -ec]
-      args: ['aws --endpoint-url="\$AWS_ENDPOINT_URL" s3api head-object --bucket "${S3_BUCKET}" --key "${S3_KEY}" >/dev/null']
-      envFrom:
-        - secretRef: {name: ${secret}}
-      env: [{name: HOME, value: /tmp}]
-      resources:
-        requests: {cpu: 25m, memory: 64Mi}
-        limits: {cpu: 200m, memory: 256Mi}
-      securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
-EOF
+  # Construct JSON structurally so an endpoint recovered from a custom
+  # resource can never inject Pod fields into a YAML heredoc.
+  jq -n --arg pod "$pod" --arg secret "$secret" --arg bucket "$S3_BUCKET" \
+    --arg key "$S3_KEY" --arg endpoint "$endpoint" '
+      {apiVersion:"v1",kind:"Pod",
+       metadata:{name:$pod,labels:{"backup-restore.io/native-restore":"true"}},
+       spec:{
+         restartPolicy:"Never",activeDeadlineSeconds:300,
+         automountServiceAccountToken:false,
+         securityContext:{runAsNonRoot:true,runAsUser:1000,runAsGroup:1000,
+                          seccompProfile:{type:"RuntimeDefault"}},
+         containers:[{
+           name:"head",image:"amazon/aws-cli:2.34.48",
+           command:["/bin/sh","-ec"],
+           args:["aws --endpoint-url=\"$AWS_ENDPOINT_URL\" s3api head-object --bucket \"$S3_BUCKET\" --key \"$S3_KEY\" >/dev/null"],
+           envFrom:[{secretRef:{name:$secret}}],
+           env:([{name:"HOME",value:"/tmp"},{name:"S3_BUCKET",value:$bucket},
+                 {name:"S3_KEY",value:$key}] +
+                if $endpoint == "" then [] else [{name:"AWS_ENDPOINT_URL",value:$endpoint}] end),
+           resources:{requests:{cpu:"25m",memory:"64Mi"},
+                      limits:{cpu:"200m",memory:"256Mi"}},
+           securityContext:{allowPrivilegeEscalation:false,readOnlyRootFilesystem:true,
+                            capabilities:{drop:["ALL"]}}
+         }]
+       }}
+    ' | kubectl apply -n "$namespace" -f - >/dev/null
   kubectl wait "pod/$pod" -n "$namespace" --for=jsonpath='{.status.phase}'=Succeeded --timeout=5m >/dev/null \
     || { kubectl logs "pod/$pod" -n "$namespace" --tail=50 >&2 || true; fail "$component exact object is unavailable"; }
   kubectl delete pod "$pod" -n "$namespace" --wait=true >/dev/null
@@ -367,7 +408,9 @@ restore_seaweedfs() {
 }
 
 restore_vault() {
-  local artifact state uri auth_secret job init_plain root_token pod status vault_job_complete=false
+  local artifact state uri auth_secret job init_plain pod status
+  local artifact_sha unseal_threshold unseal_key_count unseal_status active_deadline existing_job
+  local vault_job_complete=false
   artifact=$(artifact_json vault); state=$(jq -r '.state' <<<"$artifact")
   if [[ "$state" == velero-fallback ]]; then
     kubectl get statefulset vault -n vault >/dev/null
@@ -378,36 +421,119 @@ restore_vault() {
     done
     return 0
   fi
+  artifact_sha=$(printf '%s' "$artifact" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
   [[ -f "$VAULT_INIT_FILE" ]] || fail "Vault native restore requires --vault-init-file"
   [[ -n "${ANSIBLE_VAULT_PASSWORD_FILE:-}" && -f "$ANSIBLE_VAULT_PASSWORD_FILE" ]] \
     || fail "ANSIBLE_VAULT_PASSWORD_FILE is required for Vault restore"
+  command -v ansible-vault >/dev/null 2>&1 \
+    || fail "ansible-vault is required for Vault native restore"
   uri=$(jq -r '.artifact_locator' <<<"$artifact"); parse_s3_uri "$uri" || fail "invalid Vault snapshot URI"
   head_s3_object vault vault vault-backup-credentials "$uri"
   init_plain="$WORK_DIR/vault-init.json"
   ansible-vault view --vault-password-file "$ANSIBLE_VAULT_PASSWORD_FILE" "$VAULT_INIT_FILE" > "$init_plain"
   chmod 600 "$init_plain"
-  root_token=$(jq -er '.root_token' "$init_plain")
+  jq -e '.root_token | type == "string" and length > 0' "$init_plain" >/dev/null \
+    || fail "Vault init material has no root token"
+  unseal_threshold=$(jq -er '.unseal_threshold' "$init_plain")
+  [[ "$unseal_threshold" =~ ^[1-9][0-9]*$ ]] \
+    || fail "Vault init material has an invalid unseal threshold"
+  unseal_key_count=$(jq '.unseal_keys_b64 | length' "$init_plain")
+  (( unseal_key_count >= unseal_threshold )) \
+    || fail "Vault init material lacks enough unseal keys"
+  for pod in $(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o name); do
+    status=$(kubectl exec -n vault "${pod#pod/}" -- vault status -format=json 2>/dev/null || true)
+    jq -e '.initialized == true' <<<"$status" >/dev/null \
+      || fail "restored Vault member ${pod#pod/} is not initialized"
+    if jq -e '.sealed == true' <<<"$status" >/dev/null; then
+      # Feed each key through the exec stream. Keeping it out of the command
+      # argument prevents exposure in local process listings and Kubernetes
+      # audit records. Trying every distinct encrypted key makes resume safe
+      # after an interruption; readiness is always re-read from Vault.
+      for ((key_index=0; key_index<unseal_key_count; key_index++)); do
+        unseal_status=$(jq -er --argjson i "$key_index" '.unseal_keys_b64[$i]' "$init_plain" \
+          | kubectl exec -i -n vault "${pod#pod/}" -- \
+              vault operator unseal -format=json 2>/dev/null || true)
+        if jq -e '.sealed == false' <<<"$unseal_status" >/dev/null; then break; fi
+      done
+    fi
+    status=$(kubectl exec -n vault "${pod#pod/}" -- vault status -format=json 2>/dev/null || true)
+    jq -e '.initialized == true and .sealed == false' <<<"$status" >/dev/null \
+      || fail "restored Vault member ${pod#pod/} could not be unsealed"
+  done
+  active_deadline=$((SECONDS + 300))
+  while (( SECONDS < active_deadline )); do
+    kubectl get endpoints vault-active -n vault -o json \
+      | jq -e 'any(.subsets[]?.addresses[]?; (.ip // "") != "")' >/dev/null 2>&1 \
+      && break
+    sleep 5
+  done
+  (( SECONDS < active_deadline )) || fail "Vault did not elect an active member after unseal"
   auth_secret="native-vault-auth-$(short_hash "$BACKUP_ID")"
   TEMP_VAULT_SECRET="$auth_secret"
-  jq -n --arg token "$root_token" --arg name "$auth_secret" \
-    '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:"vault"},stringData:{VAULT_TOKEN:$token}}' \
+  jq --arg name "$auth_secret" \
+    '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:"vault"},
+      stringData:{VAULT_TOKEN:.root_token}}' "$init_plain" \
     | kubectl apply -f - >/dev/null
   job="native-vault-restore-$(short_hash "$BACKUP_ID")"
   if kubectl get job "$job" -n vault -o json \
-    | jq -e --arg id "$BACKUP_ID" '.metadata.annotations["backup-restore.io/native-backup-id"] == $id and
-        any(.status.conditions[]?; .type == "Complete" and .status == "True")' >/dev/null 2>&1; then
+    | jq -e --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+        --arg artifact "$artifact_sha" --arg bucket "$S3_BUCKET" --arg key "$S3_KEY" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .spec.backoffLimit == 0 and .spec.activeDeadlineSeconds == 1800 and
+        .spec.template.spec.restartPolicy == "Never" and
+        ([.spec.template.spec.initContainers[]? | select(
+          .name == "download" and .image == "amazon/aws-cli:2.34.48" and
+          .args == ["aws --endpoint-url=\"$AWS_ENDPOINT_URL\" s3 cp \"s3://"+$bucket+"/"+$key+"\" /work/snapshot.snap; test -s /work/snapshot.snap"]
+        )] | length) == 1 and
+        ([.spec.template.spec.containers[]? | select(
+          .name == "restore" and .image == "hashicorp/vault:2.0.3" and
+          .args == ["vault operator raft snapshot restore -force /work/snapshot.snap"]
+        )] | length) == 1 and
+        any(.status.conditions[]?; .type == "Complete" and .status == "True")
+      ' >/dev/null 2>&1; then
     vault_job_complete=true
   fi
   if [[ "$vault_job_complete" != true ]]; then
-    kubectl get job "$job" -n vault >/dev/null 2>&1 \
-      && fail "existing Vault restore Job is not a completed checkpoint for this backup"
+    existing_job=$(kubectl get job "$job" -n vault -o json 2>/dev/null || true)
+    if [[ -n "$existing_job" ]]; then
+      if [[ "$RESUME" == true ]] && jq -e --arg id "$BACKUP_ID" \
+        --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" --arg artifact "$artifact_sha" \
+        --arg bucket "$S3_BUCKET" --arg key "$S3_KEY" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .spec.backoffLimit == 0 and .spec.activeDeadlineSeconds == 1800 and
+        .spec.template.spec.restartPolicy == "Never" and
+        ([.spec.template.spec.initContainers[]? | select(
+          .name == "download" and .image == "amazon/aws-cli:2.34.48" and
+          .args == ["aws --endpoint-url=\"$AWS_ENDPOINT_URL\" s3 cp \"s3://"+$bucket+"/"+$key+"\" /work/snapshot.snap; test -s /work/snapshot.snap"]
+        )] | length) == 1 and
+        ([.spec.template.spec.containers[]? | select(
+          .name == "restore" and .image == "hashicorp/vault:2.0.3" and
+          .args == ["vault operator raft snapshot restore -force /work/snapshot.snap"]
+        )] | length) == 1 and
+        (.status.failed // 0) > 0 and (.status.active // 0) == 0
+      ' <<<"$existing_job" >/dev/null; then
+        kubectl delete job "$job" -n vault --wait=true >/dev/null
+      else
+        fail "existing Vault restore Job is not a completed checkpoint for this backup"
+      fi
+    fi
     kubectl apply -n vault -f - >/dev/null <<EOF
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: ${job}
   labels: {backup-restore.io/native-restore: "true"}
-  annotations: {backup-restore.io/native-backup-id: "${BACKUP_ID}"}
+  annotations:
+    backup-restore.io/native-backup-id: "${BACKUP_ID}"
+    backup-restore.io/native-target-cluster-uid: "${TARGET_UID}"
+    backup-restore.io/native-catalog-sha256: "${CATALOG_SHA}"
+    backup-restore.io/native-artifact-sha256: "${artifact_sha}"
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 1800
@@ -416,7 +542,9 @@ spec:
       restartPolicy: Never
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 1000, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
-      volumes: [{name: work, emptyDir: {sizeLimit: 2Gi}}]
+      volumes:
+        - {name: work, emptyDir: {sizeLimit: 2Gi}}
+        - {name: vault-ca, secret: {secretName: vault-internal-tls, items: [{key: ca.crt, path: ca.crt}]}}
       initContainers:
         - name: download
           image: amazon/aws-cli:2.34.48
@@ -437,20 +565,22 @@ spec:
           envFrom:
             - secretRef: {name: vault-backup-credentials}
             - secretRef: {name: ${auth_secret}}
-          volumeMounts: [{name: work, mountPath: /work}]
+          env: [{name: VAULT_CACERT, value: /vault/tls/ca.crt}]
+          volumeMounts:
+            - {name: work, mountPath: /work}
+            - {name: vault-ca, mountPath: /vault/tls, readOnly: true}
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits: {cpu: 500m, memory: 512Mi}
           securityContext: {runAsNonRoot: true, runAsUser: 100, runAsGroup: 1000, allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
 EOF
-    if ! kubectl wait "job/$job" -n vault --for=condition=complete --timeout="${TIMEOUT_SECONDS}s" >/dev/null; then
+    if ! wait_job_complete "$job" vault; then
       kubectl logs "job/$job" -n vault --all-containers --tail=100 >&2 || true
       fail "Vault snapshot restore failed"
     fi
   fi
   kubectl delete secret "$auth_secret" -n vault --wait=true >/dev/null
   TEMP_VAULT_SECRET=""
-  root_token=""
   for pod in $(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o name); do
     status=$(kubectl exec -n vault "${pod#pod/}" -- vault status -format=json 2>/dev/null || true)
     jq -e '.initialized == true and .sealed == false' <<<"$status" >/dev/null \
@@ -458,51 +588,171 @@ EOF
   done
 }
 
+prove_postgresql_repository() {
+  local cluster="$1" set="$2" repo="$3"
+  local repo_index repo_host repo_info
+  repo_index="${repo#repo}"
+  repo_host="${cluster}-repo-host-0"
+  kubectl wait "pod/$repo_host" -n databases --for=condition=Ready --timeout=10m >/dev/null
+  repo_info=$(kubectl exec -n databases "$repo_host" -c pgbackrest -- \
+    pgbackrest info --stanza=db "--repo=$repo_index" --output=json)
+  jq -e --arg set "$set" --argjson repoIndex "$repo_index" '
+    any(.[].backup[]?; .label == $set and .error == false) and
+    any(.[].repo[]?; .key == $repoIndex and .status.code == 0)
+  ' <<<"$repo_info" >/dev/null \
+    || fail "PostgreSQL repository does not contain the exact healthy recorded set"
+}
+
 restore_postgresql() {
-  local artifact backup_cr set repo cluster cr_file secrets_file pvcs_file primary pg_phase
+  local artifact backup_cr set repo
+  local artifact_sha cluster cr_file secrets_file pvcs_file primary pg_phase current_pg
+  local cr_tmp secrets_tmp pvcs_tmp cr_sha secrets_sha pvcs_sha capture_state
+  local pg_missing=false
   artifact=$(artifact_json postgresql)
+  artifact_sha=$(printf '%s' "$artifact" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
   backup_cr=$(jq -r '.name' <<<"$artifact"); set=$(jq -r '.artifact_locator' <<<"$artifact")
   repo=$(jq -r '.repository' <<<"$artifact"); cluster="${PROJECT}-pg"
   [[ "$set" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$ && "$set" != latest && "$repo" == repo2 ]] \
     || fail "PostgreSQL requires an exact repo2 set"
-  kubectl get perconapgbackup "$backup_cr" -n databases -o json \
-    | jq -e --arg cluster "$cluster" --arg set "$set" --arg repo "$repo" '
-      .spec.pgCluster == $cluster and .spec.repoName == $repo and .status.backupName == $set and
-      ((.status.state // "" | ascii_downcase) as $s | $s == "succeeded" or $s == "successful" or $s == "ready")' \
-    >/dev/null || fail "PostgreSQL backup CR does not own the exact recorded set"
   cr_file="${STATE_FILE}.postgresql-cluster.json"
   secrets_file="${STATE_FILE}.postgresql-secrets.json"
   pvcs_file="${STATE_FILE}.postgresql-pvcs.txt"
-  if [[ ! -f "$cr_file" ]]; then
+  capture_state=$(jq -r '.sidecar_capture.postgresql // "pending"' "$STATE_FILE")
+  if [[ "$capture_state" != completed ]]; then
+    kubectl get perconapgbackup "$backup_cr" -n databases -o json \
+      | jq -e --arg cluster "$cluster" --arg repo "$repo" '
+        .spec.pgCluster == $cluster and .spec.repoName == $repo' \
+      >/dev/null || fail "PostgreSQL backup CR does not bind the recorded cluster and repository"
+    prove_postgresql_repository "$cluster" "$set" "$repo"
+    current_pg=$(kubectl get perconapgcluster "$cluster" -n databases -o json)
+    jq -e '
+      (.metadata.annotations["backup-restore.io/native-restore-phase"] // "") == "" and
+      (.metadata.annotations["backup-restore.io/native-backup-id"] // "") == "" and
+      (.spec.dataSource // null) == null
+    ' <<<"$current_pg" >/dev/null \
+      || fail "cannot capture PostgreSQL sidecars after restore mutation has begun"
+    cr_tmp=$(mktemp "${cr_file}.capture.XXXXXX")
+    secrets_tmp=$(mktemp "${secrets_file}.capture.XXXXXX")
+    pvcs_tmp=$(mktemp "${pvcs_file}.capture.XXXXXX")
     kubectl get perconapgcluster "$cluster" -n databases -o json \
       | jq 'del(.metadata.annotations,.metadata.creationTimestamp,.metadata.finalizers,
-          .metadata.generation,.metadata.managedFields,.metadata.resourceVersion,.metadata.uid,.status)' > "$cr_file"
+          .metadata.generation,.metadata.managedFields,.metadata.resourceVersion,.metadata.uid,.status)' > "$cr_tmp"
     kubectl get secrets -n databases -l "postgres-operator.crunchydata.com/cluster=${cluster}" -o json \
       | jq '.items |= map(del(.metadata.creationTimestamp,.metadata.managedFields,.metadata.ownerReferences,
-          .metadata.resourceVersion,.metadata.uid))' > "$secrets_file"
-    kubectl get pvc -n databases -l "postgres-operator.crunchydata.com/cluster=${cluster}" -o name > "$pvcs_file"
-    chmod 600 "$cr_file" "$secrets_file" "$pvcs_file"
+          .metadata.resourceVersion,.metadata.uid))' > "$secrets_tmp"
+    kubectl get pvc -n databases -l "postgres-operator.crunchydata.com/cluster=${cluster}" -o name > "$pvcs_tmp"
+    chmod 600 "$cr_tmp" "$secrets_tmp" "$pvcs_tmp"
+    mv "$cr_tmp" "$cr_file"
+    mv "$secrets_tmp" "$secrets_file"
+    mv "$pvcs_tmp" "$pvcs_file"
+    cr_sha=$(sha256_file "$cr_file")
+    secrets_sha=$(sha256_file "$secrets_file")
+    pvcs_sha=$(sha256_file "$pvcs_file")
+    # Publish all hashes and the completion marker in one atomic state update.
+    # The marker also checkpoints the exact live pgBackRest proof performed
+    # above. An interruption before this point remains safely recapturable
+    # because no restore mutation has started.
+    # shellcheck disable=SC2016
+    write_state --arg cr "$cr_sha" --arg secrets "$secrets_sha" --arg pvcs "$pvcs_sha" '
+      .sidecars["postgresql-cluster"]=$cr |
+      .sidecars["postgresql-secrets"]=$secrets |
+      .sidecars["postgresql-pvcs"]=$pvcs |
+      .sidecar_capture.postgresql="completed"'
+  else
+    verify_sidecar_hash postgresql-cluster "$cr_file"
+    verify_sidecar_hash postgresql-secrets "$secrets_file"
+    verify_sidecar_hash postgresql-pvcs "$pvcs_file"
   fi
-  if kubectl get perconapgcluster "$cluster" -n databases -o json \
-      | jq -e --arg id "$BACKUP_ID" '.metadata.annotations["backup-restore.io/native-backup-id"] == $id and
-          .metadata.annotations["backup-restore.io/native-restore-phase"] == "completed" and .status.state == "ready"' >/dev/null 2>&1; then
+  current_pg=$(kubectl get perconapgcluster "$cluster" -n databases -o json 2>/dev/null || true)
+  if [[ -z "$current_pg" ]]; then
+    [[ "$RESUME" == true && "$capture_state" == completed ]] \
+      || fail "PostgreSQL cluster disappeared before an exact resumable restore checkpoint"
+    pg_missing=true
+  elif jq -e --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+      --arg artifact "$artifact_sha" --arg set "$set" --arg repo "$repo" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .metadata.annotations["backup-restore.io/postgresql-set"] == $set and
+        .metadata.annotations["backup-restore.io/postgresql-repository"] == $repo and
+        .metadata.annotations["backup-restore.io/native-restore-phase"] == "completed" and
+        .status.state == "ready" and (.spec.dataSource // null) == null
+      ' <<<"$current_pg" >/dev/null 2>&1; then
+    prove_postgresql_repository "$cluster" "$set" "$repo"
     return 0
   fi
-  pg_phase=$(kubectl get perconapgcluster "$cluster" -n databases -o json 2>/dev/null \
-    | jq -r --arg id "$BACKUP_ID" 'if .metadata.annotations["backup-restore.io/native-backup-id"] == $id
-        then .metadata.annotations["backup-restore.io/native-restore-phase"] // "" else "" end' || true)
+  pg_phase=""
+  [[ "$pg_missing" == true ]] \
+    || pg_phase=$(jq -r '.metadata.annotations["backup-restore.io/native-restore-phase"] // ""' <<<"$current_pg")
   if [[ "$pg_phase" == restoring ]]; then
+    jq -e --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+      --arg artifact "$artifact_sha" --arg set "$set" --arg repo "$repo" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .metadata.annotations["backup-restore.io/postgresql-set"] == $set and
+        .metadata.annotations["backup-restore.io/postgresql-repository"] == $repo and
+        .spec.dataSource.pgbackrest.stanza == "db" and
+        .spec.dataSource.pgbackrest.options == ["--set="+$set] and
+        .spec.dataSource.pgbackrest.repo.name == $repo
+      ' <<<"$current_pg" >/dev/null \
+      || fail "in-progress PostgreSQL restore is not bound to the exact target and set"
+    prove_postgresql_repository "$cluster" "$set" "$repo"
     wait_json_state perconapgcluster "$cluster" databases ready \
       || fail "in-progress PostgreSQL restore did not become ready; refusing to replace it again"
+  elif [[ "$pg_phase" == completed ]]; then
+    jq -e --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+      --arg artifact "$artifact_sha" --arg set "$set" --arg repo "$repo" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .metadata.annotations["backup-restore.io/postgresql-set"] == $set and
+        .metadata.annotations["backup-restore.io/postgresql-repository"] == $repo and
+        (.spec.dataSource // null) == null
+      ' <<<"$current_pg" >/dev/null \
+      || fail "completed PostgreSQL checkpoint is not bound to the exact target and set"
+    wait_json_state perconapgcluster "$cluster" databases ready \
+      || fail "completed PostgreSQL checkpoint did not become ready"
+    current_pg=$(kubectl get perconapgcluster "$cluster" -n databases -o json)
+    jq -e --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+      --arg artifact "$artifact_sha" --arg set "$set" --arg repo "$repo" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .metadata.annotations["backup-restore.io/postgresql-set"] == $set and
+        .metadata.annotations["backup-restore.io/postgresql-repository"] == $repo and
+        .status.state == "ready" and (.spec.dataSource // null) == null
+      ' <<<"$current_pg" >/dev/null \
+      || fail "completed PostgreSQL checkpoint changed while becoming ready"
+    prove_postgresql_repository "$cluster" "$set" "$repo"
+    return 0
+  elif [[ -n "$pg_phase" ]]; then
+    fail "existing PostgreSQL restore checkpoint is not bound to this exact operation"
   else
+    if [[ "$pg_missing" != true ]]; then
+      prove_postgresql_repository "$cluster" "$set" "$repo"
+    fi
     kubectl apply -f "$secrets_file" >/dev/null
     kubectl delete perconapgcluster "$cluster" -n databases --ignore-not-found \
       --wait=true --timeout="${TIMEOUT_SECONDS}s"
     while IFS= read -r pvc; do
-      [[ -z "$pvc" ]] || kubectl delete "$pvc" -n databases --ignore-not-found --wait=true
+      [[ -z "$pvc" ]] && continue
+      [[ "$pvc" =~ ^persistentvolumeclaim/${cluster}-(instance[0-9]+-[a-z0-9]+-pgdata|repo[0-9]+)$ ]] \
+        || fail "unsafe PostgreSQL PVC sidecar entry: $pvc"
+      kubectl delete "$pvc" -n databases --ignore-not-found --wait=true
     done < "$pvcs_file"
-    jq --arg set "$set" --arg repo "$repo" --arg id "$BACKUP_ID" '
+    jq --arg set "$set" --arg repo "$repo" --arg id "$BACKUP_ID" \
+      --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" --arg artifact "$artifact_sha" '
       .metadata.annotations["backup-restore.io/native-backup-id"]=$id |
+      .metadata.annotations["backup-restore.io/native-target-cluster-uid"]=$target |
+      .metadata.annotations["backup-restore.io/native-catalog-sha256"]=$catalog |
+      .metadata.annotations["backup-restore.io/native-artifact-sha256"]=$artifact |
+      .metadata.annotations["backup-restore.io/postgresql-set"]=$set |
+      .metadata.annotations["backup-restore.io/postgresql-repository"]=$repo |
       .metadata.annotations["backup-restore.io/native-restore-phase"]="restoring" |
       .spec.backups.pgbackrest.repos |= map(.schedules={}) |
       (.spec.backups.pgbackrest.repos[] | select(.name==$repo)) as $sourceRepo |
@@ -513,6 +763,9 @@ restore_postgresql() {
         repo:$sourceRepo
       }' "$cr_file" | kubectl apply -f - >/dev/null
     wait_json_state perconapgcluster "$cluster" databases ready || fail "PostgreSQL native restore did not become ready"
+    if [[ "$pg_missing" == true ]]; then
+      prove_postgresql_repository "$cluster" "$set" "$repo"
+    fi
   fi
   primary=$(kubectl get pods -n databases \
     -l "postgres-operator.crunchydata.com/cluster=${cluster},postgres-operator.crunchydata.com/role=master" \
@@ -522,8 +775,14 @@ restore_postgresql() {
     -o jsonpath='{.items[0].metadata.name}')
   kubectl exec -n databases "$primary" -- psql -U postgres -tAc 'select 1' | grep -qx 1 \
     || fail "PostgreSQL validation query failed"
-  jq --arg id "$BACKUP_ID" '
+  jq --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+    --arg artifact "$artifact_sha" --arg set "$set" --arg repo "$repo" '
     .metadata.annotations["backup-restore.io/native-backup-id"]=$id |
+    .metadata.annotations["backup-restore.io/native-target-cluster-uid"]=$target |
+    .metadata.annotations["backup-restore.io/native-catalog-sha256"]=$catalog |
+    .metadata.annotations["backup-restore.io/native-artifact-sha256"]=$artifact |
+    .metadata.annotations["backup-restore.io/postgresql-set"]=$set |
+    .metadata.annotations["backup-restore.io/postgresql-repository"]=$repo |
     .metadata.annotations["backup-restore.io/native-restore-phase"]="completed" |
     del(.spec.dataSource)' "$cr_file" | kubectl apply -f - >/dev/null
   wait_json_state perconapgcluster "$cluster" databases ready \
@@ -532,26 +791,56 @@ restore_postgresql() {
 
 restore_mongodb() {
   local artifact backup_cr destination storage cluster restore_name cluster_json backup_json source
+  local endpoint existing_restore restore_state
   artifact=$(artifact_json mongodb); backup_cr=$(jq -r '.name' <<<"$artifact")
   destination=$(jq -r '.artifact_locator' <<<"$artifact"); storage=$(jq -r '.repository' <<<"$artifact")
   cluster="${PROJECT}-mongo"
   [[ "$destination" == *://* && "$destination" != *latest* ]] || fail "MongoDB destination is not exact"
   backup_json=$(kubectl get perconaservermongodbbackup "$backup_cr" -n databases -o json)
-  jq -e --arg destination "$destination" '(.status.state | ascii_downcase) == "ready" and .status.destination == $destination' \
-    <<<"$backup_json" \
-    >/dev/null || fail "MongoDB backup CR does not match the exact destination"
+  jq -e --arg cluster "$cluster" --arg storage "$storage" '
+    .spec.clusterName == $cluster and .spec.storageName == $storage
+  ' <<<"$backup_json" >/dev/null \
+    || fail "MongoDB backup CR does not bind the recorded cluster and repository"
   cluster_json=$(kubectl get perconaservermongodb "$cluster" -n databases -o json)
+  endpoint=$(jq -er --arg storage "$storage" '.spec.backup.storages[$storage].s3.endpointUrl' \
+    <<<"$cluster_json") || fail "MongoDB backup storage has no S3 endpoint"
+  # The restored operator may reconcile the historical Backup CR and replace
+  # its status.destination. The signed catalog remains authoritative; prove
+  # that its exact PBM metadata object exists before creating a restore.
+  head_s3_object mongodb databases object-storage-backup-credentials "${destination}.pbm.json" "$endpoint"
   source=$(jq -cn --arg destination "$destination" --arg storage "$storage" \
     --argjson cluster "$cluster_json" --argjson backup "$backup_json" \
     '{destination:$destination,type:($backup.status.type // "logical"),storageName:$storage,
       s3:($cluster.spec.backup.storages[$storage].s3)}')
   restore_name="native-mongo-$(short_hash "$BACKUP_ID")"
-  jq -n --arg name "$restore_name" --arg cluster "$cluster" --argjson source "$source" '
-    {apiVersion:"psmdb.percona.com/v1",kind:"PerconaServerMongoDBRestore",
-     metadata:{name:$name,namespace:"databases",annotations:{"backup-restore.io/native-backup-id":""}},
-     spec:{clusterName:$cluster,backupSource:$source}}' \
-    | jq --arg id "$BACKUP_ID" '.metadata.annotations["backup-restore.io/native-backup-id"]=$id' \
-    | kubectl apply -f - >/dev/null
+  existing_restore=$(kubectl get perconaservermongodbrestore "$restore_name" -n databases -o json 2>/dev/null || true)
+  if [[ -n "$existing_restore" ]]; then
+    jq -e --arg id "$BACKUP_ID" --arg cluster "$cluster" --arg destination "$destination" \
+      --arg storage "$storage" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.deletionTimestamp == null and .spec.clusterName == $cluster and
+        .spec.backupSource.destination == $destination and
+        .spec.backupSource.storageName == $storage
+      ' <<<"$existing_restore" >/dev/null \
+      || fail "existing MongoDB restore is not bound to this exact backup"
+    restore_state=$(jq -r '.status.state // "" | ascii_downcase' <<<"$existing_restore")
+    if [[ "$restore_state" == error || "$restore_state" == failed ]]; then
+      [[ "$RESUME" == true ]] \
+        || fail "existing MongoDB restore failed; inspect it and use --resume"
+      kubectl delete perconaservermongodbrestore "$restore_name" -n databases --wait=true >/dev/null
+      existing_restore=""
+    elif [[ "$RESUME" != true ]]; then
+      fail "existing MongoDB restore is an in-progress or completed checkpoint; use --resume"
+    fi
+  fi
+  if [[ -z "$existing_restore" ]]; then
+    jq -n --arg name "$restore_name" --arg cluster "$cluster" --argjson source "$source" '
+      {apiVersion:"psmdb.percona.com/v1",kind:"PerconaServerMongoDBRestore",
+       metadata:{name:$name,namespace:"databases",annotations:{"backup-restore.io/native-backup-id":""}},
+       spec:{clusterName:$cluster,backupSource:$source}}' \
+      | jq --arg id "$BACKUP_ID" '.metadata.annotations["backup-restore.io/native-backup-id"]=$id' \
+      | kubectl apply -f - >/dev/null
+  fi
   wait_json_state perconaservermongodbrestore "$restore_name" databases ready \
     || fail "MongoDB native restore failed"
   wait_json_state perconaservermongodb "$cluster" databases ready || fail "MongoDB cluster is not ready"
@@ -561,7 +850,7 @@ restore_mongodb() {
 }
 
 restore_gitlab_secrets() {
-  local artifact uri pod encoded file expected_secret_sha actual_secret_sha
+  local artifact uri pod file expected_secret_sha actual_secret_sha
   artifact=$(artifact_json gitlab-secrets); uri=$(jq -r '.artifact_locator' <<<"$artifact")
   head_s3_object gitlab-secrets gitlab gitlab-rails-backup-credentials "$uri"
   parse_s3_uri "$uri" || fail "invalid GitLab Rails secret URI"
@@ -580,20 +869,29 @@ spec:
     - name: download
       image: amazon/aws-cli:2.34.48
       command: [/bin/sh, -ec]
-      args: ['aws --endpoint-url="\$AWS_ENDPOINT_URL" s3 cp "s3://${S3_BUCKET}/${S3_KEY}" - --only-show-errors | base64']
+      args: ['sleep 600']
       envFrom: [{secretRef: {name: gitlab-rails-backup-credentials}}]
-      env: [{name: HOME, value: /tmp}]
+      env:
+        - {name: HOME, value: /tmp}
+        - {name: S3_BUCKET, value: "${S3_BUCKET}"}
+        - {name: S3_KEY, value: "${S3_KEY}"}
       resources:
         requests: {cpu: 25m, memory: 64Mi}
         limits: {cpu: 200m, memory: 256Mi}
       securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
 EOF
-  kubectl wait "pod/$pod" -n gitlab --for=jsonpath='{.status.phase}'=Succeeded --timeout=5m >/dev/null \
-    || fail "GitLab Rails secret download failed"
-  encoded=$(kubectl logs "pod/$pod" -n gitlab)
-  kubectl delete pod "$pod" -n gitlab --wait=true >/dev/null
+  kubectl wait "pod/$pod" -n gitlab --for=condition=Ready --timeout=5m >/dev/null \
+    || fail "GitLab Rails secret transfer pod did not become ready"
   file="$WORK_DIR/gitlab-secrets.yml"
-  printf '%s' "$encoded" | base64 --decode > "$file"
+  # Variables are expanded inside the transfer pod, not by the controller shell.
+  # shellcheck disable=SC2016
+  if ! kubectl exec -n gitlab "$pod" -- /bin/sh -ec \
+      'aws --endpoint-url="$AWS_ENDPOINT_URL" s3 cp "s3://$S3_BUCKET/$S3_KEY" - --only-show-errors' \
+      > "$file"; then
+    kubectl delete pod "$pod" -n gitlab --wait=true >/dev/null 2>&1 || true
+    fail "GitLab Rails secret download failed"
+  fi
+  kubectl delete pod "$pod" -n gitlab --wait=true >/dev/null
   chmod 600 "$file"; [[ -s "$file" ]] || fail "GitLab Rails secret object is empty"
   kubectl create secret generic gitlab-rails-secret -n gitlab --from-file="secrets.yml=$file" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -606,47 +904,106 @@ EOF
 }
 
 restore_gitlab() {
-  local artifact uri backup_file backup_id job replicas_file
+  local artifact artifact_sha uri backup_file backup_id job replicas_file existing_job
+  local replicas_tmp replicas_sha capture_state restore_command
   artifact=$(artifact_json gitlab); uri=$(jq -r '.artifact_locator' <<<"$artifact")
+  artifact_sha=$(printf '%s' "$artifact" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
   parse_s3_uri "$uri" || fail "invalid GitLab Toolbox URI"
   backup_file="$S3_KEY"; backup_id="${backup_file%_gitlab_backup.tar}"
-  [[ "$backup_id" != "$backup_file" && -n "$backup_id" ]] || fail "GitLab archive key has no exact backup ID"
+  [[ "$backup_id" != "$backup_file" && "$backup_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$ ]] \
+    || fail "GitLab archive key has no safe exact backup ID"
   replicas_file="${STATE_FILE}.gitlab-replicas.json"
   GITLAB_REPLICAS_FILE="$replicas_file"
-  if [[ ! -f "$replicas_file" ]]; then
+  job="native-gitlab-restore-$(short_hash "$BACKUP_ID")"
+  restore_command="exec backup-utility --restore -t ${backup_id} --skip db --s3tool awscli --aws-s3-endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333"
+  capture_state=$(jq -r '.sidecar_capture.gitlab // "pending"' "$STATE_FILE")
+  if [[ "$capture_state" != completed ]]; then
+    ! kubectl get job "$job" -n gitlab >/dev/null 2>&1 \
+      || fail "cannot capture GitLab replicas after restore mutation has begun"
+    replicas_tmp=$(mktemp "${replicas_file}.capture.XXXXXX")
     kubectl get deployment -n gitlab -l 'app in (webservice,sidekiq)' -o json \
-      | jq '[.items[] | {name:.metadata.name,replicas:(.spec.replicas // 1)}]' > "$replicas_file"
-    chmod 600 "$replicas_file"
+      | jq -e 'if ((.items | length) > 0 and
+          all(.items[]; (.spec.replicas // 0) > 0))
+        then [.items[] | {name:.metadata.name,replicas:.spec.replicas}]
+        else error("deployments are absent or scaled down") end' > "$replicas_tmp" \
+      || fail "GitLab webservice and sidekiq deployments must all have positive desired replicas before capture"
+    chmod 600 "$replicas_tmp"
+    mv "$replicas_tmp" "$replicas_file"
+    replicas_sha=$(sha256_file "$replicas_file")
+    # shellcheck disable=SC2016
+    write_state --arg sha "$replicas_sha" '
+      .sidecars["gitlab-replicas"]=$sha |
+      .sidecar_capture.gitlab="completed"'
+  else
+    verify_sidecar_hash gitlab-replicas "$replicas_file"
   fi
   GITLAB_SCALED=true
   while IFS=$'\t' read -r deployment _replicas; do
-    [[ -z "$deployment" ]] || kubectl scale deployment "$deployment" -n gitlab --replicas=0 >/dev/null
+    [[ -z "$deployment" ]] && continue
+    [[ "$deployment" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] \
+      || fail "unsafe GitLab deployment in replicas sidecar: $deployment"
+    kubectl scale deployment "$deployment" -n gitlab --replicas=0 >/dev/null
   done < <(jq -r '.[] | [.name,.replicas] | @tsv' "$replicas_file")
-  job="native-gitlab-restore-$(short_hash "$BACKUP_ID")"
   if ! kubectl get job "$job" -n gitlab -o json \
-      | jq -e --arg id "$BACKUP_ID" '.metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+      | jq -e --arg id "$BACKUP_ID" --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+          --arg artifact "$artifact_sha" --arg command "$restore_command" '
+          .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+          .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+          .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+          .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+          .spec.backoffLimit == 0 and .spec.template.spec.restartPolicy == "Never" and
+          (.spec.template.spec.containers[0].command // null) == null and
+          .spec.template.spec.containers[0].args == ["/bin/bash","-c",$command] and
           any(.status.conditions[]?; .type == "Complete" and .status == "True")' >/dev/null 2>&1; then
-    kubectl get job "$job" -n gitlab >/dev/null 2>&1 \
-      && fail "existing GitLab restore Job is not a completed checkpoint for this backup"
+    existing_job=$(kubectl get job "$job" -n gitlab -o json 2>/dev/null || true)
+    if [[ -n "$existing_job" ]]; then
+      if [[ "$RESUME" == true ]] && jq -e --arg id "$BACKUP_ID" \
+        --arg target "$TARGET_UID" --arg catalog "$CATALOG_SHA" \
+        --arg artifact "$artifact_sha" --arg command "$restore_command" '
+        .metadata.annotations["backup-restore.io/native-backup-id"] == $id and
+        .metadata.annotations["backup-restore.io/native-target-cluster-uid"] == $target and
+        .metadata.annotations["backup-restore.io/native-catalog-sha256"] == $catalog and
+        .metadata.annotations["backup-restore.io/native-artifact-sha256"] == $artifact and
+        .metadata.deletionTimestamp == null and
+        .spec.backoffLimit == 0 and .spec.template.spec.restartPolicy == "Never" and
+        (.spec.template.spec.containers[0].command // null) == null and
+        .spec.template.spec.containers[0].args == ["/bin/bash","-c",$command] and
+        (.status.failed // 0) > 0 and (.status.active // 0) == 0
+      ' <<<"$existing_job" >/dev/null; then
+        kubectl delete job "$job" -n gitlab --wait=true >/dev/null
+      else
+        fail "existing GitLab restore Job is not a completed checkpoint for this backup"
+      fi
+    fi
     kubectl get cronjob gitlab-toolbox-backup -n gitlab -o json \
-      | jq --arg name "$job" --arg id "$BACKUP_ID" --arg restoreId "$backup_id" '
+      | jq --arg name "$job" --arg id "$BACKUP_ID" --arg target "$TARGET_UID" \
+          --arg catalog "$CATALOG_SHA" --arg artifact "$artifact_sha" --arg restoreId "$backup_id" '
           {apiVersion:"batch/v1",kind:"Job",
            metadata:{name:$name,namespace:"gitlab",labels:{"backup-restore.io/native-restore":"true"},
-             annotations:{"backup-restore.io/native-backup-id":$id}},
+             annotations:{"backup-restore.io/native-backup-id":$id,
+               "backup-restore.io/native-target-cluster-uid":$target,
+               "backup-restore.io/native-catalog-sha256":$catalog,
+               "backup-restore.io/native-artifact-sha256":$artifact}},
            spec:.spec.jobTemplate.spec} |
           .spec.backoffLimit=0 | del(.spec.ttlSecondsAfterFinished) |
           .spec.template.spec.restartPolicy="Never" |
-          .spec.template.spec.containers[0].command=["backup-utility"] |
-          .spec.template.spec.containers[0].args=["--restore","-t",$restoreId,"--skip","db",
-            "--s3tool","awscli","--aws-s3-endpoint-url","http://seaweedfs-filer.storage.svc.cluster.local:8333"]' \
+          del(.spec.template.spec.containers[0].command) |
+          .spec.template.spec.containers[0].args=[
+            "/bin/bash","-c",
+            ("exec backup-utility --restore -t " + $restoreId +
+             " --skip db --s3tool awscli --aws-s3-endpoint-url http://seaweedfs-filer.storage.svc.cluster.local:8333")
+          ]' \
       | kubectl apply -f - >/dev/null
-    if ! kubectl wait "job/$job" -n gitlab --for=condition=complete --timeout="${TIMEOUT_SECONDS}s" >/dev/null; then
+    if ! wait_job_complete "$job" gitlab; then
       kubectl logs "job/$job" -n gitlab --all-containers --tail=100 >&2 || true
       fail "GitLab Toolbox restore failed"
     fi
   fi
   while IFS=$'\t' read -r deployment replicas; do
-    [[ -z "$deployment" ]] || kubectl scale deployment "$deployment" -n gitlab --replicas="$replicas" >/dev/null
+    [[ -z "$deployment" ]] && continue
+    [[ "$deployment" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && "$replicas" =~ ^[0-9]+$ ]] \
+      || fail "unsafe GitLab replica sidecar entry"
+    kubectl scale deployment "$deployment" -n gitlab --replicas="$replicas" >/dev/null
   done < <(jq -r '.[] | [.name,.replicas] | @tsv' "$replicas_file")
   kubectl rollout status deployment -n gitlab --timeout=20m >/dev/null
   GITLAB_SCALED=false

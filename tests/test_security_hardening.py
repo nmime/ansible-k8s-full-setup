@@ -540,6 +540,8 @@ def test_default_deny_uses_standard_networkpolicy_and_removes_invalid_cilium_leg
         "roles/k8s-gitops/tasks/main.yml",
         "roles/k8s-databases/tasks/main.yml",
         "roles/k8s-observability/tasks/main.yml",
+        "roles/k8s-observability/tasks/coroot.yml",
+        "roles/backup-restore/tasks/velero.yml",
         "roles/temporal/tasks/main.yml",
         "roles/object-storage/tasks/main.yml",
     ):
@@ -551,6 +553,79 @@ def test_default_deny_uses_standard_networkpolicy_and_removes_invalid_cilium_leg
         for task in content.split("- name:")[1:]:
             if "kind: CiliumNetworkPolicy" in task and "name: default-deny" in task:
                 assert "state: absent" in task, path
+
+
+def test_keda_admission_fails_closed_and_remains_reachable():
+    content = read("roles/k8s-autoscaling/tasks/main.yml")
+    helm_values = content.split("- name: Install KEDA with Helm", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "webhooks:" in helm_values
+    assert "failurePolicy: Fail" in helm_values
+
+    ingress = content.split(
+        "- name: Allow Kubernetes API and monitoring traffic to KEDA endpoints", 1
+    )[1].split("- name:", 1)[0]
+    assert "name: allow-keda-ingress" in ingress
+    assert "- kube-apiserver" in ingress
+    assert "port: '6443'" in ingress
+    assert "port: '9443'" in ingress
+    assert "- host" in ingress
+    assert "- remote-node" in ingress
+
+
+def test_coroot_network_policy_preserves_only_required_data_paths():
+    content = read("roles/k8s-observability/tasks/coroot.yml")
+    policy = content.split(
+        "- name: Allow only required Coroot application and agent traffic", 1
+    )[1].split("- name:", 1)[0]
+    assert "name: allow-coroot-required-traffic" in policy
+    for namespace in ("coroot", "kube-system"):
+        assert f"k8s:io.kubernetes.pod.namespace: {namespace}" in policy
+    assert "- ingress" in policy
+    assert "k8s:io.kubernetes.pod.namespace: cilium-system" not in policy
+    assert "- kube-apiserver" in policy
+    assert "serviceName: '{{ \"vmselect-vmcluster\"" in policy
+    assert "serviceName: '{{ \"vminsert-vmcluster\"" in policy
+    for port in ("'53'", "'8080'"):
+        assert f"port: {port}" in policy
+    for port in ("8429", "8480", "8481"):
+        assert port in policy
+
+
+def test_external_secrets_network_policy_keeps_webhook_vault_and_api_paths():
+    content = read("roles/k8s-secrets/tasks/reconcile.yml")
+    policy = content.split(
+        "- name: Allow only required External Secrets reconciliation traffic", 1
+    )[1].split("- name:", 1)[0]
+    assert "name: allow-external-secrets-required-traffic" in policy
+    assert "- kube-apiserver" in policy
+    assert "port: '10250'" in policy
+    assert "serviceName: vault" in policy
+    assert "namespace: '{{ vault_ns }}'" in policy
+    assert "port: '8200'" in policy
+    assert "k8s:io.kubernetes.pod.namespace: monitoring" in policy
+
+
+def test_velero_network_policy_uses_configured_external_storage_port():
+    content = read("roles/backup-restore/tasks/velero.yml")
+    assert "urlsplit('scheme')" in content
+    assert "urlsplit('hostname')" in content
+    assert "urlsplit('port')" in content
+    policy = content.split(
+        'name: "Backup-DR | Allow only required Velero control and backup traffic"',
+        1,
+    )[1].split("- name:", 1)[0]
+    assert "name: allow-velero-required-traffic" in policy
+    assert "- kube-apiserver" in policy
+    assert "- host" in policy
+    assert 'port: "{{ backup_dr_storage_port | string }}"' in policy
+    assert "toFQDNs:" in policy
+    assert 'matchName: "{{ backup_dr_storage_hostname }}"' in policy
+    egress = policy.split("egress:", 1)[1]
+    assert "- world" not in egress
+    assert "- remote-node" not in egress
+    assert "port: '8085'" in policy
 
 
 def test_health_gate_rejects_invalid_cilium_policies():

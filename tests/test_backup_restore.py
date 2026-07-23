@@ -120,6 +120,69 @@ def test_velero_dynamic_include_propagates_tags_to_every_child_task():
     assert set(include["tags"]) == {"backup", "backup-dr", "velero"}
 
 
+def test_velero_provider_init_container_has_complete_resource_bounds():
+    defaults = yaml.safe_load(
+        (REPO_ROOT / "roles" / "backup-restore" / "defaults" / "main.yml").read_text()
+    )
+    tasks = load_yaml(TASKS_DIR / "velero.yml")
+    install = next(
+        task
+        for task in tasks
+        if task.get("name")
+        == "Backup-DR | Deploy Velero with node-agent filesystem backups"
+    )
+    init_containers = install["kubernetes.core.helm"]["values"]["initContainers"]
+    provider = next(
+        container
+        for container in init_containers
+        if container["name"] == "velero-plugin-for-aws"
+    )
+
+    resources = provider["resources"]
+    assert set(resources) == {"requests", "limits"}
+    assert set(resources["requests"]) == {"cpu", "memory"}
+    assert set(resources["limits"]) == {"cpu", "memory"}
+    expected = {
+        "requests": {
+            "cpu": "backup_dr_velero_plugin_cpu_request",
+            "memory": "backup_dr_velero_plugin_memory_request",
+        },
+        "limits": {
+            "cpu": "backup_dr_velero_plugin_cpu_limit",
+            "memory": "backup_dr_velero_plugin_memory_limit",
+        },
+    }
+    for category, bounds in expected.items():
+        for resource, variable in bounds.items():
+            assert variable in defaults
+            assert resources[category][resource] == "{{ " + variable + " }}"
+
+
+def test_velero_restore_helper_uses_explicit_numeric_non_root_identity():
+    tasks = load_yaml(TASKS_DIR / "velero.yml")
+    install = next(
+        task
+        for task in tasks
+        if task.get("name")
+        == "Backup-DR | Deploy Velero with node-agent filesystem backups"
+    )
+    values = install["kubernetes.core.helm"]["values"]
+    helper = values["configMaps"]["fs-restore-action-config"]
+    assert helper["labels"] == {
+        "velero.io/plugin-config": "",
+        "velero.io/pod-volume-restore": "RestoreItemAction",
+    }
+    assert helper["data"]["image"] == "docker.io/velero/velero:{{ backup_dr_velero_image_tag }}"
+    sec_ctx = yaml.safe_load(helper["data"]["secCtx"])
+    assert sec_ctx["runAsNonRoot"] is True
+    assert sec_ctx["runAsUser"] == 1001
+    assert sec_ctx["runAsGroup"] == 1001
+    assert sec_ctx["allowPrivilegeEscalation"] is False
+    assert sec_ctx["readOnlyRootFilesystem"] is True
+    assert sec_ctx["capabilities"]["drop"] == ["ALL"]
+    assert sec_ctx["seccompProfile"]["type"] == "RuntimeDefault"
+
+
 def test_replacement_cluster_has_an_isolated_velero_only_bootstrap_path():
     play = load_yaml(REPO_ROOT / "playbooks" / "deploy_platform.yml")[0]
     bootstrap = next(

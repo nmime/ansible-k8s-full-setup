@@ -400,6 +400,7 @@
         'release: not found' not in (gt_helm_stale_uninstall.stderr | lower)
 
 - name: Install GlitchTip via Helm
+  no_log: true
   kubernetes.core.helm:
     name: glitchtip
     chart_ref: glitchtip/glitchtip

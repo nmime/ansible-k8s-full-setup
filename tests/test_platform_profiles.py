@@ -69,6 +69,12 @@ def load_profile(name: str) -> dict:
         return yaml.safe_load(stream)
 
 
+def test_medium_keeps_measured_gitlab_webservice_headroom():
+    profile = load_profile("medium")
+    assert profile["gitlab"]["webservice_memory_request"] == "2Gi"
+    assert profile["gitlab"]["webservice_memory_limit"] == "3Gi"
+
+
 def test_component_certificates_use_selectable_cluster_issuer():
     defaults = yaml.safe_load((REPO_ROOT / "defaults" / "main.yml").read_text())
     assert defaults["cert_manager_cluster_issuer"] == "letsencrypt-prod"
@@ -228,7 +234,8 @@ class TestNamedProfileContract:
         assert profile["gitlab"]["sidekiq_max_replicas"] == 4
         assert profile["gitlab"]["registry_max_replicas"] == 3
         assert profile["gitlab"]["runner"]["concurrent_jobs"] == 4
-        assert profile["gitlab"]["webservice_memory_request"] == "768Mi"
+        assert profile["gitlab"]["webservice_memory_request"] == "2Gi"
+        assert profile["gitlab"]["webservice_memory_limit"] == "3Gi"
         assert profile["gitlab"]["sidekiq_memory_request"] == "768Mi"
         assert profile["gitlab"]["kas_memory_request"] == "128Mi"
         assert profile["gitlab"]["toolbox_memory_request"] == "192Mi"
@@ -337,6 +344,14 @@ class TestMediumOptimizedContract:
             "min_replicas": 1,
             "max_replicas": 4,
         }
+
+    def test_gitlab_keeps_measured_webservice_headroom_and_bounded_runner_parallelism(
+        self,
+    ):
+        assert self.profile["gitlab"]["webservice_memory_request"] == "2Gi"
+        assert self.profile["gitlab"]["webservice_memory_limit"] == "3Gi"
+        assert self.profile["gitlab"]["runner"]["enabled"] is True
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 4
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
@@ -1319,6 +1334,8 @@ class TestComponentLifecycle:
         assert "denyGlobalSecrets: true" in coroot
         assert "Create VPN-only Coroot HTTPRoute" in coroot
         assert "name: admin-gateway" in coroot
+        assert "Create default-deny NetworkPolicy for Coroot namespace" in coroot
+        assert "allow-coroot-required-traffic" in coroot
         assert "latest" not in coroot
         assert "Wait for the Coroot node agent DaemonSet rollout" in coroot
 

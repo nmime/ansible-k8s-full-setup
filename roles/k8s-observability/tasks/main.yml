@@ -316,6 +316,7 @@
   until: _r_create_loki_s3_credentials_secret is not failed
   when: log_stack == "loki"
 - name: Install Loki with Helm
+  no_log: true
   kubernetes.core.helm:
     name: loki
     chart_ref: grafana/loki
@@ -576,6 +577,22 @@
               protocol: UDP
             - port: '53'
               protocol: TCP
+        - toCIDR:
+          - 169.254.25.10/32
+          toPorts:
+          - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
+        - toEntities:
+          - host
+          toPorts:
+          - ports:
+            - port: '53'
+              protocol: UDP
+            - port: '53'
+              protocol: TCP
         - toEntities:
           - kube-apiserver
         - toServices:
@@ -601,6 +618,7 @@
   when: log_stack != "loki" and _r_grafana_es_credentials.resources | default([]) | length > 0
   no_log: true
 - name: Install Grafana with Helm
+  no_log: true
   kubernetes.core.helm:
     name: grafana
     chart_ref: grafana/grafana
@@ -753,6 +771,50 @@
   retries: 3
   delay: 10
   until: _r_install_grafana_with_helm is not failed
+- name: Wait for Grafana before reconciling its persisted admin password
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - deployment/grafana
+      - --namespace
+      - '{{ monitoring_namespace }}'
+      - --timeout=10m
+  changed_when: false
+- name: Reconcile the persisted Grafana admin password
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    printf '%s\n' "$GRAFANA_ADMIN_PASSWORD" | \
+      kubectl exec -i --namespace "{{ monitoring_namespace }}" deployment/grafana \
+        -- sh -ec 'IFS= read -r password; grafana cli --homepath /usr/share/grafana \
+          --config /etc/grafana/grafana.ini \
+          admin reset-admin-password "$password" >/dev/null'
+  args:
+    executable: /bin/bash
+  environment:
+    GRAFANA_ADMIN_PASSWORD: '{{ grafana_admin_password }}'
+  changed_when: true
+- name: Verify the reconciled Grafana admin login
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    payload=$(printf '%s' "$GRAFANA_ADMIN_PASSWORD" | \
+      jq -Rcn --arg user "{{ grafana_admin_user | default('admin') }}" \
+        'input as $password | {user:$user,password:$password}')
+    printf '%s' "$payload" | kubectl exec -i --namespace "{{ monitoring_namespace }}" \
+      deployment/grafana -- sh -ec 'curl -fsS -H "Content-Type: application/json" \
+        --data-binary @- http://localhost:3000/login >/dev/null'
+  args:
+    executable: /bin/bash
+  environment:
+    GRAFANA_ADMIN_PASSWORD: '{{ grafana_admin_password }}'
+  changed_when: false
+  register: _grafana_password_verification
+  retries: 10
+  delay: 3
+  until: _grafana_password_verification is succeeded
 - name: Create Grafana Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -1418,6 +1480,88 @@
       password: '{{ _r_filebeat_source_secrets.results[1].resources[0].data.password }}'
   no_log: true
   when: log_stack in ["elk", "efk"]
+- name: Detect the Helm major version for the Filebeat post-renderer
+  ansible.builtin.command:
+    argv:
+    - helm
+    - version
+    - --short
+  register: _r_filebeat_helm_version
+  changed_when: false
+  when: log_stack == "elk"
+- name: Resolve the Helm-compatible Filebeat post-renderer
+  ansible.builtin.set_fact:
+    _filebeat_helm_major: >-
+      {{ (_r_filebeat_helm_version.stdout | trim).split('.') | first
+         | regex_replace('[^0-9]', '')
+         | int }}
+  when: log_stack == "elk"
+- name: Discover the Helm 4 plugin root
+  ansible.builtin.command:
+    argv:
+    - helm
+    - env
+    - HELM_PLUGINS
+  register: _r_filebeat_helm_plugins_root
+  changed_when: false
+  when:
+  - log_stack == "elk"
+  - _filebeat_helm_major | int >= 4
+- name: Resolve the Helm 4 plugin root
+  ansible.builtin.set_fact:
+    _filebeat_helm_plugins_root: >-
+      {{ (_r_filebeat_helm_plugins_root.stdout | trim).split(':') | first }}
+  when:
+  - log_stack == "elk"
+  - _filebeat_helm_major | int >= 4
+- name: Inspect installed Helm 4 post-renderer plugins
+  ansible.builtin.command:
+    argv:
+    - helm
+    - plugin
+    - list
+    - --type
+    - postrenderer/v1
+  register: _r_filebeat_helm_plugins
+  changed_when: false
+  when:
+  - log_stack == "elk"
+  - _filebeat_helm_major | int >= 4
+- name: Install the bundled Helm 4 Filebeat post-renderer plugin
+  ansible.builtin.command:
+    argv:
+    - helm
+    - plugin
+    - install
+    - '{{ playbook_dir }}/../helm-plugins/filebeat-containerd'
+  when:
+  - log_stack == "elk"
+  - _filebeat_helm_major | int >= 4
+  - _r_filebeat_helm_plugins.stdout is not regex('(?m)^filebeat-containerd\\s')
+- name: Resolve the installed and bundled Helm 4 post-renderer paths
+  ansible.builtin.command:
+    argv:
+    - '{{ ansible_playbook_python }}'
+    - -c
+    - 'import os,sys; print(os.path.realpath(sys.argv[1])); print(os.path.realpath(sys.argv[2]))'
+    - '{{ _filebeat_helm_plugins_root }}/filebeat-containerd'
+    - '{{ playbook_dir }}/../helm-plugins/filebeat-containerd'
+  register: _r_filebeat_helm_plugin_paths
+  changed_when: false
+  when:
+  - log_stack == "elk"
+  - _filebeat_helm_major | int >= 4
+- name: Reject a conflicting Helm 4 Filebeat post-renderer plugin
+  ansible.builtin.assert:
+    that:
+    - _r_filebeat_helm_plugin_paths.stdout_lines | length == 2
+    - _r_filebeat_helm_plugin_paths.stdout_lines[0] == _r_filebeat_helm_plugin_paths.stdout_lines[1]
+    fail_msg: >-
+      Helm plugin filebeat-containerd exists but is not the bundled platform
+      post-renderer. Remove the conflicting plugin and rerun deployment.
+  when:
+  - log_stack == "elk"
+  - _filebeat_helm_major | int >= 4
 - name: Install Filebeat for log collection (ELK)
   kubernetes.core.helm:
     name: filebeat
@@ -1427,9 +1571,16 @@
     create_namespace: false
     release_state: present
     wait: false
-    post_renderer: '{{ playbook_dir }}/../scripts/filebeat-containerd-post-renderer.sh'
+    post_renderer: >-
+      {{ 'filebeat-containerd'
+         if (_filebeat_helm_major | int) >= 4
+         else playbook_dir ~ '/../scripts/filebeat-containerd-post-renderer.sh' }}
     values:
       imageTag: 9.4.3
+      podAnnotations:
+        platform.n0xeid.xyz/logging-credentials-checksum: >-
+          {{ _r_filebeat_source_secrets.results[1].resources[0].data.password
+             | hash('sha256') }}
       daemonset:
         enabled: true
         securityContext:
@@ -1512,6 +1663,7 @@
             cpu: 500m
             memory: 512Mi
   register: _r_install_filebeat_elk
+  no_log: true
   retries: 3
   delay: 10
   until: _r_install_filebeat_elk is not failed

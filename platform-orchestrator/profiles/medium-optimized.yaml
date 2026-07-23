@@ -128,6 +128,11 @@ gitlab:
   webservice_replicas: 1
   webservice_max_replicas: 2
   worker_processes: 2
+  # A live webservice reached about 1.96Gi. Reserve its measured working set and
+  # allow bounded headroom without reverting the rest of this profile to the
+  # normal medium resource envelope.
+  webservice_memory_request: 2Gi
+  webservice_memory_limit: 3Gi
   sidekiq_replicas: 1
   sidekiq_max_replicas: 2
   registry_max_replicas: 2

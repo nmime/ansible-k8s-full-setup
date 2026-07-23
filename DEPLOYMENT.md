@@ -108,6 +108,10 @@ Coroot -> observability is also enforced; HIPAA-oriented hardening requires
 secrets, observability, Cilium encryption, and active log redaction. The full
 selector, profile matrix, and removal classes are in the
 [technology catalog](docs/TECHNOLOGY_CATALOG.md).
+Adding a selector later reuses the existing foundation, but it does not create
+capacity. Validate allocatable CPU, memory, storage, and topology constraints
+before reconciliation; use the supported named-profile migration or approved
+node-resize workflow when the current cluster cannot place the added workload.
 Alert delivery channels remain settings under `alerting.telegram.enabled` and
 `alerting.email.enabled`; email requires Postal, while Telegram also requires
 `ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID` at deployment time.
@@ -213,7 +217,8 @@ Removal never deletes Hetzner infrastructure, DNS, remote backup objects, or
 the tracing bucket. Data-bearing components refuse removal without
 `--delete-data`. Re-enabling after a non-removal pause reconciles the retained
 installation; re-enabling after data deletion creates a fresh service unless
-you perform the documented restore procedure.
+you perform the documented restore procedure. Re-enable never automatically
+selects or replays a retained backup.
 
 HIPAA-oriented hardening can be disabled to stop future reconciliation, but
 generic removal is refused because host and cluster security controls cannot
@@ -270,6 +275,17 @@ the next node. Scale-in and source-data deletion remain behind `finalize`.
 Equivalent-compute server types with a larger existing root disk are retained
 and written into the active migration config; a disk-shrinking compute change
 fails before mutation instead of attempting an unsafe provider resize.
+
+VictoriaMetrics topology changes carry a separate data proof. Migration writes
+a deterministic one-hour historical sentinel, requires the exact value and
+millisecond timestamp from source and destination, binds that result to the
+migration descriptor, and re-queries the live destination before retiring the
+old resource and again immediately before deleting its PVCs. Rollback first
+copies post-switch samples back and proves an exact delta sentinel on both
+sides. A completed copy Job by itself is never deletion authority. Before every
+finalization invocation with destructive stages pending, the workflow also
+refreshes and verifies the final encrypted recovery point; Velero is removed
+only near the end when the target disables scheduled backup.
 
 Downgrades never request an in-place PVC shrink because Kubernetes storage
 cannot safely do that. The generated named target records larger existing

@@ -2,7 +2,7 @@
 
 This is the repository's audited cost baseline for the default
 `medium-optimized` profile. Prices were read from Hetzner Cloud's authenticated
-`/v1/pricing` API on 2026-07-22. They are net EUR values for the queried account,
+`/v1/pricing` API on 2026-07-23. They are net EUR values for the queried account,
 whose API response reported 0% VAT. Re-query before purchasing because provider
 prices, tax, and included traffic can change.
 
@@ -74,3 +74,9 @@ traffic overages, external DR S3 or MinIO capacity, snapshots, Hetzner server
 backups, domain registration, support, and any VAT applicable to another
 customer. Private networks, firewalls, and placement groups have no separate
 line item in this calculation.
+
+At the same audit time, the authenticated `hel1` server-type catalog marked
+`cx23`, `cx33`, and `cx43` unavailable for new placement. The price calculation
+is therefore a capacity plan, not a placement guarantee; re-check location
+availability immediately before provisioning or select an approved alternate
+location/type mapping.

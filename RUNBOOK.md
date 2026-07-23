@@ -150,7 +150,7 @@ in parallel, but each controller advances one host operation at a time. Keep
 that bound on memory-constrained workstations and raise it only after checking
 RAM and swap headroom.
 
-Five-tier controllers keep encrypted Vault initialization material in
+Five-profile controllers keep encrypted Vault initialization material in
 `.campaign-state/PROJECT/`, alongside the encrypted `.platform-secrets.yml`
 credential source and outside disposable worktrees. Preserve that gitignored
 directory and the matching vault password in the operator backup; never
@@ -190,6 +190,12 @@ and enabled Kubernetes resources. Extra servers and server type changes always
 fail closed; the infrastructure role cannot bulk-delete or bulk-resize cluster
 members. Use the migration controller, which checkpoints every operation and
 drains, validates, and restores one node at a time:
+
+Before `execute`, export the remote DR endpoint/bucket credentials and an age
+recipient or pass the equivalent flags; set a volume quota large enough for
+the source and target PVC inventories plus migration staging. `plan` prints the
+exact required inputs and confirmation phrase. Do not rely on an undeclared
+controller `.env` when writing an operator procedure.
 
 ```bash
 ./scripts/migrate-profile.sh --target medium plan
@@ -315,7 +321,10 @@ There is no automatic plaintext path.
 Vault uses internal cert-manager TLS. Initialization output is encrypted into
 the configured local init file; Kubernetes does not receive a root-token or
 unseal-key Secret/CronJob. Follow the organization’s approved manual or KMS
-unseal procedure after pod/node recovery.
+unseal procedure after ordinary pod/node recovery. Full replacement recovery
+is the narrow exception: `native-restore.sh` may automate unseal only from that
+separately protected Ansible-Vault-encrypted init file, streams shares over
+stdin, verifies the internal CA, and removes its temporary token Secret.
 
 Checks:
 
@@ -437,8 +446,12 @@ counts, drains/resizes each retained node separately, grows both the provider
 disk and the node root filesystem, verifies etcd before and after control-plane
 changes, applies target capabilities, migrates
 VictoriaMetrics single-to-cluster or cluster-to-single, validates the target,
-and captures the second encrypted recovery point. Before finalization,
-`migrate rollback` copies post-switch VictoriaMetrics samples back, restores the
+and captures the second encrypted recovery point. Metrics migration injects a
+persisted historical sentinel and requires its exact value and millisecond
+timestamp from both topologies; finalization repeats the destination query
+before old metrics PVC deletion. Before finalization, `migrate rollback` copies
+post-switch VictoriaMetrics samples back, proves a post-switch delta sentinel on
+both sides, then restores the
 recorded Helm/config baseline, removes target-only components in dependency
 order, and deliberately retains expanded/resized nodes. If Vault already uses
 the migrated Raft storage, rollback restores every non-Vault Helm revision and
@@ -446,10 +459,12 @@ retains Raft. Target-only data removal is authorized only by the completed
 post-migration backup checkpoint; without it rollback fails closed rather than
 discarding target writes. HIPAA-oriented hardening is never generically
 reversed.
-Finalization is itself checkpointed: it removes disabled dependants first,
-retires old metrics/logging PVCs, removes excess workers then control planes
-through Kubespray, reconciles the exact target, takes a final backup, removes
-disabled backup resources last, and cleans unused cloud placement resources.
+Finalization is itself checkpointed. Before every invocation with destructive
+work still pending, it refreshes and verifies the final encrypted recovery
+point. It then removes disabled dependants, retires old metrics/logging PVCs,
+removes excess workers then control planes through Kubespray, reconciles the
+exact target, removes disabled backup resources near the end, and cleans unused
+cloud placement resources.
 
 Every completed node resize is followed by the full profile-aware platform
 health gate before the next node is touched. This includes expected node and

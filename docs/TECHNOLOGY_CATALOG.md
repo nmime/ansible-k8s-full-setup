@@ -3,7 +3,10 @@
 This is the exhaustive catalog for the canonical
 `playbooks/deploy_platform.yml` workflow. The YAML selector is the source of
 truth: a named profile is only a starting point, and any optional component
-can be enabled later through `platform.sh` without rebuilding the cluster.
+can be enabled later through `platform.sh` without rebuilding the foundation.
+The operator must still validate node capacity, persistent storage, and topology
+constraints; use the supported profile migration or approved node resize when
+the active cluster cannot place the added workload.
 
 ## Always-managed foundations
 
@@ -165,15 +168,24 @@ alert-channel choices that differ from the source profile's named defaults are
 carried into the target and recorded in `selection-retention.tsv`.
 Target reconciliation applies that merged selection, while technology deletion
 is deferred to the separately confirmed, checkpointed `finalize` phase. A
-removed technology can be selected again later and restored from its retained
-external backup; external backup and Loki archive objects are never deleted by
-profile finalization.
+removed technology can be selected again later, but selection creates a fresh
+service after data deletion and does not automatically choose or replay an old
+backup. Recover retained data only through that component's documented restore
+procedure. External backup and Loki archive objects are never deleted by profile
+finalization.
 
 The transition expands to the larger node topology, resizes retained nodes one
 at a time, grows both the provider disk and root filesystem, and requires full
 platform health before touching the next node. It migrates VictoriaMetrics
-between single and cluster mode when needed, then safely removes excess nodes
-through Kubespray. Production taints control planes for general workloads but
+between single and cluster mode when needed. That path writes a deterministic
+one-hour historical sentinel, proves its exact value and millisecond timestamp
+on both source and destination, binds the proof to the migration descriptor,
+and re-queries the live destination before old-resource and PVC deletion.
+Rollback copies post-switch samples back and proves a delta sentinel on both
+sides. A completed copy Job alone never authorizes deletion. Finalization
+refreshes and verifies its final encrypted recovery point before any pending
+destructive stage, then safely removes excess nodes through Kubespray.
+Production taints control planes for general workloads but
 allows critical PostgreSQL, MongoDB, and Elasticsearch stateful replicas to
 tolerate them for one-worker failure capacity. Larger existing PVC
 requests are retained as named-profile overrides because Kubernetes does not
@@ -186,7 +198,11 @@ migration plan and state.
 The bastion is also retained without an in-place type change. Before mutation,
 the migration reads its live provider type and writes it to every generated
 source, transition, target, backup, and rollback config as well as durable
-state. Resume repeats that read-only capture to heal older states and reconciles
+state. Backup checkpoints bind the exact local and remote archive and completion
+receipt identities and SHA-256 hashes into that same state. Resume and rollback
+revalidate those objects before mutation, while each finalization invocation
+with pending destructive retirement creates and verifies a fresh bundle first.
+Resume repeats that read-only capture to heal older states and reconciles
 the expansion spread placement group's exact project ownership label.
 
 ## Pinned platform versions

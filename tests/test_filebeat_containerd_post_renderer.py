@@ -120,10 +120,14 @@ def test_post_renderer_fails_closed_for_a_privileged_filebeat_container():
 def test_role_installs_filebeat_through_the_containerd_post_renderer():
     tasks = (ROOT / "roles" / "k8s-observability" / "tasks" / "main.yml").read_text()
     filebeat_task = tasks.split("- name: Install Filebeat for log collection (ELK)", 1)[1]
-    assert (
-        "post_renderer: '{{ playbook_dir }}/../scripts/filebeat-containerd-post-renderer.sh'"
-        in filebeat_task
-    )
+    assert "Detect the Helm major version for the Filebeat post-renderer" in tasks
+    assert "(_r_filebeat_helm_version.stdout | trim).split('.') | first" in tasks
+    assert "regex_replace('[^0-9]', '')" in tasks
+    assert "Install the bundled Helm 4 Filebeat post-renderer plugin" in tasks
+    assert "Reject a conflicting Helm 4 Filebeat post-renderer plugin" in tasks
+    assert "helm\n    - env\n    - HELM_PLUGINS" in tasks
+    assert "if (_filebeat_helm_major | int) >= 4" in filebeat_task
+    assert "else playbook_dir ~ '/../scripts/filebeat-containerd-post-renderer.sh'" in filebeat_task
     assert "privileged: false" in filebeat_task
     assert "allowPrivilegeEscalation: false" in filebeat_task
     assert "drop: [ALL]" in filebeat_task
@@ -131,6 +135,26 @@ def test_role_installs_filebeat_through_the_containerd_post_renderer():
     assert "key: node-role.kubernetes.io/control-plane" in filebeat_task
     assert "key: node-role.kubernetes.io/master" in filebeat_task
     assert filebeat_task.count("effect: NoSchedule") >= 2
+
+
+def test_helm4_post_renderer_plugin_is_bundled_and_delegates_to_the_fail_closed_renderer():
+    plugin_dir = ROOT / "helm-plugins" / "filebeat-containerd"
+    manifest = yaml.safe_load((plugin_dir / "plugin.yaml").read_text())
+    assert manifest == {
+        "apiVersion": "v1",
+        "type": "postrenderer/v1",
+        "name": "filebeat-containerd",
+        "version": "0.1.0",
+        "runtime": "subprocess",
+        "runtimeConfig": {
+            "platformCommand": [
+                {"command": "${HELM_PLUGIN_DIR}/run.sh"},
+            ]
+        },
+    }
+    wrapper = (plugin_dir / "run.sh").read_text()
+    assert "pwd -P" in wrapper
+    assert "../../scripts/filebeat-containerd-post-renderer.sh" in wrapper
 
 
 def test_nonvendored_workload_roles_do_not_mount_docker_runtime_paths():
@@ -241,6 +265,13 @@ def test_efk_gets_agent_namespace_secrets_policies_and_health_check():
     assert "username:" in replication
     assert "password:" in replication
     assert "es-credentials" not in replication
+    filebeat = tasks.split(
+        "- name: Install Filebeat for log collection (ELK)", 1
+    )[1].split("- name: Remove legacy Fluentd release", 1)[0]
+    assert "platform.n0xeid.xyz/logging-credentials-checksum" in filebeat
+    assert "_r_filebeat_source_secrets.results[1].resources[0].data.password" in filebeat
+    assert "| hash('sha256')" in filebeat
+    assert "no_log: true" in filebeat
     assert "Remove the legacy replicated Elasticsearch superuser secret" in tasks
     cleanup = tasks.split(
         "- name: Remove replicated logging credentials when Elasticsearch logging is deselected",
@@ -266,6 +297,8 @@ def test_efk_gets_agent_namespace_secrets_policies_and_health_check():
         1,
     )[1].split("- name: Fetch Elasticsearch credentials for Grafana datasource", 1)[0]
     assert "k8s:k8s-app: kube-dns" in logging_policy
+    assert "- 169.254.25.10/32" in logging_policy
+    assert "- host" in logging_policy
     assert "- kube-apiserver" in logging_policy
     assert "serviceName:" in logging_policy
     assert "loki-gateway" in logging_policy

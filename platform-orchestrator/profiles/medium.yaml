@@ -108,6 +108,10 @@ gitlab:
   enabled: true
   webservice_replicas: 2
   sidekiq_replicas: 2
+  # The live production campaign observed ~1.96Gi per Webservice pod. Keep
+  # equivalent headroom on medium, whose node envelope is larger.
+  webservice_memory_request: 2Gi
+  webservice_memory_limit: 3Gi
   runner:
     enabled: true
     concurrent_jobs: 10
