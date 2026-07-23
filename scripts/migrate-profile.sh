@@ -802,7 +802,8 @@ generate_configs() {
         safety_margin_gib:$margin,live_account_usage_required:true} |
       .minimum_required_headroom_gib=(.required_additional_gib + $margin) |
       .offline_result=(
-        if $quota == null then "quota-required-before-execute"
+        if (.storage_class_changes | length) > 0 then "replacement-restore-required"
+        elif $quota == null then "quota-required-before-execute"
         elif .minimum_required_headroom_gib > $quota then "impossible-even-empty-account"
         else "requires-live-provider-state" end)
     ' "$CAPACITY_PLAN_FILE" > "${CAPACITY_PLAN_FILE}.tmp.$$"
@@ -812,6 +813,7 @@ generate_configs() {
     (.source.persistent_total_gib | numbers) and
     (.target.persistent_total_gib | numbers) and
     (.target_delta_gib | numbers) and
+    (.storage_class_changes | objects) and
     (.migration_scratch_gib | numbers) and
     (.required_additional_gib == (.target_delta_gib + .migration_scratch_gib)) and
     (.minimum_required_headroom_gib ==
@@ -869,6 +871,7 @@ Retained bastion server type: $(yq -r '.network.bastion.server_type // "disabled
 Estimated source persistent capacity: $(jq -r '.source.persistent_total_gib' "$CAPACITY_PLAN_FILE") GiB
 Estimated target persistent capacity: $(jq -r '.target.persistent_total_gib' "$CAPACITY_PLAN_FILE") GiB
 Estimated target-only/growth delta: $(jq -r '.target_delta_gib' "$CAPACITY_PLAN_FILE") GiB
+Immutable StorageClass transitions: $(jq -r '.storage_class_changes | length' "$CAPACITY_PLAN_FILE")
 Retained migration backup scratch: $(jq -r '.migration_scratch_gib' "$CAPACITY_PLAN_FILE") GiB
 Required additional capacity before safety margin: $(jq -r '.required_additional_gib' "$CAPACITY_PLAN_FILE") GiB
 Configured account volume quota: ${VOLUME_QUOTA_GIB:-MISSING} GiB
@@ -878,6 +881,11 @@ EOF
   [[ ! -s "$STORAGE_RETENTION_FILE" ]] || { printf '\nRetained storage requests (source, requested target, YAML path):\n'; sed 's/\t/  /g' "$STORAGE_RETENTION_FILE"; }
   [[ ! -s "$STATEFUL_RETENTION_FILE" ]] || { printf '\nRetained data-bearing replicas (source, requested target, YAML path):\n'; sed 's/\t/  /g' "$STATEFUL_RETENTION_FILE"; }
   [[ ! -s "$SELECTION_RETENTION_FILE" ]] || { printf '\nPreserved component selections (YAML path, source-profile default, active value):\n'; sed 's/\t/  /g' "$SELECTION_RETENTION_FILE"; }
+  if jq -e '.storage_class_changes | length > 0' "$CAPACITY_PLAN_FILE" >/dev/null; then
+    printf '\nStorageClass transitions (replacement restore required):\n'
+    jq -r '.storage_class_changes | to_entries[] |
+      "  \(.key): \(.value.source) -> \(.value.target)"' "$CAPACITY_PLAN_FILE"
+  fi
   exit 0
 fi
 
@@ -895,6 +903,9 @@ if [[ "$COMMAND" == execute ]]; then
   archive_reusable_state
   generate_configs
   validate_generated_configs
+  if jq -e '.storage_class_changes | length > 0' "$CAPACITY_PLAN_FILE" >/dev/null; then
+    fail "PVC StorageClass is immutable; this profile transition requires a backup-gated replacement cluster plus native/Velero restore. Run plan for the exact claim map, then use cluster-backup.sh, cluster-restore.sh, and native-restore.sh instead of in-place execute."
+  fi
   if [[ "$DRY_RUN" == true ]]; then
     for stage in "${STAGES[@]}"; do dry "would run stage: $stage"; done
     exit 0

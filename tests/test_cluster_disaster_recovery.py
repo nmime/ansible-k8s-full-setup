@@ -2003,7 +2003,11 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
         "live_account_usage_required": True,
     }
     assert capacity["minimum_required_headroom_gib"] == 1370
-    assert capacity["offline_result"] == "quota-required-before-execute"
+    assert capacity["offline_result"] == (
+        "replacement-restore-required"
+        if capacity["storage_class_changes"]
+        else "quota-required-before-execute"
+    )
     assert "Required additional capacity before safety margin: 1270 GiB" in result.stdout
 
 
@@ -2203,7 +2207,11 @@ def test_migration_plan_supports_every_ordered_profile_pair(tmp_path, source, ta
         capacity["target_delta_gib"] + capacity["migration_scratch_gib"]
     )
     assert capacity["required_additional_gib"] >= 0
-    assert capacity["offline_result"] == "quota-required-before-execute"
+    assert capacity["offline_result"] == (
+        "replacement-restore-required"
+        if capacity["storage_class_changes"]
+        else "quota-required-before-execute"
+    )
 
 
 def test_live_migration_requires_explicit_hetzner_volume_quota(tmp_path):

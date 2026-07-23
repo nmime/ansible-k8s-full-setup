@@ -188,6 +188,28 @@ For the full medium service set on the constrained resource envelope, initialize
 `platform_profile: medium-optimized`, `tier: medium`, and
 `resource_tier: small` before deployment.
 
+That profile uses a hybrid storage policy. Run the capacity estimator against
+the generated config and confirm the expected 470 GiB local reservation plus
+280 GiB provider CSI capacity:
+
+```bash
+scripts/profile-storage-capacity.py \
+  --source platform.yaml \
+  --target platform.yaml
+```
+For a new cluster, the deploy playbook creates and verifies the static local
+PV pool before stateful workloads. For an existing cluster, do not edit PVCs
+or StatefulSet claim templates in place: take a complete external backup,
+provision a replacement cluster, and use the verified `cluster-restore.sh`
+plus `native-restore.sh` workflow. `migrate-profile.sh ... plan` prints the
+immutable StorageClass transition map and `execute` fails closed.
+
+Static local PV sizes are logical scheduler reservations, not hard directory
+quotas. Keep `NodeDiskUsageHigh` and `NodeDiskPressure` alerts active, respond
+before root usage reaches 85%, and never clean a retained local-PV directory
+until the affected application member has been rebuilt and external recovery
+has been verified.
+
 Reruns reconcile firewall rules, load-balancer services/targets, DNS records,
 and enabled Kubernetes resources. Extra servers and server type changes always
 fail closed; the infrastructure role cannot bulk-delete or bulk-resize cluster

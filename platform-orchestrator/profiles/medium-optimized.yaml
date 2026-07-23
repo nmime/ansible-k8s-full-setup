@@ -13,8 +13,9 @@ tier: medium
 resource_tier: small
 cost_estimate: >-
   Current balanced tariff: 3 x cpx32 control plane, 4 x cpx32 workers, cpx22
-  bastion, lb11, one bastion IPv4, and 750 GiB billable persistent volumes
-  (730 GiB data claims plus 20 GiB GitLab backup staging). See docs/COST_MODEL.md.
+  bastion, lb11, one bastion IPv4, 470 GiB replication-qualified local SSD
+  reservation, and 280 GiB provider-billable persistent volumes. See
+  docs/COST_MODEL.md.
 
 global:
   project: k8s
@@ -79,9 +80,23 @@ kubernetes:
 # ---------------------------------------------
 # Storage
 # ---------------------------------------------
+local_storage:
+  enabled: true
+  storage_class: platform-local
+  path: /var/lib/platform-local-storage
+  # Every Kubernetes node must retain this much free root-disk capacity before
+  # local provisioning is enabled. Monitoring and application replication
+  # remain mandatory because local PVs cannot move with a failed node.
+  min_free_gib_per_node: 40
+
 storage:
   enabled: true
   mode: distributed
+  storage_class: hcloud-volumes
+  master_storage_class: platform-local
+  volume_storage_class: platform-local
+  index_storage_class: platform-local
+  filer_storage_class: hcloud-volumes
   master_replicas: 3
   volume_replicas: 3
   replication_placement: "001"
@@ -100,6 +115,8 @@ secrets:
   vault:
     replicas: 3
     storage_size: 10Gi
+    data_storage_class: platform-local
+    audit_storage_class: hcloud-volumes
   eso:
     enabled: true
     replicas: 1
@@ -114,10 +131,14 @@ databases:
     replicas: 3
     proxy_replicas: 1
     storage_size: 30Gi
+    data_storage_class: platform-local
+    repo_storage_class: hcloud-volumes
+    repo_storage_size: 10Gi
   mongodb:
     enabled: true
     replicas: 3
     storage_size: 20Gi
+    data_storage_class: platform-local
 
 # ---------------------------------------------
 # GitLab
@@ -183,6 +204,7 @@ elasticsearch:
   enabled: true
   master:
     replicas: 3
+    storage_class: platform-local
     cpu_request: 100m
     cpu_limit: 500m
     memory_request: 1Gi
@@ -191,6 +213,7 @@ elasticsearch:
     storage_size: 10Gi
   data:
     replicas: 2
+    storage_class: platform-local
     cpu_request: 250m
     cpu_limit: 1000m
     memory_request: 1536Mi

@@ -56,8 +56,9 @@ replica failover.
 Medium, medium-optimized, and production use two Elasticsearch data replicas.
 This keeps the default one shard replica assigned and makes Elasticsearch
 health gates truthfully require green status. For medium-optimized, the second
-40 GiB data claim is included in the current 730 GiB persistent-capacity report
-(plus the unchanged 20 GiB GitLab backup-staging peak).
+40 GiB data claim is included in the current 750 GiB conservative capacity
+envelope. Medium-optimized places 470 GiB of replication-qualified claims on
+server SSD and retains 280 GiB on provider CSI.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
@@ -68,6 +69,7 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Component | YAML selector | Main technologies | Required selections | minimal | small | medium | medium-optimized | production |
 |---|---|---|---|---:|---:|---:|---:|---:|
 | Object storage | `storage.enabled` | SeaweedFS S3/filer/master/volume | none | on | on | on | on | on |
+| Node-local replicated claims | `local_storage.enabled` | Kubernetes static local PVs, delayed binding, retained PVs, explicit slot map and capacity gate | application replication plus external DR | off | off | off | on | off |
 | Secrets | `secrets.enabled` | Vault Raft with internal TLS | none | on | on | on | on | on |
 | ESO | `secrets.eso.enabled` | External Secrets Operator, Vault `ClusterSecretStore` | Secrets | off | off | on | on | on |
 | Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | on | on | on | on | on |
@@ -108,9 +110,15 @@ Loki claims are retained independently of StatefulSet scale/delete and are
 retired only by the checkpointed migration finalizer.
 
 Capacity planning counts every persistent index claim separately. For
-`medium-optimized`, three 2 GiB index requests are each billed at Hetzner's
-10 GiB volume minimum, contributing 30 GiB to the profile's 730 GiB operational
-data total. GitLab backup staging adds another 20 GiB; see
+medium-optimized it also records each claim's StorageClass: SeaweedFS
+master/volume/index, Vault Raft, PostgreSQL data, MongoDB data, and
+Elasticsearch use local SSD; singleton, audit, and backup claims remain on
+Hetzner CSI. StorageClass changes are immutable and therefore require the
+backup-gated replacement/native-restore path rather than an ordinary
+reconcile. The three 2 GiB SeaweedFS index requests reserve a conservative
+10 GiB each on local SSD, contributing 30 GiB to the 470 GiB local envelope
+even though their actual Kubernetes requests total 6 GiB. GitLab backup
+staging remains a 20 GiB CSI claim; see
 [the current cost model](COST_MODEL.md).
 
 Alert transports are settings rather than removable workloads:

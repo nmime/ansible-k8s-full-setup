@@ -1071,6 +1071,254 @@
   failed_when: false
 
 # ============================================
+# Bounded node-local storage (optional)
+# ============================================
+
+- name: Configure the retained static local storage class
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: "{{ local_storage_class }}"
+        annotations:
+          storageclass.kubernetes.io/is-default-class: 'false'
+      provisioner: kubernetes.io/no-provisioner
+      reclaimPolicy: Retain
+      volumeBindingMode: WaitForFirstConsumer
+  register: _r_configure_local_storage_class
+  retries: 3
+  delay: 10
+  until: _r_configure_local_storage_class is not failed
+  when: local_storage_enabled | bool
+
+- name: Resolve schedulable control-plane nodes for the static local PV pool
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl get nodes -o json |
+      jq -r '.items[]
+        | select(.metadata.labels["node-role.kubernetes.io/control-plane"] != null)
+        | .metadata.name' |
+      sort
+  args:
+    executable: /bin/bash
+  register: local_storage_control_plane_nodes_result
+  changed_when: false
+  when: local_storage_enabled | bool
+
+- name: Resolve worker nodes for the static local PV pool
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl get nodes -o json |
+      jq -r '.items[]
+        | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
+        | .metadata.name' |
+      sort
+  args:
+    executable: /bin/bash
+  register: local_storage_worker_nodes_result
+  changed_when: false
+  when: local_storage_enabled | bool
+
+- name: Enforce the audited 3+4 local-storage topology
+  ansible.builtin.assert:
+    that:
+      - cp_schedulable | bool
+      - local_storage_control_plane_nodes_result.stdout_lines | length == 3
+      - local_storage_worker_nodes_result.stdout_lines | length == 4
+    fail_msg: >-
+      The medium-optimized local PV pool requires exactly three schedulable
+      control planes and four workers. Refusing an unreviewed disk layout.
+  when: local_storage_enabled | bool
+
+- name: Enforce root-disk capacity for the static local PV reservation
+  ansible.builtin.shell: |
+    set -euo pipefail
+    nodes=$(kubectl get nodes -o json)
+    jq -e '
+      def capacity_kib:
+        (.status.capacity["ephemeral-storage"]
+          | capture("^(?<value>[0-9]+)Ki$").value
+          | tonumber);
+      all(
+        .items[];
+        if .metadata.labels["node-role.kubernetes.io/control-plane"] != null
+        then capacity_kib >= (70 * 1024 * 1024)
+        else capacity_kib >= (140 * 1024 * 1024)
+        end
+      )
+    ' <<<"$nodes" >/dev/null
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: local_storage_enabled | bool
+
+- name: Build the capacity-aware static local PV slot map
+  ansible.builtin.set_fact:
+    local_storage_pv_slots:
+      # Each 80 GiB control-plane root disk keeps at least 40 GiB outside PVCs.
+      - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[0] }}", size: 30, slot: 1}
+      - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[0] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[1] }}", size: 30, slot: 1}
+      - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[1] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[2] }}", size: 30, slot: 1}
+      - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[2] }}", size: 10, slot: 1}
+      # Four 160 GiB worker disks reserve at most 90 GiB each.
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 40, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 40, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 40, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 40, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 40, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 20, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 3}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 20, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 20, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 3}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 4}
+  when: local_storage_enabled | bool
+
+- name: Create and validate static local PV directories on every node
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: platform-local-storage-initializer
+        namespace: kube-system
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: platform-local-storage-initializer
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: platform-local-storage-initializer
+          spec:
+            tolerations:
+              - operator: Exists
+            containers:
+              - name: initializer
+                image: docker.io/library/busybox:1.37.0
+                command:
+                  - sh
+                  - -ec
+                  - >-
+                    free_kib=$(df -Pk /storage | awk 'NR==2 {print $4}');
+                    test "$free_kib" -ge {{
+                    (local_storage_min_free_gib_per_node | int) * 1024 * 1024 }};
+                    for slot in
+                    10gi-1 10gi-2 10gi-3 10gi-4
+                    20gi-1 20gi-2 30gi-1 40gi-1 40gi-2;
+                    do mkdir -m 0777 -p "/storage/pv-$slot"; done;
+                    touch /storage/.platform-static-local-pv-ready;
+                    sleep 3600
+                resources:
+                  requests: {cpu: 5m, memory: 8Mi}
+                  limits: {cpu: 50m, memory: 32Mi}
+                volumeMounts:
+                  - name: local-storage
+                    mountPath: /storage
+            volumes:
+              - name: local-storage
+                hostPath:
+                  path: "{{ local_storage_path }}"
+                  type: DirectoryOrCreate
+  register: _r_create_local_storage_initializer
+  retries: 3
+  delay: 10
+  until: _r_create_local_storage_initializer is not failed
+  when: local_storage_enabled | bool
+
+- name: Wait for every node to initialize the static local PV pool
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: kube-system
+    name: platform-local-storage-initializer
+  register: local_storage_initializer
+  until: >
+    (local_storage_initializer.resources | default([])) | length > 0
+    and
+    (local_storage_initializer.resources[0].status.numberReady | default(0))
+    ==
+    (local_storage_initializer.resources[0].status.desiredNumberScheduled | default(1))
+  retries: 60
+  delay: 5
+  when: local_storage_enabled | bool
+
+- name: Reconcile the capacity-aware static local PV pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolume
+      metadata:
+        name: >-
+          platform-local-{{ (item.node | hash('sha1'))[0:8] }}-{{
+          item.size }}gi-{{ item.slot }}
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          platform.example.com/project: "{{ project_name }}"
+          platform.example.com/storage-pool: medium-optimized-local
+      spec:
+        capacity:
+          storage: "{{ item.size }}Gi"
+        volumeMode: Filesystem
+        accessModes: [ReadWriteOnce]
+        persistentVolumeReclaimPolicy: Retain
+        storageClassName: "{{ local_storage_class }}"
+        local:
+          path: "{{ local_storage_path }}/pv-{{ item.size }}gi-{{ item.slot }}"
+        nodeAffinity:
+          required:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: ["{{ item.node }}"]
+  loop: "{{ local_storage_pv_slots }}"
+  loop_control:
+    label: "{{ item.node }}:{{ item.size }}Gi:{{ item.slot }}"
+  register: _r_reconcile_static_local_pv_pool
+  retries: 3
+  delay: 5
+  until: _r_reconcile_static_local_pv_pool is not failed
+  when: local_storage_enabled | bool
+
+- name: Verify the static local PV pool count and capacity
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pool=$(kubectl get pv -l \
+      platform.example.com/project={{ project_name | quote }},platform.example.com/storage-pool=medium-optimized-local \
+      -o json)
+    test "$(jq '.items | length' <<<"$pool")" -eq 23
+    test "$(jq '[.items[].spec.capacity.storage | sub("Gi$"; "") | tonumber] | add' <<<"$pool")" -eq 470
+    test "$(jq '[.items[].spec.persistentVolumeReclaimPolicy] | all(. == "Retain")' <<<"$pool")" = true
+    test "$(jq '[.items[].spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values | length] | all(. == 1)' <<<"$pool")" = true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: local_storage_enabled | bool
+
+- name: Remove the successful static local PV initializer
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: kube-system
+    name: platform-local-storage-initializer
+    wait: true
+  when: local_storage_enabled | bool
+
+# ============================================
 # Gateway API CRDs + Cilium Gateway
 # ============================================
 

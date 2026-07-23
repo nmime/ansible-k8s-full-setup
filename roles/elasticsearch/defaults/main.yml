@@ -16,6 +16,7 @@ es_master_cpu_req: "{{ elasticsearch.master.cpu_request | default('500m' if reso
 es_master_cpu_lim: "{{ elasticsearch.master.cpu_limit | default('1000m' if resource_tier in ['medium', 'production'] else '500m') }}"
 es_master_heap: "{{ elasticsearch.master.heap | default('1g' if resource_tier in ['medium', 'production'] else '512m') }}"
 es_master_storage: "{{ elasticsearch.master.storage_size | default('30Gi' if resource_tier == 'production' else '20Gi') }}"
+es_master_storage_class: "{{ elasticsearch.master.storage_class | default(storage_class | default('hcloud-volumes')) }}"
 
 es_data_memory_req: "{{ elasticsearch.data.memory_request | default('4Gi' if resource_tier == 'production' else '2Gi' if resource_tier == 'medium' else '1536Mi') }}"
 es_data_memory_lim: "{{ elasticsearch.data.memory_limit | default('4Gi' if resource_tier == 'production' else '2Gi') }}"
@@ -23,6 +24,7 @@ es_data_cpu_req: "{{ elasticsearch.data.cpu_request | default('1000m' if resourc
 es_data_cpu_lim: "{{ elasticsearch.data.cpu_limit | default('2000m' if resource_tier == 'production' else '1000m') }}"
 es_data_heap: "{{ elasticsearch.data.heap | default('2g' if resource_tier == 'production' else '1g') }}"
 es_data_storage: "{{ elasticsearch.data.storage_size | default('150Gi' if resource_tier == 'production' else '100Gi' if resource_tier == 'medium' else '20Gi') }}"
+es_data_storage_class: "{{ elasticsearch.data.storage_class | default(storage_class | default('hcloud-volumes')) }}"
 
 kibana_replicas: "{{ elasticsearch.kibana.replicas | default(1) }}"
 kibana_memory_req: "{{ elasticsearch.kibana.memory_request | default('768Mi' if resource_tier in ['medium', 'production'] else '384Mi') }}"

@@ -6,7 +6,8 @@
     kb_img: '{{ kibana_image }}:{{ kibana_version }}'
     es_cluster: '{{ es_cluster_name }}'
     es_password: '{{ es_superuser_password }}'
-    storage_class: '{{ storage_class | default("hcloud-volumes") }}'
+    es_master_storage_class_resolved: '{{ es_master_storage_class | default(storage_class | default("hcloud-volumes")) }}'
+    es_data_storage_class_resolved: '{{ es_data_storage_class | default(storage_class | default("hcloud-volumes")) }}'
   no_log: true
 - name: Create Elasticsearch namespace
   kubernetes.core.k8s:
@@ -365,6 +366,14 @@
             # but critical stateful replicas may use its reserved capacity when
             # a worker is drained or exhausts the CSI attachment limit.
             tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app: elasticsearch
+                        role: master
+                    topologyKey: kubernetes.io/hostname
             securityContext:
               fsGroup: 1000
               runAsUser: 1000
@@ -481,7 +490,7 @@
           spec:
             accessModes:
             - ReadWriteOnce
-            storageClassName: '{{ storage_class }}'
+            storageClassName: '{{ es_master_storage_class_resolved }}'
             resources:
               requests:
                 storage: '{{ es_master_storage }}'
@@ -589,6 +598,14 @@
               role: data
           spec:
             tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app: elasticsearch
+                        role: data
+                    topologyKey: kubernetes.io/hostname
             securityContext:
               fsGroup: 1000
               runAsUser: 1000
@@ -705,7 +722,7 @@
           spec:
             accessModes:
             - ReadWriteOnce
-            storageClassName: '{{ storage_class }}'
+            storageClassName: '{{ es_data_storage_class_resolved }}'
             resources:
               requests:
                 storage: '{{ es_data_storage }}'

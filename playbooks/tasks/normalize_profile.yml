@@ -70,7 +70,26 @@
     k8s_pod_cidr: '{{ kubernetes.pod_cidr | default(k8s_pod_cidr) }}'
     k8s_service_cidr: '{{ kubernetes.service_cidr | default(k8s_service_cidr) }}'
     storage_class: '{{ storage.storage_class | default(storage_class) }}'
+    local_storage_enabled: '{{ local_storage.enabled | default(local_storage_enabled) | bool }}'
+    local_storage_class: '{{ local_storage.storage_class | default(local_storage_class) }}'
+    local_storage_path: '{{ local_storage.path | default(local_storage_path) }}'
+    local_storage_min_free_gib_per_node: >-
+      {{ local_storage.min_free_gib_per_node |
+         default(local_storage_min_free_gib_per_node) }}
     object_storage_enabled: '{{ platform_object_storage_enabled }}'
+    object_storage_master_storage_class: >-
+      {{ storage.master_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
+    object_storage_volume_storage_class: >-
+      {{ storage.volume_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
+    object_storage_index_storage_class: >-
+      {{ storage.index_storage_class |
+         default(storage.volume_storage_class |
+         default(storage.storage_class | default(storage_class))) }}
+    object_storage_filer_storage_class: >-
+      {{ storage.filer_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
     object_storage_replicas: >-
       {{ storage.master_replicas | default(storage.replicas | default(object_storage_replicas | default(1))) }}
     object_storage_volume_replicas: >-
@@ -87,6 +106,12 @@
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
     vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
     vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
+    vault_data_storage_class: >-
+      {{ secrets.vault.data_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
+    vault_audit_storage_class: >-
+      {{ secrets.vault.audit_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
     vault_audit_storage_size: >-
       {{ secrets.vault.audit_storage_size |
          default(secrets.vault.storage_size | default(vault_storage_size)) }}
@@ -104,6 +129,15 @@
     postgresql_proxy_replicas: >-
       {{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(1)) }}
     postgresql_storage: '{{ databases.postgresql.storage_size | default(postgresql_storage) }}'
+    postgresql_data_storage_class: >-
+      {{ databases.postgresql.data_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
+    postgresql_repo_storage_class: >-
+      {{ databases.postgresql.repo_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
+    postgresql_repo_storage: >-
+      {{ databases.postgresql.repo_storage_size |
+         default(postgresql_repo_storage | default('10Gi')) }}
     database_container_default_resources: >-
       {{ databases.container_defaults | default(database_container_default_resources) }}
     postgresql_replica_cert_copy_resources: >-
@@ -126,6 +160,9 @@
          default(postgresql_pgbackrest_job_resources) }}
     mongodb_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(1)) }}'
     mongodb_storage: '{{ databases.mongodb.storage_size | default(mongodb_storage) }}'
+    mongodb_data_storage_class: >-
+      {{ databases.mongodb.data_storage_class |
+         default(storage.storage_class | default(storage_class)) }}
     mongodb_backup_resources: >-
       {{ (databases.mongodb.resources | default({})).backup |
          default(mongodb_backup_resources) }}
@@ -224,6 +261,34 @@
     hipaa_compliance: '{{ platform_hipaa_enabled }}'
     log_redaction_enabled: >-
       {{ compliance.hipaa.log_redaction_enabled | default(platform_hipaa_enabled) | bool }}
+
+- name: Validate local SSD storage policy
+  ansible.builtin.assert:
+    that:
+      - local_storage_class is match('^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$')
+      - local_storage_path is match('^/[A-Za-z0-9._/-]+$')
+      - "'..' not in local_storage_path.split('/')"
+      - local_storage_min_free_gib_per_node | int >= 20
+      - local_storage_min_free_gib_per_node | int <= 1024
+      - >-
+        local_storage_enabled | bool
+        or local_storage_class not in local_claim_storage_classes
+    fail_msg: >-
+      Local storage selections require local_storage.enabled=true, an absolute
+      traversal-free path, and a 20-1024 GiB per-node free-space gate.
+  vars:
+    local_claim_storage_classes:
+      - '{{ object_storage_master_storage_class }}'
+      - '{{ object_storage_volume_storage_class }}'
+      - '{{ object_storage_index_storage_class }}'
+      - '{{ object_storage_filer_storage_class }}'
+      - '{{ vault_data_storage_class }}'
+      - '{{ vault_audit_storage_class }}'
+      - '{{ postgresql_data_storage_class }}'
+      - '{{ postgresql_repo_storage_class }}'
+      - '{{ mongodb_data_storage_class }}'
+      - '{{ elasticsearch.master.storage_class | default(storage_class) }}'
+      - '{{ elasticsearch.data.storage_class | default(storage_class) }}'
 
 - name: Validate the selected logging stack
   ansible.builtin.assert:

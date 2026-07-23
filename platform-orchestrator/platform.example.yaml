@@ -66,10 +66,20 @@ kubernetes:
     encryption: true
     network_policies: true
 
+local_storage:
+  # Opt in only for application-replicated claims. Local PVs are node-affine
+  # and require external recovery backups.
+  enabled: false
+  storage_class: platform-local
+  path: /var/lib/platform-local-storage
+  min_free_gib_per_node: 40
+
 storage:
   enabled: true
   replicas: 1
   storage_class: hcloud-volumes
+  # Per-component overrides can select platform-local after local_storage is
+  # enabled. See profiles/medium-optimized.yaml for the audited hybrid map.
   size: 100Gi
   # Normal deployments keep a separate durable index claim per volume replica.
   # Only disposable --minimum-storage campaigns colocate indexes with data.

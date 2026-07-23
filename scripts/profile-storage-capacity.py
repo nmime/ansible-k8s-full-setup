@@ -47,17 +47,36 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
     tier = str(config.get("tier", "custom"))
     resource = str(config.get("resource_tier", tier))
     claims: dict[str, dict[str, Any]] = {}
+    default_storage_class = str(
+        nested(config, "storage.storage_class", config.get("storage_class", "hcloud-volumes"))
+    )
 
-    def add(key: str, replicas: Any, size: Any, source: str) -> None:
+    def storage_class(path: str, fallback: str = default_storage_class) -> str:
+        return str(nested(config, path, fallback))
+
+    def add(
+        key: str,
+        replicas: Any,
+        size: Any,
+        source: str,
+        claim_storage_class: str = default_storage_class,
+    ) -> None:
         count = int(replicas)
         if count < 1:
             raise ValueError(f"{key} replica count must be positive")
         per_volume = billable_gib(size)
+        requested_per_volume = requested_gib(size)
+        provider_billable = claim_storage_class == "hcloud-volumes"
         claims[key] = {
             "replicas": count,
             "requested_size": str(size),
+            "requested_per_volume_gib": requested_per_volume,
+            "requested_total_gib": count * requested_per_volume,
             "billable_per_volume_gib": per_volume,
             "total_gib": count * per_volume,
+            "storage_class": claim_storage_class,
+            "provider_billable_gib": count * per_volume if provider_billable else 0,
+            "local_reserved_gib": count * per_volume if not provider_billable else 0,
             "source": source,
         }
 
@@ -68,42 +87,91 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
         volumes = nested(config, "storage.volume_replicas", masters)
         filers = nested(config, "storage.filer_replicas", 2 if default_ha else 1)
         default_volume = {"minimal": "20Gi", "small": "40Gi", "medium": "100Gi"}.get(resource, "150Gi")
-        add("object-storage/master", masters, nested(config, "storage.master_size", "4Gi"), "SeaweedFS master")
+        add(
+            "object-storage/master",
+            masters,
+            nested(config, "storage.master_size", "4Gi"),
+            "SeaweedFS master",
+            storage_class("storage.master_storage_class"),
+        )
         add("object-storage/volume", volumes,
             nested(config, "storage.size_per_replica", nested(config, "storage.size", default_volume)),
-            "SeaweedFS volume")
+            "SeaweedFS volume",
+            storage_class("storage.volume_storage_class"))
         if enabled(config, "storage.index_persistent", True):
             add("object-storage/index", volumes,
                 nested(config, "storage.index_size", "4Gi"),
-                "SeaweedFS volume indexes")
-        add("object-storage/filer", filers, nested(config, "storage.filer_size", "10Gi"), "SeaweedFS filer")
+                "SeaweedFS volume indexes",
+                storage_class(
+                    "storage.index_storage_class",
+                    storage_class("storage.volume_storage_class"),
+                ))
+        add(
+            "object-storage/filer",
+            filers,
+            nested(config, "storage.filer_size", "10Gi"),
+            "SeaweedFS filer",
+            storage_class("storage.filer_storage_class"),
+        )
 
     if enabled(config, "secrets.enabled", True):
         replicas = nested(config, "secrets.vault.replicas", 3 if resource in {"medium", "production"} else 1)
         size = nested(config, "secrets.vault.storage_size", "20Gi")
-        add("vault/data", replicas, size, "Vault Raft data")
-        add("vault/audit", replicas, nested(config, "secrets.vault.audit_storage_size", size), "Vault audit")
+        add(
+            "vault/data",
+            replicas,
+            size,
+            "Vault Raft data",
+            storage_class("secrets.vault.data_storage_class"),
+        )
+        add(
+            "vault/audit",
+            replicas,
+            nested(config, "secrets.vault.audit_storage_size", size),
+            "Vault audit",
+            storage_class("secrets.vault.audit_storage_class"),
+        )
 
     databases = enabled(config, "databases.enabled", True)
     if databases and enabled(config, "databases.postgresql.enabled", True):
         replicas = nested(config, "databases.postgresql.replicas", 2 if resource in {"medium", "production"} else 1)
         default_pg = {"minimal": "20Gi", "small": "30Gi", "medium": "50Gi"}.get(resource, "100Gi")
-        add("postgresql/data", replicas, nested(config, "databases.postgresql.storage_size", default_pg), "Percona PostgreSQL instances")
-        add("postgresql/repo1", 1, "10Gi", "pgBackRest local repository")
+        add(
+            "postgresql/data",
+            replicas,
+            nested(config, "databases.postgresql.storage_size", default_pg),
+            "Percona PostgreSQL instances",
+            storage_class("databases.postgresql.data_storage_class"),
+        )
+        add(
+            "postgresql/repo1",
+            1,
+            nested(config, "databases.postgresql.repo_storage_size", "10Gi"),
+            "pgBackRest local repository",
+            storage_class("databases.postgresql.repo_storage_class"),
+        )
     if databases and enabled(config, "databases.mongodb.enabled", resource in {"medium", "production"}):
         replicas = nested(config, "databases.mongodb.replicas", 3 if resource in {"medium", "production"} else 1)
         default_mongo = {"minimal": "20Gi", "small": "30Gi", "medium": "50Gi"}.get(resource, "100Gi")
-        add("mongodb/data", replicas, nested(config, "databases.mongodb.storage_size", default_mongo), "Percona MongoDB members")
+        add(
+            "mongodb/data",
+            replicas,
+            nested(config, "databases.mongodb.storage_size", default_mongo),
+            "Percona MongoDB members",
+            storage_class("databases.mongodb.data_storage_class"),
+        )
 
     if enabled(config, "elasticsearch.enabled", tier in {"medium", "production"}):
         master_replicas = nested(config, "elasticsearch.master.replicas", 3 if resource in {"medium", "production"} else 1)
         data_replicas = nested(config, "elasticsearch.data.replicas", 2 if resource == "production" else 1)
         add("elasticsearch/master", master_replicas,
             nested(config, "elasticsearch.master.storage_size", "30Gi" if resource == "production" else "20Gi"),
-            "Elasticsearch masters")
+            "Elasticsearch masters",
+            storage_class("elasticsearch.master.storage_class"))
         add("elasticsearch/data", data_replicas,
             nested(config, "elasticsearch.data.storage_size", "150Gi" if resource == "production" else "100Gi" if resource == "medium" else "20Gi"),
-            "Elasticsearch data")
+            "Elasticsearch data",
+            storage_class("elasticsearch.data.storage_class"))
 
     if enabled(config, "dragonfly.enabled", tier in {"medium", "production"}):
         add("dragonfly/data", nested(config, "dragonfly.replicas", 2 if resource in {"medium", "production"} else 1),
@@ -150,8 +218,10 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
                                         "50Gi" if resource in {"medium", "production"} else "20Gi"), "Postal MariaDB")
 
     scratch = 0
+    scratch_storage_class = default_storage_class
     if gitlab_enabled and bool(nested(config, "gitlab.backup_persistence_enabled", True)):
         scratch = billable_gib(nested(config, "gitlab.backup_persistence_size", "50Gi"))
+        scratch_storage_class = storage_class("gitlab.backup_storage_class")
     return {
         "profile": str(config.get("platform_profile", tier)),
         "tier": tier,
@@ -159,7 +229,21 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
         "provider_minimum_volume_gib": 10,
         "claims": claims,
         "persistent_total_gib": sum(item["total_gib"] for item in claims.values()),
+        "requested_persistent_total_gib": sum(
+            item["requested_total_gib"] for item in claims.values()
+        ),
+        "provider_persistent_gib": sum(
+            item["provider_billable_gib"] for item in claims.values()
+        ),
+        "local_reserved_gib": sum(item["local_reserved_gib"] for item in claims.values()),
         "backup_scratch_gib": scratch,
+        "backup_scratch_storage_class": scratch_storage_class,
+        "provider_backup_scratch_gib": (
+            scratch if scratch_storage_class == "hcloud-volumes" else 0
+        ),
+        "local_backup_scratch_gib": (
+            scratch if scratch_storage_class != "hcloud-volumes" else 0
+        ),
     }
 
 
@@ -169,8 +253,23 @@ def migration(source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
     source_claims = source_estimate["claims"]
     target_claims = target_estimate["claims"]
     delta: dict[str, int] = {}
+    storage_class_changes: dict[str, dict[str, str]] = {}
     for key, claim in target_claims.items():
-        growth = max(0, claim["total_gib"] - source_claims.get(key, {}).get("total_gib", 0))
+        source_claim = source_claims.get(key, {})
+        class_changed = (
+            bool(source_claim)
+            and source_claim.get("storage_class") != claim.get("storage_class")
+        )
+        if class_changed:
+            storage_class_changes[key] = {
+                "source": str(source_claim.get("storage_class", "")),
+                "target": str(claim.get("storage_class", "")),
+            }
+        growth = (
+            claim["total_gib"]
+            if class_changed
+            else max(0, claim["total_gib"] - source_claim.get("total_gib", 0))
+        )
         if growth:
             delta[key] = growth
     scratch = max(source_estimate["backup_scratch_gib"], target_estimate["backup_scratch_gib"])
@@ -180,6 +279,7 @@ def migration(source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
         "target": target_estimate,
         "target_delta_by_claim_gib": delta,
         "target_delta_gib": sum(delta.values()),
+        "storage_class_changes": storage_class_changes,
         "retained_source_gib": sum(
             claim["total_gib"] for key, claim in source_claims.items() if key not in target_claims
         ),

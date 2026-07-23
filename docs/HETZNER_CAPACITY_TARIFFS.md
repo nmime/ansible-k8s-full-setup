@@ -91,13 +91,13 @@ balancer where enabled, and every billable CSI volume including GitLab backup
 staging. They exclude external DR object storage, snapshots, excess traffic,
 domains, support, and non-zero customer VAT.
 
-| Profile | PVC capacity | CX economy | CAX planning | CPX balanced | CCX dedicated |
+| Profile | CSI / local reserve | CX economy | CAX planning | CPX balanced | CCX dedicated |
 |---|---:|---:|---:|---:|---:|
-| `minimal` | 250 GiB | €37.27 | €41.77 | **€105.27** | €229.77 |
-| `small` | 360 GiB | €56.54 | €61.54 | **€138.54** | €286.54 |
-| `medium` | 1,520 GiB | €180.37 | €205.87 | **€461.87** | €567.87 |
-| `medium-optimized` | 750 GiB | €145.81 | €130.31 | **€318.81** | €695.81 |
-| `production` | 1,490 GiB | €194.65 | €225.15 | **€529.65** | €652.15 |
+| `minimal` | 250 / 0 GiB | €37.27 | €41.77 | **€105.27** | €229.77 |
+| `small` | 360 / 0 GiB | €56.54 | €61.54 | **€138.54** | €286.54 |
+| `medium` | 1,520 / 0 GiB | €180.37 | €205.87 | **€461.87** | €567.87 |
+| `medium-optimized` | 280 / 470 GiB | €118.93 | €103.43 | **€291.93** | €668.93 |
+| `production` | 1,490 / 0 GiB | €194.65 | €225.15 | **€529.65** | €652.15 |
 
 CX figures are valid purchase prices whenever the complete mapping reappears;
 the required shapes were temporarily not placeable in `hel1` at capture time.
@@ -116,32 +116,43 @@ topology.
 
 The CX option is intentionally mixed instead of assigning `cx33` everywhere:
 
-| Role | Shape and count | vCPU | RAM | Node-local SSD | Durable CSI | Monthly net |
+| Role | Shape and count | vCPU | RAM | Node-local SSD | CSI capacity | Monthly net |
 |---|---|---:|---:|---:|---:|---:|
 | Schedulable control planes | 3 × `cx33` | 12 | 24 GiB | 240 GiB | — | €25.47 |
 | Workers | 4 × `cx43` | 32 | 64 GiB | 640 GiB | — | €63.96 |
 | Bastion | 1 × `cx23` | 2 | 4 GiB | 40 GiB | — | €5.49 |
 | `lb11` and bastion IPv4 | 1 each | — | — | — | — | €7.99 |
 | **Infrastructure** | | **46** | **92 GiB** | **920 GiB** | — | **€102.91** |
-| Durable CSI volumes | 42 volumes | — | — | — | 750 GiB | €42.90 |
-| **Total** | | | | **920 GiB** | **750 GiB** | **€145.81** |
+| Provider CSI volumes | 19 volumes | — | — | — | 280 GiB | €16.02 |
+| Local PVC reservation | 23 volumes | — | — | 470 GiB | — | included |
+| **Total** | | | | **920 GiB** | **280 GiB** | **€118.93** |
 
 Excluding the bastion, Kubernetes receives 44 vCPU, 88 GiB RAM, and 880 GiB
 aggregate node-local SSD. Relative to four `cx33` workers, the four `cx43`
 workers double the workload pool from 16 to 32 vCPU, 32 to 64 GiB RAM, and 320
 to 640 GiB local SSD for €30/month more. The three control planes remain
-schedulable and contribute another 12 vCPU and 24 GiB RAM.
+schedulable and contribute another 12 vCPU and 24 GiB RAM. Of the Kubernetes
+nodes' 880 GiB aggregate SSD, 470 GiB is conservatively reserved for
+application-replicated PVCs.
 
 ## Local disk and volume boundary
 
-The SSD column is node-local root storage. It is not a shared Kubernetes
-storage allowance and is not subtracted from Hetzner CSI volumes. Replacing
-durable claims with local disks would require a separately designed replicated
-storage layer, node-affinity and evacuation procedures, rebuild handling, and
-off-site recovery proof.
+The SSD column is node-local root storage, not shared storage. The
+`medium-optimized` profile now uses it selectively through a capacity-aware
+23-volume static local PV pool, `WaitForFirstConsumer`, retained PVs,
+required hostname anti-affinity, minimum root-disk gates of 70 GiB on control
+planes and 140 GiB on workers, and a 40 GiB per-node free-space gate. Only
+SeaweedFS master/volume/index, Vault Raft data, PostgreSQL instances, MongoDB
+members, and Elasticsearch master/data claims use this class because those
+applications already replicate across nodes.
 
-At the current €0.0572/GiB-month Volume rate, buying a larger CPX tier merely to
-gain disk is more expensive per incremental GiB than retaining CSI volumes.
-Resize compute for CPU or memory pressure. Reduce volume cost through measured
-retention and backup/restore into smaller claims, not by counting aggregate
-node-local SSD as durable shared storage.
+Node-local PVs remain pinned to their node. A failed or deleted node does not
+carry its local PV to a replacement. Application quorum repairs the live
+service and external native plus Velero/Kopia backups provide recovery.
+PV capacity is a Kubernetes scheduling reservation, not a hard per-directory
+filesystem quota; all local slots share the node root filesystem and remain
+protected by the 85% disk-usage alert plus kubelet `DiskPressure`.
+SeaweedFS filer, Vault audit, pgBackRest, observability, Gitaly, Dragonfly,
+Coroot/ClickHouse, Tempo, Postal, and backup staging remain on Hetzner CSI.
+Existing CSI claims cannot change StorageClass in place; migrate them only
+through the backup-gated replacement/native-restore procedure.
