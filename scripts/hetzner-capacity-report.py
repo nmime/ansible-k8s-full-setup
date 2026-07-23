@@ -186,7 +186,7 @@ def build_plans(
                         if family == "cax"
                         else "deployable"
                         if all(selected_availability.values())
-                        else "capacity-unavailable"
+                        else "temporarily-unavailable"
                     ),
                     "infrastructure_monthly_net": f"{infrastructure:.2f}",
                     "volume_gib": volume_gib,
