@@ -1,10 +1,10 @@
-# Five-Tier Live Test Report — 2026-07-21
+# Five-Profile Live Test Report — 2026-07-21
 
 ## Result and scope
 
 All five named profiles were deployed concurrently as isolated Hetzner Cloud
 clusters and exercised against delegated `n0xeid.xyz` DNS. The historical
-five-tier acceptance evidence contains 23/23 Ready Kubernetes nodes, 141/141
+five-profile acceptance evidence contains 23/23 Ready Kubernetes nodes, 141/141
 protected PVCs, five passing profile-aware smoke runs, five healthy post-load
 snapshots, five complete encrypted cluster bundles, five successful local
 archive-verification runs, and 254,950 load operations with zero reported
@@ -56,7 +56,7 @@ The authoritative selectable-component matrix, dependencies, and later
 enable/disable/remove behavior remain in
 [`TECHNOLOGY_CATALOG.md`](TECHNOLOGY_CATALOG.md).
 
-## Historical five-tier acceptance evidence
+## Historical five-profile acceptance evidence
 
 The acceptance snapshots were collected after load with
 `scripts/collect-live-evidence.sh`. Every snapshot reported `healthy: true`, no
@@ -85,7 +85,7 @@ After the component drills and intentional GitLab cleanup, a new production
 pressure, 195 observed pods with none pending/failed/unready, zero unavailable
 controllers, zero failed Jobs, zero unbound PVCs, healthy certificates/routes/
 APIServices, and 6/6 healthy provider-edge checks. This superseded the earlier
-production snapshot for the five-tier acceptance phase. That disposable
+production snapshot for the five-profile acceptance phase. That disposable
 production cluster was subsequently removed.
 
 ## Bounded load result
@@ -145,14 +145,16 @@ verified all five local archives, their external checksums, internal
 dependency. This is archive-integrity and recovery-input proof; it does not
 mutate a cluster or replay PVC contents.
 
-The original five archive/checksum/receipt triplets and their Velero objects
-remain in external DR storage after provider teardown. The later live
-`minimal` to `production` migration produced two additional complete encrypted
-pre-switch triplets, timestamped `20260721T102455Z` and `20260721T104447Z`.
-Both are retained remotely; the first was independently decrypted and verified,
-and the second is the durable backup-stage checkpoint used by the active
-migration. These extra checkpoints do not replace the original five-tier
-acceptance bundles.
+At the original evidence cutoff, the five archive/checksum/receipt triplets and
+their Velero objects remained in external DR storage after provider teardown.
+The later live `minimal` to `production` migration produced two additional
+complete encrypted pre-switch triplets, timestamped `20260721T102455Z` and
+`20260721T104447Z`. At that cutoff both were retained remotely; the first was
+independently decrypted and verified, and the second was the durable
+backup-stage checkpoint used by the active migration. These extra checkpoints
+did not replace the original five-profile acceptance bundles. That remote-retention
+state was later superseded by the incident described below: the old root-disk DR
+payloads were lost, while the local encrypted checkpoint remained verifiable.
 
 Production then exercised every isolated component drill:
 
@@ -304,6 +306,9 @@ affected checks rerun. The resulting source changes include:
 - safe GitLab failed-revision recovery that removes only exact newer failed
   Helm history, plus UID/resource-version/PVC-identity-gated Gitaly StatefulSet
   orphan/reconcile instead of an uninstall or implicit data deletion;
+- bounded GitLab Webservice memory headroom above the approximately 1.96 GiB
+  live working set, hard per-component two-domain Rails placement, fail-closed
+  Gitaly PDB verification, and enabled Runner Deployment convergence checks;
 - UID-gated stale GlitchTip Helm revision recovery;
 - Vault TLS/Raft/KV/auth reconciliation and fail-closed reuse of encrypted
   initialization state;
@@ -397,20 +402,18 @@ remain under the adjacent private migration state until operator cleanup. The
 repository documentation and tests describe how to repeat every check without
 depending on these ephemeral local paths.
 
-## Post-cutoff source status — 2026-07-22
+## Post-cutoff source status — 2026-07-23
 
-The recovery implementation through commit `6d6fbef` completed a focused
-327-test validation run. The repository-wide `scripts/validate-local.sh` gate
-then passed all 10 checks, including the complete pytest suite, and local
-`main` exactly matched published `origin/main` at that commit.
+The final recovery implementation passed the repository-wide
+`scripts/validate-local.sh` gate after the replacement exercise and its
+follow-up hardening changes. All 10 mandatory checks passed, including the
+complete pytest suite. Focused recovery testing also exercises interruption
+after PostgreSQL deletion and while an exact completed cluster is still
+becoming Ready. Publication and local/remote `main` parity are verified as a
+separate delivery gate rather than recorded through a self-referential commit
+hash in this file.
 
-These results supersede only the source-validation boundary recorded at the
-2026-07-21 evidence cutoff. A full Velero plus application-native replay into a
-separately provisioned replacement cluster was still in progress when this
-appendix was written. No replacement-cluster recovery, post-recovery load, or
-final cleanup outcome is claimed here.
-
-## Medium-optimized cost audit — 2026-07-22
+## Medium-optimized cost audit — 2026-07-23
 
 The authenticated Hetzner pricing API returned `cx33` at €8.49/month,
 `cx23` at €5.49/month, `lb11` at €7.49/month, the bastion IPv4 at €0.50/month,
@@ -421,3 +424,70 @@ and 20 GiB of GitLab backup staging. The exact full-month total is therefore
 €115.810 net (€115.81 rounded). External DR storage, snapshots, excess traffic,
 domain registration, and non-zero customer VAT are excluded. The reconciled
 claim inventory and arithmetic are maintained in [the cost model](COST_MODEL.md).
+At the same query time, `hel1` marked the relevant `cx23`, `cx33`, and `cx43`
+types unavailable for new placement, so the price is not a current capacity
+guarantee.
+
+## Completed replacement-recovery campaign — 2026-07-23
+
+The encrypted source recovery point
+`load5-restore-prod-cluster-20260722T180312Z` was restored into a separately
+provisioned production replacement with three control planes and three workers.
+The source and target `kube-system` UIDs were different. Velero Restore
+`load5-restore-prod-cluster-20260722t180312z-restore-20260723041724` completed
+2,742/2,742 resource items with zero errors. All 41 PodVolumeRestores completed.
+Its 1,005 warnings were explicitly allowed only after review as expected
+existing-resource collisions on the pre-bootstrapped replacement.
+
+The schema-v2 native replay then completed in dependency order for SeaweedFS,
+Vault, PostgreSQL, MongoDB, GitLab Rails secrets, and GitLab Toolbox data.
+Exact artifact locators were checked before mutation. Vault members were
+unsealed and verified, PostgreSQL proved the recorded set through the live
+pgBackRest catalog, MongoDB proved the exact PBM metadata object, and GitLab
+restored without transporting its Rails secret through pod logs. Full
+reconciliation completed with Ansible recap `ok=675 changed=70 unreachable=0
+failed=0 skipped=148 rescued=0 ignored=0`.
+
+Post-reconciliation health passed with 6/6 nodes, 6/6 Cilium agents, 10/10
+cert-manager pods, 55/55 aggregated API services, 10/10 Argo CD pods, 6/6
+PostgreSQL pods, and 4/4 MongoDB pods. There were zero unhealthy workload
+objects, PVCs, certificates, HTTPRoutes, privileged application containers,
+invalid CiliumNetworkPolicies, or failed Helm releases. Authenticated live
+smoke passed every configured route plus S3, PostgreSQL transaction rollback,
+Vault KV, KEDA metrics, Elasticsearch, Grafana, and Argo CD. The GitLab Runner
+Deployment converged one ready replica under production concurrency four; this
+proves runner capacity configuration, not execution of a real GitLab pipeline.
+
+The `replacement-post-recovery` load run passed 159,000 operations with zero
+errors and zero allowed restart delta: HTTP 20,000 in 289 seconds, S3 4,000 in
+48 seconds, PostgreSQL 20,000 in 84 seconds, Vault 15,000 in 462 seconds, and
+Dragonfly 100,000 in 39 seconds. A final health run passed afterward.
+
+Fresh encrypted recovery point
+`load5-restore-prod-cluster-20260723T060931Z` then completed all six native
+backups. Velero completed 3,421/3,421 items and 41/41 PodVolumeBackups with zero
+errors and zero warnings. Its schema-v2 receipt binds target UID
+`7fc558bf-db0b-4b9e-883f-38c1dc7b2a87`, records receipt-last remote
+publication, and proves the downloaded archive SHA-256. This exact receipt
+passed the teardown gate before the first destructive provider mutation.
+
+The backup exercise also exposed a restored stale PostgreSQL backup Lease that
+blocked the first new pgBackRest backup. The disposable Lease was removed after
+proving its holder Job absent, and replacement Restore now excludes all
+`leases.coordination.k8s.io` alongside cert-manager `CertificateRequest`
+objects because both are cluster-local transient state.
+
+Receipt-gated cleanup removed all seven replacement servers, its load balancer,
+41 CSI volumes, firewalls, placement group, network, and API tunnel. The
+remaining orphaned `minimal` test network and placement group were also removed,
+and all disposable `load5-*` DNS RRsets were deleted. Final provider queries
+returned zero matching servers, load balancers, networks, firewalls, placement
+groups, and DNS RRsets. The only retained campaign resource is the detached,
+delete-protected 100 GiB `load5-260720-dr-data` recovery volume. Its DR server
+and DNS record are down; bringing it back requires the separately retained
+credentials.
+
+The VictoriaMetrics exact-value/timestamp and rollback-delta contract remains
+source-tested. The earlier live minimal-to-production profile migration stopped
+at its recorded capacity boundary, so this report does not misrepresent that
+particular live migration as finalized.

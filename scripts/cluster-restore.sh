@@ -11,6 +11,7 @@ MODE=verify
 IDENTITY="${CLUSTER_BACKUP_AGE_IDENTITY:-}"
 OUTPUT_DIR=""
 VELERO_BACKUP=""
+RESUME_RESTORE=""
 RECOVERY_INVENTORY_INPUT=""
 SURVIVOR=""
 BROKEN_NODES=()
@@ -43,6 +44,7 @@ Options:
   --identity FILE         age identity file
   --output-dir DIR        New destination directory for operator-state mode
   --velero-backup NAME    Override the backup name recorded in the bundle
+  --resume-restore NAME   Resume validation of an existing Velero Restore
   --allow-backup-warnings N  Explicitly reviewed Velero Backup warning count
   --allow-restore-warnings N Explicitly reviewed Velero Restore warning count
   --inventory FILE        Updated Kubespray inventory for replacement nodes
@@ -67,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --identity) IDENTITY="$2"; shift 2 ;;
     --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
     --velero-backup) VELERO_BACKUP="$2"; shift 2 ;;
+    --resume-restore) RESUME_RESTORE="$2"; shift 2 ;;
     --allow-backup-warnings) ALLOW_BACKUP_WARNINGS="$2"; shift 2 ;;
     --allow-restore-warnings) ALLOW_RESTORE_WARNINGS="$2"; shift 2 ;;
     --inventory) RECOVERY_INVENTORY_INPUT="$2"; shift 2 ;;
@@ -340,6 +343,10 @@ if [[ "$MODE" == velero ]]; then
   fi
   VELERO_BACKUP="$RECORDED_VELERO_BACKUP"
   [[ -n "$VELERO_BACKUP" && "$VELERO_BACKUP" != null ]] || fail "bundle has no Velero backup name"
+  if [[ -n "$RESUME_RESTORE" ]]; then
+    [[ "$RESUME_RESTORE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] \
+      || fail "--resume-restore must be a valid Kubernetes resource name"
+  fi
   kubectl wait backupstoragelocation/default -n velero --for=jsonpath='{.status.phase}'=Available --timeout=300s
   TARGET_BACKUP_JSON="$WORK_DIR/target-backup.json"
   kubectl get backup "$VELERO_BACKUP" -n velero -o json > "$TARGET_BACKUP_JSON" \
@@ -349,11 +356,15 @@ if [[ "$MODE" == velero ]]; then
     (.status.warnings // 0) <= $allowedWarnings
   ' "$TARGET_BACKUP_JSON" >/dev/null \
     || fail "Velero source Backup is not Completed with zero errors and an explicitly allowed warning count"
-  RESTORE_NAME="${VELERO_BACKUP}-restore-$(date -u +%Y%m%d%H%M%S)"
+  RESTORE_NAME="${RESUME_RESTORE:-${VELERO_BACKUP}-restore-$(date -u +%Y%m%d%H%M%S)}"
   phrase="RESTORE_${PROJECT}"
   if [[ "$DRY_RUN" == true ]]; then
-    dry "would create Velero Restore $RESTORE_NAME in target context $TARGET_CONTEXT"
-    dry "would restore all Kubernetes resources and filesystem-backed PVC data from $VELERO_BACKUP"
+    if [[ -n "$RESUME_RESTORE" ]]; then
+      dry "would resume validation of Velero Restore $RESTORE_NAME in target context $TARGET_CONTEXT"
+    else
+      dry "would create Velero Restore $RESTORE_NAME in target context $TARGET_CONTEXT"
+      dry "would restore all Kubernetes resources and filesystem-backed PVC data from $VELERO_BACKUP"
+    fi
     exit 0
   fi
   if [[ "$CONFIRMATION" != "$phrase" ]]; then
@@ -362,7 +373,30 @@ if [[ "$MODE" == velero ]]; then
     read -r CONFIRMATION
   fi
   [[ "$CONFIRMATION" == "$phrase" ]] || fail "confirmation did not match $phrase"
-  kubectl apply -f - <<EOF
+  if [[ -n "$RESUME_RESTORE" ]]; then
+    TARGET_RESTORE_JSON="$WORK_DIR/target-restore.json"
+    kubectl get restore "$RESTORE_NAME" -n velero -o json > "$TARGET_RESTORE_JSON" \
+      || fail "resumed Velero Restore does not exist: $RESTORE_NAME"
+    jq -e --arg backup "$VELERO_BACKUP" --argjson excluded '[
+      "nodes","events","events.events.k8s.io","backups.velero.io","restores.velero.io",
+      "resticrepositories.velero.io","csinodes.storage.k8s.io",
+      "volumeattachments.storage.k8s.io","backuprepositories.velero.io",
+      "certificaterequests.cert-manager.io","leases.coordination.k8s.io"
+    ]' '
+      .spec.backupName == $backup and
+      (.metadata.deletionTimestamp // "") == "" and
+      .spec.restorePVs == true and .spec.preserveNodePorts == true and
+      .spec.existingResourcePolicy == "none" and .spec.itemOperationTimeout == "8h0m0s" and
+      ((.spec.excludedResources | sort) == ($excluded | sort)) and
+      ((.spec | keys | sort) == ([
+        "backupName","excludedResources","existingResourcePolicy",
+        "itemOperationTimeout","preserveNodePorts","restorePVs"
+      ] | sort))
+    ' "$TARGET_RESTORE_JSON" >/dev/null \
+      || fail "resumed Velero Restore is deleting or does not bind the exact full-scope restore contract"
+    log "resuming validation of existing Velero Restore $RESTORE_NAME"
+  else
+    kubectl apply -f - <<EOF
 apiVersion: velero.io/v1
 kind: Restore
 metadata:
@@ -373,7 +407,23 @@ spec:
   restorePVs: true
   existingResourcePolicy: none
   preserveNodePorts: true
+  itemOperationTimeout: 8h
+  excludedResources:
+    - nodes
+    - events
+    - events.events.k8s.io
+    - backups.velero.io
+    - restores.velero.io
+    - resticrepositories.velero.io
+    - csinodes.storage.k8s.io
+    - volumeattachments.storage.k8s.io
+    - backuprepositories.velero.io
+    - certificaterequests.cert-manager.io
+    - leases.coordination.k8s.io
 EOF
+  fi
+  RESTORE_UID=$(kubectl get restore "$RESTORE_NAME" -n velero -o jsonpath='{.metadata.uid}')
+  [[ -n "$RESTORE_UID" ]] || fail "Velero Restore UID was not assigned"
   deadline=$((SECONDS + RESTORE_TIMEOUT))
   while (( SECONDS < deadline )); do
     phase=$(kubectl get restore "$RESTORE_NAME" -n velero -o jsonpath='{.status.phase}' 2>/dev/null || echo New)
@@ -398,7 +448,7 @@ EOF
   pvr_deadline=$((SECONDS + RESTORE_TIMEOUT))
   while (( SECONDS < pvr_deadline )); do
     kubectl get podvolumerestores -n velero \
-      -l "velero.io/restore-name=${RESTORE_NAME}" -o json \
+      -l "velero.io/restore-uid=${RESTORE_UID}" -o json \
       > "${EVIDENCE_PREFIX}.pod-volume-restores.json"
     failed_pvrs=$(jq '[.items[] | select((.status.phase // "") == "Failed" or (.status.phase // "") == "PartiallyFailed")] | length' \
       "${EVIDENCE_PREFIX}.pod-volume-restores.json")
@@ -448,14 +498,25 @@ EOF
   install -m 0600 "$WORK_DIR/target-pvcs.json" "${EVIDENCE_PREFIX}.persistentvolumeclaims.json"
   install -m 0600 "$WORK_DIR/target-pods.json" "${EVIDENCE_PREFIX}.pods.json"
 
-  [[ -x "$SCRIPT_DIR/health-gates.sh" ]] || fail "health-gates.sh is missing or not executable"
-  health_deadline=$((SECONDS + RESTORE_TIMEOUT))
-  until "$SCRIPT_DIR/health-gates.sh" --config "$BUNDLE_DIR/config/platform.yaml" \
-    > "${EVIDENCE_PREFIX}.health.log" 2>&1; do
-    (( SECONDS < health_deadline )) || fail "replacement-cluster health gates timed out"
-    sleep 30
-  done
-  log "Velero restore completed: $RESTORE_NAME"
+  # Application-native recovery deliberately follows the Velero resource/PVC
+  # replay. Requiring the full platform health suite here creates an impossible
+  # ordering for Shamir-sealed Vault and databases/applications that are not
+  # consistent until native replay completes. Restrict this phase to the
+  # replacement foundation and Velero control plane; native-restore.sh owns the
+  # full profile-aware health gate after every native artifact is restored.
+  kubectl wait nodes --all --for=condition=Ready --timeout=900s \
+    || fail "replacement-cluster nodes did not become Ready after Velero restore"
+  kubectl rollout status deployment/velero -n velero --timeout=10m \
+    || fail "replacement Velero controller is not fully rolled out"
+  kubectl rollout status daemonset/node-agent -n velero --timeout=10m \
+    || fail "replacement Velero node-agent is not fully rolled out"
+  kubectl get backupstoragelocation/default -n velero -o json \
+    > "${EVIDENCE_PREFIX}.backup-storage-location.json"
+  jq -e '.status.phase == "Available"' \
+    "${EVIDENCE_PREFIX}.backup-storage-location.json" >/dev/null \
+    || fail "replacement Velero BackupStorageLocation is no longer Available"
+  log "Velero restore and replacement-bootstrap gates completed: $RESTORE_NAME"
+  log "full platform health remains blocked on mandatory application-native replay"
   exit 0
 fi
 

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 BACKUP = SCRIPTS / "cluster-backup.sh"
 RESTORE = SCRIPTS / "cluster-restore.sh"
+NATIVE_RESTORE = SCRIPTS / "native-restore.sh"
 MIGRATE = SCRIPTS / "migrate-profile.sh"
 STORAGE_CAPACITY = SCRIPTS / "profile-storage-capacity.py"
 VAULT_MIGRATE = SCRIPTS / "vault-storage-migrate.sh"
@@ -1101,6 +1102,48 @@ def test_migration_never_advances_after_a_failed_cluster_bundle():
     assert '--vault-init-file "$VAULT_INIT_FILE"' in content
 
 
+def test_migration_persists_and_revalidates_exact_backup_receipts_before_mutation():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "record_backup_checkpoint()" in content
+    assert "verify_recorded_backup()" in content
+    assert ".backup_checkpoints[$checkpoint]" in content
+    assert "archive_sha256:$archiveSha" in content
+    assert "receipt_sha256:$receiptSha" in content
+    assert 'migration_aws s3 cp "s3://${bucket}/${receipt_key}"' in content
+    assert 'migration_aws s3 cp "s3://${bucket}/${checksum_key}"' in content
+    assert 'migration_aws s3 cp "s3://${bucket}/${archive_key}"' in content
+    assert 'cmp -s "$receipt" "${tmp_dir}/receipt.json"' in content
+    assert 'cmp -s "${archive}.sha256" "${tmp_dir}/archive.sha256"' in content
+    assert 'verify_recorded_backup pre-migration' in content
+    assert 'verify_recorded_backup post-migration' in content
+    rollback = content.split('if [[ "$COMMAND" == rollback ]]', 1)[0]
+    assert rollback.rindex("verify_recorded_backup post-migration") > rollback.rindex(
+        'if [[ "$DRY_RUN" != true'
+    )
+
+
+def test_finalization_refreshes_and_verifies_backup_before_destructive_retirement():
+    content = MIGRATE.read_text(encoding="utf-8")
+    declaration = re.search(r"FINALIZE_STAGES=\(([^)]*)\)", content)
+    assert declaration
+    stages = declaration.group(1).split()
+    assert stages[0] == "final-backup"
+    assert "PROFILE_MIGRATION_FINAL_BACKUP_MAX_AGE_SECONDS" in content
+    finalize = content.split('if [[ "$COMMAND" == finalize ]]', 1)[1]
+    refresh = finalize.index("refreshing verified finalization backup")
+    status_transition = finalize.index('.status="finalizing"')
+    retirement_loop = finalize.index(
+        'for stage in "${FINALIZE_STAGES[@]}"', status_transition
+    )
+    assert refresh < status_transition < retirement_loop
+    assert 'finalize_stage final-backup' in finalize[:status_transition]
+    cluster_backup = content.split("cluster_backup()", 1)[1].split(
+        "capture_live_bastion_type()", 1
+    )[0]
+    assert 'if [[ "$checkpoint" == finalization ]]' in cluster_backup
+    assert 'verify_recorded_backup "$checkpoint" true' in cluster_backup
+
+
 def _make_encrypted_fixture(
     tmp_path: Path,
     passphrase: str,
@@ -1566,7 +1609,7 @@ def _mock_strict_restore_runtime(tmp_path: Path, backup_warnings: int = 0) -> tu
     shutil.copy2(SCRIPTS / "load-project-env.sh", scripts / "load-project-env.sh")
     health_marker = runtime / "health-called"
     (scripts / "health-gates.sh").write_text(
-        f"#!/usr/bin/env bash\nset -eu\nprintf passed > {health_marker!s}\n",
+        f"#!/usr/bin/env bash\nset -eu\nprintf called > {health_marker!s}\nexit 99\n",
         encoding="utf-8",
     )
     (scripts / "health-gates.sh").chmod(0o755)
@@ -1585,13 +1628,19 @@ case "$args" in
   get\\ backup\\ test-backup\\ -n\\ velero\\ -o\\ json)
     printf '{"status":{"phase":"Completed","errors":0,"warnings":%s}}\\n' "${MOCK_BACKUP_WARNINGS:-0}" ;;
   "apply -f -") cat >/dev/null ;;
-  get\\ restore*jsonpath*) printf 'Completed' ;;
-  get\\ restore*"-o json") printf '{"status":{"phase":"Completed","errors":0,"warnings":0}}\\n' ;;
+  get\\ restore*"-o jsonpath={.metadata.uid}") printf 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff' ;;
+  get\\ restore*"-o jsonpath={.status.phase}") printf 'Completed' ;;
+  get\\ restore*"-o json") printf '{"metadata":{"uid":"bbbbbbbb-cccc-dddd-eeee-ffffffffffff"},"spec":{"backupName":"test-backup"},"status":{"phase":"Completed","errors":0,"warnings":0}}\\n' ;;
   get\\ podvolumerestores*) printf '{"items":[{"status":{"phase":"Completed"}}]}\\n' ;;
   "get persistentvolumeclaims --all-namespaces -o json")
     printf '{"items":[{"metadata":{"namespace":"data","name":"db-data"},"status":{"phase":"Bound"}}]}\\n' ;;
   "get pods --all-namespaces -o json")
     printf '%s\\n' '{"items":[{"metadata":{"namespace":"data","name":"db-0"},"status":{"phase":"Running"},"spec":{"containers":[{"name":"db","volumeMounts":[{"name":"data"}]}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"db-data"}}]}}]}' ;;
+  "wait nodes --all --for=condition=Ready --timeout=900s") exit 0 ;;
+  "rollout status deployment/velero -n velero --timeout=10m") exit 0 ;;
+  "rollout status daemonset/node-agent -n velero --timeout=10m") exit 0 ;;
+  "get backupstoragelocation/default -n velero -o json")
+    printf '{"status":{"phase":"Available"}}\\n' ;;
   *) printf 'unexpected kubectl invocation: %s\\n' "$args" >&2; exit 9 ;;
 esac
 """,
@@ -1649,10 +1698,40 @@ def test_strict_velero_restore_requires_warning_review_and_full_coverage(tmp_pat
         timeout=30,
     )
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-    assert (tmp_path / "restore-runtime" / "health-called").read_text() == "passed"
+    assert not (tmp_path / "restore-runtime" / "health-called").exists()
     evidence = list(tmp_path.glob("*.pod-volume-restores.json"))
     assert len(evidence) == 1
     assert json.loads(evidence[0].read_text())["items"][0]["status"]["phase"] == "Completed"
+    storage_evidence = list(tmp_path.glob("*.backup-storage-location.json"))
+    assert len(storage_evidence) == 1
+    assert json.loads(storage_evidence[0].read_text())["status"]["phase"] == "Available"
+
+
+def test_velero_restore_defers_full_health_until_native_replay():
+    content = RESTORE.read_text(encoding="utf-8")
+    assert "RESTORE_UID=$(kubectl get restore" in content
+    assert 'velero.io/restore-uid=${RESTORE_UID}' in content
+    assert 'velero.io/restore-name=${RESTORE_NAME}' not in content
+    assert "--resume-restore" in content
+    assert "resuming validation of existing Velero Restore" in content
+    assert ".spec.backupName == $backup" in content
+    assert ".spec.restorePVs == true" in content
+    assert '.spec.existingResourcePolicy == "none"' in content
+    assert '.spec.itemOperationTimeout == "8h0m0s"' in content
+    assert "(.spec.excludedResources | sort) == ($excluded | sort)" in content
+    assert content.count("leases.coordination.k8s.io") == 2
+    assert "does not bind the exact full-scope restore contract" in content
+    velero_mode = content.split('if [[ "$MODE" == velero ]]', 1)[1].split(
+        'command -v kubectl >/dev/null || fail "kubectl is required for etcd safety checks"',
+        1,
+    )[0]
+    assert "health-gates.sh" not in velero_mode
+    assert "kubectl wait nodes --all --for=condition=Ready" in velero_mode
+    assert "kubectl rollout status deployment/velero" in velero_mode
+    assert "kubectl rollout status daemonset/node-agent" in velero_mode
+    assert "full platform health remains blocked" in velero_mode
+    native = NATIVE_RESTORE.read_text(encoding="utf-8")
+    assert '"${SCRIPT_DIR}/health-gates.sh" --config "$CONFIG"' in native
 
 
 def _mock_teardown_gate(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
@@ -2797,6 +2876,85 @@ def test_vmctl_migration_job_uses_restricted_pod_security():
         "readOnlyRootFilesystem: true",
     ):
         assert contract in vmctl_job
+
+
+def test_victoriametrics_migration_requires_exact_historical_data_proof():
+    content = MIGRATE.read_text(encoding="utf-8")
+    proof = content.split("migrate_vm_data_with_proof()", 1)[1].split(
+        "stage_migrate_data()", 1
+    )[0]
+    query = content.split("query_vm_sentinel()", 1)[1].split(
+        "write_and_verify_vm_sentinel()", 1
+    )[0]
+    retire = content.split("retire_observability_source()", 1)[1].split(
+        "kubespray_inventory()", 1
+    )[0]
+
+    assert 'VM_PROBE_IMAGE="curlimages/curl:8.17.0"' in content
+    assert "profile_migration_data_proof" in content
+    assert "epoch=$((epoch - 3600))" in content
+    assert '"${address}/api/v1/import/prometheus"' in content
+    assert '"${address}/api/v1/query"' in content
+    probe = content.split("run_vm_probe_pod()", 1)[1].split(
+        "prepare_vm_sentinel()", 1
+    )[0]
+    for contract in (
+        "automountServiceAccountToken:false",
+        "runAsNonRoot:true",
+        "seccompProfile:{type:\"RuntimeDefault\"}",
+        "allowPrivilegeEscalation:false",
+        "capabilities:{drop:[\"ALL\"]}",
+        "readOnlyRootFilesystem:true",
+    ):
+        assert contract in probe
+    assert '(.data.result | length) == 1' in query
+    assert 'sample_timestamp_ms:$timestamp' in query
+    assert 'sample_value:$value' in query
+    assert proof.index("write_and_verify_vm_sentinel") < proof.index(
+        "run_vmctl_migration"
+    )
+    assert proof.index("run_vmctl_migration") < proof.index(
+        'target_evidence=$(query_vm_sentinel'
+    )
+    assert proof.index('target_evidence=$(query_vm_sentinel') < proof.index(
+        'status:"verified"'
+    )
+    assert "fromdateiso8601" in proof
+    assert "sentinel_epoch >= filter_epoch" in proof
+    assert 'filter_time_start:$filterTimeStart' in proof
+    assert '.sentinel == ($descriptor[0] | del(.source_evidence))' in content
+    assert "verified VictoriaMetrics $direction migration proof is missing or invalid" in content
+    assert retire.index("verify_vm_migration_proof forward") < retire.index(
+        "capture_observability_pvcs"
+    )
+    assert retire.index("verify_vm_migration_proof forward") < retire.index(
+        "kubectl delete pvc"
+    )
+    assert retire.rindex("verify_vm_migration_proof forward") < retire.index(
+        "kubectl delete pvc"
+    )
+    assert retire.count("verify_vm_migration_proof forward") == 2
+    migrate_stage = content.split("stage_migrate_data()", 1)[1].split(
+        "stage_validate()", 1
+    )[0]
+    assert migrate_stage.count("migrate_vm_data_with_proof forward") == 1
+
+
+def test_victoriametrics_rollback_delta_is_proven_before_helm_restore():
+    content = MIGRATE.read_text(encoding="utf-8")
+    rollback = content.split('if [[ "$COMMAND" == rollback ]]', 1)[1].split(
+        "remove_disabled_components()", 1
+    )[0]
+
+    assert "migrate_vm_data_with_proof rollback" in rollback
+    assert "target_write_switch_started_at" in rollback
+    assert "-proof-v1" in rollback
+    assert rollback.index("migrate_vm_data_with_proof rollback") < rollback.index(
+        "restore_helm_baseline_without_vault"
+    )
+    assert rollback.index("migrate_vm_data_with_proof rollback") < rollback.index(
+        '"$SCRIPT_DIR/rollback.sh"'
+    )
 
 
 def test_mutating_migrations_are_single_writer_and_use_process_unique_temp_files():

@@ -55,7 +55,7 @@ class TestChart10ValuesStructure:
         assert "maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'" in self.content
         assert "maxReplicas: '{{ gitlab_registry_max_replicas | int }}'" in self.content
 
-    def test_heavy_rails_workloads_prefer_different_nodes(self):
+    def test_heavy_rails_workloads_require_safe_cross_node_spread(self):
         tasks = yaml.safe_load(self.content)
         install = next(task for task in tasks if task.get("name") == "Install GitLab with Helm")
         rails = install["kubernetes.core.helm"]["values"]["gitlab"]
@@ -67,8 +67,11 @@ class TestChart10ValuesStructure:
             }
             spread = rails[component]["topologySpreadConstraints"]
             assert len(spread) == 1
+            assert spread[0]["minDomains"] == 2
             assert spread[0]["topologyKey"] == "kubernetes.io/hostname"
             assert spread[0]["whenUnsatisfiable"] == "DoNotSchedule"
+            assert spread[0]["nodeAffinityPolicy"] == "Honor"
+            assert spread[0]["nodeTaintsPolicy"] == "Honor"
             expressions = spread[0]["labelSelector"]["matchExpressions"]
             assert expressions[0]["values"] == ["gitlab"]
             assert expressions[1]["values"] == [component]
@@ -100,6 +103,116 @@ class TestChart10ValuesStructure:
         ] == ["webservice", "sidekiq"]
         assert "Rebalance GitLab Rails workloads when a rolling update co-locates them" in self.content
 
+    def test_webservice_memory_limit_is_profile_tunable(self):
+        tasks = yaml.safe_load(self.content)
+        facts = next(
+            task
+            for task in tasks
+            if task.get("name") == "Set GitLab tier-specific variables"
+        )
+        install = next(
+            task for task in tasks if task.get("name") == "Install GitLab with Helm"
+        )
+        webservice = install["kubernetes.core.helm"]["values"]["gitlab"]["webservice"]
+        assert (
+            "gitlab.webservice_memory_limit"
+            in facts["set_fact"]["gitlab_webservice_memory_limit"]
+        )
+        assert webservice["resources"]["requests"]["memory"] == (
+            "{{ gitlab_webservice_memory_request }}"
+        )
+        assert webservice["resources"]["limits"]["memory"] == (
+            "{{ gitlab_webservice_memory_limit }}"
+        )
+
+    def test_runner_uses_internal_service_behind_vpn_only_gateway(self):
+        tasks = yaml.safe_load(self.content)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name") == "Install GitLab Runner with Helm"
+        )
+        values = install["kubernetes.core.helm"]["values"]
+        internal = (
+            "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
+        )
+        assert values["gitlabUrl"] == internal
+        assert f'clone_url = "{internal}"' in values["runners"]["config"]
+        assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
+        assert values["metrics"] == {"enabled": True}
+        assert (
+            "request_concurrency = {{ gitlab_runner_concurrent | int }}"
+            in values["runners"]["config"]
+        )
+        assert values["podSecurityContext"]["seccompProfile"] == {
+            "type": "RuntimeDefault"
+        }
+        assert (
+            "[runners.kubernetes.pod_security_context.seccomp_profile]"
+            in values["runners"]["config"]
+        )
+        assert 'type = "RuntimeDefault"' in values["runners"]["config"]
+
+        scrape = next(
+            task
+            for task in tasks
+            if task.get("name") == "Create GitLab Runner VMPodScrape"
+        )
+        scrape_definition = scrape["kubernetes.core.k8s"]["definition"]
+        assert scrape_definition["kind"] == "VMPodScrape"
+        assert scrape_definition["spec"]["selector"]["matchLabels"] == {
+            "app": "gitlab-runner"
+        }
+        assert scrape_definition["spec"]["podMetricsEndpoints"] == [
+            {"port": "metrics", "interval": "30s", "path": "/metrics"}
+        ]
+
+        policy = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Allow VictoriaMetrics to scrape GitLab Runner metrics"
+        )
+        policy_spec = policy["kubernetes.core.k8s"]["definition"]["spec"]
+        assert policy_spec["endpointSelector"]["matchLabels"] == {
+            "app": "gitlab-runner"
+        }
+        assert policy_spec["ingress"][0]["toPorts"][0]["ports"] == [
+            {"port": "9252", "protocol": "TCP"}
+        ]
+
+    def test_custom_production_capacity_defaults_to_full_mode_memory(self):
+        tasks = yaml.safe_load(self.content)
+        facts = next(
+            task
+            for task in tasks
+            if task.get("name") == "Set GitLab tier-specific variables"
+        )["set_fact"]
+        from jinja2 import Environment
+
+        context = {"gitlab": {}, "resource_tier": "medium", "tier": "custom"}
+        environment = Environment()
+        assert environment.from_string(facts["gitlab_mode"]).render(**context) == "full"
+        assert environment.from_string(
+            facts["gitlab_webservice_memory_request"]
+        ).render(**context) == "2.5Gi"
+        assert environment.from_string(
+            facts["gitlab_webservice_memory_limit"]
+        ).render(**context) == "5Gi"
+
+    def test_readiness_fails_closed_on_rails_placement_and_gitaly_pdb_drift(self):
+        gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[
+            1
+        ].split("- name: Add preferred cross-component anti-affinity", 1)[0]
+        assert "Require hard per-component topology spread" in gate
+        assert "whenUnsatisfiable == 'DoNotSchedule'" in gate
+        assert "minDomains | default(0) | int) == 2" in gate
+        assert "nodeAffinityPolicy == 'Honor'" in gate
+        assert "nodeTaintsPolicy == 'Honor'" in gate
+        assert "name: gitlab-gitaly" in gate
+        assert "spec.maxUnavailable | int) == 0" in gate
+        assert "spec.minAvailable is not defined" in gate
+
     def test_enabled_runner_requires_modern_authentication_token(self):
         gate = self.content.split(
             "- name: Require a GitLab Runner authentication token when Runner is selected",
@@ -110,9 +223,11 @@ class TestChart10ValuesStructure:
         )[0]
         assert "^glrt-[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$" in gate
         assert "vault_encrypt_secrets | default(true) | bool" in gate
+        assert "gitlab_runner_concurrent | int > 0" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
         assert "runnerToken: '{{ gitlab_runner_token }}'" in install
+        assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
         assert "gitlab_runner_token is defined" not in install
         assert "gitlab_runner_token != ''" not in install
         assert "no_log: true" in install
@@ -128,6 +243,30 @@ class TestChart10ValuesStructure:
         assert "requires vault_encrypt_secrets=true" in secrets
         assert "Require a modern authentication token when GitLab Runner is selected" in secrets
         assert "the Runner will not be silently omitted" in secrets
+
+    def test_enabled_runner_install_waits_for_deployment_convergence(self):
+        tasks = yaml.safe_load(self.content)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name") == "Install GitLab Runner with Helm"
+        )
+        converge = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Wait for the enabled GitLab Runner deployment to converge"
+        )
+        assert install["kubernetes.core.helm"]["wait"] is True
+        assert install["kubernetes.core.helm"]["values"]["concurrent"] == (
+            "{{ gitlab_runner_concurrent | int }}"
+        )
+        assert converge["kubernetes.core.k8s_info"]["name"] == "gitlab-runner"
+        assert converge["when"] == "gitlab_runner_enabled | bool"
+        assert converge["retries"] == 60
+        assert "readyReplicas" in converge["until"]
+        assert "availableReplicas" in converge["until"]
+        assert "updatedReplicas" in converge["until"]
 
     @pytest.mark.component
     def test_gitlab_shell_configured(self):

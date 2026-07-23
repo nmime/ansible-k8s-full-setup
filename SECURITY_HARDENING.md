@@ -7,6 +7,8 @@
   host keys when an out-of-band fingerprint is available.
 - Generated platform credentials persist only in an Ansible-Vault-encrypted
   file. Missing encryption tooling/password material is fatal.
+- Helm tasks that must interpolate credential values are censored with
+  `no_log`; charts use Kubernetes Secret references wherever supported.
 - Vault and External Secrets Operator use internal TLS and CA verification by
   default. Vault initialization material is encrypted locally and is not stored
   in a Kubernetes Secret or automated unseal CronJob.

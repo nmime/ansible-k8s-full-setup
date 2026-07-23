@@ -43,7 +43,7 @@ network:
     server_type: cx23
 
   load_balancer:
-    enabled: false  # Save €6/mo - bastion proxies
+    enabled: false  # Avoid the separately billed load balancer; bastion proxies
     proxy_public_apps: true  # Bastion handles routing
 
   vpn:

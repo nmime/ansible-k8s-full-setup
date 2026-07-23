@@ -85,6 +85,10 @@ backup_dr_velero_cpu_request: 100m
 backup_dr_velero_cpu_limit: 500m
 backup_dr_velero_memory_request: 128Mi
 backup_dr_velero_memory_limit: 512Mi
+backup_dr_velero_plugin_cpu_request: 5m
+backup_dr_velero_plugin_cpu_limit: 100m
+backup_dr_velero_plugin_memory_request: 16Mi
+backup_dr_velero_plugin_memory_limit: 64Mi
 backup_dr_node_agent_cpu_request: 100m
 backup_dr_node_agent_cpu_limit: 1
 backup_dr_node_agent_memory_request: 256Mi

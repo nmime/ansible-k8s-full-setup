@@ -185,6 +185,111 @@
   delay: 15
   until: _r_install_coroot is not failed
 
+- name: Remove legacy invalid Cilium default-deny for Coroot namespace
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: coroot
+
+- name: Create default-deny NetworkPolicy for Coroot namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: coroot
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+          - Egress
+        ingress: []
+        egress: []
+
+- name: Allow only required Coroot application and agent traffic
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-coroot-required-traffic
+        namespace: coroot
+      spec:
+        endpointSelector: {}
+        ingress:
+          # Coroot, ClickHouse, keeper, and both agents communicate inside the
+          # dedicated privileged namespace.
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: coroot
+          # Kubelet health probes originate from the local or remote node.
+          - fromEntities:
+              - host
+              - remote-node
+          # Cilium Gateway API preserves the reserved ingress identity for
+          # traffic forwarded from Envoy to the backend.
+          - fromEntities:
+              - ingress
+            toPorts:
+              - ports:
+                  - port: '8080'
+                    protocol: TCP
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: kube-system
+                  k8s:k8s-app: kube-dns
+            toPorts:
+              - ports:
+                  - port: '53'
+                    protocol: UDP
+                  - port: '53'
+                    protocol: TCP
+          - toCIDR:
+              - 169.254.25.10/32
+            toPorts:
+              - ports:
+                  - port: '53'
+                    protocol: UDP
+                  - port: '53'
+                    protocol: TCP
+          - toEntities:
+              - host
+            toPorts:
+              - ports:
+                  - port: '53'
+                    protocol: UDP
+                  - port: '53'
+                    protocol: TCP
+          - toEntities:
+              - kube-apiserver
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: coroot
+          - toServices:
+              - k8sService:
+                  serviceName: '{{ "vmselect-vmcluster" if tier in ["medium", "production"] else "vmsingle-vmsingle" }}'
+                  namespace: '{{ monitoring_namespace | default("monitoring") }}'
+            toPorts:
+              - ports:
+                  - port: '{{ "8481" if tier in ["medium", "production"] else "8429" }}'
+                    protocol: TCP
+          - toServices:
+              - k8sService:
+                  serviceName: '{{ "vminsert-vmcluster" if tier in ["medium", "production"] else "vmsingle-vmsingle" }}'
+                  namespace: '{{ monitoring_namespace | default("monitoring") }}'
+            toPorts:
+              - ports:
+                  - port: '{{ "8480" if tier in ["medium", "production"] else "8429" }}'
+                    protocol: TCP
+
 - name: Recreate the Coroot application controller after its desired storage update
   ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
   vars:

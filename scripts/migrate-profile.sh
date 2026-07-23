@@ -62,9 +62,12 @@ PLATFORM_CONVERGENCE_INTERVAL="${PROFILE_MIGRATION_PLATFORM_CONVERGENCE_INTERVAL
 ROOT_DISK_PRUNE_PERCENT="${PROFILE_MIGRATION_ROOT_DISK_PRUNE_PERCENT:-75}"
 ROOT_DISK_MAX_PERCENT="${PROFILE_MIGRATION_ROOT_DISK_MAX_PERCENT:-85}"
 VMCTL_IMAGE="docker.io/victoriametrics/vmctl:v1.147.0"
+VM_PROBE_IMAGE="curlimages/curl:8.17.0"
 NAMED_PROFILES=(minimal small medium medium-optimized production)
 STAGES=(preflight backup expand resize migrate-vault-storage apply-target migrate-data validate post-backup)
-FINALIZE_STAGES=(retire-services retire-observability scale-in reconcile-target final-backup retire-backup cleanup-cloud validate-final)
+FINALIZE_STAGES=(final-backup retire-services retire-observability scale-in reconcile-target retire-backup cleanup-cloud validate-final)
+DESTRUCTIVE_FINALIZE_STAGES=(retire-services retire-observability scale-in retire-backup cleanup-cloud)
+FINAL_BACKUP_MAX_AGE_SECONDS="${PROFILE_MIGRATION_FINAL_BACKUP_MAX_AGE_SECONDS:-86400}"
 
 log() { printf '[profile-migration] %s\n' "$*"; }
 warn() { printf '[profile-migration] WARNING: %s\n' "$*" >&2; }
@@ -160,6 +163,8 @@ for tool in yq jq ansible-playbook; do command -v "$tool" >/dev/null || fail "re
   || fail "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS must be a positive integer"
 [[ "$HCLOUD_CAPACITY_RETRY_INTERVAL" =~ ^[1-9][0-9]*$ ]] \
   || fail "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS must be a positive integer"
+[[ "$FINAL_BACKUP_MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+  || fail "PROFILE_MIGRATION_FINAL_BACKUP_MAX_AGE_SECONDS must be a positive integer"
 [[ "$CSI_DETACH_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
   || fail "PROFILE_MIGRATION_CSI_DETACH_TIMEOUT_SECONDS must be a positive integer"
 
@@ -305,6 +310,7 @@ if [[ "$COMMAND" != plan && "$COMMAND" != status && "$DRY_RUN" != true ]]; then
       restore_gitaly_pdb_override \
         || warn "Gitaly PDB restoration needs resume/rollback; durable override checkpoint retained"
     fi
+    [[ -z "${BACKUP_VERIFY_TMP_DIR:-}" ]] || rm -rf "$BACKUP_VERIFY_TMP_DIR"
     rm -rf "$MIGRATION_LOCK"
     exit "$exit_status"
   }
@@ -321,6 +327,11 @@ NODE_TYPE_OVERRIDE_FILE="${STATE_DIR}/node-type-overrides.tsv"
 SELECTION_RETENTION_FILE="${STATE_DIR}/selection-retention.tsv"
 CAPACITY_PLAN_FILE="${STATE_DIR}/volume-capacity-plan.json"
 GITALY_PDB_OVERRIDE_FILE="${STATE_DIR}/gitaly-pdb-override.json"
+BACKUP_VERIFY_TMP_DIR=""
+VM_FORWARD_SENTINEL_FILE="${STATE_DIR}/victoriametrics-forward-sentinel.json"
+VM_FORWARD_PROOF_FILE="${STATE_DIR}/victoriametrics-forward-proof.json"
+VM_ROLLBACK_SENTINEL_FILE="${STATE_DIR}/victoriametrics-rollback-sentinel.json"
+VM_ROLLBACK_PROOF_FILE="${STATE_DIR}/victoriametrics-rollback-proof.json"
 
 restore_persisted_operator_state() {
   local recorded_root recorded_secrets recorded_vault recorded_ssh_key recorded_known_hosts recorded_api_port
@@ -1522,15 +1533,175 @@ mark_finalize_stage() {
   mv "$tmp" "$STATE_FILE"
 }
 
+sha256_file() {
+  if command -v sha256sum >/dev/null; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+migration_aws() {
+  local aws_bin
+  if [[ -x "${PROJECT_ROOT}/.venv/bin/aws" ]]; then aws_bin="${PROJECT_ROOT}/.venv/bin/aws"
+  else aws_bin=$(command -v aws) || fail "aws CLI is required to revalidate migration backups"; fi
+  AWS_ACCESS_KEY_ID="${BACKUP_DR_ACCESS_KEY:?BACKUP_DR_ACCESS_KEY is required}" \
+    AWS_SECRET_ACCESS_KEY="${BACKUP_DR_SECRET_KEY:?BACKUP_DR_SECRET_KEY is required}" \
+    AWS_DEFAULT_REGION="$DR_REGION" AWS_EC2_METADATA_DISABLED=true \
+    "$aws_bin" --endpoint-url "$DR_ENDPOINT" "$@"
+}
+
+record_backup_checkpoint() {
+  local checkpoint="$1" archive="$2"
+  local receipt="${archive}.manifest.json"
+  local archive_sha receipt_sha tmp
+  [[ -f "$archive" && ! -L "$archive" && -s "$archive" ]] \
+    || fail "backup checkpoint archive is missing, empty, or a symlink: $archive"
+  [[ -f "${archive}.sha256" && ! -L "${archive}.sha256" && -s "${archive}.sha256" ]] \
+    || fail "backup checkpoint checksum is missing, empty, or a symlink: ${archive}.sha256"
+  [[ -f "$receipt" && ! -L "$receipt" && -s "$receipt" ]] \
+    || fail "backup checkpoint receipt is missing, empty, or a symlink: $receipt"
+  archive_sha=$(sha256_file "$archive")
+  receipt_sha=$(sha256_file "$receipt")
+  jq -e --arg project "$PROJECT" --arg endpoint "$DR_ENDPOINT" --arg bucket "$DR_BUCKET" \
+    --arg archive "$(basename "$archive")" --arg sha "$archive_sha" '
+      .schema_version == 2 and .receipt_type == "encrypted-cluster-backup" and
+      .project == $project and .archive == $archive and .sha256 == $sha and
+      .completeness == "complete" and .remote.published == true and
+      .remote.download_sha256_verified == true and
+      .remote.receipt_uploaded_last == true and
+      .remote.publication_state == "complete" and
+      .remote.endpoint == $endpoint and .remote.bucket == $bucket and
+      ([.backup_id,.created_at,.remote.archive_key,.remote.checksum_key,
+        .remote.receipt_key] | all(type == "string" and length > 0))
+    ' "$receipt" >/dev/null \
+    || fail "backup checkpoint receipt is incomplete or does not match the exact archive"
+  tmp="${STATE_FILE}.tmp.$$"
+  jq --arg checkpoint "$checkpoint" --arg archivePath "$archive" \
+    --arg receiptPath "$receipt" --arg archiveSha "$archive_sha" \
+    --arg receiptSha "$receipt_sha" --slurpfile receipt "$receipt" '
+      .backup_checkpoints //= {} |
+      .backup_checkpoints[$checkpoint]={
+        backup_id:$receipt[0].backup_id,created_at:$receipt[0].created_at,
+        archive_path:$archivePath,receipt_path:$receiptPath,
+        archive_sha256:$archiveSha,receipt_sha256:$receiptSha,
+        remote:$receipt[0].remote,recorded_at:(now | todateiso8601)
+      } | .updated_at=(now | todateiso8601)
+    ' "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+verify_recorded_backup() {
+  local checkpoint="$1" require_fresh="${2:-false}" archive receipt archive_sha receipt_sha
+  local endpoint bucket archive_key checksum_key receipt_key backup_id created_at tmp_dir remote_archive remote_key
+  jq -e --arg checkpoint "$checkpoint" '
+      .backup_checkpoints[$checkpoint] |
+      .backup_id and .created_at and .archive_path and .receipt_path and
+      (.archive_sha256 | test("^[0-9a-f]{64}$")) and
+      (.receipt_sha256 | test("^[0-9a-f]{64}$")) and .remote
+    ' "$STATE_FILE" >/dev/null \
+    || fail "migration backup identity is missing for checkpoint $checkpoint; repeat that backup gate before continuing"
+  archive=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].archive_path' "$STATE_FILE")
+  receipt=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].receipt_path' "$STATE_FILE")
+  archive_sha=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].archive_sha256' "$STATE_FILE")
+  receipt_sha=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].receipt_sha256' "$STATE_FILE")
+  case "$archive" in "$STATE_DIR/backups/"*) ;; *) fail "recorded backup archive is outside migration state: $archive" ;; esac
+  case "$receipt" in "$STATE_DIR/backups/"*) ;; *) fail "recorded backup receipt is outside migration state: $receipt" ;; esac
+  [[ -f "$archive" && ! -L "$archive" && -f "${archive}.sha256" && ! -L "${archive}.sha256" ]] \
+    || fail "recorded local backup archive or checksum is unavailable: $archive"
+  [[ -f "$receipt" && ! -L "$receipt" ]] || fail "recorded local backup receipt is unavailable: $receipt"
+  [[ "$(sha256_file "$archive")" == "$archive_sha" ]] || fail "recorded local backup archive hash drifted: $archive"
+  [[ "$(sha256_file "$receipt")" == "$receipt_sha" ]] || fail "recorded local backup receipt hash drifted: $receipt"
+  [[ "$(awk 'NR == 1 {print $1}' "${archive}.sha256")" == "$archive_sha" ]] \
+    || fail "recorded local backup checksum no longer binds the archive"
+
+  endpoint=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].remote.endpoint' "$STATE_FILE")
+  bucket=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].remote.bucket' "$STATE_FILE")
+  archive_key=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].remote.archive_key' "$STATE_FILE")
+  checksum_key=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].remote.checksum_key' "$STATE_FILE")
+  receipt_key=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].remote.receipt_key' "$STATE_FILE")
+  backup_id=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].backup_id' "$STATE_FILE")
+  created_at=$(jq -r --arg checkpoint "$checkpoint" '.backup_checkpoints[$checkpoint].created_at' "$STATE_FILE")
+  [[ "$endpoint" == "$DR_ENDPOINT" && "$bucket" == "$DR_BUCKET" ]] \
+    || fail "configured DR endpoint or bucket drifted from backup checkpoint $checkpoint"
+  for remote_key in "$archive_key" "$checksum_key" "$receipt_key"; do
+    [[ -n "$remote_key" && "$remote_key" != /* && "$remote_key" != *..* ]] \
+      || fail "backup checkpoint contains an unsafe remote object key"
+  done
+  if [[ "$require_fresh" == true ]]; then
+    local age_seconds
+    age_seconds=$(python3 - "$created_at" <<'PY'
+import datetime
+import sys
+try:
+    created = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    print(int((now - created).total_seconds()))
+except (TypeError, ValueError):
+    raise SystemExit(1)
+PY
+    ) || fail "recorded finalization backup has an invalid creation timestamp"
+    (( age_seconds >= 0 && age_seconds <= FINAL_BACKUP_MAX_AGE_SECONDS )) \
+      || fail "finalization backup is older than ${FINAL_BACKUP_MAX_AGE_SECONDS}s; create a fresh gate before retirement"
+  fi
+
+  tmp_dir=$(mktemp -d "${STATE_DIR}/.backup-verify-${checkpoint}.XXXXXX")
+  BACKUP_VERIFY_TMP_DIR="$tmp_dir"
+  remote_archive="${tmp_dir}/$(basename "$archive")"
+  if ! migration_aws s3 cp "s3://${bucket}/${receipt_key}" "${tmp_dir}/receipt.json" --only-show-errors \
+    || ! migration_aws s3 cp "s3://${bucket}/${checksum_key}" "${tmp_dir}/archive.sha256" --only-show-errors \
+    || ! migration_aws s3 cp "s3://${bucket}/${archive_key}" "$remote_archive" --only-show-errors; then
+    rm -rf "$tmp_dir"
+    fail "could not re-download the exact remote backup checkpoint $checkpoint"
+  fi
+  cmp -s "$receipt" "${tmp_dir}/receipt.json" \
+    || { rm -rf "$tmp_dir"; fail "remote backup receipt drifted from checkpoint $checkpoint"; }
+  cmp -s "${archive}.sha256" "${tmp_dir}/archive.sha256" \
+    || { rm -rf "$tmp_dir"; fail "remote backup checksum object drifted from checkpoint $checkpoint"; }
+  [[ "$(awk 'NR == 1 {print $1}' "${tmp_dir}/archive.sha256")" == "$archive_sha" ]] \
+    || { rm -rf "$tmp_dir"; fail "remote backup checksum drifted from checkpoint $checkpoint"; }
+  [[ "$(sha256_file "$remote_archive")" == "$archive_sha" ]] \
+    || { rm -rf "$tmp_dir"; fail "remote backup archive hash drifted from checkpoint $checkpoint"; }
+  jq -e --arg id "$backup_id" --arg archive "$(basename "$archive")" --arg sha "$archive_sha" \
+    '.backup_id == $id and .archive == $archive and .sha256 == $sha and
+     .remote.published == true and .remote.download_sha256_verified == true and
+     .remote.receipt_uploaded_last == true and .remote.publication_state == "complete"' \
+    "${tmp_dir}/receipt.json" >/dev/null \
+    || { rm -rf "$tmp_dir"; fail "remote backup receipt identity is invalid for checkpoint $checkpoint"; }
+  rm -rf "$tmp_dir"
+  BACKUP_VERIFY_TMP_DIR=""
+  local state_tmp="${STATE_FILE}.tmp.$$"
+  jq --arg checkpoint "$checkpoint" '
+      .backup_checkpoints[$checkpoint].last_verified_at=(now | todateiso8601) |
+      .updated_at=(now | todateiso8601)
+    ' "$STATE_FILE" > "$state_tmp"
+  mv "$state_tmp" "$STATE_FILE"
+  log "verified exact local and remote backup checkpoint: $checkpoint ($backup_id)"
+}
+
 cluster_backup() {
-  local config="$1"
+  local config="$1" checkpoint="$2" marker archive
+  local -a receipts=()
   local args=(--config "$config" --secrets-file "$SECRETS_FILE" \
     --vault-init-file "$VAULT_INIT_FILE" \
     --ssh-identity "$SSH_KEY_PATH" --ssh-known-hosts "$SSH_KNOWN_HOSTS_FILE" \
     --output-dir "$STATE_DIR/backups" --force)
   [[ -z "$BACKUP_RECIPIENT" ]] || args+=(--recipient "$BACKUP_RECIPIENT")
+  mkdir -p "$STATE_DIR/backups"
+  marker="$STATE_DIR/backups/.capture-start-${checkpoint}-$$"
+  : > "$marker"
   "$SCRIPT_DIR/cluster-backup.sh" "${args[@]}" \
     || fail "encrypted cluster backup gate failed; migration checkpoint was not advanced"
+  while IFS= read -r receipt; do receipts+=("$receipt"); done < <(
+    find "$STATE_DIR/backups" -maxdepth 1 -type f -name '*.manifest.json' -newer "$marker" -print
+  )
+  rm -f "$marker"
+  (( ${#receipts[@]} == 1 )) \
+    || fail "backup gate produced ${#receipts[@]} new completion receipts; expected exactly one"
+  archive="${receipts[0]%.manifest.json}"
+  record_backup_checkpoint "$checkpoint" "$archive"
+  if [[ "$checkpoint" == finalization ]]; then
+    verify_recorded_backup "$checkpoint" true
+  else
+    verify_recorded_backup "$checkpoint"
+  fi
 }
 
 capture_live_bastion_type() {
@@ -1696,7 +1867,7 @@ stage_backup() {
   # with the temporary backup config before the backup role requires it.
   run_playbook "$BACKUP_CONFIG" --tags databases,gitlab,backup
   mkdir -p "$STATE_DIR/backups"
-  cluster_backup "$BACKUP_CONFIG"
+  cluster_backup "$BACKUP_CONFIG" pre-migration
   snapshot_root="$STATE_DIR/rollback-snapshots"
   snapshot=$("$SCRIPT_DIR/snapshot-helm-baseline.sh" \
     --config "$SOURCE_CONFIG" --snapshot-dir "$snapshot_root" | tail -1)
@@ -2345,12 +2516,230 @@ vm_addresses() {
   if [[ "$to_mode" == single ]]; then VM_TARGET_ADDR='http://vmsingle-vmsingle.monitoring.svc:8429'; else VM_TARGET_ADDR='http://vminsert-vmcluster.monitoring.svc:8480/insert/0/prometheus'; fi
 }
 
+vm_mode_addresses() {
+  local mode="$1"
+  case "$mode" in
+    single)
+      VM_QUERY_ADDR='http://vmsingle-vmsingle.monitoring.svc:8429'
+      VM_WRITE_ADDR='http://vmsingle-vmsingle.monitoring.svc:8429'
+      ;;
+    cluster)
+      VM_QUERY_ADDR='http://vmselect-vmcluster.monitoring.svc:8481/select/0/prometheus'
+      VM_WRITE_ADDR='http://vminsert-vmcluster.monitoring.svc:8480/insert/0/prometheus'
+      ;;
+    *) fail "unsupported VictoriaMetrics topology for data proof: $mode" ;;
+  esac
+}
+
+run_vm_probe_pod() {
+  local operation="$1" address="$2" argument="$3" timestamp_seconds="${4:-}"
+  local pod manifest output
+  pod="vm-data-proof-${operation}-$$-${RANDOM}"
+  if [[ "$operation" == import ]]; then
+    manifest=$(jq -n --arg name "$pod" --arg image "$VM_PROBE_IMAGE" \
+      --arg url "${address}/api/v1/import/prometheus" --arg payload "$argument" '{
+        apiVersion:"v1",kind:"Pod",
+        metadata:{name:$name,namespace:"monitoring",labels:{
+          "app.kubernetes.io/part-of":"profile-migration",
+          "app.kubernetes.io/component":"victoriametrics-data-proof"}},
+        spec:{restartPolicy:"Never",automountServiceAccountToken:false,
+          securityContext:{runAsNonRoot:true,runAsUser:1000,runAsGroup:1000,
+            seccompProfile:{type:"RuntimeDefault"}},
+          containers:[{name:"curl",image:$image,command:["curl"],args:[
+            "-fsS","--retry","6","--retry-delay","5","--max-time","30",
+            "-X","POST","--data-binary",$payload,$url],
+            resources:{requests:{cpu:"10m",memory:"16Mi"},limits:{cpu:"100m",memory:"64Mi"}},
+            securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]},
+              readOnlyRootFilesystem:true}}]}}
+      ')
+  else
+    manifest=$(jq -n --arg name "$pod" --arg image "$VM_PROBE_IMAGE" \
+      --arg url "${address}/api/v1/query" --arg query "$argument" \
+      --arg time "$timestamp_seconds" '{
+        apiVersion:"v1",kind:"Pod",
+        metadata:{name:$name,namespace:"monitoring",labels:{
+          "app.kubernetes.io/part-of":"profile-migration",
+          "app.kubernetes.io/component":"victoriametrics-data-proof"}},
+        spec:{restartPolicy:"Never",automountServiceAccountToken:false,
+          securityContext:{runAsNonRoot:true,runAsUser:1000,runAsGroup:1000,
+            seccompProfile:{type:"RuntimeDefault"}},
+          containers:[{name:"curl",image:$image,command:["curl"],args:[
+            "-fsS","--retry","6","--retry-delay","5","--max-time","30","--get",$url,
+            "--data-urlencode",("query="+$query),"--data-urlencode",("time="+$time)],
+            resources:{requests:{cpu:"10m",memory:"16Mi"},limits:{cpu:"100m",memory:"64Mi"}},
+            securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]},
+              readOnlyRootFilesystem:true}}]}}
+      ')
+  fi
+  cleanup_probe_pod monitoring "$pod"
+  kubectl create -f - <<<"$manifest" >/dev/null
+  if ! kubectl wait -n monitoring "pod/${pod}" --for=jsonpath='{.status.phase}'=Succeeded --timeout=5m >/dev/null; then
+    output=$(kubectl logs -n monitoring "$pod" --tail=100 2>&1 || true)
+    cleanup_probe_pod monitoring "$pod"
+    printf '%s\n' "$output" >&2
+    fail "VictoriaMetrics $operation data-proof request failed"
+  fi
+  output=$(kubectl logs -n monitoring "$pod" 2>&1) \
+    || { cleanup_probe_pod monitoring "$pod"; fail "could not read VictoriaMetrics $operation data-proof response"; }
+  cleanup_probe_pod monitoring "$pod"
+  printf '%s' "$output"
+}
+
+prepare_vm_sentinel() {
+  local direction="$1" from_mode="$2" to_mode="$3" sentinel_file="$4"
+  local epoch timestamp_ms proof_id value tmp
+  if [[ -f "$sentinel_file" ]]; then
+    jq -e --arg direction "$direction" --arg from "$from_mode" --arg to "$to_mode" '
+      .schema == 1 and .direction == $direction and .source_mode == $from and
+      .target_mode == $to and (.metric | type == "string") and
+      (.migration_id | type == "string") and (.timestamp_ms | type == "number") and
+      (.expected_value | type == "number")
+    ' "$sentinel_file" >/dev/null || fail "invalid persisted VictoriaMetrics $direction sentinel descriptor"
+    return 0
+  fi
+  epoch=$(date -u +%s)
+  if [[ "$direction" == forward ]]; then
+    # Keep the proof independent of fresh-scrape success: it is deliberately a
+    # historical sample and therefore exercises vmctl's retained-history path.
+    epoch=$((epoch - 3600))
+    value=41001
+  else
+    # The rollback sentinel is written after the target write switch so it is
+    # necessarily inside the delta window copied with --filter-time-start.
+    value=42001
+  fi
+  timestamp_ms=$((epoch * 1000))
+  proof_id=$(printf '%s-%s-%s-%s' "$PROJECT" "$SOURCE_PROFILE" "$TARGET_PROFILE" "$direction" \
+    | tr -cd '[:alnum:]_-')
+  tmp="${sentinel_file}.tmp.$$"
+  jq -n --arg direction "$direction" --arg from "$from_mode" --arg to "$to_mode" \
+    --arg id "$proof_id" --argjson timestamp "$timestamp_ms" --argjson value "$value" '{
+      schema:1,direction:$direction,source_mode:$from,target_mode:$to,
+      metric:"profile_migration_data_proof",migration_id:$id,
+      timestamp_ms:$timestamp,expected_value:$value,source_evidence:null
+    }' > "$tmp"
+  mv "$tmp" "$sentinel_file"
+}
+
+query_vm_sentinel() {
+  local mode="$1" sentinel_file="$2" response query timestamp_ms timestamp_seconds
+  local metric migration_id expected_value attempt
+  metric=$(jq -r '.metric' "$sentinel_file")
+  migration_id=$(jq -r '.migration_id' "$sentinel_file")
+  timestamp_ms=$(jq -r '.timestamp_ms' "$sentinel_file")
+  expected_value=$(jq -r '.expected_value' "$sentinel_file")
+  timestamp_seconds=$((timestamp_ms / 1000))
+  query="${metric}{migration_id=\"${migration_id}\"}"
+  vm_mode_addresses "$mode"
+  for ((attempt=1; attempt<=30; attempt++)); do
+    response=$(run_vm_probe_pod query "$VM_QUERY_ADDR" "$query" "$timestamp_seconds")
+    if jq -e --arg metric "$metric" --arg id "$migration_id" \
+      --argjson timestamp "$timestamp_ms" --argjson value "$expected_value" '
+        .status == "success" and (.data.result | length) == 1 and
+        .data.result[0].metric.__name__ == $metric and
+        .data.result[0].metric.migration_id == $id and
+        (((.data.result[0].value[0] | tonumber) * 1000 | round) == $timestamp) and
+        ((.data.result[0].value[1] | tonumber) == $value)
+      ' <<<"$response" >/dev/null 2>&1; then
+      jq -c --arg mode "$mode" --argjson timestamp "$timestamp_ms" \
+        --argjson value "$expected_value" '{
+          mode:$mode,queried_at:(now | todateiso8601),
+          sample_timestamp_ms:$timestamp,sample_value:$value,
+          series:.data.result[0].metric
+        }' <<<"$response"
+      return 0
+    fi
+    (( attempt == 30 )) || sleep 5
+  done
+  fail "VictoriaMetrics $mode data proof did not return the exact sentinel value and timestamp"
+}
+
+write_and_verify_vm_sentinel() {
+  local mode="$1" sentinel_file="$2" metric migration_id timestamp_ms expected_value payload evidence tmp
+  metric=$(jq -r '.metric' "$sentinel_file")
+  migration_id=$(jq -r '.migration_id' "$sentinel_file")
+  timestamp_ms=$(jq -r '.timestamp_ms' "$sentinel_file")
+  expected_value=$(jq -r '.expected_value' "$sentinel_file")
+  payload="${metric}{migration_id=\"${migration_id}\"} ${expected_value} ${timestamp_ms}"
+  vm_mode_addresses "$mode"
+  run_vm_probe_pod import "$VM_WRITE_ADDR" "$payload" >/dev/null
+  evidence=$(query_vm_sentinel "$mode" "$sentinel_file")
+  tmp="${sentinel_file}.tmp.$$"
+  jq --argjson evidence "$evidence" '.source_evidence=$evidence' "$sentinel_file" > "$tmp"
+  mv "$tmp" "$sentinel_file"
+}
+
+verify_vm_migration_proof() {
+  local direction="$1" from_mode="$2" to_mode="$3" sentinel_file="$4" proof_file="$5"
+  jq -e --arg direction "$direction" --arg from "$from_mode" --arg to "$to_mode" \
+    --slurpfile descriptor "$sentinel_file" '
+    .schema == 1 and .status == "verified" and .direction == $direction and
+    .source_mode == $from and .target_mode == $to and
+    .sentinel == ($descriptor[0] | del(.source_evidence)) and
+    ($direction != "rollback" or
+      (.filter_time_start | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))) and
+    (.source.sample_timestamp_ms == .sentinel.timestamp_ms) and
+    (.target.sample_timestamp_ms == .sentinel.timestamp_ms) and
+    (.source.sample_value == .sentinel.expected_value) and
+    (.target.sample_value == .sentinel.expected_value) and
+    (.source.series.__name__ == .sentinel.metric) and
+    (.target.series.__name__ == .sentinel.metric) and
+    (.source.series.migration_id == .sentinel.migration_id) and
+    (.target.series.migration_id == .sentinel.migration_id)
+  ' "$proof_file" >/dev/null 2>&1 \
+    || fail "verified VictoriaMetrics $direction migration proof is missing or invalid"
+  # A persisted JSON receipt is not enough for destructive retirement. Query
+  # the still-active destination again at the exact historical timestamp.
+  query_vm_sentinel "$to_mode" "$sentinel_file" >/dev/null
+}
+
+migrate_vm_data_with_proof() {
+  local direction="$1" from_mode="$2" to_mode="$3" job="$4" time_start="${5:-1970-01-01T00:00:00Z}"
+  local sentinel_file proof_file source_evidence target_evidence tmp filter_epoch sentinel_epoch
+  if [[ "$direction" == forward ]]; then
+    sentinel_file="$VM_FORWARD_SENTINEL_FILE"; proof_file="$VM_FORWARD_PROOF_FILE"
+  else
+    sentinel_file="$VM_ROLLBACK_SENTINEL_FILE"; proof_file="$VM_ROLLBACK_PROOF_FILE"
+  fi
+  prepare_vm_sentinel "$direction" "$from_mode" "$to_mode" "$sentinel_file"
+  if [[ "$direction" == rollback ]]; then
+    filter_epoch=$(jq -nr --arg time "$time_start" '$time | fromdateiso8601') \
+      || fail "rollback VictoriaMetrics delta start is not valid RFC3339 UTC: $time_start"
+    sentinel_epoch=$(( $(jq -r '.timestamp_ms' "$sentinel_file") / 1000 ))
+    (( sentinel_epoch >= filter_epoch )) \
+      || fail "rollback VictoriaMetrics sentinel predates the target write-switch delta"
+  fi
+  if [[ -f "$proof_file" ]]; then
+    verify_vm_migration_proof "$direction" "$from_mode" "$to_mode" "$sentinel_file" "$proof_file"
+    log "VictoriaMetrics $direction exact data proof already verified"
+    return 0
+  fi
+  write_and_verify_vm_sentinel "$from_mode" "$sentinel_file"
+  vm_addresses "$from_mode" "$to_mode"
+  run_vmctl_migration "$job" "$VM_SOURCE_ADDR" "$VM_TARGET_ADDR" "$time_start"
+  target_evidence=$(query_vm_sentinel "$to_mode" "$sentinel_file")
+  source_evidence=$(jq -c '.source_evidence' "$sentinel_file")
+  tmp="${proof_file}.tmp.$$"
+  jq -n --arg direction "$direction" --arg from "$from_mode" --arg to "$to_mode" \
+    --arg filterTimeStart "$time_start" \
+    --slurpfile sentinel "$sentinel_file" --argjson source "$source_evidence" \
+    --argjson target "$target_evidence" '{
+      schema:1,status:"verified",direction:$direction,source_mode:$from,target_mode:$to,
+      verified_at:(now | todateiso8601),filter_time_start:$filterTimeStart,
+      sentinel:($sentinel[0] | del(.source_evidence)),
+      source:$source,target:$target
+    }' > "$tmp"
+  mv "$tmp" "$proof_file"
+  verify_vm_migration_proof "$direction" "$from_mode" "$to_mode" "$sentinel_file" "$proof_file"
+  log "VictoriaMetrics $direction exact historical value/time proof verified"
+}
+
 stage_migrate_data() {
   local source_mode target_mode
   source_mode=$(profile_mode "$SOURCE_CONFIG"); target_mode=$(profile_mode "$TARGET_CONFIG")
   if [[ "$source_mode" != "$target_mode" ]]; then
-    vm_addresses "$source_mode" "$target_mode"
-    run_vmctl_migration "${PROJECT}-vm-${SOURCE_PROFILE}-to-${TARGET_PROFILE}" "$VM_SOURCE_ADDR" "$VM_TARGET_ADDR"
+    migrate_vm_data_with_proof forward "$source_mode" "$target_mode" \
+      "${PROJECT}-vm-${SOURCE_PROFILE}-to-${TARGET_PROFILE}-proof-v1"
   fi
   [[ "$source_mode" != single || "$target_mode" != cluster ]] || warn "Loki objects remain an archive until separately confirmed finalization"
 }
@@ -2374,7 +2763,7 @@ stage_post_backup() {
   set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.bucket' "$DR_BUCKET"
   set_yaml_string "$POST_BACKUP_CONFIG" '.backup.disaster_recovery.prefix' "$DR_PREFIX"
   run_playbook "$POST_BACKUP_CONFIG" --tags databases,gitlab,backup
-  cluster_backup "$POST_BACKUP_CONFIG"
+  cluster_backup "$POST_BACKUP_CONFIG" post-migration
 }
 
 rollback_components_to_remove() {
@@ -2441,6 +2830,16 @@ if [[ "$DRY_RUN" != true && ( "$COMMAND" == execute || "$COMMAND" == resume \
     || fail "checkpointed Gitaly PDB override must be restored before $COMMAND"
 fi
 
+if [[ "$DRY_RUN" != true && ( "$COMMAND" == resume || "$COMMAND" == rollback \
+  || "$COMMAND" == finalize ) ]]; then
+  if [[ -f "$STATE_DIR/stage-backup.done" ]]; then
+    verify_recorded_backup pre-migration
+  fi
+  if [[ -f "$STATE_DIR/stage-post-backup.done" ]]; then
+    verify_recorded_backup post-migration
+  fi
+fi
+
 if [[ "$COMMAND" == rollback ]]; then
   rollback_status=$(jq -r '.status' "$STATE_FILE")
   [[ "$rollback_status" != finalized && "$rollback_status" != finalizing ]] || fail "started or completed finalization requires recovery-bundle restoration, not an in-place rollback"
@@ -2451,8 +2850,10 @@ if [[ "$COMMAND" == rollback ]]; then
   snapshot=$(jq -r '.helm_snapshot // ""' "$STATE_FILE")
   [[ -n "$snapshot" && -d "$snapshot" ]] || fail "recorded Helm snapshot is unavailable"
   if [[ -f "$STATE_DIR/stage-apply-target.done" && $(profile_mode "$SOURCE_CONFIG") != $(profile_mode "$TARGET_CONFIG") ]]; then
-    vm_addresses "$(profile_mode "$TARGET_CONFIG")" "$(profile_mode "$SOURCE_CONFIG")"
-    run_vmctl_migration "${PROJECT}-vm-rollback-${TARGET_PROFILE}-to-${SOURCE_PROFILE}" "$VM_SOURCE_ADDR" "$VM_TARGET_ADDR" "$(jq -r '.target_write_switch_started_at' "$STATE_FILE")"
+    migrate_vm_data_with_proof rollback "$(profile_mode "$TARGET_CONFIG")" \
+      "$(profile_mode "$SOURCE_CONFIG")" \
+      "${PROJECT}-vm-rollback-${TARGET_PROFILE}-to-${SOURCE_PROFILE}-proof-v1" \
+      "$(jq -r '.target_write_switch_started_at' "$STATE_FILE")"
   fi
   if [[ -f "$STATE_DIR/stage-migrate-vault-storage.done" ]]; then
     warn "Vault storage is already Raft; restoring every non-Vault Helm baseline while retaining the migrated Vault release"
@@ -2510,6 +2911,11 @@ retire_observability_source() {
   local -a pvcs=()
   source_mode=$(profile_mode "$SOURCE_CONFIG"); target_mode=$(profile_mode "$TARGET_CONFIG")
   [[ "$source_mode" != "$target_mode" ]] || return 0
+  # This live exact-sample query is the final destructive gate. A completed
+  # vmctl Job, migration stage marker, or JSON receipt alone cannot authorize
+  # removal of the old CR/PVC data path.
+  verify_vm_migration_proof forward "$source_mode" "$target_mode" \
+    "$VM_FORWARD_SENTINEL_FILE" "$VM_FORWARD_PROOF_FILE"
   if [[ ! -f "$pvc_file" ]]; then
     if [[ "$source_mode" == single ]]; then
       capture_observability_pvcs '^(vmsingle-vmsingle-|loki-)' > "$pvc_file"
@@ -2530,7 +2936,11 @@ retire_observability_source() {
   else
     kubectl delete vmcluster vmcluster -n monitoring --ignore-not-found --wait --timeout=10m
   fi
-  (( ${#pvcs[@]} == 0 )) || kubectl delete pvc -n monitoring "${pvcs[@]}" --ignore-not-found --wait --timeout=10m
+  if (( ${#pvcs[@]} > 0 )); then
+    verify_vm_migration_proof forward "$source_mode" "$target_mode" \
+      "$VM_FORWARD_SENTINEL_FILE" "$VM_FORWARD_PROOF_FILE"
+    kubectl delete pvc -n monitoring "${pvcs[@]}" --ignore-not-found --wait --timeout=10m
+  fi
 }
 
 kubespray_inventory() { printf '%s/playbooks/kubespray/inventory/%s/hosts.yml' "$PROJECT_ROOT" "$PROJECT"; }
@@ -2613,7 +3023,7 @@ finalize_stage() {
       validate_volume_capacity_settings
       check_volume_capacity
       run_playbook "$POST_BACKUP_CONFIG" --tags databases,gitlab,backup
-      cluster_backup "$POST_BACKUP_CONFIG"
+      cluster_backup "$POST_BACKUP_CONFIG" finalization
       ;;
     retire-backup) remove_disabled_components true ;;
     cleanup-cloud)
@@ -2645,6 +3055,19 @@ if [[ "$COMMAND" == finalize ]]; then
   if [[ "$FORCE" != true ]]; then
     printf 'Type FINALIZE to retire source resources for %s -> %s: ' "$SOURCE_PROFILE" "$TARGET_PROFILE"
     read -r confirmation; [[ "$confirmation" == FINALIZE ]] || fail "confirmation did not match FINALIZE"
+  fi
+  pending_destructive=false
+  for destructive_stage in "${DESTRUCTIVE_FINALIZE_STAGES[@]}"; do
+    [[ -f "$STATE_DIR/finalize-${destructive_stage}.done" ]] || pending_destructive=true
+  done
+  if [[ "$pending_destructive" == true ]]; then
+    log "refreshing verified finalization backup before remaining destructive retirement"
+    finalize_stage final-backup
+    mark_finalize_stage final-backup
+  elif [[ -f "$STATE_DIR/finalize-final-backup.done" ]]; then
+    verify_recorded_backup finalization
+  else
+    fail "finalization backup checkpoint is missing"
   fi
   jq '.status="finalizing" | .finalization_started_at=(.finalization_started_at // (now | todateiso8601))' "$STATE_FILE" > "${STATE_FILE}.tmp.$$"; mv "${STATE_FILE}.tmp.$$" "$STATE_FILE"
   for stage in "${FINALIZE_STAGES[@]}"; do
