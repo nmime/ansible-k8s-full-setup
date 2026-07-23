@@ -6,9 +6,13 @@
     pg_version: '{{ postgresql_version | default(18) }}'
     pg_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     pg_storage: '{{ postgresql_storage | default(''20Gi'') }}'
+    pg_data_storage_class: '{{ postgresql_data_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
+    pg_repo_storage_class: '{{ postgresql_repo_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
+    pg_repo_storage: '{{ postgresql_repo_storage | default(''10Gi'') }}'
     pg_proxy_replicas: '{{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1)) }}'
     mongo_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     mongo_storage: '{{ mongodb_storage | default(''20Gi'') }}'
+    mongo_data_storage_class: '{{ mongodb_data_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -269,7 +273,7 @@
           dataVolumeClaimSpec:
             accessModes:
             - ReadWriteOnce
-            storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
+            storageClassName: '{{ pg_data_storage_class }}'
             resources:
               requests:
                 storage: '{{ pg_storage }}'
@@ -346,10 +350,10 @@
                 volumeClaimSpec:
                   accessModes:
                   - ReadWriteOnce
-                  storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
+                  storageClassName: '{{ pg_repo_storage_class }}'
                   resources:
                     requests:
-                      storage: '{{ pg_storage }}'
+                      storage: '{{ pg_repo_storage }}'
             - name: repo2
               schedules: "{{ {'full': '0 3 * * 0'} if (platform_backup_enabled | default(backup_enabled) | bool) else {} }}"
               s3:
@@ -572,7 +576,7 @@
           tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
           volumeSpec:
             persistentVolumeClaim:
-              storageClassName: '{{ storage_class | default(''hcloud-volumes'') }}'
+              storageClassName: '{{ mongo_data_storage_class }}'
               accessModes:
               - ReadWriteOnce
               resources:

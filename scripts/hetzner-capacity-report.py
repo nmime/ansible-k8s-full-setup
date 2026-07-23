@@ -114,7 +114,7 @@ def find_location_amount(
     return Decimal(str(price[field]["net"]))
 
 
-def storage_estimate(profile: dict[str, Any]) -> int:
+def storage_estimate(profile: dict[str, Any]) -> dict[str, int]:
     # Keep one source of truth by importing the migration estimator.
     import importlib.util
 
@@ -125,7 +125,20 @@ def storage_estimate(profile: dict[str, Any]) -> int:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     result = module.estimate(profile)
-    return int(result["persistent_total_gib"]) + int(result["backup_scratch_gib"])
+    return {
+        "provider_volume_gib": (
+            int(result["provider_persistent_gib"])
+            + int(result["provider_backup_scratch_gib"])
+        ),
+        "local_reserved_gib": (
+            int(result["local_reserved_gib"])
+            + int(result["local_backup_scratch_gib"])
+        ),
+        "total_claim_capacity_gib": (
+            int(result["persistent_total_gib"])
+            + int(result["backup_scratch_gib"])
+        ),
+    }
 
 
 def build_plans(
@@ -153,7 +166,8 @@ def build_plans(
             if lb_enabled
             else Decimal("0")
         )
-        volume_gib = storage_estimate(profile)
+        storage = storage_estimate(profile)
+        volume_gib = storage["provider_volume_gib"]
         volume_total = volume_price * volume_gib
         for family in FAMILY_ORDER:
             selected = TARIFF_TYPES[profile_name][family]
@@ -191,6 +205,8 @@ def build_plans(
                     "infrastructure_monthly_net": f"{infrastructure:.2f}",
                     "volume_gib": volume_gib,
                     "volume_monthly_net": f"{volume_total:.2f}",
+                    "local_reserved_gib": storage["local_reserved_gib"],
+                    "total_claim_capacity_gib": storage["total_claim_capacity_gib"],
                     "total_monthly_net": f"{infrastructure + volume_total:.2f}",
                 }
             )
@@ -227,10 +243,11 @@ def render_markdown(report: dict[str, Any]) -> str:
             "## Five-profile tariff totals",
             "",
             "Totals include the selected servers, bastion IPv4, configured load balancer, "
-            "and profile PVC capacity. Local server SSD is not deducted from CSI volumes.",
+            "and provider-billed PVC capacity. Replication-qualified local claims are "
+            "reported separately.",
             "",
-            "| Profile | Family | Types (bastion / control plane / worker) | Status | Infrastructure | Volumes | Total net/month |",
-            "|---|---|---|---|---:|---:|---:|",
+            "| Profile | Family | Types (bastion / control plane / worker) | Status | Infrastructure | CSI volumes | Local reserve | Total net/month |",
+            "|---|---|---|---|---:|---:|---:|---:|",
         ]
     )
     for plan in report["plans"]:
@@ -240,6 +257,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"`{selected['bastion']}` / `{selected['control_plane']}` / `{selected['worker']}` | "
             f"{plan['deployment_status']} | {money(plan['infrastructure_monthly_net'])} | "
             f"{money(plan['volume_monthly_net'])} ({plan['volume_gib']} GiB) | "
+            f"{plan['local_reserved_gib']} GiB | "
             f"**{money(plan['total_monthly_net'])}** |"
         )
     lines.extend(

@@ -230,6 +230,15 @@
           master:
             enabled: true
             replicas: "{{ object_storage_replicas | int }}"
+            affinity: |
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: seaweedfs
+                        app.kubernetes.io/instance: {{ object_storage_release_name | default('seaweedfs') }}
+                        app.kubernetes.io/component: master
+                    topologyKey: kubernetes.io/hostname
             resources:
               requests:
                 cpu: 50m
@@ -258,13 +267,22 @@
             raftBootstrap: false
             data:
               type: persistentVolumeClaim
-              storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+              storageClass: "{{ object_storage_master_storage_class | default(object_storage_storage_class | default(storage_class | default('hcloud-volumes'))) }}"
               size: "{{ object_storage_master_size | default('2Gi') }}"
             logs:
               type: emptyDir
           volume:
             enabled: true
             replicas: "{{ object_storage_volume_replicas | int }}"
+            affinity: |
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: seaweedfs
+                        app.kubernetes.io/instance: {{ object_storage_release_name | default('seaweedfs') }}
+                        app.kubernetes.io/component: volume
+                    topologyKey: kubernetes.io/hostname
             resources:
               requests:
                 cpu: 100m
@@ -275,15 +293,17 @@
             dataDirs:
               - name: data
                 type: persistentVolumeClaim
-                storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+                storageClass: "{{ object_storage_volume_storage_class | default(object_storage_storage_class | default(storage_class | default('hcloud-volumes'))) }}"
                 size: "{{ object_storage_volume_size | default('50Gi') }}"
                 maxVolumes: 0
             idx: >-
               {{
                 {
                   'type': 'persistentVolumeClaim',
-                  'storageClass': object_storage_storage_class |
-                    default(storage_class | default('hcloud-volumes')),
+                  'storageClass': object_storage_index_storage_class |
+                    default(object_storage_volume_storage_class |
+                    default(object_storage_storage_class |
+                    default(storage_class | default('hcloud-volumes')))),
                   'size': object_storage_idx_size | default('2Gi')
                 }
                 if (object_storage_index_persistent | default(true) | bool)
@@ -301,7 +321,7 @@
                 memory: 1Gi
             data:
               type: persistentVolumeClaim
-              storageClass: "{{ object_storage_storage_class | default(storage_class | default('hcloud-volumes')) }}"
+              storageClass: "{{ object_storage_filer_storage_class | default(object_storage_storage_class | default(storage_class | default('hcloud-volumes'))) }}"
               size: "{{ object_storage_filer_size | default('5Gi') }}"
             logs:
               type: emptyDir

@@ -38,6 +38,20 @@ PostgreSQL, MongoDB, Vault, or GitLab native mechanisms. Keep the native and
 filesystem layers together. A component's guarded `--delete-data` flag is not
 evidence that a backup exists.
 
+`medium-optimized` places only application-replicated claims on the
+`platform-local` StorageClass. Those PVs are retained and node-affine: Kubernetes
+cannot attach them to a replacement node. Loss of one member is repaired by
+SeaweedFS, Vault Raft, PostgreSQL, MongoDB, or Elasticsearch quorum; loss of
+the cluster or quorum is recovered from the independent native and
+Velero/Kopia layers above. Singleton, audit, repository, UI-state, and staging
+claims remain on `hcloud-volumes`.
+
+StorageClass is immutable. Converting an existing CSI-backed cluster to the
+hybrid layout requires a completed external backup, a newly provisioned target
+using the desired profile, and target-bound native/Velero restore. The
+in-place profile migrator reports the exact class-transition map and refuses
+to mutate those claims.
+
 Loki PVC retention is explicitly `Retain` for StatefulSet scale and deletion.
 If a restore is required, include the source Pod and PVC in the Velero restore
 so the node-agent can inject the filesystem replay. For a complete SeaweedFS

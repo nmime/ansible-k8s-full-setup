@@ -26,18 +26,23 @@ def test_medium_optimized_capacity_includes_every_persistent_index_volume():
     index = estimate["claims"]["object-storage/index"]
 
     assert profile["storage"]["index_persistent"] is True
-    assert index == {
-        "replicas": 3,
-        "requested_size": "2Gi",
-        "billable_per_volume_gib": 10,
-        "total_gib": 30,
-        "source": "SeaweedFS volume indexes",
-    }
+    assert index["replicas"] == 3
+    assert index["requested_size"] == "2Gi"
+    assert index["requested_total_gib"] == 6
+    assert index["billable_per_volume_gib"] == 10
+    assert index["total_gib"] == 30
+    assert index["storage_class"] == "platform-local"
+    assert index["provider_billable_gib"] == 0
+    assert index["local_reserved_gib"] == 30
+    assert index["source"] == "SeaweedFS volume indexes"
     assert estimate["persistent_total_gib"] == 730
+    assert estimate["provider_persistent_gib"] == 260
+    assert estimate["local_reserved_gib"] == 470
     assert estimate["backup_scratch_gib"] == 20
+    assert estimate["provider_backup_scratch_gib"] == 20
     assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 41
-    assert "750 GiB billable persistent volumes" in profile["cost_estimate"]
-    assert "730 GiB data claims" in profile["cost_estimate"]
+    assert "470 GiB replication-qualified local SSD" in profile["cost_estimate"]
+    assert "280 GiB provider-billable persistent volumes" in profile["cost_estimate"]
 
 
 def test_capacity_index_presence_matches_normalized_helm_pvc_contract():
@@ -85,9 +90,11 @@ def test_medium_optimized_cost_document_tracks_capacity_source_of_truth():
     deployment = (ROOT / "DEPLOYMENT.md").read_text()
 
     for document in (cost, readme, deployment):
-        assert "750 GiB" in document
-        assert "€318.81" in document
-        assert "€145.81" in document
-    assert "730 GiB" in cost
+        assert "470 GiB" in document
+        assert "280 GiB" in document
+        assert "€291.93" in document
+        assert "€118.93" in document
+    assert "692 GiB" in cost
+    assert "750 GiB" in cost
     assert "SeaweedFS" in cost and "index" in cost
     assert "€0.0572" in cost

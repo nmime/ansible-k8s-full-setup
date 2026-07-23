@@ -448,7 +448,7 @@ class TestVaultTLS:
 
     def test_vault_affinity_uses_the_chart_templated_string_contract(self):
         assert "affinity: |" in self.content
-        assert "preferredDuringSchedulingIgnoredDuringExecution:" in self.content
+        assert "requiredDuringSchedulingIgnoredDuringExecution:" in self.content
         assert "Vault chart consumes affinity as a templated YAML string" in self.content
 
 

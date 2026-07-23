@@ -210,17 +210,15 @@
                 - ALL
         # The Vault chart consumes affinity as a templated YAML string. Keeping
         # this value a string avoids Helm coalescing type warnings while still
-        # rendering the same preferred anti-affinity PodSpec.
+        # rendering required hostname separation for Raft members.
         affinity: |
           podAntiAffinity:
-            preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                podAffinityTerm:
-                  labelSelector:
-                    matchLabels:
-                      app.kubernetes.io/name: vault
-                      component: server
-                  topologyKey: kubernetes.io/hostname
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vault
+                    component: server
+                topologyKey: kubernetes.io/hostname
         tolerations:
         - key: node-role.kubernetes.io/control-plane
           operator: Exists
@@ -228,11 +226,11 @@
         dataStorage:
           enabled: true
           size: '{{ vault_storage }}'
-          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
+          storageClass: '{{ vault_data_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
         auditStorage:
           enabled: true
           size: '{{ vault_audit_storage }}'
-          storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
+          storageClass: '{{ vault_audit_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
         extraEnvironmentVars:
           VAULT_CACERT: "{{ '' if vault_tls_disabled | bool else '/vault/tls/ca.crt' }}"
         volumes: >-

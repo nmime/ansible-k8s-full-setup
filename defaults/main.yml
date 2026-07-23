@@ -55,6 +55,10 @@ hetzner_region: hel1
 hetzner_image: ubuntu-24.04
 ssh_key_path: ~/.ssh/id_ed25519
 storage_class: hcloud-volumes
+local_storage_enabled: false
+local_storage_class: platform-local
+local_storage_path: /var/lib/platform-local-storage
+local_storage_min_free_gib_per_node: 40
 ansible_ssh_strict_host_key_checking: true
 # Controller-local state must be unique when several clusters are reconciled
 # concurrently. Override the port per cluster and run each controller with an
