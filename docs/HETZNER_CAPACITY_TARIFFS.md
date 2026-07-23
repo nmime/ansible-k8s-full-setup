@@ -79,8 +79,10 @@ included allowance.
 | `production` | `cpx22` / `cpx42` / `cpx42` |
 
 The minimal 4-vCPU/8-GiB node floor and the medium-optimized seven-node
-4-vCPU/8-GiB envelope come from the completed live campaign. The profiles do
-not trade that measured headroom for a cheaper but untested shape.
+failure-domain layout come from the completed live campaign. The balanced CPX
+default retains the tested 4-vCPU/8-GiB node envelope. The CX mapping uses
+`cx33` control planes and intentionally raises workers to `cx43`: quorum nodes
+stay economical while workload capacity receives the larger shape.
 
 ## Five-profile price balance
 
@@ -94,7 +96,7 @@ domains, support, and non-zero customer VAT.
 | `minimal` | 250 GiB | €37.27 | €41.77 | **€105.27** | €229.77 |
 | `small` | 360 GiB | €56.54 | €61.54 | **€138.54** | €286.54 |
 | `medium` | 1,520 GiB | €180.37 | €205.87 | **€461.87** | €567.87 |
-| `medium-optimized` | 750 GiB | €115.81 | €130.31 | **€318.81** | €695.81 |
+| `medium-optimized` | 750 GiB | €145.81 | €130.31 | **€318.81** | €695.81 |
 | `production` | 1,490 GiB | €194.65 | €225.15 | **€529.65** | €652.15 |
 
 CX figures are valid purchase prices whenever the complete mapping reappears;
@@ -109,6 +111,26 @@ savings.
 not a linear tier between `medium` and `production`. It uses more small nodes
 than production, so CCX can make it more expensive than the six-node production
 topology.
+
+### Medium-optimized CX resource balance
+
+The CX option is intentionally mixed instead of assigning `cx33` everywhere:
+
+| Role | Shape and count | vCPU | RAM | Node-local SSD | Durable CSI | Monthly net |
+|---|---|---:|---:|---:|---:|---:|
+| Schedulable control planes | 3 × `cx33` | 12 | 24 GiB | 240 GiB | — | €25.47 |
+| Workers | 4 × `cx43` | 32 | 64 GiB | 640 GiB | — | €63.96 |
+| Bastion | 1 × `cx23` | 2 | 4 GiB | 40 GiB | — | €5.49 |
+| `lb11` and bastion IPv4 | 1 each | — | — | — | — | €7.99 |
+| **Infrastructure** | | **46** | **92 GiB** | **920 GiB** | — | **€102.91** |
+| Durable CSI volumes | 42 volumes | — | — | — | 750 GiB | €42.90 |
+| **Total** | | | | **920 GiB** | **750 GiB** | **€145.81** |
+
+Excluding the bastion, Kubernetes receives 44 vCPU, 88 GiB RAM, and 880 GiB
+aggregate node-local SSD. Relative to four `cx33` workers, the four `cx43`
+workers double the workload pool from 16 to 32 vCPU, 32 to 64 GiB RAM, and 320
+to 640 GiB local SSD for €30/month more. The three control planes remain
+schedulable and contribute another 12 vCPU and 24 GiB RAM.
 
 ## Local disk and volume boundary
 

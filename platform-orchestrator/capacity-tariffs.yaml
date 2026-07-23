@@ -42,7 +42,10 @@ profiles:
     cpx: {bastion: cpx22, control_plane: cpx42, worker: cpx42}
     ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}
   medium-optimized:
-    cx: {bastion: cx23, control_plane: cx33, worker: cx33}
+    # Keep quorum nodes economical while doubling every workload node's
+    # CPU, RAM, and local SSD. Four workers preserve the live-tested failure
+    # domain count; node-local SSD remains separate from durable CSI capacity.
+    cx: {bastion: cx23, control_plane: cx33, worker: cx43}
     cax: {bastion: cax11, control_plane: cax21, worker: cax21}
     cpx: {bastion: cpx22, control_plane: cpx32, worker: cpx32}
     ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}

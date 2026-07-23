@@ -98,7 +98,13 @@ def test_current_medium_optimized_totals_and_safety_statuses():
         if plan["profile"] == "medium-optimized"
     }
 
-    assert selected["cx"]["total_monthly_net"] == "115.81"
+    assert selected["cx"]["types"] == {
+        "bastion": "cx23",
+        "control_plane": "cx33",
+        "worker": "cx43",
+    }
+    assert selected["cx"]["infrastructure_monthly_net"] == "102.91"
+    assert selected["cx"]["total_monthly_net"] == "145.81"
     assert selected["cx"]["deployment_status"] == "temporarily-unavailable"
     assert selected["cax"]["total_monthly_net"] == "130.31"
     assert selected["cax"]["deployment_status"] == "planning-only-arm64-unattested"
