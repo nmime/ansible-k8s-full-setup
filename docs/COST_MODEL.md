@@ -81,10 +81,29 @@ line item in this calculation.
 
 ## Intermittent cost-optimized reference
 
-The mapping of seven `cx33` nodes and one `cx23` bastion still calculates to
-**€115.81/month net**, including the same 750 GiB of volumes. It is retained as
-an opportunistic purchase option, existing-server reference, and
-migration/rollback reference. CX capacity appears intermittently; at audit time,
+The optimized CX mapping uses three `cx33` schedulable control planes, four
+`cx43` workers, and one `cx23` bastion:
+
+| Resource | Quantity | Monthly each | Monthly total |
+|---|---:|---:|---:|
+| `cx33` control planes | 3 | €8.49 | €25.47 |
+| `cx43` workers | 4 | €15.99 | €63.96 |
+| `cx23` bastion | 1 | €5.49 | €5.49 |
+| `lb11` | 1 | €7.49 | €7.49 |
+| Bastion Primary IPv4 | 1 | €0.50 | €0.50 |
+| **Infrastructure subtotal** | | | **€102.91** |
+| 750 GiB durable CSI volumes | | €0.0572/GiB | **€42.90** |
+| **Total** | | | **€145.81** |
+
+The Kubernetes nodes provide 44 vCPU, 88 GiB RAM, and 880 GiB aggregate
+node-local SSD. The worker pool alone is 32 vCPU, 64 GiB RAM, and 640 GiB
+local SSD—double the worker capacity of the earlier four-`cx33` mapping for
+€30/month more. Including the bastion, the account receives 46 vCPU, 92 GiB
+RAM, and 920 GiB local SSD. The direct infrastructure rate is €0.1648/hour;
+the complete monthly-capped planning equivalent is €0.19974/hour.
+
+This mapping is retained as an opportunistic purchase option and
+migration/rollback target. CX capacity appears intermittently; at audit time,
 `hel1` marked the required types temporarily unavailable for new placement.
 
 The default named profile uses the predictably available CPX mapping. Existing CX

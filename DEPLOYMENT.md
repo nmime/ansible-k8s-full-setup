@@ -74,12 +74,14 @@ outside this cluster.
 At the authenticated Hetzner API prices audited on 2026-07-23, this currently
 placeable balanced shape is €318.810/month net (€318.81 rounded), including its
 bastion IPv4 and 750 GiB of billable persistent volumes. The intermittent CX
-cost-optimized mapping remains €115.81/month whenever all required shapes are
-placeable; it was temporarily unavailable for new `hel1` placement at audit
-time. Storage is 730 GiB of operational data claims, including two
-Elasticsearch data claims and three durable SeaweedFS index claims, plus 20 GiB
-of GitLab backup staging. External DR storage and traffic overages are separate;
-see [the cost model](docs/COST_MODEL.md) and
+cost-optimized mapping is €145.81/month whenever all required shapes are
+placeable: three `cx33` control planes retain economical quorum capacity while
+four `cx43` workers double the worker pool's CPU, RAM, and node-local SSD
+relative to four `cx33` workers. It was temporarily unavailable for new `hel1`
+placement at audit time. Storage is 730 GiB of operational data claims,
+including two Elasticsearch data claims and three durable SeaweedFS index
+claims, plus 20 GiB of GitLab backup staging. External DR storage and traffic
+overages are separate; see [the cost model](docs/COST_MODEL.md) and
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md).
 
 Its three SeaweedFS volume servers use placement `001`, not SeaweedFS's unsafe

@@ -87,7 +87,7 @@ def test_medium_optimized_cost_document_tracks_capacity_source_of_truth():
     for document in (cost, readme, deployment):
         assert "750 GiB" in document
         assert "€318.81" in document
-        assert "€115.81" in document
+        assert "€145.81" in document
     assert "730 GiB" in cost
     assert "SeaweedFS" in cost and "index" in cost
     assert "€0.0572" in cost

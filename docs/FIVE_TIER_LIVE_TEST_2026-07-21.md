@@ -430,9 +430,11 @@ types unavailable for new placement, so the price is not a current capacity
 guarantee.
 
 After this campaign, the named profiles moved their purchase defaults to the
-predictably available CPX generation. The intermittent CX arithmetic remains a
-valid opportunistic-placement and existing-server reference; current mappings
-and live refresh commands are documented in
+predictably available CPX generation. The €115.81 figure above remains the
+historical all-`cx33` campaign cost, not the current CX purchase mapping. The
+current mapping retains three `cx33` control planes and promotes four workers
+to `cx43` for €145.81/month, doubling the worker pool's CPU, RAM, and
+node-local SSD. Current mappings and live refresh commands are documented in
 [Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
 
 ## Completed replacement-recovery campaign — 2026-07-23

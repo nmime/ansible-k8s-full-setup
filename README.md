@@ -34,9 +34,11 @@ The runtime has four capability tiers and five named profiles:
 The current deployable `medium-optimized` balanced tariff is approximately
 **€318.81/month net** at the authenticated 2026-07-23 prices: seven `cpx32`
 nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, and 750 GiB of billable
-volumes. The intermittent CX cost-optimized mapping remains **€115.81/month
-net** whenever its required server types are placeable. They were temporarily
-unavailable in `hel1` at audit time. The volume
+volumes. The intermittent CX cost-optimized mapping is **€145.81/month net**
+whenever its required server types are placeable. It keeps three economical
+`cx33` control planes and upgrades all four workers to `cx43`, doubling
+worker-pool CPU, RAM, and node-local SSD over an all-`cx33` worker pool. The
+required types were temporarily unavailable in `hel1` at audit time. The volume
 total includes two Elasticsearch data replicas, three separately persistent
 SeaweedFS index claims, and 20 GiB of GitLab backup staging. See the exact
 arithmetic in [the cost model](docs/COST_MODEL.md) and the complete live CX,
