@@ -87,17 +87,18 @@ stay economical while workload capacity receives the larger shape.
 ## Five-profile price balance
 
 These totals include servers, one bastion Primary IPv4, the profile's load
-balancer where enabled, and every billable CSI volume including GitLab backup
-staging. They exclude external DR object storage, snapshots, excess traffic,
+balancer where enabled, and every billable CSI volume selected by the named
+base profile. They exclude opt-in service claims, external DR object storage,
+snapshots, excess traffic,
 domains, support, and non-zero customer VAT.
 
-| Profile | CSI / local reserve | CX economy | CAX planning | CPX balanced | CCX dedicated |
+| Profile | CSI / active local claims | CX economy | CAX planning | CPX balanced | CCX dedicated |
 |---|---:|---:|---:|---:|---:|
-| `minimal` | 250 / 0 GiB | €37.27 | €41.77 | **€105.27** | €229.77 |
-| `small` | 360 / 0 GiB | €56.54 | €61.54 | **€138.54** | €286.54 |
-| `medium` | 1,520 / 0 GiB | €180.37 | €205.87 | **€461.87** | €567.87 |
-| `medium-optimized` | 280 / 470 GiB | €118.93 | €103.43 | **€291.93** | €668.93 |
-| `production` | 1,490 / 0 GiB | €194.65 | €225.15 | **€529.65** | €652.15 |
+| `minimal` | 220 / 0 GiB | €35.55 | €40.05 | **€103.55** | €228.05 |
+| `small` | 250 / 0 GiB | €50.25 | €55.25 | **€132.25** | €280.25 |
+| `medium` | 1,200 / 0 GiB | €162.07 | €187.57 | **€443.57** | €549.57 |
+| `medium-optimized` | 200 / 320 GiB | €114.35 | €98.85 | **€287.35** | €664.35 |
+| `production` | 1,200 / 0 GiB | €178.06 | €208.56 | **€513.06** | €635.56 |
 
 CX figures are valid purchase prices whenever the complete mapping reappears;
 the required shapes were temporarily not placeable in `hel1` at capture time.
@@ -107,10 +108,12 @@ approved production deployment. CPX is the current default and was placeable.
 CCX is available but should be chosen for CPU predictability, not storage
 savings.
 
-`medium-optimized` is a resource-envelope variant of the full medium toolset,
-not a linear tier between `medium` and `production`. It uses more small nodes
-than production, so CCX can make it more expensive than the six-node production
-topology.
+`medium-optimized` is a resource-envelope variant of the base medium toolset,
+not a linear tier between `medium` and `production`. PostgreSQL, MongoDB,
+GitLab/Runner, Temporal, Postal, and GlitchTip are opt-in and excluded from
+every named profile. Medium-optimized
+uses more small nodes than production, so CCX can make it more expensive than
+the six-node production topology.
 
 ### Medium-optimized CX resource balance
 
@@ -123,17 +126,18 @@ The CX option is intentionally mixed instead of assigning `cx33` everywhere:
 | Bastion | 1 × `cx23` | 2 | 4 GiB | 40 GiB | — | €5.49 |
 | `lb11` and bastion IPv4 | 1 each | — | — | — | — | €7.99 |
 | **Infrastructure** | | **46** | **92 GiB** | **920 GiB** | — | **€102.91** |
-| Provider CSI volumes | 19 volumes | — | — | — | 280 GiB | €16.02 |
-| Local PVC reservation | 23 volumes | — | — | 470 GiB | — | included |
-| **Total** | | | | **920 GiB** | **280 GiB** | **€118.93** |
+| Provider CSI volumes | 15 volumes | — | — | — | 200 GiB | €11.44 |
+| Active local PVC claims | 17 volumes | — | — | 320 GiB | — | included |
+| Expandable static local pool | 23 slots | — | — | 470 GiB | — | included |
+| **Total base claims** | | | | **320 GiB** | **200 GiB** | **€114.35** |
 
 Excluding the bastion, Kubernetes receives 44 vCPU, 88 GiB RAM, and 880 GiB
 aggregate node-local SSD. Relative to four `cx33` workers, the four `cx43`
 workers double the workload pool from 16 to 32 vCPU, 32 to 64 GiB RAM, and 320
 to 640 GiB local SSD for €30/month more. The three control planes remain
 schedulable and contribute another 12 vCPU and 24 GiB RAM. Of the Kubernetes
-nodes' 880 GiB aggregate SSD, 470 GiB is conservatively reserved for
-application-replicated PVCs.
+nodes' 880 GiB aggregate SSD, base claims actively select 320 GiB and the
+pre-created pool exposes up to 470 GiB for late database opt-ins.
 
 ## Local disk and volume boundary
 
@@ -142,9 +146,9 @@ The SSD column is node-local root storage, not shared storage. The
 23-volume static local PV pool, `WaitForFirstConsumer`, retained PVs,
 required hostname anti-affinity, minimum root-disk gates of 70 GiB on control
 planes and 140 GiB on workers, and a 40 GiB per-node free-space gate. Only
-SeaweedFS master/volume/index, Vault Raft data, PostgreSQL instances, MongoDB
-members, and Elasticsearch master/data claims use this class because those
-applications already replicate across nodes.
+SeaweedFS master/volume/index, Vault Raft data, and Elasticsearch master/data
+claims use this class in the base profile. Explicitly enabled PostgreSQL and
+MongoDB also use it because those applications replicate across nodes.
 
 Node-local PVs remain pinned to their node. A failed or deleted node does not
 carry its local PV to a replacement. Application quorum repairs the live
@@ -152,7 +156,8 @@ service and external native plus Velero/Kopia backups provide recovery.
 PV capacity is a Kubernetes scheduling reservation, not a hard per-directory
 filesystem quota; all local slots share the node root filesystem and remain
 protected by the 85% disk-usage alert plus kubelet `DiskPressure`.
-SeaweedFS filer, Vault audit, pgBackRest, observability, Gitaly, Dragonfly,
-Coroot/ClickHouse, Tempo, Postal, and backup staging remain on Hetzner CSI.
+SeaweedFS filer, Vault audit, observability, Dragonfly, Coroot/ClickHouse, and
+Tempo remain on Hetzner CSI. When their owners are selected, pgBackRest,
+Gitaly, and GitLab backup staging also remain on CSI.
 Existing CSI claims cannot change StorageClass in place; migrate them only
 through the backup-gated replacement/native-restore procedure.

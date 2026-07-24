@@ -13,9 +13,10 @@ ship or deploy an application repository by default.
 - Profile-controlled services: SeaweedFS; Vault and External Secrets Operator;
   Percona PostgreSQL and MongoDB; Elasticsearch/Kibana; Dragonfly; GitLab and
   Runner; Argo CD; VictoriaMetrics, Grafana, Loki/ELK, PMM, Alertmanager,
-  Coroot, Tempo/OpenTelemetry, and Blackbox Exporter; KEDA; Temporal; Postal;
-  GlitchTip; Elastic APM; Daytona; backup automation; and HIPAA-oriented
-  technical hardening. See the exhaustive
+  Coroot, Tempo/OpenTelemetry, and Blackbox Exporter; KEDA; Elastic APM;
+  backup automation; and HIPAA-oriented technical hardening. PostgreSQL,
+  MongoDB, GitLab/Runner, Temporal, Postal, GlitchTip, and Daytona remain
+  available as explicit opt-ins and are disabled in every named base profile. See the exhaustive
   [technology catalog](docs/TECHNOLOGY_CATALOG.md).
 - Native application backups, external Velero/Kopia resource and PVC backups,
   encrypted etcd/PKI/config bundles, restore drills, staged upgrades, exact
@@ -26,17 +27,17 @@ The runtime has four capability tiers and five named profiles:
 | Profile | Capability tier | Resource tier | Default topology | Service scope |
 |---|---|---|---|---|
 | `minimal` | minimal | minimal | 1 schedulable 4 vCPU/8 GiB control plane + 1 4 vCPU/8 GiB worker | Core development platform; no GitLab or medium-only services |
-| `small` | small | small | 1 control plane + 2 workers | Compact GitLab platform with PostgreSQL, Dragonfly, storage, secrets, GitOps, and monitoring |
-| `medium` | medium | medium | 3 schedulable control planes + 2 workers | Full platform with standard medium sizing; control-plane capacity is part of the workload envelope |
-| `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Full medium service set with conservative requests, replicas, retention, and autoscaling |
+| `small` | small | small | 1 control plane + 2 workers | Compact platform with Dragonfly, storage, secrets, GitOps, and monitoring; data/application services are opt-in |
+| `medium` | medium | medium | 3 schedulable control planes + 2 workers | Base platform with standard medium sizing; control-plane capacity is part of the workload envelope |
+| `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Base medium service set with conservative requests, replicas, retention, and autoscaling |
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 The current deployable `medium-optimized` balanced tariff is approximately
-**€291.93/month net** at the authenticated 2026-07-23 prices: seven `cpx32`
-nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, 470 GiB reserved on
-server-local SSD for application-replicated claims, and 280 GiB of
+**€287.35/month net** at the authenticated 2026-07-24 prices: seven `cpx32`
+nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, 320 GiB of active
+server-local application-replicated claims in a 470 GiB expandable pool, and 200 GiB of
 provider-billable CSI volumes. The intermittent CX cost-optimized mapping is
-**€118.93/month net**
+**€114.35/month net**
 whenever its required server types are placeable. It keeps three economical
 `cx33` control planes and upgrades all four workers to `cx43`, doubling
 worker-pool CPU, RAM, and node-local SSD over an all-`cx33` worker pool. The
@@ -50,11 +51,12 @@ CAX, CPX, and CCX matrix in
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
-what lets `medium-optimized` retain the full medium toolset without silently
-allocating the normal-medium footprint. Production uses the same conservative
+what lets `medium-optimized` retain the medium foundation without silently
+allocating the normal-medium footprint. Optional data and application services
+remain off until selected. Production uses the same conservative
 request envelope and pins critical HA replicas explicitly. Its control planes
-are tainted for general workloads, while the critical PostgreSQL, MongoDB, and
-Elasticsearch stateful replicas tolerate those taints so a single worker loss
+are tainted for general workloads; when PostgreSQL or MongoDB is selected, its
+profile-defined stateful replicas tolerate those taints so a single worker loss
 does not exhaust the remaining workers or their volume-attachment capacity.
 GitLab chart 10 requires PostgreSQL,
 Dragonfly, and object storage; profile validation rejects an invalid
@@ -63,20 +65,18 @@ Postal, Coroot, tracing, backup, HIPAA-oriented hardening, ESO, the GitLab
 Runner, and parent bundles.
 
 Production is deliberately selective HA, not universal active-active HA. Its
-control plane, Vault, SeaweedFS masters/volumes, PostgreSQL, MongoDB, GitLab
-Rails workloads, Argo CD, VictoriaMetrics, Temporal, alerting, tracing, and
-selected stateless services have explicit redundant topology. The compact
+control plane, Vault, SeaweedFS masters/volumes, Argo CD, VictoriaMetrics,
+alerting, tracing, and selected
+stateless services have explicit redundant topology. The compact
 footprint retains these intentional singleton recovery boundaries:
 
-- GitLab Gitaly uses one RWO data claim. Recover it from the verified GitLab
+- When GitLab is selected, Gitaly uses one RWO data claim. Recover it from the verified GitLab
   application backup and cluster/PVC backup before reopening repository writes.
 - Elasticsearch has three masters and two data nodes. Its default shard replica
   stays assigned, providing shard availability through one data-pod loss when
   the surviving node has capacity; backups remain required for data recovery.
 - Grafana uses one SQLite/RWO instance. Reapply declarative data sources and
   dashboards and restore its claim when local UI state must be retained.
-- Postal has one web instance and one MariaDB data path. Redeploying the web
-  pod is stateless, but MariaDB must be restored before mail operations resume.
 - Coroot and its ClickHouse data path are singletons. Restore their claims when
   historical telemetry is required, or explicitly accept a telemetry rebuild.
 
@@ -84,7 +84,7 @@ These boundaries reduce steady-state requests on three 16 GiB workers; backup
 and restore gates provide recovery, not instant failover, for the listed data
 paths.
 
-Production GitLab Webservice uses a `2Gi` memory request and `3Gi` limit per
+When selected, production GitLab Webservice uses a `2Gi` memory request and `3Gi` limit per
 pod. The limit leaves bounded headroom above the approximately `1.96Gi` working
 set observed during the five-profile live campaign without returning the complete
 stack to GitLab's larger default envelope. Webservice and Sidekiq use a hard
@@ -95,12 +95,15 @@ honors node affinity and taints, so dedicated control-plane nodes are not counte
 as empty workload domains. Cross-component anti-affinity remains a preference
 so it cannot deadlock a rolling update.
 
-The optimized profile keeps three-way control-plane, Vault, PostgreSQL,
-MongoDB, SeaweedFS, and Elasticsearch-master topology. Recoverable stateless
-services run one replica by default and autoscaling is capped at four. It is a
+The optimized profile keeps three-way control-plane, Vault, SeaweedFS, and
+Elasticsearch-master topology. It retains three-replica PostgreSQL and MongoDB
+sizing for explicit opt-in without running either database in the base setup.
+Recoverable stateless services run one replica by default and autoscaling is
+capped at four. PostgreSQL, MongoDB, GitLab/Runner, Temporal, Postal, and
+GlitchTip remain off unless explicitly selected. It is a
 production-oriented budget profile, but it does not provide the same workload
 availability during maintenance as the `production` profile. Store production
-backups outside the cluster for disaster recovery. Its single baseline GitLab
+backups outside the cluster for disaster recovery. Its opt-in GitLab
 Webservice pod uses the same `2Gi` request and `3Gi` limit; when its HPA adds a
 second pod, the same hard topology rule requires a second eligible node.
 
@@ -349,6 +352,9 @@ Technology selection is available without hand-editing dotted YAML paths:
 
 ```bash
 ./platform.sh components
+./platform.sh enable postgresql     # enables the database operator parent
+./platform.sh enable mongodb        # enables the database operator parent
+./platform.sh enable gitlab         # enables storage + PostgreSQL + Dragonfly
 ./platform.sh enable temporal       # also enables PostgreSQL
 ./platform.sh enable coroot         # also enables the observability core
 ./platform.sh enable hipaa          # adds required secrets + observability
@@ -380,7 +386,7 @@ PostgreSQL pgBackRest schedules are removed and MongoDB backup, PITR, and tasks
 are disabled, without deleting database data, repositories, PVCs, or existing
 backup objects.
 
-For the full platform on the small-resource envelope:
+For the medium base platform on the small-resource envelope:
 
 ```bash
 ./platform.sh init medium-optimized
@@ -427,7 +433,8 @@ Reconciliation fails closed if the source key or property does not exist. The
 fixture is for integration demonstrations only; applications should define
 their own namespace-scoped ExternalSecrets and Vault paths.
 
-GitLab Gitaly remains a singleton in every bundled profile. Its chart-managed
+When GitLab is selected, Gitaly remains a singleton under every bundled
+profile's sizing. Its chart-managed
 PDB is pinned to `maxUnavailable: 0` (equivalent to `minAvailable: 1`) so a
 voluntary eviction cannot take the only repository-storage pod down. This does
 not provide node-failure HA. Before planned maintenance of its node, explicitly

@@ -32,12 +32,15 @@ differences exercised by this campaign were:
 |---|---|---|---|
 | `minimal` | `minimal` / `minimal` | 1 schedulable control plane + 1 worker; no provider LB | Common set only; ESO, MongoDB, Elasticsearch, Dragonfly, GitLab/Runner, PMM, Coroot, tracing, Temporal, Postal, GlitchTip, APM, and Blackbox off |
 | `small` | `small` / `small` | 1 dedicated control plane + 2 workers | Common set plus Dragonfly and GitLab/Runner; full-platform services remain off |
-| `medium` | `medium` / `medium` | 3 schedulable control planes + 2 workers | Full set: ESO, MongoDB, Elasticsearch/Kibana, Dragonfly, GitLab/Runner, PMM, Coroot, Tempo/OpenTelemetry, Temporal, Postal, GlitchTip, Elastic APM, Blackbox, native backups, and external DR |
-| `medium-optimized` | `medium` / `small` | 3 schedulable control planes + 4 workers | Same full technology set as `medium`, with conservative requests, retention, replicas, and autoscaling; quorum services remain replicated |
-| `production` | `production` / `small` | 3 dedicated control planes + 3 workers | Full technology set with explicit HA replicas and failover headroom, including two-replica VictoriaMetrics storage at replication factor 2 |
+| `medium` | `medium` / `medium` | 3 schedulable control planes + 2 workers | Campaign selection included ESO, MongoDB, Elasticsearch/Kibana, Dragonfly, GitLab/Runner, PMM, Coroot, Tempo/OpenTelemetry, Temporal, Postal, GlitchTip, Elastic APM, Blackbox, native backups, and external DR |
+| `medium-optimized` | `medium` / `small` | 3 schedulable control planes + 4 workers | Campaign selection matched `medium`, with conservative requests, retention, replicas, and autoscaling; quorum services remained replicated |
+| `production` | `production` / `small` | 3 dedicated control planes + 3 workers | Campaign selection used explicit HA replicas and failover headroom, including two-replica VictoriaMetrics storage at replication factor 2 |
 
-Daytona and HIPAA-oriented hardening are opt-in and were off in all five named
-profiles. To test recovery consistently, the campaign explicitly enabled native
+This table records the 2026-07-21 campaign selection, not the current named
+profile defaults. PostgreSQL, MongoDB, GitLab/Runner, Temporal, Postal,
+GlitchTip, Daytona, and HIPAA-oriented hardening are now opt-in and off in all
+five named profiles. To test recovery
+consistently, the campaign explicitly enabled native
 backup and external disaster recovery on `minimal` and `small`; this was a
 campaign selection override, not a change to their named-profile defaults.
 `--minimum-storage` preserved technology selection, node topology, and replica
@@ -434,7 +437,7 @@ predictably available CPX generation. The €115.81 figure above remains the
 historical all-`cx33` campaign cost, not the current CX purchase mapping. The
 current mapping retains three `cx33` control planes, promotes four workers to
 `cx43`, and assigns only application-replicated claims to local SSD. Its
-current estimate is €118.93/month, while doubling the worker pool's CPU, RAM,
+current base-profile estimate is €114.35/month, while doubling the worker pool's CPU, RAM,
 and local SSD. Current mappings and live refresh commands are documented in
 [Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
 

@@ -160,7 +160,7 @@ directory and the matching vault password in the operator backup; never
 initialize again or regenerate credentials merely because a resume controller
 cannot find it.
 
-For Postal, verify both schema reconciliation and the unprivileged SMTP
+If Postal was explicitly enabled, verify both schema reconciliation and the unprivileged SMTP
 listener before treating the mail stack as healthy:
 
 ```bash
@@ -183,14 +183,15 @@ $EDITOR platform.yaml
 ./platform.sh deploy all
 ```
 
-For the full medium service set on the constrained resource envelope, initialize
-`medium-optimized`. Confirm the generated config still contains
+For the medium base platform on the constrained resource envelope, initialize
+`medium-optimized`. PostgreSQL, MongoDB, GitLab/Runner, Temporal, Postal, and
+GlitchTip stay disabled unless explicitly selected. Confirm the generated config still contains
 `platform_profile: medium-optimized`, `tier: medium`, and
 `resource_tier: small` before deployment.
 
 That profile uses a hybrid storage policy. Run the capacity estimator against
-the generated config and confirm the expected 470 GiB local reservation plus
-280 GiB provider CSI capacity:
+the generated config and confirm 320 GiB of active local claims inside the
+470 GiB expandable static pool plus 200 GiB provider CSI capacity:
 
 ```bash
 scripts/profile-storage-capacity.py \

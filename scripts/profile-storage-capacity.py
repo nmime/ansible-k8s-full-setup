@@ -132,8 +132,8 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
             storage_class("secrets.vault.audit_storage_class"),
         )
 
-    databases = enabled(config, "databases.enabled", True)
-    if databases and enabled(config, "databases.postgresql.enabled", True):
+    databases = enabled(config, "databases.enabled", False)
+    if databases and enabled(config, "databases.postgresql.enabled", False):
         replicas = nested(config, "databases.postgresql.replicas", 2 if resource in {"medium", "production"} else 1)
         default_pg = {"minimal": "20Gi", "small": "30Gi", "medium": "50Gi"}.get(resource, "100Gi")
         add(
@@ -150,7 +150,7 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
             "pgBackRest local repository",
             storage_class("databases.postgresql.repo_storage_class"),
         )
-    if databases and enabled(config, "databases.mongodb.enabled", resource in {"medium", "production"}):
+    if databases and enabled(config, "databases.mongodb.enabled", False):
         replicas = nested(config, "databases.mongodb.replicas", 3 if resource in {"medium", "production"} else 1)
         default_mongo = {"minimal": "20Gi", "small": "30Gi", "medium": "50Gi"}.get(resource, "100Gi")
         add(
@@ -178,7 +178,7 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
             nested(config, "dragonfly.snapshot_storage", "20Gi" if resource in {"medium", "production"} else "10Gi"),
             "Dragonfly snapshots")
 
-    gitlab_enabled = enabled(config, "gitlab.enabled", tier != "minimal")
+    gitlab_enabled = enabled(config, "gitlab.enabled", False)
     if gitlab_enabled:
         default_gitaly = "10Gi" if resource == "minimal" else "20Gi" if resource == "small" else "50Gi"
         add("gitlab/gitaly", nested(config, "gitlab.gitaly_replicas", 1),
@@ -213,7 +213,9 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
     if enabled(config, "tracing.enabled", tier in {"medium", "production"}):
         add("tracing/tempo", 1, nested(config, "tracing.storage_size",
                                        "10Gi" if resource in {"minimal", "small"} else "20Gi" if resource == "medium" else "40Gi"), "Tempo")
-    if enabled(config, "postal.enabled", tier in {"medium", "production"}):
+    # Postal is an application opt-in in every tier. Missing selectors must
+    # fail closed instead of deriving enablement from the capability tier.
+    if enabled(config, "postal.enabled", False):
         add("postal/mariadb", 1, nested(config, "postal.mariadb_storage",
                                         "50Gi" if resource in {"medium", "production"} else "20Gi"), "Postal MariaDB")
 

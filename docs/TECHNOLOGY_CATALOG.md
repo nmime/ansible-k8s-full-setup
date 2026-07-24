@@ -32,13 +32,14 @@ of unrelated records.
 ## Selectable technologies
 
 Legend: **on** is enabled by the named profile; **off** can be enabled later.
-The `medium-optimized` profile intentionally has the same technology set as
-`medium`, but uses the `small` resource envelope plus explicit compact
-overrides for heavy services.
+The `medium-optimized` profile intentionally has the same base technology set
+as `medium`, but uses the `small` resource envelope plus explicit compact
+overrides for heavy services. PostgreSQL, MongoDB, GitLab/Runner, Temporal,
+Postal, and GlitchTip are data/application services: every named profile leaves
+them off until an operator selects them.
 The `production` profile also uses the conservative request envelope, while
-explicitly retaining selective critical HA replicas for Vault, databases,
-storage, GitLab, Argo CD, metrics, autoscaling, Temporal, alerting, tracing,
-and error tracking.
+explicitly retaining selective critical HA sizing for Vault, optional
+databases/GitLab, storage, Argo CD, metrics, autoscaling, alerting, and tracing.
 Its three control planes are dedicated and its three 16 GiB workers are sized
 with failover headroom rather than steady-state-only fit.
 Production explicitly pairs two VictoriaMetrics `vmstorage` replicas with
@@ -47,7 +48,7 @@ replication factor `2`, even though its pod request envelope is `small`.
 factor `1`; resource sizing therefore cannot silently change metrics durability.
 
 `production` is not universal active-active HA. Gitaly, Grafana's SQLite/RWO
-deployment, Postal web/MariaDB, and Coroot with its
+deployment, and Coroot with its
 ClickHouse data path remain intentional singletons. Their recovery contract is
 backup/PVC restoration (or an explicitly accepted telemetry rebuild for
 Coroot), followed by component health gates; they do not provide immediate
@@ -56,9 +57,10 @@ replica failover.
 Medium, medium-optimized, and production use two Elasticsearch data replicas.
 This keeps the default one shard replica assigned and makes Elasticsearch
 health gates truthfully require green status. For medium-optimized, the second
-40 GiB data claim is included in the current 750 GiB conservative capacity
-envelope. Medium-optimized places 470 GiB of replication-qualified claims on
-server SSD and retains 280 GiB on provider CSI.
+40 GiB data claim is included in the current 520 GiB conservative active-claim
+envelope. Medium-optimized places 320 GiB of active replication-qualified claims
+on server SSD, keeps a 470 GiB expandable static local pool for late opt-ins,
+and retains 200 GiB on provider CSI.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
@@ -72,24 +74,24 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Node-local replicated claims | `local_storage.enabled` | Kubernetes static local PVs, delayed binding, retained PVs, explicit slot map and capacity gate | application replication plus external DR | off | off | off | on | off |
 | Secrets | `secrets.enabled` | Vault Raft with internal TLS | none | on | on | on | on | on |
 | ESO | `secrets.eso.enabled` | External Secrets Operator, Vault `ClusterSecretStore` | Secrets | off | off | on | on | on |
-| Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | on | on | on | on | on |
-| PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | on | on | on | on | on |
-| MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB and PBM; optional PMM client when PMM is selected | Databases | off | off | on | on | on |
+| Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | off | off | off | off | off |
+| PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | off | off | off | off | off |
+| MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB and PBM; optional PMM client when PMM is selected | Databases | off | off | off | off | off |
 | Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | on | on |
 | Dragonfly | `dragonfly.enabled` | Dragonfly operator and Redis-compatible cache | none | off | on | on | on | on |
-| GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | on | on | on | on |
-| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | on | on | on | on |
+| GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | off | off | off | off |
+| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | off | off | off | off |
 | GitOps | `gitops.enabled` | Argo CD with scoped source/resource allowlists | none | on | on | on | on | on |
 | Observability core | `observability.enabled` | VictoriaMetrics, Grafana, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
 | PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | on | on |
 | Coroot | `coroot.enabled` | Coroot CE/operator, eBPF node agent, cluster agent, ClickHouse; VictoriaMetrics reused as external Prometheus | Observability | off | off | on | on | on |
 | Tracing | `tracing.enabled` | Tempo and OpenTelemetry Collector | Observability, object storage | off | off | on | on | on |
 | Autoscaling | `autoscaling.enabled` | KEDA | none | on | on | on | on | on |
-| Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL | off | off | on | on | on |
-| Postal | `postal.enabled` | Postal mail server, schema initialize/update gate, and MariaDB; public SMTP 25/587 targets unprivileged container port 2525 | Dragonfly | off | off | on | on | on |
+| Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL | off | off | off | off | off |
+| Postal | `postal.enabled` | Postal mail server, schema initialize/update gate, and MariaDB; public SMTP 25/587 targets unprivileged container port 2525 | Dragonfly | off | off | off | off | off |
 | Native backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, and SeaweedFS backup jobs plus application-aware restore drills | Object storage | off | off | on | on | on |
 | External disaster recovery | `backup.disaster_recovery.enabled` | Velero/Kopia resource and mounted-PVC protection; complete encrypted etcd/PKI/config/cloud-state bundles; replacement-cluster restore | Native backup automation, object storage, and an independent external S3 endpoint | off | off | on | on | on |
-| GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | on | on | on |
+| GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | off | off | off |
 | APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | on | on |
 | Blackbox | `blackbox.enabled` | Prometheus Blackbox Exporter and VMProbe resources | Observability | off | off | on | on | on |
 | Daytona | `applications.daytona.enabled` | Daytona workspace platform | none | off | off | off | off | off |
@@ -111,14 +113,17 @@ retired only by the checkpointed migration finalizer.
 
 Capacity planning counts every persistent index claim separately. For
 medium-optimized it also records each claim's StorageClass: SeaweedFS
-master/volume/index, Vault Raft, PostgreSQL data, MongoDB data, and
-Elasticsearch use local SSD; singleton, audit, and backup claims remain on
-Hetzner CSI. StorageClass changes are immutable and therefore require the
+master/volume/index, Vault Raft, and Elasticsearch use local SSD in the base
+profile; PostgreSQL and MongoDB use the same class when selected. Singleton,
+audit, and backup claims remain on Hetzner CSI. StorageClass changes are
+immutable and therefore require the
 backup-gated replacement/native-restore path rather than an ordinary
 reconcile. The three 2 GiB SeaweedFS index requests reserve a conservative
-10 GiB each on local SSD, contributing 30 GiB to the 470 GiB local envelope
-even though their actual Kubernetes requests total 6 GiB. GitLab backup
-staging remains a 20 GiB CSI claim; see
+10 GiB each on local SSD, contributing 30 GiB to the active 320 GiB local
+envelope even though their actual Kubernetes requests total 6 GiB. The static
+pool remains 470 GiB so late database selection does not require server
+replacement. GitLab backup staging adds a 20 GiB CSI claim only when GitLab is
+selected; see
 [the current cost model](COST_MODEL.md).
 
 Alert transports are settings rather than removable workloads:
@@ -193,9 +198,9 @@ Rollback copies post-switch samples back and proves a delta sentinel on both
 sides. A completed copy Job alone never authorizes deletion. Finalization
 refreshes and verifies its final encrypted recovery point before any pending
 destructive stage, then safely removes excess nodes through Kubespray.
-Production taints control planes for general workloads but
-allows critical PostgreSQL, MongoDB, and Elasticsearch stateful replicas to
-tolerate them for one-worker failure capacity. Larger existing PVC
+Production taints control planes for general workloads but allows
+profile-sized PostgreSQL and MongoDB opt-ins plus Elasticsearch stateful
+replicas to tolerate them for one-worker failure capacity. Larger existing PVC
 requests are retained as named-profile overrides because Kubernetes does not
 support in-place shrink; obsolete component and old metrics-topology PVCs are
 retired after the final backup gate. SeaweedFS, Vault Raft, and same-topology

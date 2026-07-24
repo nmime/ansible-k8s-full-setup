@@ -437,14 +437,17 @@ log_redaction_enabled: "{{ hipaa_compliance }}"
 # Optional component defaults. Profiles can override these through their nested
 # `<component>.enabled` setting; the playbook normalizes both forms.
 deploy_elasticsearch: "{{ tier in ['medium', 'production'] }}"
-deploy_gitlab: "{{ tier != 'minimal' }}"
+deploy_gitlab: false
 deploy_gitops: true
 deploy_observability: true
-deploy_databases: true
-deploy_postgresql: true
-deploy_mongodb: "{{ tier in ['medium', 'production'] }}"
+deploy_databases: false
+deploy_postgresql: false
+deploy_mongodb: false
 deploy_autoscaling: true
 deploy_dragonfly: "{{ tier in ['medium', 'production'] }}"
-deploy_temporal: "{{ tier in ['medium', 'production'] }}"
-deploy_postal: "{{ tier in ['medium', 'production'] }}"
+# Optional application services are never inferred from the capability tier.
+# Select them explicitly through the nested profile selectors or legacy flags.
+deploy_temporal: false
+deploy_postal: false
+deploy_glitchtip: false
 edge_cdn_confirm: false
