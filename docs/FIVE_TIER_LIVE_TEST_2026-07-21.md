@@ -37,9 +37,9 @@ differences exercised by this campaign were:
 | `production` | `production` / `small` | 3 dedicated control planes + 3 workers | Campaign selection used explicit HA replicas and failover headroom, including two-replica VictoriaMetrics storage at replication factor 2 |
 
 This table records the 2026-07-21 campaign selection, not the current named
-profile defaults. PostgreSQL, MongoDB, GitLab/Runner, Temporal, Postal,
-GlitchTip, Daytona, and HIPAA-oriented hardening are now opt-in and off in all
-five named profiles. To test recovery
+profile defaults. MongoDB, Temporal, Postal, GlitchTip, Daytona, and
+HIPAA-oriented hardening are now opt-in and off in all five named profiles;
+GitLab/Runner and PostgreSQL remain selected from `small` upward. To test recovery
 consistently, the campaign explicitly enabled native
 backup and external disaster recovery on `minimal` and `small`; this was a
 campaign selection override, not a change to their named-profile defaults.
@@ -437,7 +437,7 @@ predictably available CPX generation. The €115.81 figure above remains the
 historical all-`cx33` campaign cost, not the current CX purchase mapping. The
 current mapping retains three `cx33` control planes, promotes four workers to
 `cx43`, and assigns only application-replicated claims to local SSD. Its
-current base-profile estimate is €114.35/month, while doubling the worker pool's CPU, RAM,
+current base-profile estimate is €117.78/month, while doubling the worker pool's CPU, RAM,
 and local SSD. Current mappings and live refresh commands are documented in
 [Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
 

@@ -50,8 +50,8 @@ that parent instead of creating an undelegated child zone.
 There are four runtime tiers. `medium-optimized` is intentionally a named
 profile rather than a fifth tier: it sets `tier: medium` to retain every medium
 foundation service and `resource_tier: small` to select the compact resource
-envelope. PostgreSQL, MongoDB, GitLab/Runner, Temporal, Postal, and GlitchTip
-remain explicit opt-ins in every named profile.
+envelope. GitLab/Runner and PostgreSQL are mandatory from `small` upward;
+MongoDB, Temporal, Postal, and GlitchTip remain explicit opt-ins.
 Do not rename it to `medium_optimized` or change its tier to `small`; both would
 break the explicit profile contract and are rejected before provisioning.
 
@@ -65,9 +65,8 @@ This profile uses three schedulable `cpx32` control planes, four `cpx32`
 workers, a `cpx22` bastion, and `lb11`. Critical quorum services remain
 replicated;
 recoverable stateless services default to one replica with bounded autoscaling.
-VictoriaMetrics storage, Grafana, and Coroot/ClickHouse retain documented
-singleton recovery boundaries. Opt-in GitLab retains its documented Gitaly
-singleton recovery boundary.
+VictoriaMetrics storage, Gitaly, Grafana, and Coroot/ClickHouse retain
+documented singleton recovery boundaries.
 Elasticsearch uses two compact data replicas so its default shard replica is
 assigned instead of leaving the cluster yellow.
 Choose the `production` profile when stateless workload continuity during node
@@ -75,11 +74,11 @@ maintenance is required. Production backups must also be copied to storage
 outside this cluster.
 
 At the authenticated Hetzner API prices audited on 2026-07-24, this currently
-placeable balanced shape is €287.350/month net (€287.35 rounded), including its
-bastion IPv4, 320 GiB of active replication-qualified local claims in a
-470 GiB expandable static pool, and 200 GiB
+placeable balanced shape is €290.782/month net (€290.78 rounded), including its
+bastion IPv4, 410 GiB of active replication-qualified local claims in a
+470 GiB expandable static pool, and 260 GiB
 of billable CSI volumes. The intermittent CX cost-optimized mapping is
-€114.35/month whenever all required shapes are
+€117.78/month whenever all required shapes are
 placeable: three `cx33` control planes retain economical quorum capacity while
 four `cx43` workers double the worker pool's CPU, RAM, and node-local SSD
 relative to four `cx33` workers. It was temporarily unavailable for new `hel1`

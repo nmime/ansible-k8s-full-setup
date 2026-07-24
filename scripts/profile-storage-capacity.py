@@ -132,8 +132,8 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
             storage_class("secrets.vault.audit_storage_class"),
         )
 
-    databases = enabled(config, "databases.enabled", False)
-    if databases and enabled(config, "databases.postgresql.enabled", False):
+    databases = enabled(config, "databases.enabled", True)
+    if databases and enabled(config, "databases.postgresql.enabled", True):
         replicas = nested(config, "databases.postgresql.replicas", 2 if resource in {"medium", "production"} else 1)
         default_pg = {"minimal": "20Gi", "small": "30Gi", "medium": "50Gi"}.get(resource, "100Gi")
         add(
@@ -178,7 +178,7 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
             nested(config, "dragonfly.snapshot_storage", "20Gi" if resource in {"medium", "production"} else "10Gi"),
             "Dragonfly snapshots")
 
-    gitlab_enabled = enabled(config, "gitlab.enabled", False)
+    gitlab_enabled = enabled(config, "gitlab.enabled", tier != "minimal")
     if gitlab_enabled:
         default_gitaly = "10Gi" if resource == "minimal" else "20Gi" if resource == "small" else "50Gi"
         add("gitlab/gitaly", nested(config, "gitlab.gitaly_replicas", 1),

@@ -90,9 +90,9 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
-  enabled: false
+  enabled: true
   postgresql:
-    enabled: false
+    enabled: true
     replicas: 2
     storage_size: 50Gi
   mongodb:
@@ -105,7 +105,7 @@ databases:
 # GitLab
 # ---------------------------------------------
 gitlab:
-  enabled: false
+  enabled: true
   webservice_replicas: 2
   sidekiq_replicas: 2
   # The live production campaign observed ~1.96Gi per Webservice pod. Keep
@@ -113,7 +113,7 @@ gitlab:
   webservice_memory_request: 2Gi
   webservice_memory_limit: 3Gi
   runner:
-    enabled: false
+    enabled: true
     concurrent_jobs: 10
 
 # ---------------------------------------------

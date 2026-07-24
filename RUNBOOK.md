@@ -184,14 +184,14 @@ $EDITOR platform.yaml
 ```
 
 For the medium base platform on the constrained resource envelope, initialize
-`medium-optimized`. PostgreSQL, MongoDB, GitLab/Runner, Temporal, Postal, and
-GlitchTip stay disabled unless explicitly selected. Confirm the generated config still contains
+`medium-optimized`. GitLab/Runner and PostgreSQL are enabled; MongoDB, Temporal,
+Postal, and GlitchTip stay disabled unless explicitly selected. Confirm the generated config still contains
 `platform_profile: medium-optimized`, `tier: medium`, and
 `resource_tier: small` before deployment.
 
 That profile uses a hybrid storage policy. Run the capacity estimator against
-the generated config and confirm 320 GiB of active local claims inside the
-470 GiB expandable static pool plus 200 GiB provider CSI capacity:
+the generated config and confirm 410 GiB of active local claims inside the
+470 GiB expandable static pool plus 260 GiB provider CSI capacity:
 
 ```bash
 scripts/profile-storage-capacity.py \

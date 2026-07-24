@@ -26,28 +26,32 @@ balancer's public address is part of the load-balancer resource.
 
 ## Hybrid persistent capacity
 
-The base profile has 32 operational PVCs in 17 claim groups and no GitLab
-staging PVC. It has a conservative 520 GiB active-claim envelope and assigns only
+The base profile has 37 operational PVCs in 20 claim groups plus one GitLab
+staging PVC. It has a conservative 670 GiB active-claim envelope and assigns only
 application-replicated data to server-local SSD:
 
 | Claim group | Storage class | Reserved GiB |
 |---|---|---:|
 | SeaweedFS masters, volume servers, and persistent indexes | `platform-local` | 180 |
 | Vault Raft data | `platform-local` | 30 |
+| PostgreSQL instance data | `platform-local` | 90 |
 | Elasticsearch masters and two data replicas | `platform-local` | 110 |
-| **Active replication-qualified local claims** | | **320** |
+| **Active replication-qualified local claims** | | **410** |
 | SeaweedFS filer | `hcloud-volumes` | 10 |
 | Vault audit claims | `hcloud-volumes` | 30 |
+| pgBackRest repository | `hcloud-volumes` | 10 |
 | VictoriaMetrics, Alertmanager, Grafana, and PMM | `hcloud-volumes` | 80 |
+| GitLab Gitaly | `hcloud-volumes` | 30 |
 | Dragonfly | `hcloud-volumes` | 10 |
 | Coroot, ClickHouse, and Keepers | `hcloud-volumes` | 60 |
 | Tempo | `hcloud-volumes` | 10 |
-| **Provider-billable CSI capacity** | | **200** |
-| **Total conservative active-claim envelope** | | **520** |
+| GitLab backup staging | `hcloud-volumes` | 20 |
+| **Provider-billable CSI capacity** | | **260** |
+| **Total conservative active-claim envelope** | | **670** |
 
 `scripts/profile-storage-capacity.py` applies Hetzner's 10 GiB minimum to CSI
 claims and uses the same minimum as a conservative reservation for small local
-claims. Actual Kubernetes requests total 462 GiB; the larger 520 GiB envelope
+claims. Actual Kubernetes requests total 612 GiB; the larger 670 GiB envelope
 prevents the cost and capacity plan from depending on sub-10-GiB packing.
 
 The playbook creates 23 static local PV slots totaling 470 GiB. Kubernetes uses
@@ -55,9 +59,9 @@ The playbook creates 23 static local PV slots totaling 470 GiB. Kubernetes uses
 scheduling; every PV is retained. A deployment-time DaemonSet rejects nodes
 with less than 40 GiB free at the configured path, while a separate node gate
 requires at least 70 GiB of root-disk capacity on each control plane and
-140 GiB on each worker. The base setup actively uses 17 slots/320 GiB; the
-remaining 150 GiB is the exact expandable capacity for the profile's
-three-replica PostgreSQL (90 GiB) and MongoDB (60 GiB) opt-ins. SeaweedFS,
+140 GiB on each worker. The base setup actively uses 20 slots/410 GiB; the
+remaining 60 GiB is the exact expandable capacity for the profile's
+three-replica MongoDB opt-in. SeaweedFS,
 Vault, PostgreSQL, MongoDB, and Elasticsearch use
 required or chart-provided hostname anti-affinity and application replication.
 Local volumes still cannot move with a failed node; application quorum and
@@ -71,24 +75,24 @@ within the requested size. `NodeDiskUsageHigh` at 85%, kubelet `DiskPressure`,
 and the retained 40 GiB deployment gate protect the remaining operating-system
 and container-runtime headroom.
 
-At €0.0572/GiB-month, 200 GiB of provider volumes costs €11.440/month. The
-470 GiB expandable static pool is already included in server prices. Enabling
-PostgreSQL, MongoDB, and GitLab adds the component pods and claims; the prior
-all-selected storage ceiling is not charged in the base profile.
+At €0.0572/GiB-month, 260 GiB of provider volumes costs €14.872/month, rounded
+to €14.87. The 470 GiB expandable static pool is already included in server
+prices. Enabling MongoDB consumes only the remaining replicated local-pool
+capacity and therefore does not increase this provider-volume baseline.
 
 ## Total
 
 The full-month default is:
 
 ```text
-€275.910 infrastructure + €11.440 volumes = €287.350/month net
+€275.910 infrastructure + €14.872 volumes = €290.782/month net
 ```
 
-That is **€287.35/month net** rounded to cents. Hetzner's API supplies explicit
+That is **€290.78/month net** rounded to cents. Hetzner's API supplies explicit
 hourly rates for servers, the load balancer, and Primary IPv4, giving a direct
 uncapped infrastructure rate of **€0.4423/hour**. It supplies volumes as a
 monthly GiB price, not an hourly tariff. Dividing the complete monthly-capped
-total by 730 hours gives **€0.39363/hour** as a planning equivalent only; it is
+total by 730 hours gives **€0.39833/hour** as a planning equivalent only; it is
 not a provider-quoted hourly price.
 
 The API response listed 20 TiB included traffic and €1/TB excess traffic for
@@ -111,16 +115,16 @@ The optimized CX mapping uses three `cx33` schedulable control planes, four
 | `lb11` | 1 | €7.49 | €7.49 |
 | Bastion Primary IPv4 | 1 | €0.50 | €0.50 |
 | **Infrastructure subtotal** | | | **€102.91** |
-| 200 GiB durable CSI volumes | | €0.0572/GiB | **€11.44** |
-| 320 GiB active claims in a 470 GiB server-SSD pool | | included | **€0.00** |
-| **Total** | | | **€114.35** |
+| 260 GiB durable CSI volumes | | €0.0572/GiB | **€14.87** |
+| 410 GiB active claims in a 470 GiB server-SSD pool | | included | **€0.00** |
+| **Total** | | | **€117.78** |
 
 The Kubernetes nodes provide 44 vCPU, 88 GiB RAM, and 880 GiB aggregate
 node-local SSD. The worker pool alone is 32 vCPU, 64 GiB RAM, and 640 GiB
 local SSD—double the worker capacity of the earlier four-`cx33` mapping for
 €30/month more. Including the bastion, the account receives 46 vCPU, 92 GiB
 RAM, and 920 GiB local SSD. The direct infrastructure rate is €0.1648/hour;
-the complete monthly-capped planning equivalent is €0.15664/hour.
+the complete monthly-capped planning equivalent is €0.16135/hour.
 
 This mapping is retained as an opportunistic purchase option and
 migration/rollback target. CX capacity appears intermittently; at audit time,

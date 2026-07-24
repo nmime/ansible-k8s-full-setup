@@ -106,9 +106,9 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
-  enabled: false
+  enabled: true
   postgresql:
-    enabled: false
+    enabled: true
     # Primary plus synchronous standby; Kubernetes control plane remains 3+3.
     replicas: 2
     proxy_replicas: 2
@@ -122,7 +122,7 @@ databases:
 # GitLab
 # ---------------------------------------------
 gitlab:
-  enabled: false
+  enabled: true
   # Keep the full external-service architecture and redundant Rails pods. Live
   # testing observed about 1.96Gi per webservice pod, so reserve 2Gi and retain
   # a resource-efficient 3Gi safety ceiling on the 16Gi workers.
@@ -140,7 +140,7 @@ gitlab:
   gitaly_replicas: 1
   gitaly_storage_size: 50Gi
   runner:
-    enabled: false
+    enabled: true
     # Four concurrent jobs preserve scheduling and burst headroom for the
     # platform control workloads on three 16Gi workers.
     concurrent_jobs: 4
