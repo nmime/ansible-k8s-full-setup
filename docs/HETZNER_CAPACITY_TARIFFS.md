@@ -94,11 +94,11 @@ domains, support, and non-zero customer VAT.
 
 | Profile | CSI / active local claims | CX economy | CAX planning | CPX balanced | CCX dedicated |
 |---|---:|---:|---:|---:|---:|
-| `minimal` | 220 / 0 GiB | €35.55 | €40.05 | **€103.55** | €228.05 |
-| `small` | 250 / 0 GiB | €50.25 | €55.25 | **€132.25** | €280.25 |
-| `medium` | 1,200 / 0 GiB | €162.07 | €187.57 | **€443.57** | €549.57 |
-| `medium-optimized` | 200 / 320 GiB | €114.35 | €98.85 | **€287.35** | €664.35 |
-| `production` | 1,200 / 0 GiB | €178.06 | €208.56 | **€513.06** | €635.56 |
+| `minimal` | 250 / 0 GiB | €37.27 | €41.77 | **€105.27** | €229.77 |
+| `small` | 360 / 0 GiB | €56.54 | €61.54 | **€138.54** | €286.54 |
+| `medium` | 1,410 / 0 GiB | €174.08 | €199.58 | **€455.58** | €561.58 |
+| `medium-optimized` | 260 / 410 GiB | €117.78 | €102.28 | **€290.78** | €667.78 |
+| `production` | 1,410 / 0 GiB | €190.07 | €220.57 | **€525.07** | €647.57 |
 
 CX figures are valid purchase prices whenever the complete mapping reappears;
 the required shapes were temporarily not placeable in `hel1` at capture time.
@@ -109,9 +109,9 @@ CCX is available but should be chosen for CPU predictability, not storage
 savings.
 
 `medium-optimized` is a resource-envelope variant of the base medium toolset,
-not a linear tier between `medium` and `production`. PostgreSQL, MongoDB,
-GitLab/Runner, Temporal, Postal, and GlitchTip are opt-in and excluded from
-every named profile. Medium-optimized
+not a linear tier between `medium` and `production`. GitLab/Runner and
+PostgreSQL are mandatory from `small` upward. MongoDB, Temporal, Postal, and
+GlitchTip are opt-in. Medium-optimized
 uses more small nodes than production, so CCX can make it more expensive than
 the six-node production topology.
 
@@ -126,18 +126,18 @@ The CX option is intentionally mixed instead of assigning `cx33` everywhere:
 | Bastion | 1 × `cx23` | 2 | 4 GiB | 40 GiB | — | €5.49 |
 | `lb11` and bastion IPv4 | 1 each | — | — | — | — | €7.99 |
 | **Infrastructure** | | **46** | **92 GiB** | **920 GiB** | — | **€102.91** |
-| Provider CSI volumes | 15 volumes | — | — | — | 200 GiB | €11.44 |
-| Active local PVC claims | 17 volumes | — | — | 320 GiB | — | included |
+| Provider CSI volumes | 18 volumes | — | — | — | 260 GiB | €14.87 |
+| Active local PVC claims | 20 volumes | — | — | 410 GiB | — | included |
 | Expandable static local pool | 23 slots | — | — | 470 GiB | — | included |
-| **Total base claims** | | | | **320 GiB** | **200 GiB** | **€114.35** |
+| **Total base claims** | | | | **410 GiB** | **260 GiB** | **€117.78** |
 
 Excluding the bastion, Kubernetes receives 44 vCPU, 88 GiB RAM, and 880 GiB
 aggregate node-local SSD. Relative to four `cx33` workers, the four `cx43`
 workers double the workload pool from 16 to 32 vCPU, 32 to 64 GiB RAM, and 320
 to 640 GiB local SSD for €30/month more. The three control planes remain
 schedulable and contribute another 12 vCPU and 24 GiB RAM. Of the Kubernetes
-nodes' 880 GiB aggregate SSD, base claims actively select 320 GiB and the
-pre-created pool exposes up to 470 GiB for late database opt-ins.
+nodes' 880 GiB aggregate SSD, base claims actively select 410 GiB and the
+pre-created pool exposes up to 470 GiB for the late MongoDB opt-in.
 
 ## Local disk and volume boundary
 
@@ -147,8 +147,8 @@ The SSD column is node-local root storage, not shared storage. The
 required hostname anti-affinity, minimum root-disk gates of 70 GiB on control
 planes and 140 GiB on workers, and a 40 GiB per-node free-space gate. Only
 SeaweedFS master/volume/index, Vault Raft data, and Elasticsearch master/data
-claims use this class in the base profile. Explicitly enabled PostgreSQL and
-MongoDB also use it because those applications replicate across nodes.
+claims and PostgreSQL use this class in the base profile. Explicitly enabled
+MongoDB also uses it because the application replicates across nodes.
 
 Node-local PVs remain pinned to their node. A failed or deleted node does not
 carry its local PV to a replacement. Application quorum repairs the live
@@ -156,8 +156,7 @@ service and external native plus Velero/Kopia backups provide recovery.
 PV capacity is a Kubernetes scheduling reservation, not a hard per-directory
 filesystem quota; all local slots share the node root filesystem and remain
 protected by the 85% disk-usage alert plus kubelet `DiskPressure`.
-SeaweedFS filer, Vault audit, observability, Dragonfly, Coroot/ClickHouse, and
-Tempo remain on Hetzner CSI. When their owners are selected, pgBackRest,
-Gitaly, and GitLab backup staging also remain on CSI.
+SeaweedFS filer, Vault audit, pgBackRest, observability, Gitaly, Dragonfly,
+Coroot/ClickHouse, Tempo, and GitLab backup staging remain on Hetzner CSI.
 Existing CSI claims cannot change StorageClass in place; migrate them only
 through the backup-gated replacement/native-restore procedure.

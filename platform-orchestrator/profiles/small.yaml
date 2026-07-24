@@ -82,9 +82,9 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
-  enabled: false
+  enabled: true
   postgresql:
-    enabled: false
+    enabled: true
     replicas: 1
     storage_size: 30Gi
   mongodb:
@@ -94,11 +94,11 @@ databases:
 # GitLab
 # ---------------------------------------------
 gitlab:
-  enabled: false
+  enabled: true
   webservice_replicas: 1
   sidekiq_replicas: 1
   runner:
-    enabled: false
+    enabled: true
     concurrent_jobs: 5
 
 # ---------------------------------------------

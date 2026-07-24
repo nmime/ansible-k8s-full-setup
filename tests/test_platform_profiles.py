@@ -60,22 +60,14 @@ MEDIUM_SERVICE_PATHS = tuple(
     not in {
         "applications.daytona.enabled",
         "compliance.hipaa.enabled",
-        "databases.enabled",
-        "databases.postgresql.enabled",
         "databases.mongodb.enabled",
-        "gitlab.enabled",
-        "gitlab.runner.enabled",
         "temporal.enabled",
         "postal.enabled",
         "glitchtip.enabled",
     }
 )
 OPT_IN_SERVICE_PATHS = (
-    "databases.enabled",
-    "databases.postgresql.enabled",
     "databases.mongodb.enabled",
-    "gitlab.enabled",
-    "gitlab.runner.enabled",
     "temporal.enabled",
     "postal.enabled",
     "glitchtip.enabled",
@@ -133,11 +125,10 @@ class TestNamedProfileContract:
             inventory = yaml.safe_load(stream)
         assert inventory["all"]["vars"]["platform_profile"] == "medium"
         assert inventory["all"]["vars"]["resource_tier"] == "medium"
+        for flag in ("deploy_databases", "deploy_postgresql", "deploy_gitlab"):
+            assert inventory["all"]["vars"][flag] is True
         for flag in (
-            "deploy_databases",
-            "deploy_postgresql",
             "deploy_mongodb",
-            "deploy_gitlab",
             "deploy_temporal",
             "deploy_postal",
             "deploy_glitchtip",
@@ -148,11 +139,11 @@ class TestNamedProfileContract:
         defaults = yaml.safe_load(
             (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
         )
+        for flag in ("deploy_databases", "deploy_postgresql"):
+            assert defaults[flag] is True
+        assert "tier != 'minimal'" in defaults["deploy_gitlab"]
         for flag in (
-            "deploy_databases",
-            "deploy_postgresql",
             "deploy_mongodb",
-            "deploy_gitlab",
             "deploy_temporal",
             "deploy_postal",
             "deploy_glitchtip",
@@ -238,7 +229,7 @@ class TestNamedProfileContract:
             assert isinstance(get_path(profile, path), bool)
 
     @pytest.mark.parametrize("profile_name", EXPECTED_PROFILE_TIERS)
-    def test_data_and_application_services_are_opt_in_in_every_named_profile(
+    def test_optional_data_and_application_services_are_off_in_every_profile(
         self, profile_name
     ):
         profile = load_profile(profile_name)
@@ -404,13 +395,13 @@ class TestMediumOptimizedContract:
             "max_replicas": 4,
         }
 
-    def test_gitlab_opt_in_keeps_measured_headroom_and_bounded_runner_parallelism(
+    def test_mandatory_gitlab_keeps_measured_headroom_and_bounded_runner_parallelism(
         self,
     ):
         assert self.profile["gitlab"]["webservice_memory_request"] == "2Gi"
         assert self.profile["gitlab"]["webservice_memory_limit"] == "3Gi"
-        assert self.profile["gitlab"]["enabled"] is False
-        assert self.profile["gitlab"]["runner"]["enabled"] is False
+        assert self.profile["gitlab"]["enabled"] is True
+        assert self.profile["gitlab"]["runner"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 4
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
@@ -1142,32 +1133,7 @@ class TestComponentLifecycle:
     @pytest.mark.parametrize(
         ("component", "enabled_paths"),
         (
-            (
-                "postgresql",
-                ("databases.enabled", "databases.postgresql.enabled"),
-            ),
             ("mongodb", ("databases.enabled", "databases.mongodb.enabled")),
-            (
-                "gitlab",
-                (
-                    "storage.enabled",
-                    "databases.enabled",
-                    "databases.postgresql.enabled",
-                    "dragonfly.enabled",
-                    "gitlab.enabled",
-                ),
-            ),
-            (
-                "gitlab-runner",
-                (
-                    "storage.enabled",
-                    "databases.enabled",
-                    "databases.postgresql.enabled",
-                    "dragonfly.enabled",
-                    "gitlab.enabled",
-                    "gitlab.runner.enabled",
-                ),
-            ),
             ("coroot", ("coroot.enabled", "observability.enabled")),
             ("pmm", ("observability.pmm.enabled", "observability.enabled")),
             (

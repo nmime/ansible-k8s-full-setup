@@ -34,9 +34,9 @@ of unrelated records.
 Legend: **on** is enabled by the named profile; **off** can be enabled later.
 The `medium-optimized` profile intentionally has the same base technology set
 as `medium`, but uses the `small` resource envelope plus explicit compact
-overrides for heavy services. PostgreSQL, MongoDB, GitLab/Runner, Temporal,
-Postal, and GlitchTip are data/application services: every named profile leaves
-them off until an operator selects them.
+overrides for heavy services. PostgreSQL and GitLab/Runner are part of the
+`small`-or-larger base platform. MongoDB, Temporal, Postal, and GlitchTip are
+data/application opt-ins.
 The `production` profile also uses the conservative request envelope, while
 explicitly retaining selective critical HA sizing for Vault, optional
 databases/GitLab, storage, Argo CD, metrics, autoscaling, alerting, and tracing.
@@ -57,10 +57,10 @@ replica failover.
 Medium, medium-optimized, and production use two Elasticsearch data replicas.
 This keeps the default one shard replica assigned and makes Elasticsearch
 health gates truthfully require green status. For medium-optimized, the second
-40 GiB data claim is included in the current 520 GiB conservative active-claim
-envelope. Medium-optimized places 320 GiB of active replication-qualified claims
+40 GiB data claim is included in the current 670 GiB conservative active-claim
+envelope. Medium-optimized places 410 GiB of active replication-qualified claims
 on server SSD, keeps a 470 GiB expandable static local pool for late opt-ins,
-and retains 200 GiB on provider CSI.
+and retains 260 GiB on provider CSI.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
@@ -74,13 +74,13 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Node-local replicated claims | `local_storage.enabled` | Kubernetes static local PVs, delayed binding, retained PVs, explicit slot map and capacity gate | application replication plus external DR | off | off | off | on | off |
 | Secrets | `secrets.enabled` | Vault Raft with internal TLS | none | on | on | on | on | on |
 | ESO | `secrets.eso.enabled` | External Secrets Operator, Vault `ClusterSecretStore` | Secrets | off | off | on | on | on |
-| Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | off | off | off | off | off |
-| PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | off | off | off | off | off |
+| Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | on | on | on | on | on |
+| PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | on | on | on | on | on |
 | MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB and PBM; optional PMM client when PMM is selected | Databases | off | off | off | off | off |
 | Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | on | on |
 | Dragonfly | `dragonfly.enabled` | Dragonfly operator and Redis-compatible cache | none | off | on | on | on | on |
-| GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | off | off | off | off |
-| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | off | off | off | off |
+| GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | on | on | on | on |
+| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | on | on | on | on |
 | GitOps | `gitops.enabled` | Argo CD with scoped source/resource allowlists | none | on | on | on | on | on |
 | Observability core | `observability.enabled` | VictoriaMetrics, Grafana, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
 | PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | on | on |
@@ -113,17 +113,16 @@ retired only by the checkpointed migration finalizer.
 
 Capacity planning counts every persistent index claim separately. For
 medium-optimized it also records each claim's StorageClass: SeaweedFS
-master/volume/index, Vault Raft, and Elasticsearch use local SSD in the base
-profile; PostgreSQL and MongoDB use the same class when selected. Singleton,
+master/volume/index, Vault Raft, PostgreSQL, and Elasticsearch use local SSD in
+the base profile; MongoDB uses the same class when selected. Singleton,
 audit, and backup claims remain on Hetzner CSI. StorageClass changes are
 immutable and therefore require the
 backup-gated replacement/native-restore path rather than an ordinary
 reconcile. The three 2 GiB SeaweedFS index requests reserve a conservative
-10 GiB each on local SSD, contributing 30 GiB to the active 320 GiB local
+10 GiB each on local SSD, contributing 30 GiB to the active 410 GiB local
 envelope even though their actual Kubernetes requests total 6 GiB. The static
-pool remains 470 GiB so late database selection does not require server
-replacement. GitLab backup staging adds a 20 GiB CSI claim only when GitLab is
-selected; see
+pool remains 470 GiB so late MongoDB selection does not require server
+replacement. GitLab backup staging is a 20 GiB CSI claim; see
 [the current cost model](COST_MODEL.md).
 
 Alert transports are settings rather than removable workloads:
@@ -198,8 +197,8 @@ Rollback copies post-switch samples back and proves a delta sentinel on both
 sides. A completed copy Job alone never authorizes deletion. Finalization
 refreshes and verifies its final encrypted recovery point before any pending
 destructive stage, then safely removes excess nodes through Kubespray.
-Production taints control planes for general workloads but allows
-profile-sized PostgreSQL and MongoDB opt-ins plus Elasticsearch stateful
+Production taints control planes for general workloads but allows PostgreSQL,
+the profile-sized MongoDB opt-in, and Elasticsearch stateful
 replicas to tolerate them for one-worker failure capacity. Larger existing PVC
 requests are retained as named-profile overrides because Kubernetes does not
 support in-place shrink; obsolete component and old metrics-topology PVCs are

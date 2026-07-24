@@ -36,12 +36,13 @@ def test_only_application_replicated_claims_use_local_ssd():
         "object-storage/volume",
         "object-storage/index",
         "vault/data",
+        "postgresql/data",
         "elasticsearch/master",
         "elasticsearch/data",
     }
-    assert estimate["local_reserved_gib"] == 320
-    assert estimate["provider_persistent_gib"] == 200
-    assert estimate["provider_backup_scratch_gib"] == 0
+    assert estimate["local_reserved_gib"] == 410
+    assert estimate["provider_persistent_gib"] == 240
+    assert estimate["provider_backup_scratch_gib"] == 20
     assert all(
         claim["storage_class"] == "hcloud-volumes"
         for key, claim in estimate["claims"].items()
@@ -110,11 +111,12 @@ def test_storage_class_change_requires_full_target_capacity_and_replacement():
         "object-storage/volume",
         "object-storage/index",
         "vault/data",
+        "postgresql/data",
         "elasticsearch/master",
         "elasticsearch/data",
     }
-    assert plan["target_delta_gib"] == 320
-    assert plan["required_additional_gib"] == 320
+    assert plan["target_delta_gib"] == 410
+    assert plan["required_additional_gib"] == 430
 
     migrator = (ROOT / "scripts/migrate-profile.sh").read_text()
     assert "PVC StorageClass is immutable" in migrator

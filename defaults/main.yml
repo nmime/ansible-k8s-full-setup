@@ -437,11 +437,11 @@ log_redaction_enabled: "{{ hipaa_compliance }}"
 # Optional component defaults. Profiles can override these through their nested
 # `<component>.enabled` setting; the playbook normalizes both forms.
 deploy_elasticsearch: "{{ tier in ['medium', 'production'] }}"
-deploy_gitlab: false
+deploy_gitlab: "{{ tier != 'minimal' }}"
 deploy_gitops: true
 deploy_observability: true
-deploy_databases: false
-deploy_postgresql: false
+deploy_databases: true
+deploy_postgresql: true
 deploy_mongodb: false
 deploy_autoscaling: true
 deploy_dragonfly: "{{ tier in ['medium', 'production'] }}"

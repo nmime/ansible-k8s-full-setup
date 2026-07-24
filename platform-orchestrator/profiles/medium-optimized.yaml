@@ -13,9 +13,9 @@ tier: medium
 resource_tier: small
 cost_estimate: >-
   Current balanced tariff: 3 x cpx32 control plane, 4 x cpx32 workers, cpx22
-  bastion, lb11, one bastion IPv4, 320 GiB active replication-qualified local
-  claims in a 470 GiB expandable static pool, and 200 GiB provider-billable
-  persistent volumes. See docs/COST_MODEL.md.
+  bastion, lb11, one bastion IPv4, 410 GiB active replication-qualified local
+  claims in a 470 GiB expandable static pool, and 260 GiB provider-billable
+  persistent volumes including GitLab staging. See docs/COST_MODEL.md.
 
 global:
   project: k8s
@@ -125,9 +125,9 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
-  enabled: false
+  enabled: true
   postgresql:
-    enabled: false
+    enabled: true
     replicas: 3
     proxy_replicas: 1
     storage_size: 30Gi
@@ -144,7 +144,7 @@ databases:
 # GitLab
 # ---------------------------------------------
 gitlab:
-  enabled: false
+  enabled: true
   mode: light
   webservice_replicas: 1
   webservice_max_replicas: 2
@@ -160,7 +160,7 @@ gitlab:
   gitaly_storage_size: 30Gi
   backup_persistence_size: 20Gi
   runner:
-    enabled: false
+    enabled: true
     concurrent_jobs: 4
 
 # ---------------------------------------------
