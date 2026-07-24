@@ -32,11 +32,12 @@ of unrelated records.
 ## Selectable technologies
 
 Legend: **on** is enabled by the named profile; **off** can be enabled later.
-The `medium-optimized` profile intentionally has the same base technology set
-as `medium`, but uses the `small` resource envelope plus explicit compact
-overrides for heavy services. PostgreSQL and GitLab/Runner are part of the
-`small`-or-larger base platform. MongoDB, Temporal, Postal, and GlitchTip are
-data/application opt-ins.
+The `medium-optimized` profile keeps the required medium foundation but avoids
+overlapping observability backends: Coroot, VictoriaMetrics/Grafana,
+single-binary Loki, one OpenTelemetry Collector, and Blackbox are on;
+Elasticsearch/Kibana/APM, PMM, Tempo, and GlitchTip are off. PostgreSQL and
+GitLab/Runner are part of the `small`-or-larger base platform. MongoDB,
+Temporal, Postal, and GlitchTip are data/application opt-ins.
 The `production` profile also uses the conservative request envelope, while
 explicitly retaining selective critical HA sizing for Vault, optional
 databases/GitLab, storage, Argo CD, metrics, autoscaling, alerting, and tracing.
@@ -54,17 +55,16 @@ backup/PVC restoration (or an explicitly accepted telemetry rebuild for
 Coroot), followed by component health gates; they do not provide immediate
 replica failover.
 
-Medium, medium-optimized, and production use two Elasticsearch data replicas.
+Medium and production use two Elasticsearch data replicas.
 This keeps the default one shard replica assigned and makes Elasticsearch
-health gates truthfully require green status. For medium-optimized, the second
-40 GiB data claim is included in the current 670 GiB conservative active-claim
-envelope. Medium-optimized places 410 GiB of active replication-qualified claims
-on server SSD, keeps a 470 GiB expandable static local pool for late opt-ins,
-and retains 260 GiB on provider CSI.
+health gates truthfully require green status. Medium-optimized instead uses
+Loki and places 300 GiB of active replication-qualified claims on server SSD,
+keeps a 360 GiB expandable static local pool for the MongoDB opt-in, and
+retains 240 GiB on provider CSI including GitLab backup staging.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
-`gitlab-runner`, `gitops`, `observability`, `pmm`, `coroot`, `tracing`, `autoscaling`,
+`gitlab-runner`, `gitops`, `observability`, `pmm`, `coroot`, `tracing`, `tempo`, `autoscaling`,
 `temporal`, `postal`, `backup`, `disaster-recovery`, `glitchtip`, `apm`,
 `blackbox`, `daytona`, and `hipaa`.
 
@@ -77,22 +77,23 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | on | on | on | on | on |
 | PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | on | on | on | on | on |
 | MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB and PBM; optional PMM client when PMM is selected | Databases | off | off | off | off | off |
-| Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | on | on |
+| Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | off | on |
 | Dragonfly | `dragonfly.enabled` | Dragonfly operator and Redis-compatible cache | none | off | on | on | on | on |
 | GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | on | on | on | on |
 | GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | on | on | on | on |
 | GitOps | `gitops.enabled` | Argo CD with scoped source/resource allowlists | none | on | on | on | on | on |
 | Observability core | `observability.enabled` | VictoriaMetrics, Grafana, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
-| PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | on | on |
+| PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | off | on |
 | Coroot | `coroot.enabled` | Coroot CE/operator, eBPF node agent, cluster agent, ClickHouse; VictoriaMetrics reused as external Prometheus | Observability | off | off | on | on | on |
-| Tracing | `tracing.enabled` | Tempo and OpenTelemetry Collector | Observability, object storage | off | off | on | on | on |
+| Tracing | `tracing.enabled` | OpenTelemetry Collector routed to the selected backend | Observability and exactly one backend | off | off | on | on | on |
+| Tempo | `tracing.tempo.enabled` | Tempo trace storage and Grafana datasource | Tracing, object storage; set `tracing.backend: tempo` | off | off | on | off | on |
 | Autoscaling | `autoscaling.enabled` | KEDA | none | on | on | on | on | on |
 | Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL | off | off | off | off | off |
 | Postal | `postal.enabled` | Postal mail server, schema initialize/update gate, and MariaDB; public SMTP 25/587 targets unprivileged container port 2525 | Dragonfly | off | off | off | off | off |
 | Native backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, and SeaweedFS backup jobs plus application-aware restore drills | Object storage | off | off | on | on | on |
 | External disaster recovery | `backup.disaster_recovery.enabled` | Velero/Kopia resource and mounted-PVC protection; complete encrypted etcd/PKI/config/cloud-state bundles; replacement-cluster restore | Native backup automation, object storage, and an independent external S3 endpoint | off | off | on | on | on |
 | GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | off | off | off |
-| APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | on | on |
+| APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | off | on |
 | Blackbox | `blackbox.enabled` | Prometheus Blackbox Exporter and VMProbe resources | Observability | off | off | on | on | on |
 | Daytona | `applications.daytona.enabled` | Daytona workspace platform | none | off | off | off | off | off |
 | HIPAA-oriented hardening | `compliance.hipaa.enabled` | Host audit rules, Vault TLS assertions, Cilium encryption assertion, and active log redaction | Secrets, observability | off | off | off | off | off |
@@ -113,15 +114,15 @@ retired only by the checkpointed migration finalizer.
 
 Capacity planning counts every persistent index claim separately. For
 medium-optimized it also records each claim's StorageClass: SeaweedFS
-master/volume/index, Vault Raft, PostgreSQL, and Elasticsearch use local SSD in
+master/volume/index, Vault Raft, and PostgreSQL use local SSD in
 the base profile; MongoDB uses the same class when selected. Singleton,
 audit, and backup claims remain on Hetzner CSI. StorageClass changes are
 immutable and therefore require the
 backup-gated replacement/native-restore path rather than an ordinary
 reconcile. The three 2 GiB SeaweedFS index requests reserve a conservative
-10 GiB each on local SSD, contributing 30 GiB to the active 410 GiB local
+10 GiB each on local SSD, contributing 30 GiB to the active 300 GiB local
 envelope even though their actual Kubernetes requests total 6 GiB. The static
-pool remains 470 GiB so late MongoDB selection does not require server
+pool remains 360 GiB so late MongoDB selection does not require server
 replacement. GitLab backup staging is a 20 GiB CSI claim; see
 [the current cost model](COST_MODEL.md).
 
@@ -138,6 +139,10 @@ cd platform-orchestrator
 ./platform.sh enable coroot       # enables required observability flags
 ./platform.sh validate            # offline dependency validation
 ./platform.sh deploy coroot       # targeted idempotent reconcile
+
+./platform.sh enable tempo        # selects Tempo as the trace backend
+./platform.sh deploy tempo
+./platform.sh disable tempo       # falls back to Coroot when Coroot is enabled
 
 ./platform.sh disable coroot      # desired state only; workload is retained
 ./platform.sh enable coroot       # return later without data deletion
@@ -159,8 +164,8 @@ not inferred from live cluster state.
 
 | Removal class | Components | Boundary |
 |---|---|---|
-| Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, PMM, Coroot, Temporal, Postal, GlitchTip, Daytona | exact confirmation plus `--delete-data` |
-| Stateless/shared | ESO, GitLab Runner, tracing, KEDA, native backup jobs, external disaster-recovery controllers, APM, Blackbox | exact confirmation; remote trace/backup objects are retained |
+| Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, PMM, Coroot, Tempo, Temporal, Postal, GlitchTip, Daytona | exact confirmation plus `--delete-data` |
+| Stateless/shared | ESO, GitLab Runner, tracing collector, KEDA, native backup jobs, external disaster-recovery controllers, APM, Blackbox | exact confirmation; remote trace/backup objects are retained |
 | No generic rollback | HIPAA-oriented hardening | disable only; manual reviewed reversal |
 
 Removal never deletes Hetzner infrastructure, platform DNS, external backup
@@ -185,6 +190,13 @@ service after data deletion and does not automatically choose or replay an old
 backup. Recover retained data only through that component's documented restore
 procedure. External backup and Loki archive objects are never deleted by profile
 finalization.
+
+Before a worker scale-in, the finalizer enumerates every node-affine
+`platform-local` PV. It deletes only unbound `Available`/`Released` entries
+after the fresh final backup gate and refuses to remove a node while any local
+PV is still `Bound`. The operator must restore or migrate that claim onto the
+target three-worker pool and then resume; a successful pod drain is not treated
+as proof that node-local data moved.
 
 The transition expands to the larger node topology, resizes retained nodes one
 at a time, grows both the provider disk and root filesystem, and requires full

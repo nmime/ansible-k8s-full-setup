@@ -194,7 +194,31 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
             add("metrics/vmstorage", metrics_replicas, metrics_size, "VictoriaMetrics VMStorage")
         stack = str(nested(config, "observability.logging.stack", "loki" if tier in {"minimal", "small"} else "elk"))
         if stack == "loki":
-            add("logging/loki", 1, "10Gi" if resource in {"minimal", "small"} else "20Gi", "Loki single-binary")
+            loki_mode = str(
+                nested(
+                    config,
+                    "observability.logging.deployment_mode",
+                    "single-binary" if tier in {"minimal", "small"} else "simple-scalable",
+                )
+            )
+            loki_size = "10Gi" if resource in {"minimal", "small"} else "20Gi"
+            if loki_mode == "single-binary":
+                add("logging/loki", 1, loki_size, "Loki single-binary")
+            elif loki_mode == "simple-scalable":
+                add(
+                    "logging/loki-write",
+                    metrics_replicas,
+                    loki_size,
+                    "Loki simple-scalable write",
+                )
+                add(
+                    "logging/loki-backend",
+                    metrics_replicas,
+                    loki_size,
+                    "Loki simple-scalable backend",
+                )
+            else:
+                raise ValueError(f"unsupported Loki deployment mode: {loki_mode}")
         if enabled(config, "observability.grafana.enabled", True):
             add("observability/grafana", 1, "10Gi", "Grafana SQLite")
         alert_replicas = nested(config, "alerting.replicas", 2 if resource in {"medium", "production"} else 1)
@@ -210,7 +234,16 @@ def estimate(config: dict[str, Any]) -> dict[str, Any]:
         add("coroot/clickhouse", 1, nested(config, "coroot.clickhouse.storage_size",
                                            "20Gi" if resource in {"minimal", "small"} else "50Gi" if resource == "medium" else "100Gi"), "Coroot ClickHouse")
         add("coroot/keeper", 3, "10Gi", "Coroot ClickHouse Keeper")
-    if enabled(config, "tracing.enabled", tier in {"medium", "production"}):
+    tracing_is_enabled = enabled(config, "tracing.enabled", tier in {"medium", "production"})
+    tracing_backend = str(nested(config, "tracing.backend", "tempo"))
+    tempo_is_enabled = bool(
+        nested(
+            config,
+            "tracing.tempo.enabled",
+            tracing_is_enabled and tracing_backend == "tempo",
+        )
+    )
+    if tracing_is_enabled and tempo_is_enabled:
         add("tracing/tempo", 1, nested(config, "tracing.storage_size",
                                        "10Gi" if resource in {"minimal", "small"} else "20Gi" if resource == "medium" else "40Gi"), "Tempo")
     # Postal is an application opt-in in every tier. Missing selectors must

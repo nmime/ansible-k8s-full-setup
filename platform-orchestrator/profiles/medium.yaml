@@ -165,6 +165,9 @@ coroot:
 
 tracing:
   enabled: true
+  backend: tempo
+  tempo:
+    enabled: true
   retention: 24h
   storage_size: 20Gi
 

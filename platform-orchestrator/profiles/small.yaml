@@ -150,6 +150,9 @@ coroot:
 
 tracing:
   enabled: false
+  backend: tempo
+  tempo:
+    enabled: false
 
 postal:
   enabled: false

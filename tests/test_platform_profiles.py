@@ -44,6 +44,7 @@ COMPONENT_PATHS = (
     "temporal.enabled",
     "postal.enabled",
     "tracing.enabled",
+    "tracing.tempo.enabled",
     "backup.enabled",
     "backup.disaster_recovery.enabled",
     "glitchtip.enabled",
@@ -64,6 +65,10 @@ MEDIUM_SERVICE_PATHS = tuple(
         "temporal.enabled",
         "postal.enabled",
         "glitchtip.enabled",
+        "observability.pmm.enabled",
+        "elasticsearch.enabled",
+        "tracing.tempo.enabled",
+        "apm.enabled",
     }
 )
 OPT_IN_SERVICE_PATHS = (
@@ -71,6 +76,12 @@ OPT_IN_SERVICE_PATHS = (
     "temporal.enabled",
     "postal.enabled",
     "glitchtip.enabled",
+)
+MEDIUM_OPTIMIZED_DISABLED_PATHS = (
+    "observability.pmm.enabled",
+    "elasticsearch.enabled",
+    "tracing.tempo.enabled",
+    "apm.enabled",
 )
 ALERT_CHANNEL_PATHS = (
     "alerting.telegram.enabled",
@@ -237,7 +248,7 @@ class TestNamedProfileContract:
             assert get_path(profile, path) is False
 
     @pytest.mark.parametrize(
-        "profile_name", ["medium", "medium-optimized", "production"]
+        "profile_name", ["medium", "production"]
     )
     def test_elasticsearch_backed_logging_has_two_data_replicas(self, profile_name):
         profile = load_profile(profile_name)
@@ -352,20 +363,21 @@ class TestMediumOptimizedContract:
             assert get_path(self.profile, path) is True, f"{path} must remain enabled"
         for path in OPT_IN_SERVICE_PATHS:
             assert get_path(self.profile, path) is False
+        for path in MEDIUM_OPTIMIZED_DISABLED_PATHS:
+            assert get_path(self.profile, path) is False
         assert get_path(self.profile, "applications.daytona.enabled") is False
         assert get_path(self.profile, "compliance.hipaa.enabled") is False
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
         assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
+        assert self.profile["infrastructure"]["workers"]["count"] == 3
         assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
         assert self.profile["secrets"]["vault"]["replicas"] == 3
         assert self.profile["databases"]["postgresql"]["replicas"] == 3
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
         assert self.profile["storage"]["master_replicas"] == 3
         assert self.profile["storage"]["volume_replicas"] == 3
-        assert self.profile["elasticsearch"]["master"]["replicas"] == 3
-        assert self.profile["elasticsearch"]["data"]["replicas"] == 2
 
     def test_uses_compact_stateless_baselines(self):
         replica_paths = (
@@ -411,8 +423,16 @@ class TestMediumOptimizedContract:
         assert self.profile["observability"]["metrics"]["storage_size"] == "40Gi"
         assert self.profile["observability"]["metrics"]["retention"] == "14d"
         assert self.profile["observability"]["logging"]["retention"] == "7d"
+        assert self.profile["observability"]["logging"]["stack"] == "loki"
+        assert self.profile["observability"]["logging"]["deployment_mode"] == "single-binary"
         assert self.profile["tracing"]["retention"] == "24h"
+        assert self.profile["tracing"]["backend"] == "coroot"
+        assert self.profile["tracing"]["tempo"]["enabled"] is False
         assert self.profile["coroot"]["storage_size"] == "10Gi"
+        assert self.profile["coroot"]["cache_ttl"] == "3d"
+        assert self.profile["coroot"]["logs_ttl"] == "24h"
+        assert self.profile["coroot"]["traces_ttl"] == "24h"
+        assert self.profile["coroot"]["profiles_ttl"] == "24h"
         assert self.profile["coroot"]["clickhouse"]["storage_size"] == "20Gi"
         assert self.profile["coroot"]["clickhouse"]["resources"] == {
             "cpu_request": "250m",
@@ -1009,6 +1029,9 @@ class TestResourceTierConsumers:
         assert tracing.count("chart_ref: open-telemetry/opentelemetry-collector") == 1
         assert "create-tempo-bucket" in tracing
         assert "grafana-tempo-datasource" in tracing
+        assert "otlphttp/coroot" in tracing
+        assert "when: tempo_enabled | bool" in tracing
+        assert "when: tracing_enabled | bool" in tracing
 
 
 class TestComponentLifecycle:
@@ -1116,6 +1139,7 @@ class TestComponentLifecycle:
             "dragonfly",
             "gitlab-runner",
             "tracing",
+            "tempo",
             "temporal",
             "postal",
             "backup",
@@ -1136,6 +1160,15 @@ class TestComponentLifecycle:
             ("mongodb", ("databases.enabled", "databases.mongodb.enabled")),
             ("coroot", ("coroot.enabled", "observability.enabled")),
             ("pmm", ("observability.pmm.enabled", "observability.enabled")),
+            (
+                "tempo",
+                (
+                    "tracing.tempo.enabled",
+                    "tracing.enabled",
+                    "storage.enabled",
+                    "observability.enabled",
+                ),
+            ),
             (
                 "temporal",
                 (
@@ -1216,6 +1249,29 @@ class TestComponentLifecycle:
         assert result.returncode != 0
         assert "coroot" in result.stdout + result.stderr
 
+    def test_disabling_tempo_keeps_tracing_and_routes_it_to_coroot(self, tmp_path):
+        orchestrator = tmp_path / "platform-orchestrator"
+        shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
+        shutil.copytree(REPO_ROOT / "playbooks", tmp_path / "playbooks")
+        shutil.copytree(REPO_ROOT / "defaults", tmp_path / "defaults")
+        profile = load_profile("medium")
+        with (orchestrator / "platform.yaml").open("w", encoding="utf-8") as stream:
+            yaml.safe_dump(profile, stream)
+        result = subprocess.run(
+            ["bash", "platform.sh", "disable", "tempo"],
+            cwd=orchestrator,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        updated = yaml.safe_load(
+            (orchestrator / "platform.yaml").read_text(encoding="utf-8")
+        )
+        assert updated["tracing"]["enabled"] is True
+        assert updated["tracing"]["tempo"]["enabled"] is False
+        assert updated["tracing"]["backend"] == "coroot"
+
     def test_native_backup_cannot_be_disabled_while_dr_is_selected(self, tmp_path):
         orchestrator = tmp_path / "platform-orchestrator"
         shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
@@ -1270,6 +1326,7 @@ class TestComponentLifecycle:
         profile["temporal"]["enabled"] = False
         profile["postal"]["enabled"] = False
         profile["tracing"]["enabled"] = False
+        profile["tracing"]["tempo"]["enabled"] = False
         profile["backup"]["enabled"] = False
         profile["backup"]["disaster_recovery"]["enabled"] = False
         profile["coroot"]["enabled"] = False
@@ -1289,6 +1346,8 @@ class TestComponentLifecycle:
             return data
 
         resolve_parent(profile, enabled_parent)[enabled_key] = True
+        if enabled_path == "tracing.enabled":
+            profile["tracing"]["tempo"]["enabled"] = True
         resolve_parent(profile, disabled_parent)[disabled_key] = False
         invalid_profile = tmp_path / "invalid-profile.yaml"
         invalid_profile.write_text(yaml.safe_dump(profile), encoding="utf-8")
@@ -1356,7 +1415,7 @@ class TestComponentLifecycle:
         assert "requires elasticsearch.enabled=true" in result.stdout + result.stderr
 
     def test_elasticsearch_logging_rejects_a_single_data_node(self, tmp_path):
-        profile = load_profile("medium-optimized")
+        profile = load_profile("medium")
         profile["elasticsearch"]["data"]["replicas"] = 1
         invalid_profile = tmp_path / "single-elasticsearch-data-node.yaml"
         invalid_profile.write_text(yaml.safe_dump(profile), encoding="utf-8")
@@ -1387,6 +1446,13 @@ class TestComponentLifecycle:
         assert "Refuse removal while the component is selected" in playbook
         assert "delete_component_data | bool" in playbook
         assert "Remote\n          object-storage backup and tracing buckets are intentionally retained" in playbook
+        assert "tempo:" in playbook
+        assert "{name: tempo, namespace: monitoring}" in playbook
+        tracing_spec = playbook.split("      tracing:", 1)[1].split(
+            "      tempo:", 1
+        )[0]
+        assert "{name: otel-collector, namespace: monitoring}" in tracing_spec
+        assert "{name: tempo, namespace: monitoring}" not in tracing_spec
 
     def test_coroot_uses_pinned_official_operator_and_external_metrics(self):
         defaults = (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
@@ -1482,6 +1548,7 @@ class TestComponentLifecycle:
             "PMM": "observability.pmm.enabled",
             "Coroot": "coroot.enabled",
             "Tracing": "tracing.enabled",
+            "Tempo": "tracing.tempo.enabled",
             "Autoscaling": "autoscaling.enabled",
             "Temporal": "temporal.enabled",
             "Postal": "postal.enabled",

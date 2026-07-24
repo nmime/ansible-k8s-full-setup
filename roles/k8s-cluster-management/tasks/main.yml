@@ -1121,15 +1121,17 @@
   changed_when: false
   when: local_storage_enabled | bool
 
-- name: Enforce the audited 3+4 local-storage topology
+- name: Enforce the audited 3+3 local-storage topology
   ansible.builtin.assert:
     that:
       - cp_schedulable | bool
       - local_storage_control_plane_nodes_result.stdout_lines | length == 3
-      - local_storage_worker_nodes_result.stdout_lines | length == 4
+      - local_storage_worker_nodes_result.stdout_lines | length >= 3
     fail_msg: >-
       The medium-optimized local PV pool requires exactly three schedulable
-      control planes and four workers. Refusing an unreviewed disk layout.
+      control planes and at least three workers. Only the first three workers
+      receive target-generation slots; a temporary fourth worker is tolerated
+      during a checkpointed scale-in migration.
   when: local_storage_enabled | bool
 
 - name: Enforce root-disk capacity for the static local PV reservation
@@ -1164,24 +1166,20 @@
       - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[1] }}", size: 10, slot: 1}
       - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[2] }}", size: 30, slot: 1}
       - {node: "{{ local_storage_control_plane_nodes_result.stdout_lines[2] }}", size: 10, slot: 1}
-      # Four 160 GiB worker disks reserve at most 90 GiB each.
+      # Three 160 GiB worker disks reserve 80 GiB each. The 20 GiB slots are
+      # dormant capacity for the optional three-member MongoDB deployment.
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 40, slot: 1}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 40, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 20, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 10, slot: 2}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 40, slot: 1}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 40, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 20, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 10, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 10, slot: 2}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 40, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 20, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 2}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 3}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 20, slot: 1}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 20, slot: 2}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 1}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 2}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 3}
-      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[3] }}", size: 10, slot: 4}
   when: local_storage_enabled | bool
 
 - name: Create and validate static local PV directories on every node
@@ -1268,6 +1266,7 @@
           app.kubernetes.io/managed-by: ansible
           platform.example.com/project: "{{ project_name }}"
           platform.example.com/storage-pool: medium-optimized-local
+          platform.example.com/storage-pool-generation: three-plus-three-v1
       spec:
         capacity:
           storage: "{{ item.size }}Gi"
@@ -1297,10 +1296,10 @@
   ansible.builtin.shell: |
     set -euo pipefail
     pool=$(kubectl get pv -l \
-      platform.example.com/project={{ project_name | quote }},platform.example.com/storage-pool=medium-optimized-local \
+      platform.example.com/project={{ project_name | quote }},platform.example.com/storage-pool=medium-optimized-local,platform.example.com/storage-pool-generation=three-plus-three-v1 \
       -o json)
-    test "$(jq '.items | length' <<<"$pool")" -eq 23
-    test "$(jq '[.items[].spec.capacity.storage | sub("Gi$"; "") | tonumber] | add' <<<"$pool")" -eq 470
+    test "$(jq '.items | length' <<<"$pool")" -eq 18
+    test "$(jq '[.items[].spec.capacity.storage | sub("Gi$"; "") | tonumber] | add' <<<"$pool")" -eq 360
     test "$(jq '[.items[].spec.persistentVolumeReclaimPolicy] | all(. == "Retain")' <<<"$pool")" = true
     test "$(jq '[.items[].spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values | length] | all(. == 1)' <<<"$pool")" = true
   args:

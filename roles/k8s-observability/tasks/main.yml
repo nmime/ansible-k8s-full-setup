@@ -327,7 +327,7 @@
     wait: false
     timeout: 10m0s
     values:
-      deploymentMode: '{{ ''SingleBinary'' if tier in [''minimal'', ''small''] else ''SimpleScalable'' }}'
+      deploymentMode: '{{ ''SingleBinary'' if loki_deployment_mode == ''single-binary'' else ''SimpleScalable'' }}'
       loki:
         auth_enabled: false
         podSecurityContext:
@@ -362,7 +362,7 @@
           max_query_length: 721h
           max_query_parallelism: 32
       read:
-        replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
+        replicas: '{{ 0 if loki_deployment_mode == ''single-binary'' else vm_replicas | int }}'
         resources:
           requests:
             cpu: '{{ ''50m'' if resource_tier == ''minimal'' else ''100m'' }}'
@@ -371,7 +371,7 @@
             cpu: 500m
             memory: 512Mi
       write:
-        replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
+        replicas: '{{ 0 if loki_deployment_mode == ''single-binary'' else vm_replicas | int }}'
         resources:
           requests:
             cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
@@ -387,7 +387,7 @@
           size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       backend:
-        replicas: '{{ 0 if tier in [''minimal'', ''small''] else vm_replicas | int }}'
+        replicas: '{{ 0 if loki_deployment_mode == ''single-binary'' else vm_replicas | int }}'
         resources:
           requests:
             cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
@@ -403,7 +403,7 @@
           size: '{{ ''10Gi'' if resource_tier in [''minimal'', ''small''] else ''20Gi'' }}'
           storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
       singleBinary:
-        replicas: '{{ 1 if tier in [''minimal'', ''small''] else 0 | int }}'
+        replicas: '{{ 1 if loki_deployment_mode == ''single-binary'' else 0 }}'
         resources:
           requests:
             cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
@@ -2038,13 +2038,13 @@
 - name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)
   ansible.builtin.import_tasks: alerting.yml
 
-- name: Include distributed tracing (Tempo + OTel Collector)
-  ansible.builtin.import_tasks: tracing.yml
-
-- name: Include observability health checks
-  ansible.builtin.import_tasks: health_checks.yml
-
 - name: Include Coroot (auto-discovering application observability)
   ansible.builtin.import_tasks: coroot.yml
   when: coroot_enabled | bool
   tags: [coroot]
+
+- name: Include distributed tracing collector and selected backend
+  ansible.builtin.import_tasks: tracing.yml
+
+- name: Include observability health checks
+  ansible.builtin.import_tasks: health_checks.yml

@@ -2991,7 +2991,7 @@ def test_migration_rollback_removes_target_only_components_fail_closed():
         "restore_helm_baseline_without_vault()", 1
     )[0]
     expected_order = (
-        "daytona blackbox apm glitchtip temporal postal tracing coroot "
+        "daytona blackbox apm glitchtip temporal postal tempo tracing coroot "
         "gitlab-runner gitlab mongodb eso elasticsearch dragonfly "
         "disaster-recovery backup autoscaling gitops observability "
         "postgresql databases secrets object-storage"
@@ -3210,6 +3210,24 @@ def test_infrastructure_role_cannot_bulk_delete_or_resize_cluster_nodes():
     assert "migrate-profile.sh" in content
     assert "hcloud server change-type --keep-disk {{ item.name }}" not in content
     assert "hcloud server delete {{ item }}" not in content
+
+
+def test_profile_scale_in_refuses_bound_node_local_data():
+    content = MIGRATE.read_text(encoding="utf-8")
+    guard = content.split("prepare_local_pvs_for_node_removal()", 1)[1].split(
+        "remove_cluster_node()", 1
+    )[0]
+    assert '.local_storage.enabled // false' in guard
+    assert '.status.phase == "Bound"' in guard
+    assert "refusing to remove $node: bound local PVs remain node-affine" in guard
+    assert '.status.phase == "Available" or .status.phase == "Released"' in guard
+    remove_node = content.split("remove_cluster_node()", 1)[1].split(
+        "scale_in_nodes()", 1
+    )[0]
+    assert 'prepare_local_pvs_for_node_removal "$node"' in remove_node
+    assert remove_node.index("prepare_local_pvs_for_node_removal") < remove_node.index(
+        "kubectl drain"
+    )
 
 
 def test_cluster_backup_cloud_capture_is_fail_closed_and_uses_managed_dns_zone():

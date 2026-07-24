@@ -139,6 +139,7 @@ component_path() {
     pmm) echo '.observability.pmm.enabled' ;;
     coroot) echo '.coroot.enabled' ;;
     tracing) echo '.tracing.enabled' ;;
+    tempo) echo '.tracing.tempo.enabled' ;;
     autoscaling) echo '.autoscaling.enabled' ;;
     dragonfly) echo '.dragonfly.enabled' ;;
     temporal) echo '.temporal.enabled' ;;
@@ -152,6 +153,20 @@ component_path() {
     hipaa) echo '.compliance.hipaa.enabled' ;;
     *) return 1 ;;
   esac
+}
+
+component_selected() {
+  local component="$1" path
+  if [[ "$component" == tempo ]]; then
+    [[ $(yq -r '
+      .tracing.tempo.enabled //
+      (((.tracing.enabled // false) == true) and
+       ((.tracing.backend // "tempo") == "tempo"))
+    ' "$CONFIG_FILE") == true ]]
+    return
+  fi
+  path=$(component_path "$component") || return 1
+  is_enabled "$path"
 }
 
 enable_paths() {
@@ -170,6 +185,7 @@ enable_paths() {
     pmm) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .observability.pmm.enabled' ;;
     coroot) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .coroot.enabled' ;;
     tracing) echo '.storage.enabled .observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .tracing.enabled' ;;
+    tempo) echo '.storage.enabled .observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .tracing.enabled .tracing.tempo.enabled' ;;
     autoscaling) echo '.autoscaling.enabled' ;;
     dragonfly) echo '.dragonfly.enabled' ;;
     temporal) echo '.databases.enabled .databases.postgresql.enabled .temporal.enabled' ;;
@@ -193,7 +209,7 @@ validate_config() {
 require_component_enabled() {
   local component="$1" path
   path=$(component_path "$component") || { error "Unknown component: $component"; exit 1; }
-  is_enabled "$path" || {
+  component_selected "$component" || {
     error "$component is disabled at $path in platform.yaml"
     echo "Enable it and its dependencies with: ./platform.sh enable $component"
     exit 1
@@ -209,9 +225,9 @@ show_components() {
   printf '%-18s %s\n' COMPONENT ENABLED
   printf '%-18s %s\n' '------------------' '-------'
   local component path value
-  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing autoscaling temporal postal backup disaster-recovery glitchtip apm blackbox daytona hipaa; do
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing tempo autoscaling temporal postal backup disaster-recovery glitchtip apm blackbox daytona hipaa; do
     path=$(component_path "$component")
-    value=$(flag_from_config "$path" false)
+    if component_selected "$component"; then value=true; else value=false; fi
     printf '%-18s %s\n' "$component" "$value"
   done
 }
@@ -225,6 +241,9 @@ enable_component() {
   for path in $paths; do
     yq -i "${path} = true" "$CONFIG_FILE"
   done
+  if [[ "$component" == tempo ]]; then
+    yq -i '.tracing.backend = "tempo"' "$CONFIG_FILE"
+  fi
   if ! validate_config; then
     cp "$backup_file" "$CONFIG_FILE"
     rm -f "$backup_file"
@@ -239,15 +258,16 @@ enable_component() {
 enabled_blockers() {
   local component="$1" blockers='' path label
   case "$component" in
-    object-storage) blockers='.gitlab.enabled:gitlab .tracing.enabled:tracing .backup.enabled:backup' ;;
+    object-storage) blockers='.gitlab.enabled:gitlab .backup.enabled:backup' ;;
     databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip' ;;
     elasticsearch) blockers='.apm.enabled:apm' ;;
     dragonfly) blockers='.gitlab.enabled:gitlab .postal.enabled:postal .glitchtip.enabled:glitchtip' ;;
     gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
     observability) blockers='.observability.pmm.enabled:pmm .coroot.enabled:coroot .tracing.enabled:tracing .blackbox.enabled:blackbox .compliance.hipaa.enabled:hipaa' ;;
+    tracing) ;;
     secrets) blockers='.secrets.eso.enabled:eso .compliance.hipaa.enabled:hipaa' ;;
     backup) blockers='.backup.disaster_recovery.enabled:disaster-recovery' ;;
-    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tracing|autoscaling|temporal|postal|disaster-recovery|glitchtip|apm|blackbox|daytona|hipaa) ;;
+    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tempo|autoscaling|temporal|postal|disaster-recovery|glitchtip|apm|blackbox|daytona|hipaa) ;;
     *) return 1 ;;
   esac
   for label in $blockers; do
@@ -256,6 +276,12 @@ enabled_blockers() {
       printf '%s ' "${label#*:}"
     fi
   done
+  if [[ "$component" == object-storage ]] && component_selected tempo; then
+    printf 'tempo '
+  fi
+  if [[ "$component" == tracing ]] && component_selected tempo; then
+    printf 'tempo '
+  fi
 }
 
 disable_component() {
@@ -263,6 +289,11 @@ disable_component() {
   require_config
   path=$(component_path "$component") || { error "Unknown component: $component"; exit 1; }
   blockers=$(enabled_blockers "$component") || { error "Unknown component: $component"; exit 1; }
+  if [[ "$component" == coroot ]] \
+    && is_enabled '.tracing.enabled' \
+    && [[ $(yq -r '.tracing.backend // "tempo"' "$CONFIG_FILE") == coroot ]]; then
+    blockers="${blockers}tracing "
+  fi
   if [[ -n "$blockers" ]]; then
     error "Cannot disable $component while these dependants are enabled: $blockers"
     echo "Disable the dependants first. No configuration was changed."
@@ -276,6 +307,13 @@ disable_component() {
     databases) yq -i '.databases.postgresql.enabled = false | .databases.mongodb.enabled = false' "$CONFIG_FILE" ;;
     gitlab) yq -i '.gitlab.runner.enabled = false' "$CONFIG_FILE" ;;
     observability) yq -i '.observability.metrics.enabled = false | .observability.logging.enabled = false | .observability.grafana.enabled = false | .observability.pmm.enabled = false' "$CONFIG_FILE" ;;
+    tempo)
+      if is_enabled '.coroot.enabled'; then
+        yq -i '.tracing.backend = "coroot"' "$CONFIG_FILE"
+      else
+        yq -i '.tracing.enabled = false' "$CONFIG_FILE"
+      fi
+      ;;
   esac
   if ! validate_config; then
     cp "$backup_file" "$CONFIG_FILE"
@@ -375,6 +413,7 @@ deploy_component() {
     pmm)           require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/pmm.log" ;;
     coroot)        require_component_enabled "$component"; run_playbook --tags coroot 2>&1 | tee -a "${LOG_DIR}/coroot.log" ;;
     tracing)       require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/tracing.log" ;;
+    tempo)         require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/tempo.log" ;;
     autoscaling)   require_component_enabled "$component"; run_playbook --tags autoscaling 2>&1 | tee -a "${LOG_DIR}/autoscaling.log" ;;
     temporal)      require_component_enabled "$component"; run_playbook --tags temporal 2>&1 | tee -a "${LOG_DIR}/temporal.log" ;;
     postal)        require_component_enabled "$component"; run_playbook --tags postal 2>&1 | tee -a "${LOG_DIR}/postal.log" ;;
@@ -439,7 +478,7 @@ remove_component() {
         ;;
     esac
   done
-  is_enabled "$path" && {
+  component_selected "$component" && {
     error "$component is still enabled at $path. Run './platform.sh disable $component' first."
     exit 1
   }

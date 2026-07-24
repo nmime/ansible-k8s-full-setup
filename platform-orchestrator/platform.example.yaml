@@ -184,7 +184,10 @@ coroot:
   enabled: false      # Requires observability; eBPF node agent is privileged
 
 tracing:
-  enabled: false      # Tempo; requires observability and object storage
+  enabled: false      # One OTel Collector and one selected trace backend
+  backend: tempo      # tempo or coroot
+  tempo:
+    enabled: false    # Requires object storage; Coroot does not
   retention: 24h
   storage_size: 10Gi
 

@@ -434,11 +434,15 @@ guarantee.
 
 After this campaign, the named profiles moved their purchase defaults to the
 predictably available CPX generation. The €115.81 figure above remains the
-historical all-`cx33` campaign cost, not the current CX purchase mapping. The
-current mapping retains three `cx33` control planes, promotes four workers to
-`cx43`, and assigns only application-replicated claims to local SSD. Its
-current base-profile estimate is €117.78/month, while doubling the worker pool's CPU, RAM,
-and local SSD. Current mappings and live refresh commands are documented in
+historical all-`cx33` campaign cost and the later €117.78 four-worker mapping
+is also superseded. The current source profile (2026-07-24) uses a reviewed
+3+3 Kubernetes topology, three `cx33` control planes, three `cx43` workers,
+Coroot/Loki instead of the overlapping Elastic/PMM/Tempo baseline, 240 GiB of
+provider CSI capacity, and 300 GiB of active local claims. Its current
+estimate is €100.65/month on intermittent CX or €254.15/month on deployable
+CPX. This source change requires a new live attestation; it does not rewrite
+the seven-node campaign evidence above. Current mappings and live refresh
+commands are documented in
 [Hetzner capacity tariffs](HETZNER_CAPACITY_TARIFFS.md).
 
 ## Completed replacement-recovery campaign — 2026-07-23

@@ -37,11 +37,9 @@ def test_only_application_replicated_claims_use_local_ssd():
         "object-storage/index",
         "vault/data",
         "postgresql/data",
-        "elasticsearch/master",
-        "elasticsearch/data",
     }
-    assert estimate["local_reserved_gib"] == 410
-    assert estimate["provider_persistent_gib"] == 240
+    assert estimate["local_reserved_gib"] == 300
+    assert estimate["provider_persistent_gib"] == 220
     assert estimate["provider_backup_scratch_gib"] == 20
     assert all(
         claim["storage_class"] == "hcloud-volumes"
@@ -60,8 +58,9 @@ def test_static_local_pool_is_retained_capacity_aware_and_gated():
     assert "volumeBindingMode: WaitForFirstConsumer" in tasks
     assert "platform-local-storage-initializer" in tasks
     assert "local_storage_pv_slots" in tasks
-    assert 'test "$(jq \'.items | length\' <<<"$pool")" -eq 23' in tasks
-    assert 'tonumber] | add\' <<<"$pool")" -eq 470' in tasks
+    assert 'test "$(jq \'.items | length\' <<<"$pool")" -eq 18' in tasks
+    assert 'tonumber] | add\' <<<"$pool")" -eq 360' in tasks
+    assert "three-plus-three-v1" in tasks
     assert "local_storage_min_free_gib_per_node" in tasks
     assert "capacity_kib >= (70 * 1024 * 1024)" in tasks
     assert "capacity_kib >= (140 * 1024 * 1024)" in tasks
@@ -112,11 +111,9 @@ def test_storage_class_change_requires_full_target_capacity_and_replacement():
         "object-storage/index",
         "vault/data",
         "postgresql/data",
-        "elasticsearch/master",
-        "elasticsearch/data",
     }
-    assert plan["target_delta_gib"] == 410
-    assert plan["required_additional_gib"] == 430
+    assert plan["target_delta_gib"] == 300
+    assert plan["required_additional_gib"] == 320
 
     migrator = (ROOT / "scripts/migrate-profile.sh").read_text()
     assert "PVC StorageClass is immutable" in migrator
