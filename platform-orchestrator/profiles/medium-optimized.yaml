@@ -2,7 +2,7 @@
 # MEDIUM-OPTIMIZED PROFILE - medium foundation, small resource envelope
 # ============================================
 # Best for: Medium base platform on a constrained current-generation x86 shape
-# Nodes: 3 x cpx32 control plane + 4 x cpx32 workers + 1 x cpx22 bastion + lb11
+# Nodes: 3 x cpx32 control plane + 3 x cpx32 workers + 1 x cpx22 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -12,9 +12,9 @@ platform_profile: medium-optimized
 tier: medium
 resource_tier: small
 cost_estimate: >-
-  Current balanced tariff: 3 x cpx32 control plane, 4 x cpx32 workers, cpx22
-  bastion, lb11, one bastion IPv4, 410 GiB active replication-qualified local
-  claims in a 470 GiB expandable static pool, and 260 GiB provider-billable
+  Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 workers, cpx22
+  bastion, lb11, one bastion IPv4, 300 GiB active replication-qualified local
+  claims in a 360 GiB expandable static pool, and 240 GiB provider-billable
   persistent volumes including GitLab staging. See docs/COST_MODEL.md.
 
 global:
@@ -32,7 +32,7 @@ hetzner_tier_specs:
     cp_min_cores: 4
     cp_min_memory: 8
     cp_schedulable: true
-    worker_count: 4
+    worker_count: 3
     worker_min_cores: 4
     worker_min_memory: 8
     lb_enabled: true
@@ -46,7 +46,7 @@ infrastructure:
     type: cpx32
     schedulable: true
   workers:
-    count: 4
+    count: 3
     type: cpx32
 
 # ---------------------------------------------
@@ -179,7 +179,7 @@ gitops:
 observability:
   enabled: true
   pmm:
-    enabled: true
+    enabled: false
   metrics:
     enabled: true
     retention: 14d
@@ -190,7 +190,8 @@ observability:
 
   logging:
     enabled: true
-    stack: elk
+    stack: loki
+    deployment_mode: single-binary
     retention: 7d
 
   grafana:
@@ -201,7 +202,7 @@ observability:
 # Search and analytics (three low-footprint masters retain quorum)
 # ---------------------------------------------
 elasticsearch:
-  enabled: true
+  enabled: false
   master:
     replicas: 3
     storage_class: platform-local
@@ -296,8 +297,8 @@ coroot:
   enabled: true
   storage_size: 10Gi
   metrics_refresh_interval: 15s
-  cache_ttl: 14d
-  logs_ttl: 7d
+  cache_ttl: 3d
+  logs_ttl: 24h
   traces_ttl: 24h
   profiles_ttl: 24h
   resources:
@@ -327,6 +328,10 @@ coroot:
 
 tracing:
   enabled: true
+  backend: coroot
+  collector_replicas: 1
+  tempo:
+    enabled: false
   retention: 24h
   storage_size: 10Gi
 
@@ -338,7 +343,7 @@ glitchtip:
   events_retention_days: 30
 
 apm:
-  enabled: true
+  enabled: false
   replicas: 1
   cpu_request: 100m
   cpu_limit: 750m

@@ -529,6 +529,7 @@ component_path() {
     elasticsearch) printf '.elasticsearch.enabled' ;; dragonfly) printf '.dragonfly.enabled' ;; gitlab) printf '.gitlab.enabled' ;;
     gitlab-runner) printf '.gitlab.runner.enabled' ;; gitops) printf '.gitops.enabled' ;; observability) printf '.observability.enabled' ;;
     coroot) printf '.coroot.enabled' ;; tracing) printf '.tracing.enabled' ;; autoscaling) printf '.autoscaling.enabled' ;;
+    tempo) printf '.tracing.tempo.enabled' ;;
     temporal) printf '.temporal.enabled' ;; postal) printf '.postal.enabled' ;; backup) printf '.backup.enabled' ;;
     disaster-recovery) printf '.backup.disaster_recovery.enabled' ;;
     glitchtip) printf '.glitchtip.enabled' ;; apm) printf '.apm.enabled' ;; blackbox) printf '.blackbox.enabled' ;;
@@ -538,6 +539,14 @@ component_path() {
 
 component_enabled() {
   local file="$1" component="$2" path
+  if [[ "$component" == tempo ]]; then
+    [[ $(yq -r '
+      .tracing.tempo.enabled //
+      (((.tracing.enabled // false) == true) and
+       ((.tracing.backend // "tempo") == "tempo"))
+    ' "$file") == true ]]
+    return
+  fi
   path=$(component_path "$component")
   [[ $(yq -r "${path} // false" "$file") == true ]]
 }
@@ -559,6 +568,7 @@ component_selection_paths() {
 .observability.pmm.enabled
 .coroot.enabled
 .tracing.enabled
+.tracing.tempo.enabled
 .autoscaling.enabled
 .temporal.enabled
 .postal.enabled
@@ -598,7 +608,7 @@ enforce_target_dependency_closure() {
   # instead of generating an invalid target selection.
   if ! component_enabled "$TARGET_CONFIG" object-storage; then
     yq -i '.gitlab.enabled = false | .gitlab.runner.enabled = false |
-      .tracing.enabled = false | .backup.enabled = false |
+      .tracing.tempo.enabled = false | .backup.enabled = false |
       .backup.disaster_recovery.enabled = false' "$TARGET_CONFIG"
   fi
   if ! component_enabled "$TARGET_CONFIG" secrets; then
@@ -623,9 +633,12 @@ enforce_target_dependency_closure() {
   fi
   if ! component_enabled "$TARGET_CONFIG" observability; then
     yq -i '.observability.pmm.enabled = false | .coroot.enabled = false |
-      .tracing.enabled = false | .blackbox.enabled = false |
+      .tracing.enabled = false | .tracing.tempo.enabled = false | .blackbox.enabled = false |
       .compliance.hipaa.enabled = false | .alerting.telegram.enabled = false |
       .alerting.email.enabled = false' "$TARGET_CONFIG"
+  fi
+  if ! component_enabled "$TARGET_CONFIG" tracing; then
+    yq -i '.tracing.tempo.enabled = false' "$TARGET_CONFIG"
   fi
   if ! component_enabled "$TARGET_CONFIG" postal; then
     yq -i '.alerting.email.enabled = false' "$TARGET_CONFIG"
@@ -633,11 +646,28 @@ enforce_target_dependency_closure() {
   if ! component_enabled "$TARGET_CONFIG" backup; then
     yq -i '.backup.disaster_recovery.enabled = false' "$TARGET_CONFIG"
   fi
+  if component_enabled "$TARGET_CONFIG" tracing; then
+    if [[ $(yq -r '.tracing.backend // "tempo"' "$TARGET_CONFIG") == tempo ]] \
+      && ! component_enabled "$TARGET_CONFIG" tempo; then
+      if component_enabled "$TARGET_CONFIG" coroot; then
+        yq -i '.tracing.backend = "coroot"' "$TARGET_CONFIG"
+      else
+        yq -i '.tracing.enabled = false' "$TARGET_CONFIG"
+      fi
+    elif [[ $(yq -r '.tracing.backend // "tempo"' "$TARGET_CONFIG") == coroot ]] \
+      && ! component_enabled "$TARGET_CONFIG" coroot; then
+      if component_enabled "$TARGET_CONFIG" tempo; then
+        yq -i '.tracing.backend = "tempo"' "$TARGET_CONFIG"
+      else
+        yq -i '.tracing.enabled = false' "$TARGET_CONFIG"
+      fi
+    fi
+  fi
 }
 
 components_to_remove() {
   local component
-  for component in daytona blackbox apm glitchtip temporal postal tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     if component_enabled "$SOURCE_CONFIG" "$component" && ! component_enabled "$TARGET_CONFIG" "$component"; then printf '%s\n' "$component"; fi
   done
 }
@@ -687,7 +717,7 @@ preserve_non_shrinking_storage() {
     retain_larger_quantity coroot '.coroot.storage_size' '.coroot.storage_size' '.coroot.storage_size' "$(resource_default "$SOURCE_CONFIG" coroot)" "$(resource_default "$TARGET_CONFIG" coroot)"
     retain_larger_quantity coroot-clickhouse '.coroot.clickhouse.storage_size' '.coroot.clickhouse.storage_size' '.coroot.clickhouse.storage_size' 50Gi 50Gi
   fi
-  if component_enabled "$SOURCE_CONFIG" tracing && component_enabled "$TARGET_CONFIG" tracing; then
+  if component_enabled "$SOURCE_CONFIG" tempo && component_enabled "$TARGET_CONFIG" tempo; then
     retain_larger_quantity tempo '.tracing.storage_size' '.tracing.storage_size' '.tracing.storage_size' "$(resource_default "$SOURCE_CONFIG" tempo)" "$(resource_default "$TARGET_CONFIG" tempo)"
   fi
   retain_larger_replica_count seaweedfs-master '.storage.master_replicas // .storage.replicas' '.storage.master_replicas // .storage.replicas' '.storage.master_replicas' 1 1
@@ -2782,7 +2812,7 @@ rollback_components_to_remove() {
   # Remove dependants before their shared services. Backup/DR are included
   # when the migration installed their temporary control plane for its backup
   # gates, even if the named target does not normally select them.
-  for component in daytona blackbox apm glitchtip temporal postal tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     component_enabled "$SOURCE_CONFIG" "$component" && continue
     if component_enabled "$TARGET_CONFIG" "$component" \
       || { [[ "$component" == backup || "$component" == disaster-recovery ]] \
@@ -2964,6 +2994,41 @@ remove_inventory_node() {
     del(.all.children.etcd.hosts[strenv(NODE)])' "$inventory"
 }
 
+prepare_local_pvs_for_node_removal() {
+  local node="$1" storage_class pv_json active released
+  [[ $(yq -r '.local_storage.enabled // false' "$TARGET_CONFIG") == true ]] || return 0
+  storage_class=$(yq -r '.local_storage.storage_class // "platform-local"' "$TARGET_CONFIG")
+  pv_json=$(kubectl get pv -o json)
+  active=$(jq -r --arg node "$node" --arg class "$storage_class" '
+    .items[]
+    | select(.spec.storageClassName == $class)
+    | select(any(
+        .spec.nodeAffinity.required.nodeSelectorTerms[]?.matchExpressions[]?.values[]?;
+        . == $node
+      ))
+    | select(.status.phase == "Bound")
+    | .metadata.name
+  ' <<<"$pv_json")
+  [[ -z "$active" ]] || fail "refusing to remove $node: bound local PVs remain node-affine: $(tr '\n' ',' <<<"$active" | sed 's/,$//'). Restore/migrate those claims from the verified backup before resuming scale-in"
+  released=$(jq -r --arg node "$node" --arg class "$storage_class" '
+    .items[]
+    | select(.spec.storageClassName == $class)
+    | select(any(
+        .spec.nodeAffinity.required.nodeSelectorTerms[]?.matchExpressions[]?.values[]?;
+        . == $node
+      ))
+    | select(.status.phase == "Available" or .status.phase == "Released")
+    | .metadata.name
+  ' <<<"$pv_json")
+  if [[ -n "$released" ]]; then
+    # Finalize runs only after the post-migration encrypted backup. Claims no
+    # longer bound to a workload can therefore be retired before their node.
+    while IFS= read -r pv; do
+      [[ -z "$pv" ]] || kubectl delete pv "$pv" --wait --timeout=10m
+    done <<<"$released"
+  fi
+}
+
 remove_cluster_node() {
   local node="$1" role="$2" inventory kubespray_dir drain_status
   inventory=$(kubespray_inventory); kubespray_dir="${PROJECT_ROOT}/playbooks/kubespray"
@@ -2975,6 +3040,7 @@ remove_cluster_node() {
     return 0
   fi
   [[ "$role" != master ]] || check_etcd_health "$node"
+  prepare_local_pvs_for_node_removal "$node"
   prepare_gitaly_pdb_override_for_node "$node"
   drain_status=0
   kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=15m \

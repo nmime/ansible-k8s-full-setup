@@ -36,6 +36,12 @@
     platform_pmm_enabled: '{{ (observability.pmm.enabled | default(pmm_enabled)) | bool }}'
     platform_coroot_enabled: '{{ (coroot.enabled | default(coroot_enabled)) | bool }}'
     platform_tracing_enabled: '{{ (tracing.enabled | default(tracing_enabled)) | bool }}'
+    platform_tempo_enabled: >-
+      {{ ((tracing.tempo | default({})).enabled |
+          default(
+            (tracing.enabled | default(tracing_enabled) | bool) and
+            (tracing.backend | default(tracing_backend)) == 'tempo'
+          )) | bool }}
     platform_elasticsearch_enabled: '{{ (elasticsearch.enabled | default(deploy_elasticsearch)) | bool }}'
     platform_databases_enabled: '{{ (databases.enabled | default(deploy_databases)) | bool }}'
     platform_postgresql_enabled: '{{ (databases.postgresql.enabled | default(deploy_postgresql)) | bool }}'
@@ -180,6 +186,9 @@
     pmm_storage_size: '{{ observability.pmm.storage_size | default(pmm_storage_size) }}'
     pmm_enabled: '{{ platform_pmm_enabled }}'
     log_stack: '{{ observability.logging.stack | default(log_stack) }}'
+    loki_deployment_mode: >-
+      {{ observability.logging.deployment_mode |
+         default('single-binary' if tier in ['minimal', 'small'] else 'simple-scalable') }}
     logging_retention: '{{ observability.logging.retention | default(logging_retention) }}'
     coroot_enabled: '{{ platform_coroot_enabled }}'
     coroot_storage_size: '{{ coroot.storage_size | default(coroot_storage_size) }}'
@@ -220,6 +229,8 @@
     coroot_cluster_agent_memory_limit: >-
       {{ coroot.cluster_agent.resources.memory_limit | default(coroot_cluster_agent_memory_limit) }}
     tracing_enabled: '{{ platform_tracing_enabled }}'
+    tempo_enabled: '{{ platform_tempo_enabled }}'
+    tracing_backend: '{{ tracing.backend | default(tracing_backend) }}'
     tempo_retention: '{{ tracing.retention | default(tempo_retention) }}'
     tempo_storage_size: '{{ tracing.storage_size | default(tempo_storage_size) }}'
     backup_schedule: '{{ backup.schedule | default(backup_schedule) }}'
@@ -298,6 +309,15 @@
       Invalid observability.logging.stack={{ log_stack }}. Select exactly one
       supported logging stack: loki, elk, or efk.
 
+- name: Validate the selected Loki deployment mode
+  ansible.builtin.assert:
+    that:
+      - loki_deployment_mode in ['single-binary', 'simple-scalable']
+    fail_msg: >-
+      Invalid observability.logging.deployment_mode={{ loki_deployment_mode }}.
+      Select single-binary or simple-scalable.
+  when: log_stack == 'loki'
+
 - name: Validate the Elasticsearch logging dependency
   ansible.builtin.assert:
     that:
@@ -343,6 +363,7 @@
       - not platform_gitlab_runner_enabled | bool or platform_gitlab_enabled | bool
       - not platform_pmm_enabled | bool or platform_observability_enabled | bool
       - not platform_tracing_enabled | bool or platform_observability_enabled | bool
+      - not platform_tempo_enabled | bool or platform_tracing_enabled | bool
       - not platform_blackbox_enabled | bool or platform_observability_enabled | bool
       - not platform_coroot_enabled | bool or platform_observability_enabled | bool
       - not platform_observability_enabled | bool or observability.metrics.enabled | default(true) | bool
@@ -352,7 +373,8 @@
       Invalid parent/child selection. ESO requires secrets; the example
       ExternalSecret demo fixture requires ESO; PostgreSQL and
       MongoDB require databases; the GitLab Runner requires GitLab; PMM,
-      tracing, Blackbox, and Coroot require observability. The core observability role is one
+      tracing, Blackbox, and Coroot require observability; Tempo requires the
+      tracing collector. The core observability role is one
       production bundle, so metrics, logging, and Grafana must stay enabled
       whenever observability.enabled=true.
 
@@ -416,14 +438,26 @@
       selected platform profile.
   when: platform_postal_enabled | bool
 
-- name: Validate tracing object storage dependency
+- name: Validate the tracing backend selection
+  ansible.builtin.assert:
+    that:
+      - tracing_backend in ['tempo', 'coroot']
+      - tracing_backend != 'tempo' or platform_tempo_enabled | bool
+      - tracing_backend != 'coroot' or platform_coroot_enabled | bool
+      - not platform_tempo_enabled | bool or tracing_backend == 'tempo'
+    fail_msg: >-
+      tracing.backend must select exactly one available backend. Tempo requires
+      tracing.tempo.enabled=true; Coroot requires coroot.enabled=true.
+  when: platform_tracing_enabled | bool
+
+- name: Validate Tempo object storage dependency
   ansible.builtin.assert:
     that:
       - platform_object_storage_enabled | bool
     fail_msg: >-
       Tempo tracing requires object storage. Enable storage in the selected
       platform profile.
-  when: platform_tracing_enabled | bool
+  when: platform_tempo_enabled | bool
 
 - name: Validate backup object storage dependency
   ansible.builtin.assert:

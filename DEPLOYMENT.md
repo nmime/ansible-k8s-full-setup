@@ -48,9 +48,10 @@ subdomain of an existing Hetzner zone, set top-level `hetzner_dns_zone` to
 that parent instead of creating an undelegated child zone.
 
 There are four runtime tiers. `medium-optimized` is intentionally a named
-profile rather than a fifth tier: it sets `tier: medium` to retain every medium
-foundation service and `resource_tier: small` to select the compact resource
-envelope. GitLab/Runner and PostgreSQL are mandatory from `small` upward;
+profile rather than a fifth tier: it sets `tier: medium` for the medium
+foundation and `resource_tier: small` for the compact resource envelope, then
+explicitly removes overlapping optional observability backends.
+GitLab/Runner and PostgreSQL are mandatory from `small` upward;
 MongoDB, Temporal, Postal, and GlitchTip remain explicit opt-ins.
 Do not rename it to `medium_optimized` or change its tier to `small`; both would
 break the explicit profile contract and are rejected before provisioning.
@@ -61,27 +62,28 @@ For the budget production-oriented deployment:
 ./platform.sh init medium-optimized
 ```
 
-This profile uses three schedulable `cpx32` control planes, four `cpx32`
+This profile uses three schedulable `cpx32` control planes, three `cpx32`
 workers, a `cpx22` bastion, and `lb11`. Critical quorum services remain
 replicated;
 recoverable stateless services default to one replica with bounded autoscaling.
-VictoriaMetrics storage, Gitaly, Grafana, and Coroot/ClickHouse retain
+VictoriaMetrics storage, Gitaly, Grafana, Loki, and Coroot/ClickHouse retain
 documented singleton recovery boundaries.
-Elasticsearch uses two compact data replicas so its default shard replica is
-assigned instead of leaving the cluster yellow.
+Coroot receives application traces through one OpenTelemetry Collector.
+Elasticsearch/Kibana/APM, PMM, and Tempo remain selectable but are off in this
+profile because they overlap with the Coroot-centric baseline.
 Choose the `production` profile when stateless workload continuity during node
 maintenance is required. Production backups must also be copied to storage
 outside this cluster.
 
 At the authenticated Hetzner API prices audited on 2026-07-24, this currently
-placeable balanced shape is €290.782/month net (€290.78 rounded), including its
-bastion IPv4, 410 GiB of active replication-qualified local claims in a
-470 GiB expandable static pool, and 260 GiB
+placeable balanced shape is €254.148/month net (€254.15 rounded), including its
+bastion IPv4, 300 GiB of active replication-qualified local claims in a
+360 GiB expandable static pool, and 240 GiB
 of billable CSI volumes. The intermittent CX cost-optimized mapping is
-€117.78/month whenever all required shapes are
+€100.65/month whenever all required shapes are
 placeable: three `cx33` control planes retain economical quorum capacity while
-four `cx43` workers double the worker pool's CPU, RAM, and node-local SSD
-relative to four `cx33` workers. It was temporarily unavailable for new `hel1`
+three `cx43` workers provide 24 vCPU, 48 GiB RAM, and 480 GiB worker-local SSD.
+It was temporarily unavailable for new `hel1`
 placement at audit time. The local portion contains only data with
 application-level replication across nodes. Singleton, audit, and backup
 claims remain on CSI. External DR storage and traffic overages are separate;

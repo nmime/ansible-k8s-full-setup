@@ -1,6 +1,6 @@
 ---
-# Tempo + OpenTelemetry Collector deployment
-# Gated by tracing_enabled (default true for medium/production)
+# OpenTelemetry Collector with one selected trace backend.
+# Tempo is optional; compact profiles can route OTLP/HTTP to Coroot.
 
 - name: Set tracing tier-specific variables
   set_fact:
@@ -18,7 +18,7 @@
   retries: 3
   delay: 10
   until: _r_add_grafana_helm_repo_for_tempo is not failed
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
 
 - name: Add OpenTelemetry Helm repository
   kubernetes.core.helm_repository:
@@ -48,7 +48,7 @@
   retries: 3
   delay: 10
   until: _r_create_tempo_s3_credentials_secret is not failed
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
 
 - name: Ensure the Tempo object-storage bucket exists
   kubernetes.core.k8s:
@@ -94,7 +94,7 @@
   retries: 3
   delay: 10
   until: _r_ensure_tempo_bucket is not failed
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
 
 - name: Reconcile Tempo StatefulSet storage growth without replacing claims
   ansible.builtin.include_tasks: ../../../playbooks/tasks/reconcile_statefulset_storage.yml
@@ -103,7 +103,7 @@
     storage_reconcile_statefulset: tempo
     storage_reconcile_claim: storage
     storage_reconcile_desired: '{{ tempo_storage_size }}'
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
 
 - name: Deploy Tempo with Helm
   kubernetes.core.helm:
@@ -173,7 +173,45 @@
   retries: 3
   delay: 10
   until: _r_install_tempo_with_helm is not failed
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
+
+- name: Allow the OTel Collector to submit traces to Coroot
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-otel-collector
+        namespace: coroot
+      spec:
+        endpointSelector: {}
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ tempo_namespace }}'
+            toPorts:
+              - ports:
+                  - port: '8080'
+                    protocol: TCP
+  register: _r_allow_otel_collector_to_coroot
+  retries: 3
+  delay: 10
+  until: _r_allow_otel_collector_to_coroot is not failed
+  when:
+    - tracing_enabled | bool
+    - tracing_backend == 'coroot'
+
+- name: Remove the stale Coroot trace-ingest policy when Tempo is selected
+  kubernetes.core.k8s:
+    state: absent
+    api_version: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    name: allow-otel-collector
+    namespace: coroot
+  when:
+    - tracing_enabled | bool
+    - tracing_backend == 'tempo'
 
 - name: Deploy OpenTelemetry Collector with Helm
   kubernetes.core.helm:
@@ -214,16 +252,20 @@
             check_interval: 5s
             limit_mib: 256
         exporters:
-          otlp:
+          otlp/tempo:
             endpoint: 'tempo.{{ tempo_namespace }}.svc.cluster.local:4317'
             tls:
               insecure: true
+          otlphttp/coroot:
+            endpoint: 'http://coroot-coroot.coroot.svc.cluster.local:8080'
         service:
           pipelines:
             traces:
               receivers: [otlp, jaeger, zipkin]
               processors: [memory_limiter, batch]
-              exporters: [otlp]
+              exporters: >-
+                {{ ['otlp/tempo'] if tracing_backend == 'tempo'
+                   else ['otlphttp/coroot'] }}
             metrics: null
             logs: null
           telemetry:
@@ -255,6 +297,17 @@
   delay: 10
   until: _r_install_otel_collector_with_helm is not failed
   when: tracing_enabled | bool
+
+- name: Remove the stale Tempo datasource when Coroot stores traces
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    name: grafana-tempo-datasource
+    namespace: '{{ tempo_namespace }}'
+  when:
+    - tracing_enabled | bool
+    - tracing_backend == 'coroot'
 
 - name: Provision the Tempo datasource in Grafana
   kubernetes.core.k8s:
@@ -289,7 +342,18 @@
   retries: 3
   delay: 10
   until: _r_provision_tempo_datasource is not failed
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
+
+- name: Remove the stale Tempo scrape when Coroot stores traces
+  kubernetes.core.k8s:
+    state: absent
+    api_version: operator.victoriametrics.com/v1beta1
+    kind: VMServiceScrape
+    name: tempo
+    namespace: '{{ tempo_namespace }}'
+  when:
+    - tracing_enabled | bool
+    - tracing_backend == 'coroot'
 
 - name: Create VMServiceScrape for Tempo
   kubernetes.core.k8s:
@@ -311,7 +375,7 @@
   retries: 3
   delay: 10
   until: _r_create_vmservicescrape_for_tempo is not failed
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
 
 - name: Create VMServiceScrape for OTel Collector
   kubernetes.core.k8s:
@@ -335,13 +399,13 @@
   until: _r_create_vmservicescrape_for_otel_collector is not failed
   when: tracing_enabled | bool
 
-- name: Display Tempo + OTel deployment info
+- name: Display tracing deployment info
   debug:
     msg:
-      - "  Tempo: chart {{ tempo_chart_version }} / image {{ tempo_image_tag }}"
+      - "  Backend: {{ tracing_backend }}"
+      - "  Tempo: {{ ('chart ' + tempo_chart_version + ' / image ' + tempo_image_tag) if (tempo_enabled | bool) else 'DISABLED' }}"
       - "  OTel Collector: chart {{ otel_collector_chart_version }} / image {{ otel_collector_image_tag }}"
-      - "  Retention: {{ tempo_retention }}"
-      - "  Protocols: OTLP, Jaeger, Zipkin, OpenCensus"
+      - "  Protocols: OTLP, Jaeger, Zipkin"
   when: tracing_enabled | bool
 
 - name: Display tracing disabled notice

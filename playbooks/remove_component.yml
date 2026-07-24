@@ -90,13 +90,21 @@
         namespaces: []
         requires_data_confirmation: false
         helm_releases:
-          - {name: tempo, namespace: monitoring}
           - {name: otel-collector, namespace: monitoring}
+        resources:
+          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMServiceScrape, name: otel-collector, namespace: monitoring}
+          - {api_version: cilium.io/v2, kind: CiliumNetworkPolicy, name: allow-otel-collector, namespace: coroot}
+      tempo:
+        namespaces: []
+        requires_data_confirmation: true
+        helm_releases:
+          - {name: tempo, namespace: monitoring}
         resources:
           - {api_version: v1, kind: Secret, name: tempo-s3-credentials, namespace: monitoring}
           - {api_version: v1, kind: ConfigMap, name: grafana-tempo-datasource, namespace: monitoring}
           - {api_version: operator.victoriametrics.com/v1beta1, kind: VMServiceScrape, name: tempo, namespace: monitoring}
-          - {api_version: operator.victoriametrics.com/v1beta1, kind: VMServiceScrape, name: otel-collector, namespace: monitoring}
+        pvc_selectors:
+          - {namespace: monitoring, selector: "app.kubernetes.io/instance=tempo"}
       autoscaling:
         namespaces: [keda]
         requires_data_confirmation: false
@@ -181,6 +189,7 @@
           pmm: "{{ platform_pmm_enabled }}"
           coroot: "{{ platform_coroot_enabled }}"
           tracing: "{{ platform_tracing_enabled }}"
+          tempo: "{{ platform_tempo_enabled }}"
           autoscaling: "{{ platform_autoscaling_enabled }}"
           temporal: "{{ platform_temporal_enabled }}"
           postal: "{{ platform_postal_enabled }}"

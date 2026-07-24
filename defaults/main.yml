@@ -423,8 +423,12 @@ bastion_log_shipping: false  # Requires an explicitly designed private ingestion
 control_plane_log_shipping: false
 hetzner_metrics_enabled: true
 
-# Distributed Tracing (Tempo)
+# Distributed tracing. OpenTelemetry collection is independent from the
+# selected storage backend so compact profiles can route OTLP directly to
+# Coroot without also running Tempo.
 tracing_enabled: "{{ tier in ['medium', 'production'] }}"
+tracing_backend: tempo  # Options: tempo, coroot
+tempo_enabled: "{{ tracing_enabled and tracing_backend == 'tempo' }}"
 tempo_retention: "{{ '12h' if resource_tier in ['minimal', 'small'] else '24h' if resource_tier == 'medium' else '72h' }}"
 tempo_storage_size: "{{ '10Gi' if resource_tier in ['minimal', 'small'] else '20Gi' if resource_tier == 'medium' else '40Gi' }}"
 otel_collector_enabled: "{{ tracing_enabled }}"

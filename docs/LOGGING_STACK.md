@@ -7,8 +7,10 @@ NodePort ingestion endpoint.
 
 ## Default behavior
 
-- minimal/small → Loki
-- medium/medium-optimized/production → ELK
+- minimal/small → Loki single-binary
+- medium → ELK
+- medium-optimized → Loki single-binary with seven-day retention
+- production → ELK
 
 ## Override
 

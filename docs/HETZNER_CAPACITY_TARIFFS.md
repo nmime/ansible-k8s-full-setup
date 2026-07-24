@@ -1,7 +1,7 @@
 # Hetzner capacity tariffs
 
 This document records the authenticated Hetzner Cloud catalog observed for
-`hel1` on 2026-07-23. The repository does not treat this snapshot as a placement
+`hel1` on 2026-07-24. The repository does not treat this snapshot as a placement
 guarantee. Refresh the catalog immediately before provisioning:
 
 ```bash
@@ -78,8 +78,9 @@ included allowance.
 | `medium-optimized` | `cpx22` / `cpx32` / `cpx32` |
 | `production` | `cpx22` / `cpx42` / `cpx42` |
 
-The minimal 4-vCPU/8-GiB node floor and the medium-optimized seven-node
-failure-domain layout come from the completed live campaign. The balanced CPX
+The minimal 4-vCPU/8-GiB node floor comes from the completed live campaign.
+The current medium-optimized layout is a reviewed 3+3 Kubernetes topology.
+The balanced CPX
 default retains the tested 4-vCPU/8-GiB node envelope. The CX mapping uses
 `cx33` control planes and intentionally raises workers to `cx43`: quorum nodes
 stay economical while workload capacity receives the larger shape.
@@ -97,7 +98,7 @@ domains, support, and non-zero customer VAT.
 | `minimal` | 250 / 0 GiB | €37.27 | €41.77 | **€105.27** | €229.77 |
 | `small` | 360 / 0 GiB | €56.54 | €61.54 | **€138.54** | €286.54 |
 | `medium` | 1,410 / 0 GiB | €174.08 | €199.58 | **€455.58** | €561.58 |
-| `medium-optimized` | 260 / 410 GiB | €117.78 | €102.28 | **€290.78** | €667.78 |
+| `medium-optimized` | 240 / 300 GiB | €100.65 | €90.65 | **€254.15** | €580.65 |
 | `production` | 1,410 / 0 GiB | €190.07 | €220.57 | **€525.07** | €647.57 |
 
 CX figures are valid purchase prices whenever the complete mapping reappears;
@@ -122,32 +123,31 @@ The CX option is intentionally mixed instead of assigning `cx33` everywhere:
 | Role | Shape and count | vCPU | RAM | Node-local SSD | CSI capacity | Monthly net |
 |---|---|---:|---:|---:|---:|---:|
 | Schedulable control planes | 3 × `cx33` | 12 | 24 GiB | 240 GiB | — | €25.47 |
-| Workers | 4 × `cx43` | 32 | 64 GiB | 640 GiB | — | €63.96 |
+| Workers | 3 × `cx43` | 24 | 48 GiB | 480 GiB | — | €47.97 |
 | Bastion | 1 × `cx23` | 2 | 4 GiB | 40 GiB | — | €5.49 |
 | `lb11` and bastion IPv4 | 1 each | — | — | — | — | €7.99 |
-| **Infrastructure** | | **46** | **92 GiB** | **920 GiB** | — | **€102.91** |
-| Provider CSI volumes | 18 volumes | — | — | — | 260 GiB | €14.87 |
-| Active local PVC claims | 20 volumes | — | — | 410 GiB | — | included |
-| Expandable static local pool | 23 slots | — | — | 470 GiB | — | included |
-| **Total base claims** | | | | **410 GiB** | **260 GiB** | **€117.78** |
+| **Infrastructure** | | **38** | **76 GiB** | **760 GiB** | — | **€86.92** |
+| Provider CSI volumes | 17 volumes | — | — | — | 240 GiB | €13.73 |
+| Active local PVC claims | 15 volumes | — | — | 300 GiB | — | included |
+| Expandable static local pool | 18 slots | — | — | 360 GiB | — | included |
+| **Total base claims** | | | | **300 GiB** | **240 GiB** | **€100.65** |
 
-Excluding the bastion, Kubernetes receives 44 vCPU, 88 GiB RAM, and 880 GiB
-aggregate node-local SSD. Relative to four `cx33` workers, the four `cx43`
-workers double the workload pool from 16 to 32 vCPU, 32 to 64 GiB RAM, and 320
-to 640 GiB local SSD for €30/month more. The three control planes remain
-schedulable and contribute another 12 vCPU and 24 GiB RAM. Of the Kubernetes
-nodes' 880 GiB aggregate SSD, base claims actively select 410 GiB and the
-pre-created pool exposes up to 470 GiB for the late MongoDB opt-in.
+Excluding the bastion, Kubernetes receives 36 vCPU, 72 GiB RAM, and 720 GiB
+aggregate node-local SSD. The three `cx43` workers provide 24 vCPU, 48 GiB RAM,
+and 480 GiB local SSD. The three control planes remain schedulable and
+contribute another 12 vCPU and 24 GiB RAM. Of the Kubernetes nodes' 720 GiB
+aggregate SSD, base claims actively select 300 GiB and the pre-created pool
+exposes up to 360 GiB for the late MongoDB opt-in.
 
 ## Local disk and volume boundary
 
 The SSD column is node-local root storage, not shared storage. The
 `medium-optimized` profile now uses it selectively through a capacity-aware
-23-volume static local PV pool, `WaitForFirstConsumer`, retained PVs,
+18-volume static local PV pool, `WaitForFirstConsumer`, retained PVs,
 required hostname anti-affinity, minimum root-disk gates of 70 GiB on control
 planes and 140 GiB on workers, and a 40 GiB per-node free-space gate. Only
-SeaweedFS master/volume/index, Vault Raft data, and Elasticsearch master/data
-claims and PostgreSQL use this class in the base profile. Explicitly enabled
+SeaweedFS master/volume/index, Vault Raft data, and PostgreSQL use this class
+in the base profile. Explicitly enabled
 MongoDB also uses it because the application replicates across nodes.
 
 Node-local PVs remain pinned to their node. A failed or deleted node does not
@@ -157,6 +157,7 @@ PV capacity is a Kubernetes scheduling reservation, not a hard per-directory
 filesystem quota; all local slots share the node root filesystem and remain
 protected by the 85% disk-usage alert plus kubelet `DiskPressure`.
 SeaweedFS filer, Vault audit, pgBackRest, observability, Gitaly, Dragonfly,
-Coroot/ClickHouse, Tempo, and GitLab backup staging remain on Hetzner CSI.
+Coroot/ClickHouse, Loki, and GitLab backup staging remain on Hetzner CSI.
+Tempo remains off unless explicitly selected.
 Existing CSI claims cannot change StorageClass in place; migrate them only
 through the backup-gated replacement/native-restore procedure.

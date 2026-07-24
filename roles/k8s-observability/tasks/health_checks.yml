@@ -200,7 +200,7 @@
   until:
     - _r_check_tempo.resources | length > 0
     - _r_check_tempo.resources[0].status.phase | default('') == 'Running'
-  when: tracing_enabled | bool
+  when: tempo_enabled | bool
 
 - name: Check OTel Collector health
   kubernetes.core.k8s_info:
@@ -224,5 +224,6 @@
       - "  Metrics: DEPLOYED ({{ 'VMCluster' if tier in ['medium', 'production'] else 'VMSingle' }})"
       - "  Loki: {{ 'OK' if log_stack == 'loki' else 'N/A (ELK)' }}"
       - "  Grafana: {{ 'OK' if _r_check_grafana.resources | default([]) | length > 0 else 'CHECK' }}"
-      - "  Tempo: {{ 'OK' if (tracing_enabled | bool) else 'DISABLED' }}"
+      - "  Trace backend: {{ tracing_backend if (tracing_enabled | bool) else 'DISABLED' }}"
+      - "  Tempo: {{ 'OK' if (tempo_enabled | bool) else 'DISABLED' }}"
       - "  OTel:   {{ 'OK' if (tracing_enabled | bool) else 'DISABLED' }}"

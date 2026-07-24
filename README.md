@@ -29,18 +29,18 @@ The runtime has four capability tiers and five named profiles:
 | `minimal` | minimal | minimal | 1 schedulable 4 vCPU/8 GiB control plane + 1 4 vCPU/8 GiB worker | Core development platform; no GitLab or medium-only services |
 | `small` | small | small | 1 control plane + 2 workers | Compact platform with Dragonfly, storage, secrets, GitOps, and monitoring; data/application services are opt-in |
 | `medium` | medium | medium | 3 schedulable control planes + 2 workers | Base platform with standard medium sizing; control-plane capacity is part of the workload envelope |
-| `medium-optimized` | medium | small | 3 schedulable control planes + 4 workers | Base medium service set with conservative requests, replicas, retention, and autoscaling |
+| `medium-optimized` | medium | small | 3 schedulable control planes + 3 workers | Coroot-centric production baseline with GitLab, PostgreSQL, compact Loki/OTel, conservative requests, retention, and autoscaling |
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 The current deployable `medium-optimized` balanced tariff is approximately
-**€290.78/month net** at the authenticated 2026-07-24 prices: seven `cpx32`
-nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, 410 GiB of active
-server-local application-replicated claims in a 470 GiB expandable pool, and 260 GiB of
+**€254.15/month net** at the authenticated 2026-07-24 prices: six `cpx32`
+nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, 300 GiB of active
+server-local application-replicated claims in a 360 GiB expandable pool, and 240 GiB of
 provider-billable CSI volumes. The intermittent CX cost-optimized mapping is
-**€117.78/month net**
+**€100.65/month net**
 whenever its required server types are placeable. It keeps three economical
-`cx33` control planes and upgrades all four workers to `cx43`, doubling
-worker-pool CPU, RAM, and node-local SSD over an all-`cx33` worker pool. The
+`cx33` control planes and three `cx43` workers, providing 36 vCPU, 72 GiB RAM,
+and 720 GiB aggregate Kubernetes node-local SSD. The
 required types were temporarily unavailable in `hel1` at audit time. Singleton,
 audit, UI-state, and backup claims remain on Hetzner CSI; local claims use
 delayed binding, required application anti-affinity, retained PVs, a per-node
@@ -51,9 +51,12 @@ CAX, CPX, and CCX matrix in
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
-what lets `medium-optimized` retain the medium foundation without silently
-allocating the normal-medium footprint. MongoDB and optional application
-services remain off until selected. Production uses the same conservative
+what lets `medium-optimized` retain the required production foundation without
+silently allocating the normal-medium footprint. GitLab and PostgreSQL remain
+on; Elasticsearch/Kibana/APM, PMM, Tempo, MongoDB, and optional application
+services remain off until selected. Coroot receives OTLP traces through one
+OpenTelemetry Collector, while Loki provides seven-day cluster logs.
+Production uses the same conservative
 request envelope and pins critical HA replicas explicitly. Its control planes
 are tainted for general workloads; PostgreSQL and any selected MongoDB
 stateful replicas tolerate those taints so a single worker loss
@@ -402,9 +405,12 @@ Component tags use the same normalized profile contract. ESO, GitLab Runner,
 and PMM have independent flags. Metrics, logging, and Grafana remain one
 production-tested observability core bundle; PMM, tracing, and Blackbox are
 optional dependants of that bundle. PMM is off in `minimal`/`small` to preserve
-the constrained node envelope and on in `medium`, `medium-optimized`, and
-`production`. Coroot is another optional dependant, installed by
-the pinned official operator and sized explicitly for `medium-optimized`.
+the constrained node envelope, on in `medium`/`production`, and deliberately
+off in `medium-optimized` because Coroot covers the selected database and
+application observability baseline. Coroot is installed by the pinned official
+operator and sized explicitly for `medium-optimized`; its trace ingest uses one
+OpenTelemetry Collector. Tempo is a separate trace-backend selection and can
+be enabled later without changing the foundation.
 Alertmanager creates Telegram/email routes only for
 enabled channels; its email channel requires the selected Postal service.
 
