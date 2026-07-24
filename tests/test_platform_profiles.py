@@ -56,7 +56,29 @@ COMPONENT_PATHS = (
 MEDIUM_SERVICE_PATHS = tuple(
     path
     for path in COMPONENT_PATHS
-    if path not in {"applications.daytona.enabled", "compliance.hipaa.enabled"}
+    if path
+    not in {
+        "applications.daytona.enabled",
+        "compliance.hipaa.enabled",
+        "databases.enabled",
+        "databases.postgresql.enabled",
+        "databases.mongodb.enabled",
+        "gitlab.enabled",
+        "gitlab.runner.enabled",
+        "temporal.enabled",
+        "postal.enabled",
+        "glitchtip.enabled",
+    }
+)
+OPT_IN_SERVICE_PATHS = (
+    "databases.enabled",
+    "databases.postgresql.enabled",
+    "databases.mongodb.enabled",
+    "gitlab.enabled",
+    "gitlab.runner.enabled",
+    "temporal.enabled",
+    "postal.enabled",
+    "glitchtip.enabled",
 )
 ALERT_CHANNEL_PATHS = (
     "alerting.telegram.enabled",
@@ -111,6 +133,31 @@ class TestNamedProfileContract:
             inventory = yaml.safe_load(stream)
         assert inventory["all"]["vars"]["platform_profile"] == "medium"
         assert inventory["all"]["vars"]["resource_tier"] == "medium"
+        for flag in (
+            "deploy_databases",
+            "deploy_postgresql",
+            "deploy_mongodb",
+            "deploy_gitlab",
+            "deploy_temporal",
+            "deploy_postal",
+            "deploy_glitchtip",
+        ):
+            assert inventory["all"]["vars"][flag] is False
+
+    def test_legacy_application_service_defaults_fail_closed(self):
+        defaults = yaml.safe_load(
+            (REPO_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
+        )
+        for flag in (
+            "deploy_databases",
+            "deploy_postgresql",
+            "deploy_mongodb",
+            "deploy_gitlab",
+            "deploy_temporal",
+            "deploy_postal",
+            "deploy_glitchtip",
+        ):
+            assert defaults[flag] is False
 
     def test_custom_example_is_a_complete_valid_selector(self):
         example_path = (
@@ -120,6 +167,8 @@ class TestNamedProfileContract:
             example = yaml.safe_load(stream)
         for path in COMPONENT_PATHS + ALERT_CHANNEL_PATHS:
             assert isinstance(get_path(example, path), bool)
+        for path in OPT_IN_SERVICE_PATHS:
+            assert get_path(example, path) is False
         result = subprocess.run(
             [
                 "ansible-playbook",
@@ -187,6 +236,14 @@ class TestNamedProfileContract:
         profile = load_profile(profile_name)
         for path in COMPONENT_PATHS + ALERT_CHANNEL_PATHS:
             assert isinstance(get_path(profile, path), bool)
+
+    @pytest.mark.parametrize("profile_name", EXPECTED_PROFILE_TIERS)
+    def test_data_and_application_services_are_opt_in_in_every_named_profile(
+        self, profile_name
+    ):
+        profile = load_profile(profile_name)
+        for path in OPT_IN_SERVICE_PATHS:
+            assert get_path(profile, path) is False
 
     @pytest.mark.parametrize(
         "profile_name", ["medium", "medium-optimized", "production"]
@@ -299,9 +356,11 @@ class TestMediumOptimizedContract:
     def _profile(self):
         self.profile = load_profile("medium-optimized")
 
-    def test_keeps_the_complete_medium_service_set(self):
+    def test_keeps_the_medium_foundation_without_opt_in_services(self):
         for path in MEDIUM_SERVICE_PATHS:
             assert get_path(self.profile, path) is True, f"{path} must remain enabled"
+        for path in OPT_IN_SERVICE_PATHS:
+            assert get_path(self.profile, path) is False
         assert get_path(self.profile, "applications.daytona.enabled") is False
         assert get_path(self.profile, "compliance.hipaa.enabled") is False
 
@@ -345,12 +404,13 @@ class TestMediumOptimizedContract:
             "max_replicas": 4,
         }
 
-    def test_gitlab_keeps_measured_webservice_headroom_and_bounded_runner_parallelism(
+    def test_gitlab_opt_in_keeps_measured_headroom_and_bounded_runner_parallelism(
         self,
     ):
         assert self.profile["gitlab"]["webservice_memory_request"] == "2Gi"
         assert self.profile["gitlab"]["webservice_memory_limit"] == "3Gi"
-        assert self.profile["gitlab"]["runner"]["enabled"] is True
+        assert self.profile["gitlab"]["enabled"] is False
+        assert self.profile["gitlab"]["runner"]["enabled"] is False
         assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 4
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
@@ -1082,8 +1142,52 @@ class TestComponentLifecycle:
     @pytest.mark.parametrize(
         ("component", "enabled_paths"),
         (
+            (
+                "postgresql",
+                ("databases.enabled", "databases.postgresql.enabled"),
+            ),
+            ("mongodb", ("databases.enabled", "databases.mongodb.enabled")),
+            (
+                "gitlab",
+                (
+                    "storage.enabled",
+                    "databases.enabled",
+                    "databases.postgresql.enabled",
+                    "dragonfly.enabled",
+                    "gitlab.enabled",
+                ),
+            ),
+            (
+                "gitlab-runner",
+                (
+                    "storage.enabled",
+                    "databases.enabled",
+                    "databases.postgresql.enabled",
+                    "dragonfly.enabled",
+                    "gitlab.enabled",
+                    "gitlab.runner.enabled",
+                ),
+            ),
             ("coroot", ("coroot.enabled", "observability.enabled")),
             ("pmm", ("observability.pmm.enabled", "observability.enabled")),
+            (
+                "temporal",
+                (
+                    "temporal.enabled",
+                    "databases.enabled",
+                    "databases.postgresql.enabled",
+                ),
+            ),
+            ("postal", ("postal.enabled", "dragonfly.enabled")),
+            (
+                "glitchtip",
+                (
+                    "glitchtip.enabled",
+                    "databases.enabled",
+                    "databases.postgresql.enabled",
+                    "dragonfly.enabled",
+                ),
+            ),
             (
                 "disaster-recovery",
                 (

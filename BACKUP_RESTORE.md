@@ -30,13 +30,17 @@ Only supported, enabled platform components receive backup resources and
 verification requirements. Credentials are generated secrets; insecure static
 fallbacks are rejected.
 
-Coroot/ClickHouse, VictoriaMetrics/Loki, Argo CD, Temporal, Postal,
-Elasticsearch, Dragonfly, GlitchTip, Daytona, and SeaweedFS data are protected
+Coroot/ClickHouse, VictoriaMetrics/Loki, Argo CD, Elasticsearch, Dragonfly, and
+SeaweedFS data are protected
 by Velero filesystem backup rather than an application-aware export. This is a
 recoverable filesystem copy, but it is not transactionally equivalent to the
 PostgreSQL, MongoDB, Vault, or GitLab native mechanisms. Keep the native and
 filesystem layers together. A component's guarded `--delete-data` flag is not
 evidence that a backup exists.
+
+When explicitly enabled, Temporal, Postal, GlitchTip, and Daytona data also
+enter the Velero filesystem layer. They are not present in any named profile's
+base backup inventory.
 
 `medium-optimized` places only application-replicated claims on the
 `platform-local` StorageClass. Those PVs are retained and node-affine: Kubernetes

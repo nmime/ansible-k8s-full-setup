@@ -97,17 +97,17 @@ all:
     # Optional platform components
     # ----------------------------------------
     deploy_elasticsearch: true
-    deploy_gitlab: true
+    deploy_gitlab: false
     deploy_gitops: true
-    deploy_databases: true
-    deploy_postgresql: true
-    deploy_mongodb: true
+    deploy_databases: false
+    deploy_postgresql: false
+    deploy_mongodb: false
     deploy_dragonfly: true
-    deploy_temporal: true
-    deploy_postal: true
+    deploy_temporal: false
+    deploy_postal: false
     deploy_apm: true
     deploy_blackbox: true
-    deploy_glitchtip: true
+    deploy_glitchtip: false
 
     # This flat inventory surface is retained for direct-Ansible compatibility.
     # Prefer platform-orchestrator/platform.yaml for the complete lifecycle

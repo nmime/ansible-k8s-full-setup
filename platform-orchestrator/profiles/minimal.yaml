@@ -82,9 +82,9 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
-  enabled: true
+  enabled: false
   postgresql:
-    enabled: true
+    enabled: false
     replicas: 1
     storage_size: 20Gi
   mongodb:

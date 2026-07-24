@@ -1,5 +1,5 @@
 # ============================================
-# MEDIUM TIER - standard full-platform footprint
+# MEDIUM TIER - standard base-platform footprint
 # ============================================
 # Best for: Small-medium traffic, teams
 # Nodes: 5 x cpx42 16Gi-class nodes (3 schedulable masters HA, 2 workers) + cpx22 bastion + lb11
@@ -29,7 +29,7 @@ infrastructure:
   control_plane:
     count: 3
     type: cpx42
-    # The full medium stack does not fit safely on only two 16Gi workers and
+    # The medium base platform does not fit safely on only two 16Gi workers and
     # can also exceed per-node volume attachment limits. Keep the three HA
     # control-plane nodes schedulable; production is the dedicated-CP tier.
     schedulable: true
@@ -90,13 +90,13 @@ secrets:
 # Databases
 # ---------------------------------------------
 databases:
-  enabled: true
+  enabled: false
   postgresql:
-    enabled: true
+    enabled: false
     replicas: 2
     storage_size: 50Gi
   mongodb:
-    enabled: true
+    enabled: false
     replicas: 3
     # Resource-efficient HA baseline; increase online when workload data needs it.
     storage_size: 20Gi
@@ -105,7 +105,7 @@ databases:
 # GitLab
 # ---------------------------------------------
 gitlab:
-  enabled: true
+  enabled: false
   webservice_replicas: 2
   sidekiq_replicas: 2
   # The live production campaign observed ~1.96Gi per Webservice pod. Keep
@@ -113,7 +113,7 @@ gitlab:
   webservice_memory_request: 2Gi
   webservice_memory_limit: 3Gi
   runner:
-    enabled: true
+    enabled: false
     concurrent_jobs: 10
 
 # ---------------------------------------------
@@ -158,7 +158,7 @@ dragonfly:
   enabled: true
 
 temporal:
-  enabled: true
+  enabled: false
 
 coroot:
   enabled: true
@@ -169,7 +169,7 @@ tracing:
   storage_size: 20Gi
 
 postal:
-  enabled: true
+  enabled: false
 
 # ---------------------------------------------
 # Backup
@@ -191,7 +191,7 @@ backup:
 # GlitchTip (Sentry-compatible error tracking)
 # ---------------------------------------------
 glitchtip:
-  enabled: true
+  enabled: false
 
 # ---------------------------------------------
 # APM Server (distributed tracing via Elasticsearch)
@@ -209,7 +209,7 @@ alerting:
   telegram:
     enabled: false
   email:
-    enabled: true
+    enabled: false
 
 compliance:
   hipaa:

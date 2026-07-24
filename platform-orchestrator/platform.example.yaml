@@ -103,14 +103,14 @@ secrets:
       remote_property: password
 
 databases:
-  enabled: true
+  enabled: false
   # Admission defaults cover operator-generated init containers whose CRDs do
   # not expose a resource field. Explicit component resources below win.
   # container_defaults:
   #   requests: {cpu: 5m, memory: 16Mi}
   #   limits: {cpu: 500m, memory: 512Mi}
   postgresql:
-    enabled: true
+    enabled: false
     version: 18
     replicas: 1
     storage_size: 30Gi
@@ -136,12 +136,12 @@ databases:
     #     limits: {cpu: 200m, memory: 256Mi}
 
 gitlab:
-  enabled: true
+  enabled: false
   registry_public: true
   webservice_replicas: 1
   sidekiq_replicas: 1
   runner:
-    enabled: true
+    enabled: false
     concurrent_jobs: 5
 
 gitops:
@@ -171,7 +171,7 @@ elasticsearch:
   enabled: false
 
 dragonfly:
-  enabled: true       # Required by GitLab, GlitchTip, and Postal
+  enabled: true       # Generic cache; also required by GitLab, GlitchTip, and Postal
   replicas: 1
 
 temporal:

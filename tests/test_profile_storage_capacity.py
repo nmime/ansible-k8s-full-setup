@@ -20,6 +20,20 @@ def load_profile(name: str) -> dict:
     return yaml.safe_load((PROFILES / f"{name}.yaml").read_text())
 
 
+def test_missing_data_service_selectors_fail_closed():
+    estimate = capacity.estimate({"tier": "medium", "resource_tier": "small"})
+
+    for claim in (
+        "postgresql/data",
+        "postgresql/repo1",
+        "mongodb/data",
+        "gitlab/gitaly",
+        "postal/mariadb",
+    ):
+        assert claim not in estimate["claims"]
+    assert estimate["backup_scratch_gib"] == 0
+
+
 def test_medium_optimized_capacity_includes_every_persistent_index_volume():
     profile = load_profile("medium-optimized")
     estimate = capacity.estimate(profile)
@@ -35,14 +49,14 @@ def test_medium_optimized_capacity_includes_every_persistent_index_volume():
     assert index["provider_billable_gib"] == 0
     assert index["local_reserved_gib"] == 30
     assert index["source"] == "SeaweedFS volume indexes"
-    assert estimate["persistent_total_gib"] == 730
-    assert estimate["provider_persistent_gib"] == 260
-    assert estimate["local_reserved_gib"] == 470
-    assert estimate["backup_scratch_gib"] == 20
-    assert estimate["provider_backup_scratch_gib"] == 20
-    assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 41
-    assert "470 GiB replication-qualified local SSD" in profile["cost_estimate"]
-    assert "280 GiB provider-billable persistent volumes" in profile["cost_estimate"]
+    assert estimate["persistent_total_gib"] == 520
+    assert estimate["provider_persistent_gib"] == 200
+    assert estimate["local_reserved_gib"] == 320
+    assert estimate["backup_scratch_gib"] == 0
+    assert estimate["provider_backup_scratch_gib"] == 0
+    assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 32
+    assert "320 GiB active replication-qualified local claims" in profile["cost_estimate"]
+    assert "200 GiB provider-billable persistent volumes" in profile["cost_estimate"]
 
 
 def test_capacity_index_presence_matches_normalized_helm_pvc_contract():
@@ -81,7 +95,7 @@ def test_explicit_compact_index_mode_removes_only_separate_index_claims():
 
     assert "object-storage/index" not in compact["claims"]
     assert persistent["persistent_total_gib"] - compact["persistent_total_gib"] == 30
-    assert compact["backup_scratch_gib"] == persistent["backup_scratch_gib"] == 20
+    assert compact["backup_scratch_gib"] == persistent["backup_scratch_gib"] == 0
 
 
 def test_medium_optimized_cost_document_tracks_capacity_source_of_truth():
@@ -90,11 +104,11 @@ def test_medium_optimized_cost_document_tracks_capacity_source_of_truth():
     deployment = (ROOT / "DEPLOYMENT.md").read_text()
 
     for document in (cost, readme, deployment):
-        assert "470 GiB" in document
-        assert "280 GiB" in document
-        assert "€291.93" in document
-        assert "€118.93" in document
-    assert "692 GiB" in cost
-    assert "750 GiB" in cost
+        assert "320 GiB" in document
+        assert "200 GiB" in document
+        assert "€287.35" in document
+        assert "€114.35" in document
+    assert "462 GiB" in cost
+    assert "520 GiB" in cost
     assert "SeaweedFS" in cost and "index" in cost
     assert "€0.0572" in cost

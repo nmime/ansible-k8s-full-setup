@@ -1992,23 +1992,25 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
         "source-declared\tcpx22\ttarget-requested\tcpx22\tretained\tcpx22\n"
     )
     capacity = json.loads((state / "volume-capacity-plan.json").read_text())
-    assert capacity["source"]["persistent_total_gib"] == 250
-    assert capacity["target"]["persistent_total_gib"] == 1440
-    assert capacity["target_delta_gib"] == 1220
-    assert capacity["migration_scratch_gib"] == 50
-    assert capacity["required_additional_gib"] == 1270
+    assert capacity["source"]["persistent_total_gib"] == 220
+    assert capacity["target"]["persistent_total_gib"] == 1200
+    # Migration delta is claim-by-claim: the 30 GiB source Loki/VMSingle
+    # claims remain retained during cutover rather than offsetting new claims.
+    assert capacity["target_delta_gib"] == 1010
+    assert capacity["migration_scratch_gib"] == 0
+    assert capacity["required_additional_gib"] == 1010
     assert capacity["planning_inputs"] == {
         "configured_account_quota_gib": None,
         "safety_margin_gib": 100,
         "live_account_usage_required": True,
     }
-    assert capacity["minimum_required_headroom_gib"] == 1370
+    assert capacity["minimum_required_headroom_gib"] == 1110
     assert capacity["offline_result"] == (
         "replacement-restore-required"
         if capacity["storage_class_changes"]
         else "quota-required-before-execute"
     )
-    assert "Required additional capacity before safety margin: 1270 GiB" in result.stdout
+    assert "Required additional capacity before safety margin: 1010 GiB" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -3181,9 +3183,9 @@ def test_application_backup_dry_run_honors_profile_selection():
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
-    assert "Would create PerconaPGBackup" in result.stdout
-    assert "Would skip disabled component mongodb" in result.stdout
-    assert "Would skip disabled component gitlab" in result.stdout
+    for component in ("postgresql", "mongodb", "gitlab"):
+        assert f"Would skip disabled component {component}" in result.stdout
+    assert "Would create PerconaPGBackup" not in result.stdout
 
 
 def test_platform_cli_exposes_backup_restore_and_migration():
