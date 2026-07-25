@@ -52,6 +52,7 @@ EU_COUNTRY_CODES = frozenset(
         "SK",
     }
 )
+ROLE_ORDER = ("bastion", "control_plane", "worker")
 
 
 def load_capacity_report() -> Any:
@@ -134,7 +135,7 @@ def collect_snapshot(
         name for name, location in location_results.items() if location["available"]
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "checked_at": utc_now(),
         "profile": "medium-optimized",
         "family": "cx",
@@ -174,44 +175,107 @@ def atomic_write_state(path: Path, state: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def build_message(snapshot: dict[str, Any], new_locations: list[str]) -> str:
+def availability_signature(snapshot: dict[str, Any]) -> dict[str, dict[str, bool]]:
+    return {
+        name: {
+            role: bool(location["availability"].get(role, False))
+            for role in ROLE_ORDER
+        }
+        for name, location in sorted(snapshot["locations"].items())
+    }
+
+
+def build_message(
+    snapshot: dict[str, Any],
+    changed_locations: list[str],
+    previous_signature: dict[str, dict[str, bool]] | None = None,
+) -> str:
     escaped_locations = []
-    for name in new_locations:
+    previous_signature = previous_signature or {}
+    for name in changed_locations:
         location = snapshot["locations"][name]
         types = location["types"]
+        available_types = [
+            types[role] for role in ROLE_ORDER if location["availability"][role]
+        ]
+        missing_types = [
+            types[role] for role in ROLE_ORDER if not location["availability"][role]
+        ]
+        if not missing_types:
+            status = "🟢 COMPLETE — deployable"
+        elif available_types:
+            status = f"🟡 PARTIAL — {len(available_types)}/{len(ROLE_ORDER)} shapes"
+        else:
+            status = "⚫ UNAVAILABLE — 0/3 shapes"
+        previous = previous_signature.get(name, {})
+        transitions = [
+            f"<code>{html.escape(types[role])}</code>: "
+            f"{'available' if previous.get(role, False) else 'unavailable'} → "
+            f"{'available' if location['availability'][role] else 'unavailable'}"
+            for role in ROLE_ORDER
+            if role in previous
+            and bool(previous[role]) != bool(location["availability"][role])
+        ]
         escaped_locations.append(
             "\n".join(
                 [
                     f"📍 <b>{html.escape(name)}</b> — "
                     f"{html.escape(location['city'])}, {html.escape(location['country'])}",
-                    f"• bastion: 1 × <code>{html.escape(types['bastion'])}</code>",
-                    f"• control plane: {location['control_plane_count']} × "
-                    f"<code>{html.escape(types['control_plane'])}</code>",
-                    f"• workers: {location['worker_count']} × "
+                    f"• status: <b>{status}</b>",
+                    "• available: "
+                    + (
+                        ", ".join(
+                            f"<code>{html.escape(name)}</code>"
+                            for name in available_types
+                        )
+                        if available_types
+                        else "none"
+                    ),
+                    "• missing: "
+                    + (
+                        ", ".join(
+                            f"<code>{html.escape(name)}</code>"
+                            for name in missing_types
+                        )
+                        if missing_types
+                        else "none"
+                    ),
+                    *([f"• changed: {'; '.join(transitions)}"] if transitions else []),
+                    f"• target: 1 × <code>{html.escape(types['bastion'])}</code>, "
+                    f"{location['control_plane_count']} × "
+                    f"<code>{html.escape(types['control_plane'])}</code>, "
+                    f"{location['worker_count']} × "
                     f"<code>{html.escape(types['worker'])}</code>",
-                    f"• infrastructure: €{html.escape(location['infrastructure_monthly_net'])}/month net",
+                    f"• infrastructure plan: "
+                    f"€{html.escape(location['infrastructure_monthly_net'])}/month net",
                     f"• CSI volumes: {location['volume_gib']} GiB, "
                     f"€{html.escape(location['volume_monthly_net'])}/month net",
                     f"• active local claims: {location['local_reserved_gib']} GiB",
-                    f"• <b>total: €{html.escape(location['total_monthly_net'])}/month net</b>",
+                    f"• <b>planned total: "
+                    f"€{html.escape(location['total_monthly_net'])}/month net</b>",
                 ]
             )
         )
     locations_text = "\n\n".join(escaped_locations)
-    first_location = new_locations[0]
+    complete_locations = [
+        name for name in changed_locations if snapshot["locations"][name]["available"]
+    ]
+    first_location = complete_locations[0] if complete_locations else changed_locations[0]
     return "\n".join(
         [
-            "🚨 <b>Hetzner CX capacity is deployable</b>",
+            "📊 <b>Hetzner CX capacity changed</b>",
             "",
-            "The complete <code>medium-optimized</code> mapping is available:",
+            "Required for <code>medium-optimized</code>: "
+            "<code>cx23 + cx33 + cx43</code>.",
             locations_text,
             "",
             f"Checked: <code>{html.escape(snapshot['checked_at'])}</code>",
             "",
-            "Reconfirm before provisioning:",
+            "Inspect the current location report:",
             f"<code>./scripts/hetzner-capacity-report.sh --location "
             f"{html.escape(first_location)}</code>",
-            "Then set <code>infrastructure.region</code> to that location and deploy with "
+            "Provision only when the location is COMPLETE. Then set "
+            "<code>infrastructure.region</code> to that location and use "
             "<code>--capacity-family cx</code>. This monitor never provisions resources.",
         ]
     )
@@ -284,19 +348,39 @@ def reconcile(
 ) -> dict[str, Any]:
     previous = read_state(state_file)
     current = set(snapshot["complete_locations"])
-    acknowledged = set(previous.get("notified_complete_locations", [])) & current
-    new_locations = sorted(current - acknowledged)
+    signature = availability_signature(snapshot)
+    previous_signature = previous.get("notified_availability")
+    if isinstance(previous_signature, dict):
+        changed_locations = sorted(
+            name
+            for name, availability in signature.items()
+            if availability != previous_signature.get(name)
+        )
+    else:
+        # Schema-v1 states only tracked complete placement. On migration, send
+        # one current snapshot for locations with any required CX shape.
+        changed_locations = sorted(
+            name for name, availability in signature.items() if any(availability.values())
+        )
     notification_sent = False
-    message = build_message(snapshot, new_locations) if new_locations else ""
+    message = (
+        build_message(
+            snapshot,
+            changed_locations,
+            previous_signature if isinstance(previous_signature, dict) else None,
+        )
+        if changed_locations
+        else ""
+    )
 
-    if new_locations and not dry_run:
+    if changed_locations and not dry_run:
         notify(token, chat_id, message)
-        acknowledged = set(current)
         notification_sent = True
 
     state = {
         **snapshot,
-        "notified_complete_locations": sorted(acknowledged),
+        "notified_complete_locations": sorted(current),
+        "notified_availability": signature,
         "last_notification_at": (
             snapshot["checked_at"]
             if notification_sent
@@ -308,7 +392,7 @@ def reconcile(
     return {
         "checked_at": snapshot["checked_at"],
         "complete_locations": sorted(current),
-        "new_locations": new_locations,
+        "changed_locations": changed_locations,
         "notification_sent": notification_sent,
         "dry_run": dry_run,
         "message": message,

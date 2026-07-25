@@ -58,6 +58,21 @@ def snapshot(*available: str, checked_at: str = "2026-07-25T10:00:00+00:00") -> 
     }
 
 
+def partial_snapshot(
+    location: str,
+    *roles: str,
+    checked_at: str = "2026-07-25T10:00:00+00:00",
+) -> dict:
+    value = snapshot(checked_at=checked_at)
+    value["locations"][location]["availability"] = {
+        role: role in roles for role in monitor.ROLE_ORDER
+    }
+    value["locations"][location]["available"] = len(roles) == len(monitor.ROLE_ORDER)
+    if value["locations"][location]["available"]:
+        value["complete_locations"] = [location]
+    return value
+
+
 def test_eu_location_filter_uses_country_membership_not_name_assumptions():
     document = {
         "locations": [
@@ -122,9 +137,9 @@ def test_notifies_on_first_availability_and_return_but_not_unchanged(tmp_path):
 
     assert first["notification_sent"] is True
     assert unchanged["notification_sent"] is False
-    assert lost["notification_sent"] is False
+    assert lost["notification_sent"] is True
     assert returned["notification_sent"] is True
-    assert len(messages) == 2
+    assert len(messages) == 3
     assert "€100.65/month net" in messages[0]
     assert "3 × <code>cx33</code>" in messages[0]
     assert "3 × <code>cx43</code>" in messages[0]
@@ -172,7 +187,7 @@ def test_dry_run_does_not_send_or_change_state(tmp_path):
         dry_run=True,
     )
 
-    assert result["new_locations"] == ["nbg1"]
+    assert result["changed_locations"] == ["nbg1"]
     assert result["notification_sent"] is False
     assert calls == []
     assert not state_file.exists()
@@ -193,6 +208,59 @@ def test_state_never_persists_credentials(tmp_path):
     assert "super-secret-token" not in raw
     assert "-123456" not in raw
     assert value["notified_complete_locations"] == ["fsn1"]
+
+
+def test_partial_availability_and_each_transition_are_reported_once(tmp_path):
+    state_file = tmp_path / "state.json"
+    messages: list[str] = []
+    notify = lambda _token, _chat_id, message: messages.append(message)
+
+    first = monitor.reconcile(
+        partial_snapshot("hel1", "bastion"),
+        state_file,
+        "token",
+        "chat",
+        notify=notify,
+    )
+    unchanged = monitor.reconcile(
+        partial_snapshot(
+            "hel1", "bastion", checked_at="2026-07-25T10:01:00+00:00"
+        ),
+        state_file,
+        "token",
+        "chat",
+        notify=notify,
+    )
+    expanded = monitor.reconcile(
+        partial_snapshot(
+            "hel1",
+            "bastion",
+            "control_plane",
+            checked_at="2026-07-25T10:02:00+00:00",
+        ),
+        state_file,
+        "token",
+        "chat",
+        notify=notify,
+    )
+    lost = monitor.reconcile(
+        partial_snapshot("hel1", checked_at="2026-07-25T10:03:00+00:00"),
+        state_file,
+        "token",
+        "chat",
+        notify=notify,
+    )
+
+    assert first["changed_locations"] == ["hel1"]
+    assert unchanged["changed_locations"] == []
+    assert expanded["changed_locations"] == ["hel1"]
+    assert lost["changed_locations"] == ["hel1"]
+    assert len(messages) == 3
+    assert "PARTIAL — 1/3 shapes" in messages[0]
+    assert "available: <code>cx23</code>" in messages[0]
+    assert "missing: <code>cx33</code>, <code>cx43</code>" in messages[0]
+    assert "<code>cx33</code>: unavailable → available" in messages[1]
+    assert "UNAVAILABLE — 0/3 shapes" in messages[2]
 
 
 def test_wrapper_uses_protected_env_and_documented_fallbacks():
