@@ -18,10 +18,11 @@ monthly totals.
 ## Telegram capacity monitor
 
 The stateful monitor checks every location whose provider-reported country is
-in the European Union. It sends a Telegram notification only when all three
-shapes required by the `medium-optimized` CX mapping become available together
-in a location: `cx23` for the bastion, `cx33` for three control planes, and
-`cx43` for three workers.
+in the European Union. It tracks all three shapes required by the
+`medium-optimized` CX mapping: `cx23` for the bastion, `cx33` for three control
+planes, and `cx43` for three workers. Telegram reports partial availability,
+complete deployable availability, and capacity loss. Each message lists the
+available and missing shapes plus the exact transition.
 
 Add the bot credentials to the protected, gitignored `.env`. The monitor can
 reuse the Alertmanager destination:
@@ -50,13 +51,16 @@ or modifying monitor state. Normal runs persist non-secret state at
 gitignored and mode `0700`, while the state and lock files are mode `0600`.
 The state records successful delivery separately from observed capacity, so a
 Telegram failure is retried and capacity that disappears and later returns
-notifies again. Unchanged capacity is silent.
+notifies again. Partial and complete states are delivered once per transition;
+unchanged capacity is silent.
 
-The message includes the exact 3+3 shapes, infrastructure and volume split,
-local-claim reservation, and current net monthly total. The monitor never
-creates, resizes, or deletes resources. Re-run the location-specific report
-and set `infrastructure.region` to the reported location before provisioning;
-availability can disappear between the notification and server creation.
+The message includes the exact 3+3 target, available and missing shapes,
+infrastructure and volume split, local-claim reservation, and current net
+monthly total. A partial report is informational and is not permission to
+deploy. The monitor never creates, resizes, or deletes resources. Re-run the
+location-specific report and set `infrastructure.region` to the reported
+location before provisioning; availability can disappear between the
+notification and server creation.
 
 ## Capacity tariff policy
 

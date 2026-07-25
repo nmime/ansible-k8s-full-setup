@@ -287,8 +287,8 @@ total directly from the authenticated provider APIs:
 ./scripts/hetzner-capacity-report.sh --location hel1 --format json
 ```
 
-Monitor the complete `medium-optimized` CX mapping across all EU locations and
-notify Telegram only on a newly available location:
+Monitor the `medium-optimized` CX mapping across all EU locations and notify
+Telegram when partial or complete availability changes:
 
 ```bash
 ./scripts/notify-cx-capacity-telegram.sh --test-telegram
@@ -297,8 +297,9 @@ notify Telegram only on a newly available location:
 
 The monitor uses the protected `.env`, reuses `ALERT_TELEGRAM_*` by default,
 and supports dedicated `CX_CAPACITY_TELEGRAM_*` overrides. It is stateful,
-retries failed delivery, stays silent while availability is unchanged, and
-never provisions resources. Configuration and operating details are in
+reports available and missing shapes, retries failed delivery, stays silent
+while availability is unchanged, and never provisions resources. Configuration
+and operating details are in
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md#telegram-capacity-monitor).
 
 After logs prove Kubespray completed with zero failed or unreachable hosts, a
