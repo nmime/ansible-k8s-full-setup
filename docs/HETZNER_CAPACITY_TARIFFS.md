@@ -71,7 +71,7 @@ and `ANSIBLE_VAULT_PASSWORD_FILE`:
 ```dotenv
 CX_CAPACITY_AUTO_DEPLOY=true
 CX_CAPACITY_DEPLOY_PROJECT=n0xeid-medium-optimized-cx
-CX_CAPACITY_DEPLOY_DOMAIN=medium-optimized.n0xeid.xyz
+CX_CAPACITY_DEPLOY_DOMAIN=n0xeid.xyz
 CX_CAPACITY_DNS_ZONE=n0xeid.xyz
 CX_CAPACITY_MANAGE_DNS=true
 CX_CAPACITY_CERTIFICATE_ISSUER=letsencrypt-prod
@@ -88,7 +88,7 @@ executes the equivalent of:
 ./run_tier.sh medium-optimized \
   --campaign-id cx-auto \
   --project n0xeid-medium-optimized-cx \
-  --domain medium-optimized.n0xeid.xyz \
+  --domain n0xeid.xyz \
   --location LOCATION \
   --capacity-family cx \
   --dns-zone n0xeid.xyz \
@@ -109,6 +109,15 @@ output is retained in the protected campaign directory.
 This automation purchases billable cloud resources. Disabling the flag stops
 future starts but does not delete an existing cluster. Use the reviewed
 teardown workflow for deletion.
+
+`CX_CAPACITY_DEPLOY_DOMAIN=n0xeid.xyz` intentionally uses the zone apex. The
+Hetzner DNS role converges `@`, `*`, and `vpn` records, so the platform root is
+`n0xeid.xyz` and individual services use names below it. Before the first
+deployment, change this variable and `CX_CAPACITY_DNS_ZONE` freely and validate
+with `run_tier.sh --dry-run`. After deployment, changing the domain requires a
+planned migration of DNS records, certificates, Gateway/Ingress hosts, GitLab
+external URLs and callbacks, application configuration, and verification; it
+must not be treated as an in-place rename.
 
 ## Capacity tariff policy
 

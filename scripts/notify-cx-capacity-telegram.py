@@ -332,7 +332,7 @@ def deployment_settings() -> dict[str, Any]:
     return {
         "project": project,
         "domain": os.environ.get(
-            "CX_CAPACITY_DEPLOY_DOMAIN", "medium-optimized.n0xeid.xyz"
+            "CX_CAPACITY_DEPLOY_DOMAIN", "n0xeid.xyz"
         ),
         "dns_zone": os.environ.get("CX_CAPACITY_DNS_ZONE", "n0xeid.xyz"),
         "certificate_issuer": os.environ.get(
