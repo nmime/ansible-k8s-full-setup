@@ -43,6 +43,8 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
             "t5-pytest-medium-optimized",
             "--domain",
             "medium-optimized.n0xeid.xyz",
+            "--location",
+            "fsn1",
             "--home",
             str(home),
             "--run-root",
@@ -77,6 +79,7 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
     assert profile["resource_tier"] == "small"
     assert profile["global"]["project"] == "t5-pytest-medium-optimized"
     assert profile["global"]["campaign_id"] == "pytest"
+    assert profile["infrastructure"]["region"] == "fsn1"
     assert profile["backup"]["disaster_recovery"]["prefix"] == (
         "t5-pytest-medium-optimized/velero"
     )
@@ -85,6 +88,8 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
     assert profile["alerting"]["storage_size"] == "10Gi"
     assert profile["gitlab"]["backup_persistence_enabled"] is False
     assert (run_root / "status.json").is_file()
+    status = yaml.safe_load((run_root / "status.json").read_text(encoding="utf-8"))
+    assert status["provider_location"] == "fsn1"
     assert "k8s_api_local_port=17446" in result.stdout
     assert f"ssh_key_path={Path.home() / '.ssh' / 'id_ed25519'}" in result.stdout
     assert "ANSIBLE_COLLECTIONS_PATH" in RUN_TIER.read_text(encoding="utf-8")

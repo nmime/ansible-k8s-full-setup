@@ -9,12 +9,13 @@ import html
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -293,6 +294,278 @@ def telegram_credentials() -> tuple[str, str]:
     return token, chat_id
 
 
+def env_enabled(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")
+
+
+def deployment_settings() -> dict[str, Any]:
+    project = os.environ.get(
+        "CX_CAPACITY_DEPLOY_PROJECT", "n0xeid-medium-optimized-cx"
+    )
+    run_root = Path(
+        os.environ.get(
+            "CX_CAPACITY_DEPLOY_RUN_ROOT",
+            str(ROOT / ".campaign-state" / project / "controller"),
+        )
+    ).expanduser()
+    if not run_root.is_absolute():
+        raise RuntimeError("CX_CAPACITY_DEPLOY_RUN_ROOT must be absolute")
+    try:
+        retry_seconds = int(
+            os.environ.get("CX_CAPACITY_DEPLOY_RETRY_SECONDS", "300")
+        )
+        stale_seconds = int(
+            os.environ.get("CX_CAPACITY_DEPLOY_STALE_SECONDS", "900")
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "CX capacity deployment retry/stale intervals must be integers"
+        ) from exc
+    return {
+        "project": project,
+        "domain": os.environ.get(
+            "CX_CAPACITY_DEPLOY_DOMAIN", "medium-optimized.n0xeid.xyz"
+        ),
+        "dns_zone": os.environ.get("CX_CAPACITY_DNS_ZONE", "n0xeid.xyz"),
+        "certificate_issuer": os.environ.get(
+            "CX_CAPACITY_CERTIFICATE_ISSUER", "letsencrypt-prod"
+        ),
+        "manage_dns": env_enabled("CX_CAPACITY_MANAGE_DNS", True),
+        "run_root": run_root,
+        "retry_seconds": retry_seconds,
+        "stale_seconds": stale_seconds,
+    }
+
+
+def build_deploy_command(location: str, settings: dict[str, Any]) -> list[str]:
+    run_root = settings["run_root"]
+    command = [
+        str(ROOT / "run_tier.sh"),
+        "medium-optimized",
+        "--campaign-id",
+        "cx-auto",
+        "--project",
+        settings["project"],
+        "--domain",
+        settings["domain"],
+        "--location",
+        location,
+        "--run-root",
+        str(run_root),
+        "--config",
+        str(run_root / "platform.yaml"),
+        "--log-file",
+        str(run_root / "logs" / "deploy.log"),
+        "--capacity-family",
+        "cx",
+        "--dns-zone",
+        settings["dns_zone"],
+        "--certificate-issuer",
+        settings["certificate_issuer"],
+    ]
+    if settings["manage_dns"]:
+        command.append("--manage-dns")
+    return command
+
+
+def execute_deploy(command: list[str], log_path: Path) -> int:
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(log_path.parent, 0o700)
+    with log_path.open("a", encoding="utf-8") as stream:
+        os.chmod(log_path, 0o600)
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    return completed.returncode
+
+
+def deployment_message(
+    status: str,
+    location: str,
+    settings: dict[str, Any],
+    *,
+    exit_code: int | None = None,
+    log_path: Path | None = None,
+) -> str:
+    icons = {"running": "🚀", "succeeded": "✅", "failed": "❌"}
+    lines = [
+        f"{icons[status]} <b>CX medium-optimized deployment {html.escape(status)}</b>",
+        f"Location: <code>{html.escape(location)}</code>",
+        f"Project: <code>{html.escape(settings['project'])}</code>",
+        f"Domain: <code>{html.escape(settings['domain'])}</code>",
+    ]
+    if exit_code is not None:
+        lines.append(f"Exit code: <code>{exit_code}</code>")
+    if log_path is not None:
+        lines.append(f"Log: <code>{html.escape(str(log_path))}</code>")
+    return "\n".join(lines)
+
+
+def parse_state_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def maybe_auto_deploy(
+    snapshot: dict[str, Any],
+    state_file: Path,
+    token: str,
+    chat_id: str,
+    *,
+    notify: Callable[[str, str, str], None] | None = None,
+    executor: Callable[[list[str], Path], int] = execute_deploy,
+    recheck: Callable[[], dict[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    notify = notify or send_telegram
+    if not env_enabled("CX_CAPACITY_AUTO_DEPLOY", False):
+        return {"enabled": False, "triggered": False}
+    settings = deployment_settings()
+    if settings["retry_seconds"] < 60:
+        raise RuntimeError("CX_CAPACITY_DEPLOY_RETRY_SECONDS must be at least 60")
+    if settings["stale_seconds"] < 60:
+        raise RuntimeError("CX_CAPACITY_DEPLOY_STALE_SECONDS must be at least 60")
+    complete_locations = list(snapshot["complete_locations"])
+    if not complete_locations:
+        return {"enabled": True, "triggered": False, "reason": "no-complete-location"}
+
+    current_time = now or datetime.now(timezone.utc)
+    state = read_state(state_file)
+    deployment = state.get("deployment", {})
+    if deployment.get("status") == "succeeded":
+        return {
+            "enabled": True,
+            "triggered": False,
+            "reason": "already-succeeded",
+            "location": deployment.get("location"),
+        }
+    running_updated = parse_state_time(deployment.get("updated_at"))
+    if (
+        deployment.get("status") == "running"
+        and running_updated is not None
+        and current_time
+        < running_updated + timedelta(seconds=settings["stale_seconds"])
+    ):
+        return {
+            "enabled": True,
+            "triggered": False,
+            "reason": "deployment-running",
+            "location": deployment.get("location"),
+        }
+    next_retry = parse_state_time(deployment.get("next_retry_at"))
+    if (
+        deployment.get("status") == "failed"
+        and next_retry is not None
+        and current_time < next_retry
+    ):
+        return {
+            "enabled": True,
+            "triggered": False,
+            "reason": "retry-backoff",
+            "location": deployment.get("location"),
+        }
+
+    previous_location = str(deployment.get("location", ""))
+    location = (
+        previous_location
+        if previous_location in complete_locations
+        else sorted(complete_locations)[0]
+    )
+    if recheck is not None:
+        refreshed = recheck()
+        if location not in refreshed["complete_locations"]:
+            return {
+                "enabled": True,
+                "triggered": False,
+                "reason": "capacity-disappeared-on-recheck",
+                "location": location,
+            }
+
+    run_root = settings["run_root"]
+    console_log = run_root / "logs" / "auto-deploy-console.log"
+    command = build_deploy_command(location, settings)
+    attempts = int(deployment.get("attempts", 0)) + 1
+    started_at = current_time.replace(microsecond=0).isoformat()
+    state["deployment"] = {
+        "status": "running",
+        "location": location,
+        "project": settings["project"],
+        "domain": settings["domain"],
+        "attempts": attempts,
+        "started_at": started_at,
+        "updated_at": started_at,
+        "command": command,
+        "console_log": str(console_log),
+    }
+    atomic_write_state(state_file, state)
+    notify(
+        token,
+        chat_id,
+        deployment_message("running", location, settings, log_path=console_log),
+    )
+    execution_error = None
+    try:
+        exit_code = executor(command, console_log)
+    except OSError as exc:
+        exit_code = 127
+        execution_error = f"{type(exc).__name__}: {exc}"
+
+    finished_at = datetime.now(timezone.utc).replace(microsecond=0)
+    state = read_state(state_file)
+    final_status = "succeeded" if exit_code == 0 else "failed"
+    deployment = {
+        **state.get("deployment", {}),
+        "status": final_status,
+        "exit_code": exit_code,
+        "finished_at": finished_at.isoformat(),
+        "updated_at": finished_at.isoformat(),
+    }
+    if exit_code != 0:
+        deployment["next_retry_at"] = (
+            finished_at + timedelta(seconds=settings["retry_seconds"])
+        ).isoformat()
+    if execution_error is not None:
+        deployment["execution_error"] = execution_error
+    state["deployment"] = deployment
+    atomic_write_state(state_file, state)
+    notify(
+        token,
+        chat_id,
+        deployment_message(
+            final_status,
+            location,
+            settings,
+            exit_code=exit_code,
+            log_path=console_log,
+        ),
+    )
+    return {
+        "enabled": True,
+        "triggered": True,
+        "status": final_status,
+        "location": location,
+        "exit_code": exit_code,
+    }
+
+
 def send_telegram(
     token: str,
     chat_id: str,
@@ -387,6 +660,8 @@ def reconcile(
             else previous.get("last_notification_at")
         ),
     }
+    if isinstance(previous.get("deployment"), dict):
+        state["deployment"] = previous["deployment"]
     if not dry_run:
         atomic_write_state(state_file, state)
     return {
@@ -468,6 +743,16 @@ def main() -> int:
                 chat_id,
                 dry_run=args.dry_run,
             )
+            if not args.dry_run:
+                result["deployment"] = maybe_auto_deploy(
+                    snapshot,
+                    args.state_file,
+                    token,
+                    chat_id,
+                    recheck=lambda: collect_snapshot(
+                        hcloud_token, args.endpoint, args.profiles_dir
+                    ),
+                )
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
