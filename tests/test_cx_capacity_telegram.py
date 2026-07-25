@@ -401,6 +401,17 @@ def test_auto_deploy_is_opt_in(tmp_path, monkeypatch):
     assert result == {"enabled": False, "triggered": False}
 
 
+def test_auto_deploy_defaults_to_zone_apex(tmp_path, monkeypatch):
+    monkeypatch.delenv("CX_CAPACITY_DEPLOY_DOMAIN", raising=False)
+    monkeypatch.delenv("CX_CAPACITY_DNS_ZONE", raising=False)
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_RUN_ROOT", str(tmp_path / "controller"))
+
+    settings = monitor.deployment_settings()
+
+    assert settings["domain"] == "n0xeid.xyz"
+    assert settings["dns_zone"] == "n0xeid.xyz"
+
+
 def test_wrapper_uses_protected_env_and_documented_fallbacks():
     wrapper = (ROOT / "scripts" / "notify-cx-capacity-telegram.sh").read_text(
         encoding="utf-8"
