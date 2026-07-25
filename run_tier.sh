@@ -19,6 +19,7 @@ Options:
   --project NAME         Unique Hetzner project prefix
   --domain DOMAIN        Cluster base domain
   --email EMAIL          ACME/operator email
+  --location NAME        Hetzner location override (for example fsn1)
   --home DIR             Isolated controller HOME
   --run-root DIR         Isolated state directory
   --config FILE          Generated runtime profile path
@@ -68,6 +69,7 @@ CAMPAIGN_ID="${CAMPAIGN_ID:-manual}"
 PROJECT="${PROJECT:-}"
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-admin@n0xeid.xyz}"
+LOCATION=""
 RUN_ROOT="${RUN_ROOT:-}"
 CONTROLLER_HOME="${CONTROLLER_HOME:-}"
 CONFIG_FILE="${CONFIG_FILE:-}"
@@ -98,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     --project) require_value "$1" "${2:-}"; PROJECT="$2"; shift 2 ;;
     --domain) require_value "$1" "${2:-}"; DOMAIN="$2"; shift 2 ;;
     --email) require_value "$1" "${2:-}"; EMAIL="$2"; shift 2 ;;
+    --location) require_value "$1" "${2:-}"; LOCATION="$2"; shift 2 ;;
     --home) require_value "$1" "${2:-}"; CONTROLLER_HOME="$2"; shift 2 ;;
     --run-root) require_value "$1" "${2:-}"; RUN_ROOT="$2"; shift 2 ;;
     --config) require_value "$1" "${2:-}"; CONFIG_FILE="$2"; shift 2 ;;
@@ -147,6 +150,8 @@ STATUS_FILE="${RUN_ROOT}/status.json"
 
 [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9-]{1,47}$ ]] || die "project must be 2-48 lowercase letters, numbers, or hyphens"
 [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$DOMAIN" == *.* ]] || die "invalid domain '$DOMAIN'"
+[[ -z "$LOCATION" || "$LOCATION" =~ ^[a-z][a-z0-9-]{1,31}$ ]] \
+  || die "invalid Hetzner location '$LOCATION'"
 [[ "$DNS_ZONE" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$DNS_ZONE" == *.* ]] || die "invalid DNS zone '$DNS_ZONE'"
 [[ "$DOMAIN" == "$DNS_ZONE" || "$DOMAIN" == *."$DNS_ZONE" ]] \
   || die "domain '$DOMAIN' is not within DNS zone '$DNS_ZONE'"
@@ -243,6 +248,10 @@ yq -i '
   .backup.disaster_recovery.bucket = strenv(DR_BUCKET) |
   .backup.disaster_recovery.prefix = strenv(DR_PREFIX)
 ' "$CONFIG_FILE"
+if [[ -n "$LOCATION" ]]; then
+  LOCATION="$LOCATION" yq -i \
+    '.infrastructure.region = strenv(LOCATION)' "$CONFIG_FILE"
+fi
 if [[ -n "$BASTION_TYPE" ]]; then
   BASTION_TYPE="$BASTION_TYPE" yq -i \
     '.network.bastion.server_type = strenv(BASTION_TYPE)' "$CONFIG_FILE"
@@ -276,6 +285,7 @@ fi
 EFFECTIVE_BASTION_TYPE=$(yq -r '.network.bastion.server_type // ""' "$CONFIG_FILE")
 EFFECTIVE_CP_TYPE=$(yq -r '.infrastructure.control_plane.type // ""' "$CONFIG_FILE")
 EFFECTIVE_WORKER_TYPE=$(yq -r '.infrastructure.workers.type // ""' "$CONFIG_FILE")
+EFFECTIVE_LOCATION=$(yq -r '.infrastructure.region // "hel1"' "$CONFIG_FILE")
 
 if $MINIMUM_STORAGE; then
   yq -i '
@@ -335,9 +345,11 @@ write_status() {
     --arg domain "$DOMAIN" --arg state "$state" --arg config "$CONFIG_FILE" \
     --arg log "$LOG_FILE" --arg bastionType "$EFFECTIVE_BASTION_TYPE" \
     --arg controlPlaneType "$EFFECTIVE_CP_TYPE" --arg workerType "$EFFECTIVE_WORKER_TYPE" \
+    --arg providerLocation "$EFFECTIVE_LOCATION" \
     --argjson api_port "$API_PORT" --argjson rc "$rc" \
     '{campaign_id:$campaign,profile:$profile,project:$project,domain:$domain,state:$state,
       capacity_family:$capacityFamily,
+      provider_location:$providerLocation,
       api_port:$api_port,config:$config,log:$log,exit_code:$rc,
       provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType,worker:$workerType},
       updated_at:(now|todateiso8601)}' >"${STATUS_FILE}.tmp"

@@ -57,10 +57,58 @@ unchanged capacity is silent.
 The message includes the exact 3+3 target, available and missing shapes,
 infrastructure and volume split, local-claim reservation, and current net
 monthly total. A partial report is informational and is not permission to
-deploy. The monitor never creates, resizes, or deletes resources. Re-run the
-location-specific report and set `infrastructure.region` to the reported
-location before provisioning; availability can disappear between the
-notification and server creation.
+deploy. In its default notification-only mode, the monitor never creates,
+resizes, or deletes resources. Re-run the location-specific report and set
+`infrastructure.region` to the reported location before manual provisioning;
+availability can disappear between the notification and server creation.
+
+### Optional one-shot automatic deployment
+
+Automatic deployment is disabled by default. Enable it only after the protected
+`.env` contains `HCLOUD_TOKEN`, the DR credentials, the GitLab Runner token,
+and `ANSIBLE_VAULT_PASSWORD_FILE`:
+
+```dotenv
+CX_CAPACITY_AUTO_DEPLOY=true
+CX_CAPACITY_DEPLOY_PROJECT=n0xeid-medium-optimized-cx
+CX_CAPACITY_DEPLOY_DOMAIN=medium-optimized.n0xeid.xyz
+CX_CAPACITY_DNS_ZONE=n0xeid.xyz
+CX_CAPACITY_MANAGE_DNS=true
+CX_CAPACITY_CERTIFICATE_ISSUER=letsencrypt-prod
+CX_CAPACITY_DEPLOY_RETRY_SECONDS=300
+CX_CAPACITY_DEPLOY_STALE_SECONDS=900
+```
+
+When a location becomes `COMPLETE`, the monitor selects one deterministic EU
+location and immediately performs a second authenticated capacity query. It
+does nothing if any required shape disappeared. If the second gate passes, it
+executes the equivalent of:
+
+```bash
+./run_tier.sh medium-optimized \
+  --campaign-id cx-auto \
+  --project n0xeid-medium-optimized-cx \
+  --domain medium-optimized.n0xeid.xyz \
+  --location LOCATION \
+  --capacity-family cx \
+  --dns-zone n0xeid.xyz \
+  --certificate-issuer letsencrypt-prod \
+  --manage-dns
+```
+
+The location override is written into the generated desired-state profile and
+the campaign status. The stable project, run root, operator state, and playbook
+inputs make retries reconcile the same cluster instead of creating another
+one. State is marked `running`, `failed`, or `succeeded`; a successful
+deployment is never launched again. A failed attempt retries after the
+configured backoff. A persisted `running` attempt is not reclaimed until its
+stale timeout, which prevents a second scheduler process from racing an active
+campaign. Telegram receives start, failure, and success messages. Console
+output is retained in the protected campaign directory.
+
+This automation purchases billable cloud resources. Disabling the flag stops
+future starts but does not delete an existing cluster. Use the reviewed
+teardown workflow for deletion.
 
 ## Capacity tariff policy
 

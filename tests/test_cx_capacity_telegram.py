@@ -49,7 +49,7 @@ def snapshot(*available: str, checked_at: str = "2026-07-25T10:00:00+00:00") -> 
             "total_monthly_net": "100.65",
         }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "checked_at": checked_at,
         "profile": "medium-optimized",
         "family": "cx",
@@ -261,6 +261,144 @@ def test_partial_availability_and_each_transition_are_reported_once(tmp_path):
     assert "missing: <code>cx33</code>, <code>cx43</code>" in messages[0]
     assert "<code>cx33</code>: unavailable → available" in messages[1]
     assert "UNAVAILABLE — 0/3 shapes" in messages[2]
+
+
+def test_complete_capacity_triggers_one_location_bound_deployment(
+    tmp_path, monkeypatch
+):
+    state_file = tmp_path / "state.json"
+    run_root = tmp_path / "controller"
+    monitor.atomic_write_state(state_file, snapshot("fsn1"))
+    monkeypatch.setenv("CX_CAPACITY_AUTO_DEPLOY", "true")
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_RUN_ROOT", str(run_root))
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_PROJECT", "cx-auto-test")
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_DOMAIN", "cx-auto.example.com")
+    monkeypatch.setenv("CX_CAPACITY_DNS_ZONE", "example.com")
+    notifications: list[str] = []
+    executions: list[tuple[list[str], Path]] = []
+
+    def execute(command: list[str], log_path: Path) -> int:
+        executions.append((command, log_path))
+        return 0
+
+    result = monitor.maybe_auto_deploy(
+        snapshot("fsn1"),
+        state_file,
+        "token",
+        "chat",
+        notify=lambda _token, _chat_id, message: notifications.append(message),
+        executor=execute,
+        recheck=lambda: snapshot("fsn1"),
+    )
+    repeated = monitor.maybe_auto_deploy(
+        snapshot("fsn1"),
+        state_file,
+        "token",
+        "chat",
+        notify=lambda _token, _chat_id, message: notifications.append(message),
+        executor=execute,
+        recheck=lambda: snapshot("fsn1"),
+    )
+
+    assert result == {
+        "enabled": True,
+        "triggered": True,
+        "status": "succeeded",
+        "location": "fsn1",
+        "exit_code": 0,
+    }
+    assert repeated["reason"] == "already-succeeded"
+    assert len(executions) == 1
+    command, log_path = executions[0]
+    assert command[:2] == [str(ROOT / "run_tier.sh"), "medium-optimized"]
+    assert command[command.index("--location") + 1] == "fsn1"
+    assert command[command.index("--capacity-family") + 1] == "cx"
+    assert command[command.index("--dns-zone") + 1] == "example.com"
+    assert "--manage-dns" in command
+    assert log_path == run_root / "logs" / "auto-deploy-console.log"
+    assert len(notifications) == 2
+    assert "deployment running" in notifications[0]
+    assert "deployment succeeded" in notifications[1]
+    state = monitor.read_state(state_file)
+    assert state["deployment"]["status"] == "succeeded"
+    assert state["deployment"]["attempts"] == 1
+    assert state["deployment"]["exit_code"] == 0
+
+
+def test_auto_deploy_rechecks_capacity_before_creating_resources(
+    tmp_path, monkeypatch
+):
+    state_file = tmp_path / "state.json"
+    monitor.atomic_write_state(state_file, snapshot("hel1"))
+    monkeypatch.setenv("CX_CAPACITY_AUTO_DEPLOY", "true")
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_RUN_ROOT", str(tmp_path / "controller"))
+    executions: list[list[str]] = []
+
+    result = monitor.maybe_auto_deploy(
+        snapshot("hel1"),
+        state_file,
+        "token",
+        "chat",
+        notify=lambda *_args: None,
+        executor=lambda command, _log: executions.append(command) or 0,
+        recheck=lambda: snapshot(),
+    )
+
+    assert result["triggered"] is False
+    assert result["reason"] == "capacity-disappeared-on-recheck"
+    assert executions == []
+    assert "deployment" not in monitor.read_state(state_file)
+
+
+def test_failed_auto_deploy_is_persisted_and_backed_off(tmp_path, monkeypatch):
+    state_file = tmp_path / "state.json"
+    monitor.atomic_write_state(state_file, snapshot("nbg1"))
+    monkeypatch.setenv("CX_CAPACITY_AUTO_DEPLOY", "true")
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_RUN_ROOT", str(tmp_path / "controller"))
+    monkeypatch.setenv("CX_CAPACITY_DEPLOY_RETRY_SECONDS", "300")
+    executions: list[list[str]] = []
+
+    failed = monitor.maybe_auto_deploy(
+        snapshot("nbg1"),
+        state_file,
+        "token",
+        "chat",
+        notify=lambda *_args: None,
+        executor=lambda command, _log: executions.append(command) or 9,
+        recheck=lambda: snapshot("nbg1"),
+    )
+    backed_off = monitor.maybe_auto_deploy(
+        snapshot("nbg1"),
+        state_file,
+        "token",
+        "chat",
+        notify=lambda *_args: None,
+        executor=lambda command, _log: executions.append(command) or 0,
+        recheck=lambda: snapshot("nbg1"),
+    )
+
+    assert failed["status"] == "failed"
+    assert failed["exit_code"] == 9
+    assert backed_off["triggered"] is False
+    assert backed_off["reason"] == "retry-backoff"
+    assert len(executions) == 1
+    deployment = monitor.read_state(state_file)["deployment"]
+    assert deployment["status"] == "failed"
+    assert deployment["attempts"] == 1
+    assert deployment["next_retry_at"]
+
+
+def test_auto_deploy_is_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("CX_CAPACITY_AUTO_DEPLOY", raising=False)
+    result = monitor.maybe_auto_deploy(
+        snapshot("nbg1"),
+        tmp_path / "state.json",
+        "token",
+        "chat",
+        notify=lambda *_args: None,
+        executor=lambda *_args: pytest.fail("executor must not run"),
+    )
+    assert result == {"enabled": False, "triggered": False}
 
 
 def test_wrapper_uses_protected_env_and_documented_fallbacks():

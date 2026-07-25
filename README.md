@@ -298,9 +298,16 @@ Telegram when partial or complete availability changes:
 The monitor uses the protected `.env`, reuses `ALERT_TELEGRAM_*` by default,
 and supports dedicated `CX_CAPACITY_TELEGRAM_*` overrides. It is stateful,
 reports available and missing shapes, retries failed delivery, stays silent
-while availability is unchanged, and never provisions resources. Configuration
-and operating details are in
+while availability is unchanged, and does not provision unless the explicit
+one-shot flag is enabled. Configuration and operating details are in
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md#telegram-capacity-monitor).
+
+Provisioning remains opt-in. Setting `CX_CAPACITY_AUTO_DEPLOY=true` makes the
+monitor perform a second complete-capacity check and then launch exactly one
+location-bound `medium-optimized` CX campaign with persistent deployment state,
+idempotent retry, and Telegram lifecycle reporting. See
+[one-shot automatic deployment](docs/HETZNER_CAPACITY_TARIFFS.md#optional-one-shot-automatic-deployment)
+before enabling this billable action.
 
 After logs prove Kubespray completed with zero failed or unreachable hosts, a
 campaign interrupted in later platform roles can resume with
