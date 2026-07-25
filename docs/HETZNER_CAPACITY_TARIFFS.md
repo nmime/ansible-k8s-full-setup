@@ -15,6 +15,49 @@ server-type and pricing APIs, inventories every returned server type, applies
 the exact named-profile topology and PVC estimator, and calculates current net
 monthly totals.
 
+## Telegram capacity monitor
+
+The stateful monitor checks every location whose provider-reported country is
+in the European Union. It sends a Telegram notification only when all three
+shapes required by the `medium-optimized` CX mapping become available together
+in a location: `cx23` for the bastion, `cx33` for three control planes, and
+`cx43` for three workers.
+
+Add the bot credentials to the protected, gitignored `.env`. The monitor can
+reuse the Alertmanager destination:
+
+```dotenv
+ALERT_TELEGRAM_BOT_TOKEN=123456:replace-with-botfather-token
+ALERT_TELEGRAM_CHAT_ID=-1001234567890
+```
+
+Or isolate capacity notifications with
+`CX_CAPACITY_TELEGRAM_BOT_TOKEN` and
+`CX_CAPACITY_TELEGRAM_CHAT_ID`. The dedicated variables take precedence.
+Keep `.env` mode `0600`.
+
+Test Telegram delivery without querying Hetzner, then run one authenticated
+capacity check:
+
+```bash
+./scripts/notify-cx-capacity-telegram.sh --test-telegram
+./scripts/notify-cx-capacity-telegram.sh
+```
+
+Use `--dry-run` to query and render a pending notification without sending it
+or modifying monitor state. Normal runs persist non-secret state at
+`platform-orchestrator/.state/cx-capacity-monitor.json`; that directory is
+gitignored and mode `0700`, while the state and lock files are mode `0600`.
+The state records successful delivery separately from observed capacity, so a
+Telegram failure is retried and capacity that disappears and later returns
+notifies again. Unchanged capacity is silent.
+
+The message includes the exact 3+3 shapes, infrastructure and volume split,
+local-claim reservation, and current net monthly total. The monitor never
+creates, resizes, or deletes resources. Re-run the location-specific report
+and set `infrastructure.region` to the reported location before provisioning;
+availability can disappear between the notification and server creation.
+
 ## Capacity tariff policy
 
 | Tariff | Hetzner family | Architecture | Deployment policy |
