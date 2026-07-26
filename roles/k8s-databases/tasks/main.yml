@@ -585,6 +585,11 @@
         - name: rs0
           size: '{{ mongo_replicas }}'
           tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
+          storage:
+            engine: wiredTiger
+            wiredTiger:
+              engineConfig:
+                cacheSizeRatio: '{{ mongodb_wiredtiger_cache_size_ratio }}'
           volumeSpec:
             persistentVolumeClaim:
               storageClassName: '{{ mongo_data_storage_class }}'
@@ -593,13 +598,7 @@
               resources:
                 requests:
                   storage: '{{ mongo_storage }}'
-          resources:
-            requests:
-              cpu: '{{ ''100m'' if resource_tier in [''minimal'', ''small''] else ''250m'' }}'
-              memory: '{{ ''256Mi'' if resource_tier in [''minimal'', ''small''] else ''512Mi'' }}'
-            limits:
-              cpu: '{{ ''500m'' if resource_tier in [''minimal'', ''small''] else ''1'' }}'
-              memory: '{{ ''1Gi'' if resource_tier in [''minimal'', ''small''] else ''2Gi'' }}'
+          resources: '{{ mongodb_replset_resources }}'
           affinity:
             antiAffinityTopologyKey: kubernetes.io/hostname
         sharding:
