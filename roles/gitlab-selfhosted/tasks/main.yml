@@ -101,7 +101,7 @@
       type: Opaque
       stringData:
         config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ object_storage_access_key }}\"\n  secretkey: \"{{ object_storage_secret_key }}\"\n  region: us-east-1\n  regionendpoint: \"{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}\"\
-          \n  v4auth: true\n  pathstyle: true\n  rootdirectory: /registry\n"
+          \n  v4auth: true\n  pathstyle: true\n  rootdirectory: /registry\nredirect:\n  disable: true\n"
   register: _r_create_registry_storage_secret
   retries: 3
   delay: 10
