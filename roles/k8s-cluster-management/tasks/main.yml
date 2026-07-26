@@ -255,7 +255,8 @@
             limits:
               cpu: {{ '250m' if resource_tier in ['minimal', 'small'] else '500m' }}
               memory: {{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}
-      # Containerd registry mirrors - route private registry through internal service
+      # Nodes use the public registry endpoint. Kubernetes service DNS is only
+      # available to pods, so a *.svc.cluster.local mirror breaks kubelet pulls.
       containerd_registries_mirrors:
         - prefix: docker.io
           mirrors:
@@ -264,9 +265,9 @@
               skip_verify: false
         - prefix: registry.{{ domain }}
           mirrors:
-            - host: http://gitlab-registry.gitlab.svc.cluster.local:5000
+            - host: https://registry.{{ domain }}
               capabilities: ["pull", "resolve", "push"]
-              skip_verify: true
+              skip_verify: false
     mode: '0644'
   delegate_to: localhost
   become: false
