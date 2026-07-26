@@ -1087,6 +1087,7 @@ def test_configurable_platform_addons_are_not_best_effort():
     cert_manager = next(
         task for task in cluster_tasks if task.get("name") == "Install cert-manager"
     )["kubernetes.core.helm"]["values"]
+    assert "--enable-gateway-api" in cert_manager["extraArgs"]
     for component in (cert_manager, cert_manager["webhook"], cert_manager["cainjector"]):
         assert component["resources"]["requests"]["cpu"]
         assert component["resources"]["requests"]["memory"]
