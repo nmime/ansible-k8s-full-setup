@@ -1961,6 +1961,8 @@
       global:
         podSecurityPolicy:
           enabled: false
+      extraArgs:
+        - --enable-gateway-api
       securityContext:
         runAsNonRoot: true
       containerSecurityContext:
