@@ -586,6 +586,13 @@ keeps that file encrypted, verifies its structure without logging contents,
 and records it as a required Vault recovery dependency. Store the Ansible Vault
 password separately from the bundle decryption identity.
 
+If cluster workloads and the controller reach the same S3 service through
+different routes, keep `BACKUP_DR_ENDPOINT` as the cluster-visible endpoint
+and set `BACKUP_DR_CLIENT_ENDPOINT` to the controller-visible route. For
+example, a controller-hosted MinIO tunnel can use
+`BACKUP_DR_ENDPOINT=http://backup-dr.example.com:19001` and
+`BACKUP_DR_CLIENT_ENDPOINT=http://127.0.0.1:19000`.
+
 Schema-v2 completion receipts bind the archive to the project, source cluster
 UID, and exact Velero prefix. Before destructive replacement, pass that receipt
 to `teardown.sh --require-backup-receipt`; teardown re-downloads and hashes the

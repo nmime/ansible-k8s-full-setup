@@ -30,6 +30,7 @@ CONTROL_PLANE_HOST="${CLUSTER_BACKUP_CONTROL_PLANE_HOST:-}"
 SSH_IDENTITY="${CLUSTER_BACKUP_SSH_IDENTITY:-}"
 SSH_KNOWN_HOSTS_FILE="${CLUSTER_BACKUP_SSH_KNOWN_HOSTS_FILE:-}"
 DR_ENDPOINT="${BACKUP_DR_ENDPOINT:-}"
+DR_CLIENT_ENDPOINT="${BACKUP_DR_CLIENT_ENDPOINT:-}"
 DR_BUCKET="${BACKUP_DR_BUCKET:-}"
 DR_PREFIX="${CLUSTER_BACKUP_DR_PREFIX:-}"
 DR_REGION="${BACKUP_DR_REGION:-us-east-1}"
@@ -78,6 +79,8 @@ Encryption:
   Passphrases are read only from the environment and never accepted on argv.
   Remote publishing uses BACKUP_DR_ENDPOINT, BACKUP_DR_BUCKET,
   BACKUP_DR_ACCESS_KEY, and BACKUP_DR_SECRET_KEY from the environment/.env.
+  Set BACKUP_DR_CLIENT_ENDPOINT only when the controller must reach the same
+  S3 service through a different endpoint (for example, a local tunnel).
 EOF
 }
 
@@ -165,6 +168,7 @@ BASTION_SERVER_TYPE=$(yq -r '.network.bastion.server_type // ""' "$CONFIG_FILE")
 CONTROL_PLANE_SERVER_TYPE=$(yq -r '.infrastructure.control_plane.type // ""' "$CONFIG_FILE")
 WORKER_SERVER_TYPE=$(yq -r '.infrastructure.workers.type // ""' "$CONFIG_FILE")
 [[ -n "$DR_ENDPOINT" ]] || DR_ENDPOINT=$(yq -r '.backup.disaster_recovery.endpoint // ""' "$CONFIG_FILE")
+[[ -n "$DR_CLIENT_ENDPOINT" ]] || DR_CLIENT_ENDPOINT="$DR_ENDPOINT"
 [[ -n "$DR_BUCKET" ]] || DR_BUCKET=$(yq -r '.backup.disaster_recovery.bucket // ""' "$CONFIG_FILE")
 VELERO_DR_PREFIX=$(yq -r '.backup.disaster_recovery.prefix // "k8s/velero"' "$CONFIG_FILE")
 VELERO_DR_PREFIX="${VELERO_DR_PREFIX#/}"
@@ -198,6 +202,7 @@ if [[ "$DRY_RUN" == true ]]; then
   dry "would trigger application backups: $RUN_APP_BACKUPS"
   dry "would trigger Velero resource and filesystem backup: $RUN_VELERO_BACKUP"
   dry "would publish and download-verify the encrypted bundle in external DR storage: $RUN_REMOTE_PUBLISH"
+  dry "would use the controller DR client endpoint: $DR_CLIENT_ENDPOINT"
   dry "would capture etcd and control-plane PKI: $([[ "$SKIP_CONTROL_PLANE" == true ]] && echo false || echo true)"
   dry "would capture Hetzner state: $([[ "$SKIP_CLOUD" == true ]] && echo false || echo true)"
   dry "would include validated Ansible Vault-encrypted Vault initialization material: $VAULT_INIT_INCLUDED"
@@ -212,6 +217,7 @@ if [[ "$RUN_REMOTE_PUBLISH" == true ]]; then
   command -v aws >/dev/null || fail "required tool is missing: aws"
   command -v cmp >/dev/null || fail "required tool is missing: cmp"
   [[ -n "$DR_ENDPOINT" ]] || fail "BACKUP_DR_ENDPOINT or backup.disaster_recovery.endpoint is required"
+  [[ -n "$DR_CLIENT_ENDPOINT" ]] || fail "BACKUP_DR_CLIENT_ENDPOINT or BACKUP_DR_ENDPOINT is required"
   [[ -n "$DR_BUCKET" ]] || fail "BACKUP_DR_BUCKET or backup.disaster_recovery.bucket is required"
   [[ -n "$DR_PREFIX" && "$DR_PREFIX" != *..* ]] || fail "CLUSTER_BACKUP_DR_PREFIX must be a non-empty safe object prefix"
   [[ -n "${BACKUP_DR_ACCESS_KEY:-}" ]] || fail "BACKUP_DR_ACCESS_KEY is required for remote bundle publishing"
@@ -290,7 +296,7 @@ aws_dr() {
   AWS_ACCESS_KEY_ID="${BACKUP_DR_ACCESS_KEY:?}" \
     AWS_SECRET_ACCESS_KEY="${BACKUP_DR_SECRET_KEY:?}" \
     AWS_DEFAULT_REGION="$DR_REGION" AWS_EC2_METADATA_DISABLED=true \
-    aws --endpoint-url "$DR_ENDPOINT" "$@"
+    aws --endpoint-url "$DR_CLIENT_ENDPOINT" "$@"
 }
 
 evaluate_pvc_protection_gate() {
@@ -864,6 +870,7 @@ write_completion_receipt() {
     --arg encryption "$ENCRYPTION" --arg completeness "$COMPLETENESS" \
     --arg veleroBackup "$VELERO_BACKUP_NAME" --arg sha256 "$ARCHIVE_SHA256" \
     --arg createdAt "$RECEIPT_CREATED_AT" --arg endpoint "$DR_ENDPOINT" \
+    --arg clientEndpoint "$DR_CLIENT_ENDPOINT" \
     --arg bucket "$DR_BUCKET" --arg archiveKey "$REMOTE_ARCHIVE_KEY" \
     --arg checksumKey "$REMOTE_CHECKSUM_KEY" --arg receiptKey "$REMOTE_RECEIPT_KEY" \
     --arg publicationState "$publication_state" \
@@ -882,7 +889,8 @@ write_completion_receipt() {
       completeness:$completeness,velero_backup_name:$veleroBackup,sha256:$sha256,
       remote:{published:$remotePublished,download_sha256_verified:$remoteVerified,
         publication_state:$publicationState,
-        endpoint:$endpoint,bucket:$bucket,archive_key:$archiveKey,
+        endpoint:$endpoint,client_endpoint:$clientEndpoint,
+        bucket:$bucket,archive_key:$archiveKey,
         checksum_key:$checksumKey,receipt_key:$receiptKey,
         publication_order:["archive","checksum","download-verify","receipt"],
         receipt_uploaded_last:$receiptUploadedLast}}' > "$target"
