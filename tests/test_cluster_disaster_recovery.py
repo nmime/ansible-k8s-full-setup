@@ -713,6 +713,15 @@ def test_encrypted_bundle_is_remote_verified_before_manifest_last_receipt():
     assert 'cmp -s "$FINAL_RECEIPT" "$REMOTE_RECEIPT_VERIFY"' in content
 
 
+def test_controller_can_publish_through_a_distinct_route_to_the_same_dr_store():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert 'DR_CLIENT_ENDPOINT="${BACKUP_DR_CLIENT_ENDPOINT:-}"' in content
+    assert '[[ -n "$DR_CLIENT_ENDPOINT" ]] || DR_CLIENT_ENDPOINT="$DR_ENDPOINT"' in content
+    assert 'aws --endpoint-url "$DR_CLIENT_ENDPOINT" "$@"' in content
+    assert "--arg clientEndpoint \"$DR_CLIENT_ENDPOINT\"" in content
+    assert "client_endpoint:$clientEndpoint" in content
+
+
 def test_schema2_receipt_binds_project_uid_prefix_and_uses_rfc3339_time():
     content = BACKUP.read_text(encoding="utf-8")
     assert "RECEIPT_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" in content

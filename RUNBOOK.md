@@ -450,6 +450,9 @@ scripts load them automatically:
 
 ```dotenv
 BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+# Optional when the controller reaches the same bucket through a different
+# route than in-cluster Velero:
+# BACKUP_DR_CLIENT_ENDPOINT=http://127.0.0.1:19000
 BACKUP_DR_BUCKET=company-platform-dr
 BACKUP_DR_ACCESS_KEY=...
 BACKUP_DR_SECRET_KEY=...
