@@ -286,7 +286,13 @@ cleanup() {
   [[ -z "$PVC_EVIDENCE_TMP" ]] || rm -f "$PVC_EVIDENCE_TMP"
   rm -rf "$WORK_DIR"
 }
-trap cleanup EXIT INT TERM
+handle_signal() {
+  trap - EXIT INT TERM
+  cleanup
+  exit 130
+}
+trap cleanup EXIT
+trap handle_signal INT TERM
 
 sha256_file() {
   if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi

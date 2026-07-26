@@ -722,6 +722,16 @@ def test_controller_can_publish_through_a_distinct_route_to_the_same_dr_store():
     assert "client_endpoint:$clientEndpoint" in content
 
 
+def test_backup_signals_cleanup_and_exit_instead_of_continuing():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert "handle_signal() {" in content
+    assert "trap - EXIT INT TERM" in content
+    assert "exit 130" in content
+    assert "trap cleanup EXIT" in content
+    assert "trap handle_signal INT TERM" in content
+    assert "trap cleanup EXIT INT TERM" not in content
+
+
 def test_schema2_receipt_binds_project_uid_prefix_and_uses_rfc3339_time():
     content = BACKUP.read_text(encoding="utf-8")
     assert "RECEIPT_CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" in content
