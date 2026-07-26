@@ -432,17 +432,28 @@
     - status.phase=Pending
   register: _pending_postgresql_pods
   when: platform_postgresql_enabled | default(true) | bool
+- name: Re-read unscheduled PostgreSQL pod candidates before replacement
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: '{{ db_ns }}'
+    name: '{{ item.metadata.name }}'
+  loop: '{{ _pending_postgresql_pods.resources | default([]) }}'
+  register: _current_pending_postgresql_pods
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Recreate unscheduled PostgreSQL pods from the current operator template
   kubernetes.core.k8s:
     state: absent
     kind: Pod
     namespace: '{{ db_ns }}'
-    name: '{{ item.metadata.name }}'
-    wait: true
-  loop: '{{ _pending_postgresql_pods.resources | default([]) }}'
+    name: '{{ item.resources[0].metadata.name }}'
+    wait: false
+  loop: '{{ _current_pending_postgresql_pods.results | default([]) }}'
   when:
   - platform_postgresql_enabled | default(true) | bool
-  - item.spec.nodeName | default('') | length == 0
+  - item.resources | default([]) | length == 1
+  - item.resources[0].metadata.uid == item.item.metadata.uid
+  - item.resources[0].status.phase | default('') == 'Pending'
+  - item.resources[0].spec.nodeName | default('') | length == 0
 - name: Wait for PostgreSQL cluster to be ready
   kubernetes.core.k8s_info:
     api_version: pgv2.percona.com/v2

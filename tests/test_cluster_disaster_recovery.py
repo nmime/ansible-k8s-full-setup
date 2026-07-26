@@ -593,6 +593,8 @@ def test_backup_requires_filesystem_copy_for_every_mounted_pvc_volume():
     assert "comm -23" in content
     assert content.count('select($pod.status.phase == "Running")') >= 2
     assert 'failed_volume_backups=$(kubectl get podvolumebackups' in content
+    assert "if ! failed_volume_backups=" in content
+    assert '[[ "$failed_volume_backups" =~ ^[0-9]+$ ]]' in content
     assert 'Velero filesystem backup(s) failed before the backup completed' in content
     assert '[[ -f "$POD_ANNOTATIONS_FILE" && -s "$POD_ANNOTATIONS_FILE" ]]' in content
 
@@ -604,7 +606,8 @@ def test_complete_backup_rejects_unbound_or_unmounted_live_pvcs_with_json_eviden
     assert '$claim.metadata.deletionTimestamp == null' not in content
     assert "select(.metadata.deletionTimestamp == null)" in content
     assert '($claim.status.phase // "") == "Bound"' in content
-    assert 'if ($claim_mounts | length) == 0 then "unmounted"' in content
+    assert 'platform.n0xeid.xyz/backup-scratch' in content
+    assert 'if (($backup_scratch | not) and ($claim_mounts | length) == 0)' in content
     assert 'if [[ "$ALLOW_INCOMPLETE" != true ]]' in content
     assert "non-terminating PVC(s) are non-Bound or unmounted" in content
     assert 'chmod 600 "$PVC_EVIDENCE"' in content
@@ -629,6 +632,15 @@ def test_pvc_evidence_policy_classifies_live_claims(tmp_path):
             {
                 "metadata": {"namespace": "data", "name": "orphan"},
                 "spec": {"volumeName": "pv-b", "resources": {"requests": {"storage": "1Gi"}}},
+                "status": {"phase": "Bound"},
+            },
+            {
+                "metadata": {
+                    "namespace": "data",
+                    "name": "completed-backup-scratch",
+                    "labels": {"platform.n0xeid.xyz/backup-scratch": "true"},
+                },
+                "spec": {"volumeName": "pv-c", "resources": {"requests": {"storage": "1Gi"}}},
                 "status": {"phase": "Bound"},
             },
             {
@@ -673,10 +685,13 @@ def test_pvc_evidence_policy_classifies_live_claims(tmp_path):
     evidence = json.loads(result.stdout)
     assert evidence["status"] == "incomplete"
     assert evidence["backup_id"] == "fixture"
-    assert evidence["summary"] == {"evaluated": 3, "protected": 1, "failures": 2}
+    assert evidence["summary"] == {"evaluated": 4, "protected": 2, "failures": 2}
     claims = {claim["name"]: claim for claim in evidence["claims"]}
     assert claims["mounted"]["protected"] is True
     assert claims["orphan"]["failures"] == ["unmounted"]
+    assert claims["completed-backup-scratch"]["backup_scratch"] is True
+    assert claims["completed-backup-scratch"]["protected"] is True
+    assert claims["completed-backup-scratch"]["failures"] == []
     assert claims["pending"]["failures"] == ["not_bound", "unmounted"]
     assert "terminating" not in claims
 

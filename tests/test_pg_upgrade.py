@@ -179,6 +179,18 @@ class TestAnsibleRoleVersion:
         assert 'status.pgbouncer.ready' in self.tasks_text
         assert 'Discover unscheduled PostgreSQL pods left from an obsolete template' in self.tasks_text
 
+    def test_pending_postgresql_cleanup_rechecks_live_pod_state_without_waiting(self):
+        cleanup = self.tasks_text.split(
+            '- name: Discover unscheduled PostgreSQL pods left from an obsolete template',
+            1,
+        )[1].split('- name: Wait for PostgreSQL cluster to be ready', 1)[0]
+        assert 'Re-read unscheduled PostgreSQL pod candidates before replacement' in cleanup
+        assert "item.resources[0].metadata.uid == item.item.metadata.uid" in cleanup
+        assert "item.resources[0].status.phase | default('') == 'Pending'" in cleanup
+        assert "item.resources[0].spec.nodeName | default('') | length == 0" in cleanup
+        assert 'wait: false' in cleanup
+        assert 'wait: true' not in cleanup
+
     def test_database_pmm3_network_path_is_explicitly_allowed(self):
         assert 'allow-pmm-egress' in self.tasks_text
         assert 'allow-pmm-database-ingress' in self.tasks_text

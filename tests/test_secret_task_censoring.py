@@ -168,8 +168,14 @@ def test_persisted_grafana_admin_password_reconciliation_is_censored():
     verify_command = verify["ansible.builtin.shell"]
     assert "http://localhost:3000/login" in verify_command
     assert '--arg password "$GRAFANA_ADMIN_PASSWORD"' not in verify_command
-    assert "printf '%s' \"$GRAFANA_ADMIN_PASSWORD\"" in verify_command
-    assert "input as $password" in verify_command
+    assert '--rawfile password <(printf \'%s\' "$GRAFANA_ADMIN_PASSWORD")' in verify_command
+    assert "default('admin', true)" in verify_command
+    assert "'{user:$user,password:$password}'" in verify_command
+    assert "'(.user | length) > 0 and (.password | length) > 0'" in verify_command
+    assert "payload_file=$(mktemp)" in verify_command
+    assert 'cat >"$payload_file"' in verify_command
+    assert '--data-binary @"$payload_file"' in verify_command
+    assert 'trap "rm -f -- \\"$payload_file\\""' in verify_command
     assert verify["retries"] == 10
     assert verify["delay"] == 3
     assert verify["until"] == "_grafana_password_verification is succeeded"
