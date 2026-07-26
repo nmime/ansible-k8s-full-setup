@@ -203,6 +203,16 @@ class TestGenerateSecrets:
         assert protected <= by_name.keys()
         assert all(by_name[name].get("no_log") is True for name in protected)
 
+    def test_operator_can_select_the_exact_persistent_secrets_file(self):
+        assert "platform_secrets_file" in self.content
+        assert "playbook_dir ~ '/.platform-secrets.yml'" in self.content
+
+        orchestrator = read("platform-orchestrator/platform.sh")
+        assert (
+            '-e "platform_secrets_file=${PLATFORM_SECRETS_FILE:-'
+            '${ANSIBLE_DIR}/playbooks/.platform-secrets.yml}"'
+        ) in orchestrator
+
 
 # ─── 4. k8s-secrets: Vault TLS ──────────────────────────
 
@@ -1212,6 +1222,15 @@ def test_platform_fact_gathering_excludes_controller_environment_secrets():
     assert "gather_facts: false" in playbook
     assert "Gather controller facts without persisting the process environment" in playbook
     assert "- '!env'" in playbook
+
+
+def test_platform_honors_explicit_kubeconfig_before_home_fallback():
+    playbook = read("playbooks/deploy_platform.yml")
+
+    auth_index = playbook.index("lookup('env', 'K8S_AUTH_KUBECONFIG')")
+    kube_index = playbook.index("lookup('env', 'KUBECONFIG')")
+    home_index = playbook.index("lookup('env', 'HOME') ~ '/.kube/config'")
+    assert auth_index < kube_index < home_index
 
 
 def test_elasticsearch_password_rotation_precedes_secret_update():

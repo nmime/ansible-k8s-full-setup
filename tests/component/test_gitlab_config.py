@@ -302,6 +302,7 @@ class TestChart10ValuesStructure:
     @pytest.mark.component
     def test_registry_storage_secret(self):
         assert "gitlab-registry-storage" in self.content
+        assert r"checksum_disabled: true" in self.content
         assert r"redirect:\n  disable: true" in self.content
 
     @pytest.mark.component

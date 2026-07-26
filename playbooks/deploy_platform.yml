@@ -5,7 +5,10 @@
   gather_facts: false
   any_errors_fatal: true
   environment:
-    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
+    KUBECONFIG: >-
+      {{ lookup('env', 'K8S_AUTH_KUBECONFIG')
+         | default(lookup('env', 'KUBECONFIG'), true)
+         | default(lookup('env', 'HOME') ~ '/.kube/config', true) }}
 
   vars_files:
     - ../defaults/main.yml
