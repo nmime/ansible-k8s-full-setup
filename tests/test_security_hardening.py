@@ -774,6 +774,13 @@ def test_promtail_is_isolated_in_a_privileged_agent_namespace():
     assert "release_namespace: '{{ logging_agent_namespace }}'" in promtail
     assert "name: default-deny" in promtail
     assert "name: allow-logging-egress" in promtail
+    assert "k8s:app.kubernetes.io/component: gateway" in promtail
+    assert "port: '8080'" in promtail
+    assert "name: allow-logging-node-health-probes" in promtail
+    assert "- remote-node" in promtail
+    assert "port: '{{ \"3101\" if log_stack == \"loki\" else \"5066\" }}'" in promtail
+    assert "timeoutSeconds: 5" in promtail
+    assert "failureThreshold: 6" in promtail
 
 
 def test_filebeat_is_isolated_in_the_privileged_agent_namespace():

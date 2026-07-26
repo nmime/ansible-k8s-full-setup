@@ -226,11 +226,24 @@ class TestChart10ValuesStructure:
         assert "gitlab_runner_concurrent | int > 0" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
-        assert "runnerToken: '{{ gitlab_runner_token }}'" in install
+        assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
         assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
         assert "gitlab_runner_token is defined" not in install
         assert "gitlab_runner_token != ''" not in install
         assert "no_log: true" in install
+
+        bootstrap = self.content.split(
+            "- name: Read the persisted GitLab Runner authentication token", 1
+        )[1].split("- name: Add GitLab Runner Helm repository", 1)[0]
+        assert "platform-gitlab-runner-auth" in bootstrap
+        assert "/api/v4/runners/verify" in bootstrap
+        assert "/api/v4/runners" in bootstrap
+        assert "gitlab-gitlab-runner-secret" in bootstrap
+        assert "'runner-registration-token'] | b64decode" in bootstrap
+        assert "GITLAB_RUNNER_REGISTRATION_TOKEN" in bootstrap
+        assert "deployment/gitlab-toolbox -c toolbox" in bootstrap
+        assert "runner-token: '{{ _gitlab_runner_auth_token }}'" in bootstrap
+        assert bootstrap.count("no_log: true") >= 8
 
         secrets = read(GENERATE_SECRETS_PATH)
         resolution = secrets.split("- name: Resolve GitLab Runner authentication token", 1)[
@@ -364,13 +377,16 @@ class TestChart10ValuesStructure:
         assert "release_state: absent" in first_install
         assert "Remove failed GitLab Helm release before reinstall" not in self.content
 
-    def test_post_reconcile_gate_requires_every_gitlab_pvc_bound(self):
+    def test_post_reconcile_gate_requires_data_bearing_gitlab_pvcs_bound(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
             "- name: Add cross-component anti-affinity", 1
         )[0]
         assert "kind: PersistentVolumeClaim" in gate
         assert "release=gitlab" in gate
-        assert "Require GitLab persistent volume claims to exist" in gate
+        assert "app=gitaly" in gate
+        assert "Require data-bearing GitLab persistent volume claims to exist" in gate
+        assert "--selector=release=gitlab,app=gitaly" in gate
+        assert "toolbox backup scratch claim intentionally uses WaitForFirstConsumer" in gate
         assert "--for=jsonpath={.status.phase}=Bound" in gate
         assert "--timeout={{ gitlab_readiness_timeout }}" in gate
 
@@ -558,6 +574,9 @@ class TestDefaultsTasksConsistency:
         assert "gitlab_backup_persistence_enabled:" in self.tasks_raw
         assert "gitlab.backup_persistence_enabled | default(true)" in self.tasks_raw
         assert "enabled: '{{ gitlab_backup_persistence_enabled | bool }}'" in self.tasks_raw
+        assert "name: gitlab-toolbox-backup-tmp" in self.tasks_raw
+        assert "platform.n0xeid.xyz/backup-scratch: 'true'" in self.tasks_raw
+        assert "state: patched" in self.tasks_raw
 
     @pytest.mark.component
     def test_every_toolbox_backup_bucket_is_bootstrapped(self):

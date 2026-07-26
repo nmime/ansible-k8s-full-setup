@@ -326,6 +326,7 @@ evaluate_pvc_protection_gate() {
       $pvc[0].items[]
       | select(.metadata.deletionTimestamp == null)
       | . as $claim
+      | (($claim.metadata.labels["platform.n0xeid.xyz/backup-scratch"] // "") == "true") as $backup_scratch
       | [$mounts[] | select(
           .namespace == $claim.metadata.namespace and
           .claim == $claim.metadata.name
@@ -337,14 +338,16 @@ evaluate_pvc_protection_gate() {
           volume_name: ($claim.spec.volumeName // ""),
           storage_class: ($claim.spec.storageClassName // ""),
           requested_storage: ($claim.spec.resources.requests.storage // ""),
+          backup_scratch: $backup_scratch,
           mounts: $claim_mounts,
           protected: (
             ($claim.status.phase // "") == "Bound" and
-            ($claim_mounts | length) > 0
+            ($backup_scratch or (($claim_mounts | length) > 0))
           ),
           failures: ([
             if ($claim.status.phase // "") != "Bound" then "not_bound" else empty end,
-            if ($claim_mounts | length) == 0 then "unmounted" else empty end
+            if (($backup_scratch | not) and ($claim_mounts | length) == 0)
+            then "unmounted" else empty end
           ])
         }
     ] | sort_by(.namespace, .name) as $claims
@@ -354,7 +357,7 @@ evaluate_pvc_protection_gate() {
       project: $project,
       source_context: $context,
       evaluated_at: (now | todateiso8601),
-      policy: "every non-terminating PVC must be Bound and mounted by a non-terminating Running pod",
+      policy: "every non-terminating PVC must be Bound; PVCs not explicitly labeled platform.n0xeid.xyz/backup-scratch=true must also be mounted by a non-terminating Running pod",
       status: (if all($claims[]; .protected) then "complete" else "incomplete" end),
       summary: {
         evaluated: ($claims | length),
@@ -728,10 +731,13 @@ EOF
       Completed) VELERO_BACKUP_RESULT=completed; break ;;
       Failed|PartiallyFailed|FailedValidation) kubectl get backup "$VELERO_BACKUP_NAME" -n velero -o yaml > "$STAGE_DIR/application-backups/velero-backup.yaml"; fail "Velero backup ended in phase $phase" ;;
     esac
-    failed_volume_backups=$(kubectl get podvolumebackups -n velero \
+    if ! failed_volume_backups=$(kubectl get podvolumebackups -n velero \
       -l "velero.io/backup-name=${VELERO_BACKUP_NAME}" -o json 2>/dev/null \
-      | jq '[.items[] | select((.status.phase // "") == "Failed")] | length' \
-      || echo 0)
+      | jq '[.items[] | select((.status.phase // "") == "Failed")] | length'); then
+      failed_volume_backups=0
+    fi
+    [[ "$failed_volume_backups" =~ ^[0-9]+$ ]] \
+      || fail "Velero returned an invalid failed filesystem-backup count"
     if (( failed_volume_backups > 0 )); then
       kubectl get podvolumebackups -n velero \
         -l "velero.io/backup-name=${VELERO_BACKUP_NAME}" -o json \

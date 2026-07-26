@@ -500,6 +500,19 @@
         limits:
           cpu: 200m
           memory: 256Mi
+      # On log-heavy nodes Promtail can briefly spend more than the upstream
+      # one-second default serving /ready while it reconciles rotated files.
+      # Keep the probe strict, but avoid marking a healthy node agent
+      # unavailable during ordinary GitLab and backup bursts.
+      readinessProbe:
+        failureThreshold: 6
+        httpGet:
+          path: /ready
+          port: http-metrics
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        successThreshold: 1
+        timeoutSeconds: 5
       # The upstream chart also defaults to Docker's container directory.
       # containerd CRI logs live under /var/log/pods, so declare only the
       # runtime state and host-log mounts that Promtail actually consumes.
@@ -602,6 +615,40 @@
           toPorts:
           - ports:
             - port: '{{ "80" if log_stack == "loki" else "9200" }}'
+              protocol: TCP
+        # Cilium resolves toServices against the Service frontend, but the
+        # selected backend Pod still receives traffic on its targetPort. Keep
+        # an explicit endpoint rule so default-deny remains correct across
+        # kube-proxy-free service translation and policy regeneration.
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: '{{ monitoring_namespace }}'
+              k8s:app.kubernetes.io/name: loki
+              k8s:app.kubernetes.io/instance: loki
+              k8s:app.kubernetes.io/component: gateway
+          toPorts:
+          - ports:
+            - port: '8080'
+              protocol: TCP
+  when: log_stack in ["loki", "elk", "efk"]
+- name: Allow node health probes to logging agents
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-logging-node-health-probes
+        namespace: '{{ logging_agent_namespace }}'
+      spec:
+        endpointSelector: {}
+        ingress:
+        - fromEntities:
+          - host
+          - remote-node
+          toPorts:
+          - ports:
+            - port: '{{ "3101" if log_stack == "loki" else "5066" }}'
               protocol: TCP
   when: log_stack in ["loki", "elk", "efk"]
 - name: Fetch Elasticsearch credentials for Grafana datasource
@@ -800,12 +847,23 @@
   no_log: true
   ansible.builtin.shell: |
     set -euo pipefail
-    payload=$(printf '%s' "$GRAFANA_ADMIN_PASSWORD" | \
-      jq -Rcn --arg user "{{ grafana_admin_user | default('admin') }}" \
-        'input as $password | {user:$user,password:$password}')
+    payload=$(jq -cn \
+      --arg user "{{ grafana_admin_user | default('admin', true) }}" \
+      --rawfile password <(printf '%s' "$GRAFANA_ADMIN_PASSWORD") \
+      '{user:$user,password:$password}')
+    jq -e '(.user | length) > 0 and (.password | length) > 0' \
+      >/dev/null <<<"$payload"
     printf '%s' "$payload" | kubectl exec -i --namespace "{{ monitoring_namespace }}" \
-      deployment/grafana -- sh -ec 'curl -fsS -H "Content-Type: application/json" \
-        --data-binary @- http://localhost:3000/login >/dev/null'
+      deployment/grafana -- sh -ec '
+        umask 077
+        payload_file=$(mktemp)
+        trap "rm -f -- \"$payload_file\"" EXIT
+        cat >"$payload_file"
+        grep -Eq "\"user\":\"[^\"]+\"" "$payload_file"
+        grep -Eq "\"password\":\"[^\"]+\"" "$payload_file"
+        curl -fsS -H "Content-Type: application/json" \
+          --data-binary @"$payload_file" http://localhost:3000/login >/dev/null
+      '
   args:
     executable: /bin/bash
   environment:

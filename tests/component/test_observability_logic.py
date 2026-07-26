@@ -42,7 +42,7 @@ class TestAlertingIntact:
         alertmanager_spec = alertmanager["kubernetes.core.k8s"]["definition"]["spec"]
         vmalert_spec = vmalert["kubernetes.core.k8s"]["definition"]["spec"]
         assert "alerting.replicas" in alertmanager_spec["replicaCount"]
-        assert "tier in ['medium', 'production']" in alertmanager_spec["replicaCount"]
+        assert "resource_tier in ['medium', 'production']" in alertmanager_spec["replicaCount"]
         assert "alerting.storage_size" in alertmanager_spec["storage"][
             "volumeClaimTemplate"
         ]["spec"]["resources"]["requests"]["storage"]

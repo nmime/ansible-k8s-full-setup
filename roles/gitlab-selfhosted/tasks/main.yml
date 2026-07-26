@@ -963,26 +963,61 @@
   retries: 3
   delay: 10
   until: _r_install_gitlab_ce_with_helm is not failed
+- name: Discover the GitLab toolbox backup scratch claim
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: '{{ gitlab_namespace }}'
+    name: gitlab-toolbox-backup-tmp
+  register: _gitlab_toolbox_backup_scratch_pvc
+  when: gitlab_backup_persistence_enabled | bool
+
+- name: Require the persistent GitLab toolbox backup scratch claim
+  ansible.builtin.assert:
+    that:
+      - (_gitlab_toolbox_backup_scratch_pvc.resources | default([]) | length) == 1
+    fail_msg: >-
+      GitLab backup scratch persistence is enabled, but the exact
+      gitlab-toolbox-backup-tmp PersistentVolumeClaim is absent or ambiguous.
+  when: gitlab_backup_persistence_enabled | bool
+
+- name: Mark the GitLab toolbox claim as backup lifecycle scratch
+  kubernetes.core.k8s:
+    state: patched
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        namespace: '{{ gitlab_namespace }}'
+        name: gitlab-toolbox-backup-tmp
+        labels:
+          platform.n0xeid.xyz/backup-scratch: 'true'
+  when: gitlab_backup_persistence_enabled | bool
+
 - name: Enforce GitLab post-reconcile readiness
   block:
-    - name: Discover GitLab persistent volume claims
+    - name: Discover data-bearing GitLab persistent volume claims
       kubernetes.core.k8s_info:
         api_version: v1
         kind: PersistentVolumeClaim
         namespace: '{{ gitlab_namespace }}'
         label_selectors:
           - release=gitlab
+          - app=gitaly
       register: _gitlab_selected_pvcs
 
-    - name: Require GitLab persistent volume claims to exist
+    - name: Require data-bearing GitLab persistent volume claims to exist
       ansible.builtin.assert:
         that:
           - (_gitlab_selected_pvcs.resources | default([]) | length) > 0
         fail_msg: >-
-          No release=gitlab PersistentVolumeClaims were found in namespace
+          No release=gitlab,app=gitaly PersistentVolumeClaims were found in namespace
           {{ gitlab_namespace }}; refusing to report a successful GitLab reconcile.
 
-    - name: Wait for all GitLab persistent volume claims to be Bound
+    # The toolbox backup scratch claim intentionally uses WaitForFirstConsumer
+    # and has no consumer until a backup Job runs. Waiting on every release PVC
+    # would therefore deadlock an otherwise healthy first installation.
+    - name: Wait for data-bearing GitLab persistent volume claims to be Bound
       ansible.builtin.command:
         argv:
           - kubectl
@@ -990,7 +1025,7 @@
           - --namespace
           - '{{ gitlab_namespace }}'
           - --for=jsonpath={.status.phase}=Bound
-          - --selector=release=gitlab
+          - --selector=release=gitlab,app=gitaly
           - persistentvolumeclaim
           - '--timeout={{ gitlab_readiness_timeout }}'
       changed_when: false
@@ -1382,6 +1417,143 @@
   retries: 3
   delay: 10
   until: _r_create_tls_certificate_for_gitlab is not failed
+- name: Read the persisted GitLab Runner authentication token
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ gitlab_namespace }}'
+    name: platform-gitlab-runner-auth
+  register: _gitlab_runner_auth_secret
+  when: gitlab_runner_enabled | bool
+- name: Resolve the persisted GitLab Runner authentication token candidate
+  no_log: true
+  ansible.builtin.set_fact:
+    _gitlab_runner_auth_candidate: >-
+      {{
+        ((_gitlab_runner_auth_secret.resources | first).data['runner-token'] |
+         b64decode)
+        if (_gitlab_runner_auth_secret.resources | default([]) | length) == 1
+        else ''
+      }}
+  when: gitlab_runner_enabled | bool
+- name: Verify the persisted GitLab Runner identity
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
+      kubectl exec -i --namespace "{{ gitlab_namespace }}" \
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
+          token=$(cat)
+          payload=$(printf "{\"token\":\"%s\"}" "$token")
+          printf "%s" "$payload" |
+            curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners/verify
+        ')
+    test "$status" = 200
+  args:
+    executable: /bin/bash
+  environment:
+    GITLAB_RUNNER_TOKEN: '{{ _gitlab_runner_auth_candidate }}'
+  register: _gitlab_runner_auth_verification
+  changed_when: false
+  failed_when: false
+  when:
+    - gitlab_runner_enabled | bool
+    - _gitlab_runner_auth_candidate | length > 0
+- name: Read the GitLab-managed Runner registration token for bootstrap
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ gitlab_namespace }}'
+    name: gitlab-gitlab-runner-secret
+  register: _gitlab_runner_registration_secret
+  when:
+    - gitlab_runner_enabled | bool
+    - >-
+      (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
+- name: Require the GitLab-managed Runner registration token for bootstrap
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - (_gitlab_runner_registration_secret.resources | default([]) | length) == 1
+      - >-
+        ((_gitlab_runner_registration_secret.resources | first).data[
+          'runner-registration-token'] | default('') | b64decode | length) >= 20
+    fail_msg: >-
+      GitLab did not publish a usable Runner registration token; refusing to
+      install an unregistered Runner.
+  when:
+    - gitlab_runner_enabled | bool
+    - >-
+      (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
+- name: Bootstrap a GitLab Runner identity through the internal API
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    printf '%s' "$GITLAB_RUNNER_REGISTRATION_TOKEN" |
+      kubectl exec -i --namespace "{{ gitlab_namespace }}" \
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
+          registration=$(cat)
+          payload=$(printf \
+            "{\"token\":\"%s\",\"description\":\"%s\",\"tag_list\":\"kubernetes,docker,k8s\",\"run_untagged\":true,\"locked\":false}" \
+            "$registration" "{{ project_name }}")
+          printf "%s" "$payload" |
+            curl -fsS -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners
+        '
+  args:
+    executable: /bin/bash
+  environment:
+    GITLAB_RUNNER_REGISTRATION_TOKEN: >-
+      {{
+        (_gitlab_runner_registration_secret.resources | first).data[
+          'runner-registration-token'] | b64decode
+      }}
+  register: _gitlab_runner_bootstrap
+  changed_when: true
+  when:
+    - gitlab_runner_enabled | bool
+    - >-
+      (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
+- name: Validate the bootstrapped GitLab Runner authentication token
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - (_gitlab_runner_bootstrap.stdout | from_json).token | default('') | length >= 20
+    fail_msg: GitLab Runner bootstrap did not return a usable authentication token.
+  when:
+    - gitlab_runner_enabled | bool
+    - >-
+      (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
+- name: Resolve the reconciled GitLab Runner authentication token
+  no_log: true
+  ansible.builtin.set_fact:
+    _gitlab_runner_auth_token: >-
+      {{
+        _gitlab_runner_auth_candidate
+        if (_gitlab_runner_auth_verification.rc | default(1) | int) == 0
+        else (_gitlab_runner_bootstrap.stdout | from_json).token
+      }}
+  when: gitlab_runner_enabled | bool
+- name: Persist the reconciled GitLab Runner authentication token
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: platform-gitlab-runner-auth
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      type: Opaque
+      stringData:
+        runner-token: '{{ _gitlab_runner_auth_token }}'
+  when: gitlab_runner_enabled | bool
 - name: Add GitLab Runner Helm repository
   kubernetes.core.helm_repository:
     name: gitlab-runner
@@ -1405,7 +1577,7 @@
       # clone through the namespace-local Webservice instead of hairpinning
       # through the external load balancer (which intentionally returns 404).
       gitlabUrl: http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
-      runnerToken: '{{ gitlab_runner_token }}'
+      runnerToken: '{{ _gitlab_runner_auth_token }}'
       concurrent: '{{ gitlab_runner_concurrent | int }}'
       checkInterval: 3
       metrics:
