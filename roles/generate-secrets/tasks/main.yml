@@ -7,7 +7,9 @@
 
 - name: Set secrets file path
   set_fact:
-    secrets_file: "{{ playbook_dir }}/.platform-secrets.yml"
+    secrets_file: >-
+      {{ platform_secrets_file
+         | default(playbook_dir ~ '/.platform-secrets.yml', true) }}
     resolved_vault_password_file: >-
       {{ (lookup('env', 'ANSIBLE_VAULT_PASSWORD_FILE')
           | default(vault_password_file | default('~/.vault_pass'), true)) | expanduser }}
