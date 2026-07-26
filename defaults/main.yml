@@ -222,6 +222,14 @@ mongodb_backup_resources:
   limits:
     cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
     memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+mongodb_replset_resources:
+  requests:
+    cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '250m' }}"
+    memory: "{{ '256Mi' if resource_tier in ['minimal', 'small'] else '512Mi' }}"
+  limits:
+    cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
+    memory: "{{ '1Gi' if resource_tier in ['minimal', 'small'] else '2Gi' }}"
+mongodb_wiredtiger_cache_size_ratio: 0.35
 mongodb_pmm_resources:
   requests:
     cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"

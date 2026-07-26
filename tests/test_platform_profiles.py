@@ -420,6 +420,11 @@ class TestMediumOptimizedContract:
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
         assert self.profile["databases"]["postgresql"]["storage_size"] == "30Gi"
         assert self.profile["databases"]["mongodb"]["storage_size"] == "20Gi"
+        assert self.profile["databases"]["mongodb"]["wiredtiger_cache_size_ratio"] == 0.35
+        assert self.profile["databases"]["mongodb"]["resources"]["replset"] == {
+            "requests": {"cpu": "250m", "memory": "512Mi"},
+            "limits": {"cpu": "1", "memory": "2Gi"},
+        }
         assert self.profile["observability"]["metrics"]["storage_size"] == "40Gi"
         assert self.profile["observability"]["metrics"]["retention"] == "14d"
         assert self.profile["observability"]["logging"]["retention"] == "7d"
