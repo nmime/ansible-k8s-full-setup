@@ -963,6 +963,7 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
         "postgresql_pgbackrest_init_resources",
         "postgresql_pgbackrest_repo_host_resources",
         "postgresql_pgbackrest_job_resources",
+        "mongodb_replset_resources",
         "mongodb_backup_resources",
         "mongodb_pmm_resources",
     )
@@ -1025,6 +1026,13 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
         if task.get("name") == "Create MongoDB cluster"
     )
     mongo_spec = mongo_task["kubernetes.core.k8s"]["definition"]["spec"]
+    mongo_replset = mongo_spec["replsets"][0]
+    assert mongo_replset["resources"] == "{{ mongodb_replset_resources }}"
+    assert mongo_replset["storage"]["engine"] == "wiredTiger"
+    assert mongo_replset["storage"]["wiredTiger"]["engineConfig"] == {
+        "cacheSizeRatio": "{{ mongodb_wiredtiger_cache_size_ratio }}"
+    }
+    assert "mongodb_wiredtiger_cache_size_ratio" in normalized
     assert mongo_spec["backup"]["resources"] == "{{ mongodb_backup_resources }}"
     assert mongo_spec["pmm"]["resources"] == "{{ mongodb_pmm_resources }}"
 

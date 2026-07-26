@@ -177,6 +177,12 @@
     mongodb_data_storage_class: >-
       {{ databases.mongodb.data_storage_class |
          default(storage.storage_class | default(storage_class)) }}
+    mongodb_replset_resources: >-
+      {{ (databases.mongodb.resources | default({})).replset |
+         default(mongodb_replset_resources) }}
+    mongodb_wiredtiger_cache_size_ratio: >-
+      {{ databases.mongodb.wiredtiger_cache_size_ratio |
+         default(mongodb_wiredtiger_cache_size_ratio) }}
     mongodb_backup_resources: >-
       {{ (databases.mongodb.resources | default({})).backup |
          default(mongodb_backup_resources) }}
