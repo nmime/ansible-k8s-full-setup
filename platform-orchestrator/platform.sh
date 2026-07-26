@@ -336,6 +336,7 @@ run_playbook() {
     -e "project_name=${PROJECT}" \
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
+    -e "platform_secrets_file=${PLATFORM_SECRETS_FILE:-${ANSIBLE_DIR}/playbooks/.platform-secrets.yml}" \
     "$@"
 }
 
