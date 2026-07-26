@@ -59,6 +59,21 @@ def test_vault_tls_covers_the_required_short_raft_addresses() -> None:
     assert "vault_init_data.unseal_keys_b64" in reconcile
 
 
+def test_vault_gateway_uses_a_verified_tls_backend() -> None:
+    tasks = read("roles/k8s-secrets/tasks/reconcile.yml")
+
+    assert "name: vault-gateway-proxy" in tasks
+    assert "replicas: 2" in tasks
+    assert "automountServiceAccountToken: false" in tasks
+    assert "allowPrivilegeEscalation: false" in tasks
+    assert "readOnlyRootFilesystem: true" in tasks
+    assert "filename: /etc/vault-ca/ca.crt" in tasks
+    assert "sni: vault.{{ vault_ns }}.svc.cluster.local" in tasks
+    assert "- ingress" in tasks
+    assert "port: '8080'" in tasks
+    assert "port: 8080" in tasks
+
+
 # ─── 1. ansible.cfg SSH Hardening ────────────────────────
 
 class TestAnsibleCfg:

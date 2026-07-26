@@ -110,6 +110,14 @@
     object_storage_idx_size: '{{ storage.index_size | default(object_storage_idx_size) }}'
     object_storage_index_persistent: '{{ storage.index_persistent | default(true) | bool }}'
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
+    object_storage_filer_cpu_request: >-
+      {{ storage.filer_resources.cpu_request | default(object_storage_filer_cpu_request | default('100m')) }}
+    object_storage_filer_cpu_limit: >-
+      {{ storage.filer_resources.cpu_limit | default(object_storage_filer_cpu_limit | default('1')) }}
+    object_storage_filer_memory_request: >-
+      {{ storage.filer_resources.memory_request | default(object_storage_filer_memory_request | default('256Mi')) }}
+    object_storage_filer_memory_limit: >-
+      {{ storage.filer_resources.memory_limit | default(object_storage_filer_memory_limit | default('1Gi')) }}
     vault_replicas: '{{ secrets.vault.replicas | default(vault_replicas) }}'
     vault_storage_size: '{{ secrets.vault.storage_size | default(vault_storage_size) }}'
     vault_data_storage_class: >-

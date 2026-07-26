@@ -987,6 +987,216 @@
   retries: 3
   delay: 15
   until: _r_create_vault_tls_certificate is not failed
+- name: Discover the pinned Cilium Envoy image for the Vault gateway bridge
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: kube-system
+    name: cilium-envoy
+  register: _r_vault_gateway_envoy_daemonset
+- name: Require the pinned Cilium Envoy image
+  ansible.builtin.assert:
+    that:
+    - _r_vault_gateway_envoy_daemonset.resources | length == 1
+    - _r_vault_gateway_envoy_daemonset.resources[0].spec.template.spec.containers | length > 0
+    - _r_vault_gateway_envoy_daemonset.resources[0].spec.template.spec.containers[0].image | length > 0
+    fail_msg: The running Cilium Envoy image could not be discovered
+- name: Configure the verified Vault TLS gateway bridge
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: vault-gateway-proxy
+        namespace: '{{ vault_ns }}'
+        labels:
+          app.kubernetes.io/name: vault-gateway-proxy
+          app.kubernetes.io/part-of: vault
+      data:
+        envoy.yaml: |
+          static_resources:
+            listeners:
+              - name: vault_http
+                address:
+                  socket_address:
+                    address: 0.0.0.0
+                    port_value: 8080
+                filter_chains:
+                  - filters:
+                      - name: envoy.filters.network.http_connection_manager
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                          stat_prefix: vault_gateway
+                          route_config:
+                            name: vault
+                            virtual_hosts:
+                              - name: vault
+                                domains: ["*"]
+                                routes:
+                                  - match: {prefix: "/"}
+                                    route:
+                                      cluster: vault
+                                      timeout: 60s
+                                      host_rewrite_literal: vault.{{ vault_ns }}.svc.cluster.local
+                          http_filters:
+                            - name: envoy.filters.http.router
+                              typed_config:
+                                "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            clusters:
+              - name: vault
+                connect_timeout: 5s
+                type: STRICT_DNS
+                lb_policy: ROUND_ROBIN
+                load_assignment:
+                  cluster_name: vault
+                  endpoints:
+                    - lb_endpoints:
+                        - endpoint:
+                            address:
+                              socket_address:
+                                address: vault.{{ vault_ns }}.svc.cluster.local
+                                port_value: 8200
+                transport_socket:
+                  name: envoy.transport_sockets.tls
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+                    sni: vault.{{ vault_ns }}.svc.cluster.local
+                    common_tls_context:
+                      validation_context:
+                        trusted_ca:
+                          filename: /etc/vault-ca/ca.crt
+- name: Create the Vault TLS gateway bridge service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: vault-gateway-proxy
+        namespace: '{{ vault_ns }}'
+        labels:
+          app.kubernetes.io/name: vault-gateway-proxy
+          app.kubernetes.io/part-of: vault
+      spec:
+        selector:
+          app.kubernetes.io/name: vault-gateway-proxy
+        ports:
+          - name: http
+            port: 8080
+            targetPort: http
+- name: Deploy the highly available Vault TLS gateway bridge
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: vault-gateway-proxy
+        namespace: '{{ vault_ns }}'
+        labels:
+          app.kubernetes.io/name: vault-gateway-proxy
+          app.kubernetes.io/part-of: vault
+      spec:
+        replicas: 2
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: vault-gateway-proxy
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: vault-gateway-proxy
+              app.kubernetes.io/part-of: vault
+          spec:
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              seccompProfile:
+                type: RuntimeDefault
+            affinity:
+              podAntiAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    podAffinityTerm:
+                      topologyKey: kubernetes.io/hostname
+                      labelSelector:
+                        matchLabels:
+                          app.kubernetes.io/name: vault-gateway-proxy
+            containers:
+              - name: envoy
+                image: "{{ _r_vault_gateway_envoy_daemonset.resources[0].spec.template.spec.containers[0].image }}"
+                imagePullPolicy: IfNotPresent
+                command:
+                  - /usr/bin/cilium-envoy
+                args:
+                  - -c
+                  - /etc/envoy/envoy.yaml
+                  - --log-level
+                  - warning
+                ports:
+                  - name: http
+                    containerPort: 8080
+                readinessProbe:
+                  tcpSocket:
+                    port: http
+                  initialDelaySeconds: 2
+                  periodSeconds: 5
+                livenessProbe:
+                  tcpSocket:
+                    port: http
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 100m
+                    memory: 96Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: [ALL]
+                  readOnlyRootFilesystem: true
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/envoy
+                    readOnly: true
+                  - name: vault-ca
+                    mountPath: /etc/vault-ca
+                    readOnly: true
+            volumes:
+              - name: config
+                configMap:
+                  name: vault-gateway-proxy
+              - name: vault-ca
+                secret:
+                  secretName: vault-internal-tls
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+- name: Allow only Cilium ingress to reach the Vault gateway bridge
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: vault-gateway-proxy
+        namespace: '{{ vault_ns }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: vault-gateway-proxy
+        ingress:
+          - fromEntities:
+              - ingress
+            toPorts:
+              - ports:
+                  - port: '8080'
+                    protocol: TCP
 - name: Create Vault HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -1009,8 +1219,8 @@
               type: PathPrefix
               value: /
           backendRefs:
-          - name: vault
-            port: 8200
+          - name: vault-gateway-proxy
+            port: 8080
   register: _r_create_vault_httproute_vpn_only_via_admi
   retries: 3
   delay: 15

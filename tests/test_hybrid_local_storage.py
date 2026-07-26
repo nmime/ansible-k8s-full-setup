@@ -90,6 +90,27 @@ def test_component_roles_use_independent_storage_classes():
     assert elasticsearch.count("requiredDuringSchedulingIgnoredDuringExecution") >= 2
 
 
+def test_medium_optimized_filer_survives_large_multipart_backups():
+    profile = load_profile()
+    normalizer = (ROOT / "playbooks/tasks/normalize_profile.yml").read_text()
+    object_storage = (ROOT / "roles/object-storage/tasks/main.yml").read_text()
+
+    assert profile["storage"]["filer_resources"] == {
+        "cpu_request": "100m",
+        "cpu_limit": "1",
+        "memory_request": "512Mi",
+        "memory_limit": "2Gi",
+    }
+    for variable in (
+        "object_storage_filer_cpu_request",
+        "object_storage_filer_cpu_limit",
+        "object_storage_filer_memory_request",
+        "object_storage_filer_memory_limit",
+    ):
+        assert variable in normalizer
+        assert variable in object_storage
+
+
 def test_storage_class_change_requires_full_target_capacity_and_replacement():
     target = load_profile()
     source = copy.deepcopy(target)
