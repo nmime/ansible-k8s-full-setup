@@ -1314,6 +1314,21 @@
     '
   retries: 120
   delay: 15
+- name: Discover the in-cluster GitLab Shell service
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: '{{ gitlab_namespace }}'
+    name: gitlab-gitlab-shell
+  register: gitlab_shell_service
+  retries: 30
+  delay: 5
+  until:
+    - gitlab_shell_service.resources | default([]) | length == 1
+    - gitlab_shell_service.resources[0].spec.clusterIP | default('') | length > 0
+- name: Record the in-cluster GitLab Shell address for GitOps
+  ansible.builtin.set_fact:
+    gitlab_shell_cluster_ip: '{{ gitlab_shell_service.resources[0].spec.clusterIP }}'
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
@@ -1328,6 +1343,9 @@
         - name: admin-gateway
           namespace: cilium-system
           sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: cluster-https
         hostnames:
         - '{{ gitlab_domain }}'
         rules:

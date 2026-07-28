@@ -8,6 +8,10 @@
     argocd_server_replicas: '{{ gitops.server_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_repo_replicas: '{{ gitops.repo_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_controller_replicas: '{{ gitops.controller_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
+    argocd_repo_host_aliases: >-
+      {{ [{'ip': gitlab_shell_cluster_ip,
+           'hostnames': ['gitlab.' ~ domain]}]
+         if gitlab_shell_cluster_ip is defined else [] }}
 - name: Create ArgoCD namespace
   kubernetes.core.k8s:
     state: present
@@ -72,6 +76,7 @@
             memory: 1Gi
       repoServer:
         replicas: '{{ argocd_repo_replicas | int }}'
+        hostAliases: '{{ argocd_repo_host_aliases }}'
         resources:
           requests:
             cpu: '{{ "25m" if resource_tier in ["minimal", "small"] else "100m" }}'
