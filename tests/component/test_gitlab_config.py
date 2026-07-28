@@ -144,6 +144,7 @@ class TestChart10ValuesStructure:
             "request_concurrency = {{ gitlab_runner_concurrent | int }}"
             in values["runners"]["config"]
         )
+        assert 'environment = ["HOME=/tmp"]' in values["runners"]["config"]
         assert values["podSecurityContext"]["seccompProfile"] == {
             "type": "RuntimeDefault"
         }

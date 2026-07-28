@@ -1667,6 +1667,10 @@
           [[runners]]
             clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
             request_concurrency = {{ gitlab_runner_concurrent | int }}
+            # Restricted jobs run as a numeric UID that may not exist in the
+            # image passwd database. Give Git and the helper a writable HOME
+            # so source checkout never falls back to the read-only root path.
+            environment = ["HOME=/tmp"]
             [runners.kubernetes]
               namespace = "{{ gitlab_namespace }}"
               image = "ubuntu:22.04"
