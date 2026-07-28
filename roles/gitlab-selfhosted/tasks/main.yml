@@ -1473,7 +1473,7 @@
   changed_when: "'changed=true' in _gitlab_disable_public_signup.stdout"
   failed_when: "'signup_enabled=false' not in _gitlab_disable_public_signup.stdout"
   when: gitlab_public_webservice_enabled | bool
-- name: Create GitLab Gateway API HTTPRoute
+- name: Create private GitLab Gateway API HTTPRoute
   kubernetes.core.k8s:
     state: present
     definition:
@@ -1483,33 +1483,13 @@
         name: gitlab-webservice
         namespace: '{{ gitlab_namespace }}'
       spec:
-        parentRefs: >-
-          {{
-            [
-              {
-                'name': 'admin-gateway',
-                'namespace': 'cilium-system',
-                'sectionName': 'https'
-              },
-              {
-                'name': 'admin-gateway',
-                'namespace': 'cilium-system',
-                'sectionName': 'cluster-https'
-              }
-            ]
-            +
-            (
-              [
-                {
-                  'name': 'main-gateway',
-                  'namespace': 'cilium-system',
-                  'sectionName': 'https'
-                }
-              ]
-              if gitlab_public_webservice_enabled | bool
-              else []
-            )
-          }}
+        parentRefs:
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: https
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: cluster-https
         hostnames: '{{ [gitlab_domain] + gitlab_domain_aliases }}'
         rules:
         - matches:
@@ -1523,6 +1503,39 @@
   retries: 3
   delay: 10
   until: _r_create_gitlab_gateway_api_httproute_vpn_ is not failed
+- name: Publish the canonical GitLab hostname through the main Gateway
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: gitlab-webservice-public
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        parentRefs:
+        - name: main-gateway
+          namespace: cilium-system
+          sectionName: https
+        hostnames:
+        - '{{ gitlab_domain }}'
+        rules:
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: gitlab-webservice-default
+            port: 8181
+  when: gitlab_public_webservice_enabled | bool
+- name: Remove the public GitLab route when public access is disabled
+  kubernetes.core.k8s:
+    state: absent
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    name: gitlab-webservice-public
+    namespace: '{{ gitlab_namespace }}'
+  when: not gitlab_public_webservice_enabled | bool
 - name: Create GitLab Registry HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present

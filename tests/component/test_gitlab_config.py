@@ -137,10 +137,16 @@ class TestChart10ValuesStructure:
             in facts["set_fact"]["gitlab_public_webservice_enabled"]
         )
 
-        route = next(
+        private_route = next(
             task
             for task in tasks
-            if task.get("name") == "Create GitLab Gateway API HTTPRoute"
+            if task.get("name") == "Create private GitLab Gateway API HTTPRoute"
+        )
+        public_route = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Publish the canonical GitLab hostname through the main Gateway"
         )
         disable_signup = next(
             task
@@ -152,14 +158,24 @@ class TestChart10ValuesStructure:
         assert "signup_enabled: false" in (
             disable_signup["ansible.builtin.command"]["argv"][-1]
         )
-        assert tasks.index(disable_signup) < tasks.index(route)
-        parent_refs = route["kubernetes.core.k8s"]["definition"]["spec"]["parentRefs"]
-        assert "'name': 'admin-gateway'" in parent_refs
-        assert "'name': 'main-gateway'" in parent_refs
-        assert "if gitlab_public_webservice_enabled | bool" in parent_refs
-        assert route["kubernetes.core.k8s"]["definition"]["spec"]["hostnames"] == (
+        assert tasks.index(disable_signup) < tasks.index(public_route)
+        private_spec = private_route["kubernetes.core.k8s"]["definition"]["spec"]
+        assert {parent["name"] for parent in private_spec["parentRefs"]} == {
+            "admin-gateway"
+        }
+        assert private_spec["hostnames"] == (
             "{{ [gitlab_domain] + gitlab_domain_aliases }}"
         )
+        public_spec = public_route["kubernetes.core.k8s"]["definition"]["spec"]
+        assert public_route["when"] == "gitlab_public_webservice_enabled | bool"
+        assert public_spec["parentRefs"] == [
+            {
+                "name": "main-gateway",
+                "namespace": "cilium-system",
+                "sectionName": "https",
+            }
+        ]
+        assert public_spec["hostnames"] == ["{{ gitlab_domain }}"]
 
         install = next(
             task for task in tasks if task.get("name") == "Install GitLab with Helm"
