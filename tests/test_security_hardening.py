@@ -1271,3 +1271,16 @@ def test_dragonfly_auth_secret_change_rolls_statefulset():
     assert "replacement pod $pod did not become Ready within 5 minutes" in rollout
     assert "no_log: true" in rollout
     assert "platform.example.com/dragonfly-applied-credentials-hash" in tasks
+
+
+def test_argocd_reaches_private_gitlab_without_public_exposure():
+    cluster = read("roles/k8s-cluster-management/tasks/main.yml")
+    gitops = read("roles/k8s-gitops/tasks/main.yml")
+    gitlab = read("roles/gitlab-selfhosted/tasks/main.yml")
+
+    assert "name: cluster-https" in cluster
+    assert "admin_gateway_private_ip:" in cluster
+    assert "gitlab_shell_cluster_ip:" in gitlab
+    assert "argocd_repo_host_aliases:" in gitops
+    assert "hostAliases: '{{ argocd_repo_host_aliases }}'" in gitops
+    assert "sectionName: cluster-https" in gitlab

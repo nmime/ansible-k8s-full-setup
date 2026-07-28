@@ -1871,6 +1871,17 @@
             allowedRoutes:
               namespaces:
                 from: All
+          - name: cluster-https
+            protocol: HTTPS
+            port: 443
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: wildcard-tls
+                  namespace: gateway-secrets
+            allowedRoutes:
+              namespaces:
+                from: All
   when: k8s_create_external_tls | default(true) | bool
   register: _r_create_admin_gateway_vpn_only_for_gitlab
   retries: 3
@@ -1897,6 +1908,15 @@
           | map(attribute='nodePort') | first) | int }}
   when:
     - admin_gw_svc.resources | default([]) | length > 0
+    - k8s_create_external_tls | default(true) | bool
+
+- name: Record the cluster-private admin Gateway address
+  ansible.builtin.set_fact:
+    admin_gateway_private_ip: >-
+      {{ admin_gw_svc.resources[0].status.loadBalancer.ingress[0].ip }}
+  when:
+    - admin_gw_svc.resources | default([]) | length > 0
+    - admin_gw_svc.resources[0].status.loadBalancer.ingress | default([]) | length > 0
     - k8s_create_external_tls | default(true) | bool
 
 - name: Require a valid admin Gateway NodePort
