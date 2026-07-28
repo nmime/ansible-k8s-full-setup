@@ -703,6 +703,8 @@
           enabled: true
           bucket: gitlab-registry
         appConfig:
+          initialDefaults:
+            signupEnabled: false
           registry:
             enabled: true
           object_store:
@@ -1449,6 +1451,28 @@
               - ports:
                   - port: '2222'
                     protocol: TCP
+- name: Disable public GitLab self-registration before publishing the webservice
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - --namespace
+      - '{{ gitlab_namespace }}'
+      - deployment/gitlab-toolbox
+      - --container
+      - toolbox
+      - --
+      - gitlab-rails
+      - runner
+      - >-
+        settings = ApplicationSetting.current;
+        changed = settings.signup_enabled;
+        settings.update!(signup_enabled: false) if changed;
+        puts "changed=#{changed};signup_enabled=#{ApplicationSetting.current.signup_enabled}"
+  register: _gitlab_disable_public_signup
+  changed_when: "'changed=true' in _gitlab_disable_public_signup.stdout"
+  failed_when: "'signup_enabled=false' not in _gitlab_disable_public_signup.stdout"
+  when: gitlab_public_webservice_enabled | bool
 - name: Create GitLab Gateway API HTTPRoute
   kubernetes.core.k8s:
     state: present
