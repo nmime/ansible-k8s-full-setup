@@ -18,6 +18,7 @@
     mongo_data_storage_class: '{{ mongodb_data_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
     mongo_service_alias: '{{ databases.mongodb.service_alias | default('''') }}'
     mongo_tls_mode: '{{ databases.mongodb.tls_mode | default(''preferTLS'') }}'
+    mongo_alias_tls_cutover_enabled: '{{ databases.mongodb.alias_tls_cutover_enabled | default(false) | bool }}'
     mongo_tls_cutover_confirmed: '{{ databases.mongodb.tls_cutover_confirmed | default(false) | bool }}'
 - name: Set stable database endpoint variables
   set_fact:
@@ -50,12 +51,15 @@
   ansible.builtin.assert:
     that:
     - mongo_tls_mode in ['preferTLS', 'requireTLS']
-    - mongo_tls_mode != 'requireTLS' or mongo_tls_cutover_confirmed | bool
+    - not mongo_alias_tls_cutover_enabled | bool or mongo_tls_cutover_confirmed | bool
+    - mongo_tls_mode != 'requireTLS' or (mongo_alias_tls_cutover_enabled | bool and mongo_tls_cutover_confirmed | bool)
     fail_msg: >-
       MongoDB tls_mode=requireTLS is a final cutover, not a bootstrap setting.
-      First deploy the alias certificate with preferTLS, mount mongodb-client-ca
-      in every consumer, rotate all URIs to tls=true with tlsCAFile, prove every
-      client, then set tls_cutover_confirmed=true together with requireTLS.
+      First deploy the short Service and alias certificate without changing the
+      operator-managed MongoDB TLS Secrets. Mount mongodb-client-ca in every
+      consumer, rotate the certificates with a combined-CA two-phase rollout,
+      prove every client, then set alias_tls_cutover_enabled=true and
+      tls_cutover_confirmed=true. requireTLS additionally requires both gates.
   when: mongo_service_alias | length > 0
 - name: Validate the staged PostgreSQL TLS cutover gate
   ansible.builtin.assert:
@@ -931,13 +935,13 @@
           ssl: >-
             {{
               mongo_alias_tls_secret
-              if (mongo_service_alias | length > 0)
+              if (mongo_alias_tls_cutover_enabled | bool)
               else omit
             }}
           sslInternal: >-
             {{
               mongo_alias_tls_secret
-              if (mongo_service_alias | length > 0)
+              if (mongo_alias_tls_cutover_enabled | bool)
               else omit
             }}
         tls: >-
@@ -947,7 +951,7 @@
               'allowInvalidCertificates': false,
               'certManagementPolicy': 'userProvidedOnly'
             }
-            if (mongo_service_alias | length > 0)
+            if (mongo_alias_tls_cutover_enabled | bool)
             else omit
           }}
         unsafeFlags:
