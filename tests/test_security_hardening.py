@@ -1154,6 +1154,11 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
     assert "mongo_tls_mode != 'requireTLS' or mongo_tls_cutover_confirmed | bool" in (
         gate["that"]
     )
+    published_ca = by_name["Publish the hostname-verifying MongoDB client CA"][
+        "kubernetes.core.k8s"
+    ]["definition"]
+    assert "type" not in published_ca
+    assert published_ca["stringData"]["ca.crt"]
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():

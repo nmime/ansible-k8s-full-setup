@@ -1164,7 +1164,6 @@
         namespace: '{{ item }}'
         annotations:
           argocd.argoproj.io/compare-options: IgnoreExtraneous
-      type: Opaque
       stringData:
         ca.crt: '{{ _database_alias_ca_secret.resources[0].data["ca.crt"] | b64decode }}'
   loop: '{{ databases.mongodb.tls_consumer_namespaces | default([]) }}'
