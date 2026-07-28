@@ -465,6 +465,47 @@
   retries: 60
   delay: 15
   when: platform_postgresql_enabled | default(true) | bool
+- name: Validate extra PostgreSQL role search paths
+  ansible.builtin.assert:
+    that:
+    - item.name is match('^[a-z_][a-z0-9_]*$')
+    - item.search_path is match('^[a-z_][a-z0-9_]*$')
+    fail_msg: >-
+      PostgreSQL extra-user names and search_path values must be lowercase
+      SQL identifiers.
+  loop: '{{ databases.postgresql.extra_users | default([]) }}'
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - item.search_path is defined
+- name: Discover the PostgreSQL primary for extra role settings
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: '{{ db_ns }}'
+    label_selectors:
+    - postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg
+    - postgres-operator.crunchydata.com/role=primary
+  register: _extra_pg_primary
+  until: (_extra_pg_primary.resources | default([])) | length == 1
+  retries: 30
+  delay: 5
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - >-
+    databases.postgresql.extra_users | default([]) |
+    selectattr('search_path', 'defined') | list | length > 0
+- name: Configure extra PostgreSQL role search paths
+  kubernetes.core.k8s_exec:
+    namespace: '{{ db_ns }}'
+    pod: '{{ _extra_pg_primary.resources[0].metadata.name }}'
+    container: database
+    command: >-
+      psql -v ON_ERROR_STOP=1 -d postgres
+      -c 'ALTER ROLE "{{ item.name }}" SET search_path TO
+      "{{ item.search_path }}", pg_catalog;'
+  loop: '{{ databases.postgresql.extra_users | default([]) }}'
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - item.search_path is defined
 - name: Check MongoDB Operator Helm release status
   ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
   register: _mongo_operator_helm_status
