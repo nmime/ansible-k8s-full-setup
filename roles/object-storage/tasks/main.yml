@@ -477,11 +477,11 @@
             replicas: "{{ object_storage_filer_replicas | int }}"
             resources:
               requests:
-                cpu: 100m
-                memory: 256Mi
+                cpu: "{{ object_storage_filer_cpu_request | default('100m') }}"
+                memory: "{{ object_storage_filer_memory_request | default('256Mi') }}"
               limits:
-                cpu: '1'
-                memory: 1Gi
+                cpu: "{{ object_storage_filer_cpu_limit | default('1') }}"
+                memory: "{{ object_storage_filer_memory_limit | default('1Gi') }}"
             data:
               type: persistentVolumeClaim
               storageClass: "{{ object_storage_filer_storage_class | default(object_storage_storage_class | default(storage_class | default('hcloud-volumes'))) }}"
