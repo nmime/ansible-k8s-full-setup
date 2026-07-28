@@ -1329,6 +1329,54 @@
 - name: Record the in-cluster GitLab Shell address for GitOps
   ansible.builtin.set_fact:
     gitlab_shell_cluster_ip: '{{ gitlab_shell_service.resources[0].spec.clusterIP }}'
+- name: Allow Argo CD repository access to GitLab Shell
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-argocd-to-gitlab-shell
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        podSelector:
+          matchLabels:
+            app: gitlab-shell
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: argocd
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: argocd-repo-server
+            ports:
+              - port: 2222
+                protocol: TCP
+- name: Allow Argo CD repository access in the Cilium policy plane
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-argocd-to-gitlab-shell
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: gitlab-shell
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: argocd
+                  k8s:app.kubernetes.io/name: argocd-repo-server
+            toPorts:
+              - ports:
+                  - port: '2222'
+                    protocol: TCP
 - name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
     state: present
