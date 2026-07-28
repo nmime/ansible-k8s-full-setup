@@ -701,6 +701,29 @@ def test_storage_egress_includes_the_selected_seaweedfs_s3_port():
     assert "kubernetes.io/metadata.name: vault" in ingress
 
 
+def test_medium_and_production_enable_cilium_wireguard_transport_encryption():
+    for profile in ("medium-optimized", "production"):
+        values = yaml.safe_load(
+            read(f"platform-orchestrator/profiles/{profile}.yaml")
+        )
+        assert values["kubernetes"]["features"]["encryption"] is True
+
+    cluster = read("roles/k8s-cluster-management/tasks/main.yml")
+    assert (
+        'cilium_encryption_enabled: "{{ network.encryption | default(true) | bool }}"'
+        in cluster
+    )
+    assert "cilium_encryption_type: wireguard" in cluster
+    assert "cilium_encryption_node_encryption: true" in cluster
+
+    firewall = read("roles/hetzner-infra/tasks/main.yml")
+    wireguard = firewall.split("description: Cilium WireGuard encryption", 1)[0]
+    wireguard = wireguard.rsplit("- direction: in", 1)[1]
+    assert "protocol: udp" in wireguard
+    assert "port: '51871'" in wireguard
+    assert "source_ips: ['{{ network_cidr }}']" in wireguard
+
+
 def test_apiserver_ingress_allows_aggregated_api_target_port():
     cluster = read("roles/k8s-cluster-management/tasks/main.yml")
     policy = cluster.split(
@@ -736,7 +759,8 @@ def test_seaweedfs_uses_and_verifies_hashicorp_raft():
     assert "app.kubernetes.io/component: filer" in content
     assert 'port: "8333"' in content
     assert 'port: "8888"' in content
-    assert "fromEntities:" in content and "- cluster" in content
+    assert "fromEntities:" in content and "- ingress" in content
+    assert "k8s:io.kubernetes.pod.namespace: gitlab" in content
 
 
 def test_seaweedfs_replicates_multi_server_data_and_refreshes_filer_topology():
@@ -1053,6 +1077,83 @@ def test_mongodb_supports_a_stable_short_service_alias():
     assert service["spec"]["ports"][0]["port"] == 27017
     assert service["spec"]["selector"]["app.kubernetes.io/replset"] == "rs0"
     assert "mongo_service_alias | length > 0" in alias_task["when"]
+
+
+def test_database_aliases_are_hostname_verified_without_renaming_operator_objects():
+    tasks = yaml.safe_load(read("roles/k8s-databases/tasks/main.yml"))
+    by_name = {task.get("name"): task for task in tasks}
+    assert "1.23.0" in tasks[0]["set_fact"]["psmdb_operator_ver"]
+    crd_reconcile = by_name[
+        "Reconcile MongoDB Operator CRDs for the selected version"
+    ]["ansible.builtin.shell"]
+    assert "helm show crds percona/psmdb-operator" in crd_reconcile
+    assert "--server-side" in crd_reconcile
+    assert "--force-conflicts" in crd_reconcile
+
+    pg_alias = by_name["Create stable short PostgreSQL service alias"][
+        "kubernetes.core.k8s"
+    ]["definition"]
+    assert pg_alias["metadata"]["name"] == "{{ pg_service_alias }}"
+    assert pg_alias["spec"]["selector"] == {
+        "postgres-operator.crunchydata.com/cluster": (
+            "{{ project_name | default('k8s') }}-pg"
+        ),
+        "postgres-operator.crunchydata.com/role": "pgbouncer",
+    }
+
+    pg_certificate = by_name[
+        "Issue hostname-verified PostgreSQL alias certificate"
+    ]["kubernetes.core.k8s"]["definition"]["spec"]
+    assert "{{ pg_service_alias }}.{{ db_ns }}.svc.cluster.local" in (
+        pg_certificate["dnsNames"]
+    )
+    assert pg_certificate["secretName"] == "{{ pg_alias_tls_secret }}"
+
+    mongo_certificate = by_name[
+        "Issue hostname-verified MongoDB alias certificate"
+    ]["kubernetes.core.k8s"]["definition"]["spec"]
+    assert "{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local" in (
+        mongo_certificate["dnsNames"]
+    )
+    assert mongo_certificate["secretName"] == "{{ mongo_alias_tls_secret }}"
+
+    pg_cluster = by_name[
+        "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
+    ]["kubernetes.core.k8s"]["definition"]
+    assert pg_cluster["metadata"]["name"] == "{{ project_name | default('k8s') }}-pg"
+    assert "pg_tls_mode == 'requireTLS'" in pg_cluster["spec"]["tlsOnly"]
+    custom_tls_secret = pg_cluster["spec"]["proxy"]["pgBouncer"][
+        "customTLSSecret"
+    ]
+    assert "pg_alias_tls_secret" in custom_tls_secret
+    assert "else omit" in custom_tls_secret
+    pg_hba_final = pg_cluster["spec"]["patroni"]["dynamicConfiguration"][
+        "postgresql"
+    ]["pg_hba"][-1]
+    assert "host all all all reject" in pg_hba_final
+    assert "host all all all scram-sha-256" in pg_hba_final
+    pg_gate = by_name["Validate the staged PostgreSQL TLS cutover gate"][
+        "ansible.builtin.assert"
+    ]
+    assert "pg_tls_mode != 'requireTLS' or pg_tls_cutover_confirmed | bool" in (
+        pg_gate["that"]
+    )
+
+    mongo_cluster = by_name["Create MongoDB cluster"]["kubernetes.core.k8s"][
+        "definition"
+    ]
+    assert mongo_cluster["metadata"]["name"] == (
+        "{{ project_name | default('k8s') }}-mongo"
+    )
+    assert "'mode': mongo_tls_mode" in mongo_cluster["spec"]["tls"]
+    assert "'allowInvalidCertificates': false" in mongo_cluster["spec"]["tls"]
+    assert "'certManagementPolicy': 'userProvidedOnly'" in mongo_cluster["spec"]["tls"]
+    gate = by_name["Validate the staged MongoDB TLS cutover gate"][
+        "ansible.builtin.assert"
+    ]
+    assert "mongo_tls_mode != 'requireTLS' or mongo_tls_cutover_confirmed | bool" in (
+        gate["that"]
+    )
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():

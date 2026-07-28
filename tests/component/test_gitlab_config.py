@@ -140,8 +140,17 @@ class TestChart10ValuesStructure:
         assert f'clone_url = "{internal}"' in values["runners"]["config"]
         assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
         assert values["metrics"] == {"enabled": True}
+        assert values["serviceAccount"] == {"create": True}
+        assert values["nodeSelector"] == {
+            "node-role.kubernetes.io/worker": "true"
+        }
+        assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
             "request_concurrency = {{ gitlab_runner_concurrent | int }}"
+            in values["runners"]["config"]
+        )
+        assert (
+            'node_selector = { "node-role.kubernetes.io/worker" = "true" }'
             in values["runners"]["config"]
         )
         assert 'environment = ["HOME=/tmp"]' in values["runners"]["config"]
@@ -225,10 +234,15 @@ class TestChart10ValuesStructure:
         assert "^glrt-[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)*$" in gate
         assert "vault_encrypt_secrets | default(true) | bool" in gate
         assert "gitlab_runner_concurrent | int > 0" in gate
+        assert "gitlab_runner_replicas | int > 0" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
+        assert "replicas: '{{ gitlab_runner_replicas | int }}'" in install
         assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
+        assert "allow_privilege_escalation = false" in install
+        assert 'cap_drop = ["ALL"]' in install
+        assert "automount_service_account_token = false" in install
         assert "gitlab_runner_token is defined" not in install
         assert "gitlab_runner_token != ''" not in install
         assert "no_log: true" in install
@@ -238,6 +252,7 @@ class TestChart10ValuesStructure:
         )[1].split("- name: Add GitLab Runner Helm repository", 1)[0]
         assert "platform-gitlab-runner-auth" in bootstrap
         assert "/api/v4/runners/verify" in bootstrap
+        assert "s_ansible_k8s_reconcile" in bootstrap
         assert "/api/v4/runners" in bootstrap
         assert "gitlab-gitlab-runner-secret" in bootstrap
         assert "'runner-registration-token'] | b64decode" in bootstrap
@@ -272,8 +287,12 @@ class TestChart10ValuesStructure:
             == "Wait for the enabled GitLab Runner deployment to converge"
         )
         assert install["kubernetes.core.helm"]["wait"] is True
+        assert install["kubernetes.core.helm"]["force_conflicts"] is True
         assert install["kubernetes.core.helm"]["values"]["concurrent"] == (
             "{{ gitlab_runner_concurrent | int }}"
+        )
+        assert install["kubernetes.core.helm"]["values"]["replicas"] == (
+            "{{ gitlab_runner_replicas | int }}"
         )
         assert converge["kubernetes.core.k8s_info"]["name"] == "gitlab-runner"
         assert converge["when"] == "gitlab_runner_enabled | bool"
@@ -647,6 +666,14 @@ class TestNoDeprecatedKeys:
     def test_external_postgresql_uses_global_psql(self):
         assert re.search(r'^\s+psql:\s*$', self.content, re.MULTILINE)
         assert "-pg-pgbouncer.databases.svc.cluster.local" in self.content
+
+    @pytest.mark.component
+    def test_external_postgresql_verifies_the_internal_tls_identity(self):
+        assert "databases.postgresql.service_alias" in self.content
+        assert "PGSSLMODE: verify-full" in self.content
+        assert "PGSSLROOTCERT: /etc/gitlab/postgresql/ca.crt" in self.content
+        assert self.content.count("secretName: gitlab-postgresql-password") >= 5
+        assert self.content.count("mountPath: /etc/gitlab/postgresql") >= 5
 
     @pytest.mark.component
     def test_no_obsolete_database_external_key(self):

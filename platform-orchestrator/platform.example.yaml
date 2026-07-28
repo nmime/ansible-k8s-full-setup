@@ -114,6 +114,14 @@ databases:
     version: 18
     replicas: 1
     storage_size: 30Gi
+    # Optional stable PgBouncer DNS. When set, the role issues a private
+    # cert-manager certificate containing both the alias and the operator
+    # service SANs and publishes verify-full connection secrets with the
+    # matching CA. Start with preferTLS. Only after every direct and pooled
+    # consumer is proven may requireTLS be paired with cutover confirmation.
+    service_alias: ""
+    tls_mode: preferTLS
+    tls_cutover_confirmed: false
     # Operator-created helper containers use tier-aware defaults. Any helper
     # can be tuned independently with the same requests/limits dictionary:
     # resources:
@@ -124,9 +132,18 @@ databases:
     # pgbackrest_init, pgbackrest_repo_host, and pgbackrest_job.
   mongodb:
     enabled: false
-    # Optional stable seed DNS:
-    # <service_alias>.databases.svc.cluster.local
+    # Optional stable seed DNS. This requires PSMDB Operator >=1.23 because
+    # v1.22 overwrites externally-added SANs. The role uses
+    # certManagementPolicy=userProvidedOnly and
+    # allowInvalidCertificates=false. Roll out with preferTLS first; consumers
+    # must mount mongodb-client-ca and add
+    # tls=true&tlsCAFile=/etc/mongodb-tls/ca.crt to their URI. Only after all
+    # clients are proven may requireTLS be paired with cutover confirmation.
     service_alias: ""
+    operator_version: "1.23.0"
+    tls_mode: preferTLS
+    tls_cutover_confirmed: false
+    tls_consumer_namespaces: []
     version: "8.0"
     replicas: 1
     storage_size: 30Gi

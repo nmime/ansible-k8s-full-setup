@@ -1,0 +1,43 @@
+---
+- name: "Backup-DR | Remove the disabled Velero Helm release"
+  kubernetes.core.helm:
+    name: velero
+    release_namespace: "{{ backup_dr_namespace }}"
+    state: absent
+    wait: true
+  register: backup_dr_velero_disabled_helm
+  retries: 3
+  delay: 10
+  until: backup_dr_velero_disabled_helm is not failed
+
+- name: "Backup-DR | Discover stale PodVolumeBackups before namespace removal"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: PodVolumeBackup
+    namespace: "{{ backup_dr_namespace }}"
+  register: backup_dr_disabled_pod_volume_backups
+  failed_when: false
+
+- name: "Backup-DR | Release stale PodVolumeBackup finalizers"
+  kubernetes.core.k8s:
+    state: present
+    merge_type: merge
+    definition:
+      apiVersion: velero.io/v1
+      kind: PodVolumeBackup
+      metadata:
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ backup_dr_namespace }}"
+        finalizers: []
+  loop: "{{ backup_dr_disabled_pod_volume_backups.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: "Backup-DR | Remove the disabled Velero runtime namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ backup_dr_namespace }}"
+    wait: true
+    wait_timeout: 300

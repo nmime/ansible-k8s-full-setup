@@ -26,7 +26,24 @@ VAULT_MIGRATE = SCRIPTS / "vault-storage-migrate.sh"
 CAPTURE_REPOSITORY = SCRIPTS / "capture-repository-state.sh"
 RESTORE_UNTRACKED = SCRIPTS / "restore-repository-untracked.sh"
 VELERO = ROOT / "roles" / "backup-restore" / "tasks" / "velero.yml"
+VELERO_DISABLED = (
+    ROOT / "roles" / "backup-restore" / "tasks" / "velero_disabled.yml"
+)
+BACKUP_TASKS = ROOT / "roles" / "backup-restore" / "tasks" / "main.yml"
 TEARDOWN = ROOT / "teardown.sh"
+
+
+def test_disabled_dr_removes_the_stale_velero_runtime():
+    tasks = BACKUP_TASKS.read_text(encoding="utf-8")
+    cleanup = VELERO_DISABLED.read_text(encoding="utf-8")
+
+    assert "velero_disabled.yml" in tasks
+    assert "not (backup_dr_enabled | bool)" in tasks
+    assert 'name: velero' in cleanup
+    assert "state: absent" in cleanup
+    assert "PodVolumeBackup" in cleanup
+    assert "finalizers: []" in cleanup
+    assert 'name: "{{ backup_dr_namespace }}"' in cleanup
 
 
 @pytest.mark.parametrize(

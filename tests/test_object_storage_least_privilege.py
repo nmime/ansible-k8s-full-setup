@@ -1,0 +1,137 @@
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text()
+
+
+def test_seaweedfs_runtime_identities_are_bucket_scoped():
+    tasks = read("roles/object-storage/tasks/main.yml")
+    auth = tasks.split("name: Create SeaweedFS S3 auth/config secret", 1)[1].split(
+        "register: _r_seaweedfs_s3_secret", 1
+    )[0]
+
+    for identity in (
+        "bucket-bootstrap",
+        "gitlab",
+        "backup",
+        "observability",
+        "gitlab-runner-cache",
+        "nx-cache-protected",
+        "nx-cache-development",
+    ):
+        assert f"'name': '{identity}'" in auth
+    assert "'actions': ['Admin']" in auth
+    assert "bootstrap_actions.append('Admin:' ~ bucket)" in auth
+    assert "'Write:nx-cache-protected'" in auth
+    assert "'Write:nx-cache-development'" in auth
+    assert "AWS_ACCESS_KEY_ID" not in auth
+    assert "AWS_SECRET_ACCESS_KEY" not in auth
+
+
+def test_root_credentials_are_not_used_by_runtime_consumers():
+    consumers = {
+        "roles/gitlab-selfhosted/tasks/main.yml": "object_storage_gitlab_access_key",
+        "roles/k8s-databases/tasks/main.yml": "object_storage_backup_access_key",
+        "roles/k8s-observability/tasks/main.yml": (
+            "object_storage_observability_access_key"
+        ),
+        "roles/k8s-observability/tasks/tracing.yml": (
+            "object_storage_observability_access_key"
+        ),
+        "roles/backup-restore/defaults/main.yml": "object_storage_backup_access_key",
+    }
+    for path, scoped_key in consumers.items():
+        content = read(path)
+        assert scoped_key in content
+        assert "{{ object_storage_access_key }}" not in content
+
+
+def test_scoped_credentials_are_encrypted_and_persisted():
+    tasks = read("roles/generate-secrets/tasks/main.yml")
+    for group in (
+        "bootstrap",
+        "gitlab",
+        "backup",
+        "observability",
+        "ci_cache",
+        "nx_cache_protected",
+        "nx_cache_development",
+    ):
+        access_key = f"object_storage_{group}_access_key"
+        secret_key = f"object_storage_{group}_secret_key"
+        assert tasks.count(access_key) >= 4
+        assert tasks.count(secret_key) >= 4
+    assert "Require distinct least-privilege object-storage credentials" in read(
+        "roles/object-storage/tasks/main.yml"
+    )
+
+
+def test_storage_default_deny_is_enabled_with_explicit_callers():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    tasks = read("roles/object-storage/tasks/main.yml")
+    policy = tasks.split("name: Allow object storage ingress on SeaweedFS ports", 1)[
+        1
+    ].split("name: Display object storage summary", 1)[0]
+
+    assert defaults["object_storage_network_policy_enabled"] is True
+    assert "fromEntities: [cluster]" not in policy
+    for namespace in (
+        "gitlab",
+        "monitoring",
+        "databases",
+        "vault",
+        "production",
+        "preproduction",
+    ):
+        assert f"pod.namespace: {namespace}" in policy
+    assert "pod.namespace: \"{{ object_storage_namespace_resolved }}\"" in policy
+
+
+def test_declared_buckets_have_bounded_credential_groups():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    buckets = {
+        item["name"] if isinstance(item, dict) else item
+        for item in defaults["object_storage_buckets"]
+    }
+    assert {
+        "gitlab-runner-cache",
+        "nx-cache-protected",
+        "nx-cache-development",
+    } <= buckets
+    assert set(defaults["object_storage_gitlab_buckets"]) <= buckets
+    assert set(defaults["object_storage_observability_buckets"]) <= buckets
+    assert set(defaults["object_storage_backup_buckets"]) <= buckets
+    assert set(defaults["object_storage_ci_cache_buckets"]) <= buckets
+
+
+def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    tasks = read("roles/object-storage/tasks/main.yml")
+    policies = {
+        item["name"]: item
+        for item in defaults["object_storage_managed_bucket_policies"]
+    }
+
+    assert defaults["object_storage_managed_bucket_policies_enabled"] is True
+    assert defaults["object_storage_managed_bucket_policy_supported_chart_versions"] == [
+        "4.25.1"
+    ]
+    assert policies["nx-cache-protected"]["ttl"] == "30d"
+    assert policies["nx-cache-development"]["ttl"] == "7d"
+    assert "createBuckets:" in tasks
+    assert "object_storage_managed_bucket_policies" in tasks
+    assert "s3.bucket.quota -name={{ policy.name }} -op=set" in tasks
+    assert "s3.bucket.quota.enforce -apply" in tasks
+    assert "kind: CronJob" in tasks
+    assert "concurrencyPolicy: Forbid" in tasks
+    assert "automountServiceAccountToken: false" in tasks
+    assert "readOnlyRootFilesystem: true" in tasks
+    assert "@sha256:" in defaults["object_storage_policy_image"]
+    assert "CACHE_TTL_HOURS" not in tasks
+    assert "CACHE_MAX_BYTES" not in tasks

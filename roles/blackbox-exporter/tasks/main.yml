@@ -90,7 +90,14 @@
   set_fact:
     bb_internal_targets: >-
       {{
-        ([ (project_name | default('k8s')) + '-pg-pgbouncer.databases.svc.cluster.local:5432' ] if platform_postgresql_enabled | default(false) | bool else []) +
+        ([
+          (
+            (databases.postgresql.service_alias ~ '.databases.svc.cluster.local')
+            if (databases.postgresql.service_alias | default('') | length > 0)
+            else
+            ((project_name | default('k8s')) ~ '-pg-pgbouncer.databases.svc.cluster.local')
+          ) ~ ':5432'
+        ] if platform_postgresql_enabled | default(false) | bool else []) +
         ([ 'elasticsearch.elasticsearch.svc.cluster.local:9200' ] if platform_elasticsearch_enabled | default(false) | bool else []) +
         ([ 'dragonfly.dragonfly.svc.cluster.local:6379' ] if platform_dragonfly_enabled | default(false) | bool else []) +
         ([ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') ] if platform_object_storage_enabled | default(false) | bool else [])

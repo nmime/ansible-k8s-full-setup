@@ -11,7 +11,73 @@
         object_storage_api_domain_resolved: "{{ object_storage_api_domain | default(('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local', true) }}"
         object_storage_access_key_resolved: "{{ object_storage_access_key | default('seaweedfsadmin', true) }}"
         object_storage_secret_key_resolved: "{{ object_storage_secret_key | default('seaweedfsadmin123456789', true) }}"
+        object_storage_bootstrap_access_key_resolved: "{{ object_storage_bootstrap_access_key }}"
+        object_storage_bootstrap_secret_key_resolved: "{{ object_storage_bootstrap_secret_key }}"
+        object_storage_gitlab_access_key_resolved: "{{ object_storage_gitlab_access_key }}"
+        object_storage_gitlab_secret_key_resolved: "{{ object_storage_gitlab_secret_key }}"
+        object_storage_backup_access_key_resolved: "{{ object_storage_backup_access_key }}"
+        object_storage_backup_secret_key_resolved: "{{ object_storage_backup_secret_key }}"
+        object_storage_observability_access_key_resolved: "{{ object_storage_observability_access_key }}"
+        object_storage_observability_secret_key_resolved: "{{ object_storage_observability_secret_key }}"
+        object_storage_ci_cache_access_key_resolved: "{{ object_storage_ci_cache_access_key }}"
+        object_storage_ci_cache_secret_key_resolved: "{{ object_storage_ci_cache_secret_key }}"
+        object_storage_nx_cache_protected_access_key_resolved: "{{ object_storage_nx_cache_protected_access_key }}"
+        object_storage_nx_cache_protected_secret_key_resolved: "{{ object_storage_nx_cache_protected_secret_key }}"
+        object_storage_nx_cache_development_access_key_resolved: "{{ object_storage_nx_cache_development_access_key }}"
+        object_storage_nx_cache_development_secret_key_resolved: "{{ object_storage_nx_cache_development_secret_key }}"
       no_log: true
+
+    - name: Require distinct least-privilege object-storage credentials
+      no_log: true
+      ansible.builtin.assert:
+        that:
+          - _object_storage_access_keys | length == (_object_storage_access_keys | unique | length)
+          - _object_storage_secret_keys | length == (_object_storage_secret_keys | unique | length)
+          - _object_storage_access_keys | map('length') | min >= 12
+          - _object_storage_secret_keys | map('length') | min >= 24
+        fail_msg: >-
+          SeaweedFS root, bootstrap, GitLab, backup, observability, CI-cache,
+          and Nx-cache credentials must be non-empty and pairwise distinct.
+          Refusing to mount a global Admin credential into runtime workloads.
+      vars:
+        _object_storage_access_keys:
+          - "{{ object_storage_access_key_resolved }}"
+          - "{{ object_storage_bootstrap_access_key_resolved }}"
+          - "{{ object_storage_gitlab_access_key_resolved }}"
+          - "{{ object_storage_backup_access_key_resolved }}"
+          - "{{ object_storage_observability_access_key_resolved }}"
+          - "{{ object_storage_ci_cache_access_key_resolved }}"
+          - "{{ object_storage_nx_cache_protected_access_key_resolved }}"
+          - "{{ object_storage_nx_cache_development_access_key_resolved }}"
+        _object_storage_secret_keys:
+          - "{{ object_storage_secret_key_resolved }}"
+          - "{{ object_storage_bootstrap_secret_key_resolved }}"
+          - "{{ object_storage_gitlab_secret_key_resolved }}"
+          - "{{ object_storage_backup_secret_key_resolved }}"
+          - "{{ object_storage_observability_secret_key_resolved }}"
+          - "{{ object_storage_ci_cache_secret_key_resolved }}"
+          - "{{ object_storage_nx_cache_protected_secret_key_resolved }}"
+          - "{{ object_storage_nx_cache_development_secret_key_resolved }}"
+
+    - name: Gate managed bucket policies on the audited SeaweedFS chart
+      ansible.builtin.assert:
+        that:
+          - >-
+            (object_storage_chart_version | string) in
+            (object_storage_managed_bucket_policy_supported_chart_versions | default([]))
+          - >-
+            object_storage_managed_bucket_policies | default([]) |
+            map(attribute='name') | unique | length ==
+            object_storage_managed_bucket_policies | default([]) | length
+          - >-
+            object_storage_managed_bucket_policies | default([]) |
+            map(attribute='quota_mib') | map('int') | min > 0
+        fail_msg: >-
+          Managed bucket TTL/quota automation is enabled, but the selected
+          SeaweedFS chart or policy inventory has not passed the version and
+          bounded-growth gate. Audit the chart's createBuckets TTL hook and
+          s3.bucket.quota commands before adding a supported version.
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
 
 
     - name: Create object storage namespace
@@ -47,26 +113,116 @@
           type: Opaque
           stringData:
             seaweedfs_s3_config: >-
+              {%- set managed_buckets = [] -%}
+              {%- for bucket in object_storage_buckets | default([]) -%}
+              {%- set _ = managed_buckets.append(bucket.name | default(bucket, true)) -%}
+              {%- endfor -%}
+              {%- set bootstrap_actions = [] -%}
+              {%- for bucket in managed_buckets -%}
+              {%- set _ = bootstrap_actions.append('Admin:' ~ bucket) -%}
+              {%- endfor -%}
+              {%- set gitlab_actions = [] -%}
+              {%- for bucket in object_storage_gitlab_buckets -%}
+              {%- for action in ['Read', 'Write', 'List', 'Tagging'] -%}
+              {%- set _ = gitlab_actions.append(action ~ ':' ~ bucket) -%}
+              {%- endfor -%}
+              {%- endfor -%}
+              {%- set backup_actions = [] -%}
+              {%- for bucket in object_storage_backup_buckets -%}
+              {%- for action in ['Read', 'Write', 'List', 'Tagging'] -%}
+              {%- set _ = backup_actions.append(action ~ ':' ~ bucket) -%}
+              {%- endfor -%}
+              {%- endfor -%}
+              {%- set observability_actions = [] -%}
+              {%- for bucket in object_storage_observability_buckets -%}
+              {%- for action in ['Read', 'Write', 'List', 'Tagging'] -%}
+              {%- set _ = observability_actions.append(action ~ ':' ~ bucket) -%}
+              {%- endfor -%}
+              {%- endfor -%}
+              {%- set ci_cache_actions = [] -%}
+              {%- for bucket in object_storage_ci_cache_buckets -%}
+              {%- for action in ['Read', 'Write', 'List', 'Tagging'] -%}
+              {%- set _ = ci_cache_actions.append(action ~ ':' ~ bucket) -%}
+              {%- endfor -%}
+              {%- endfor -%}
               {{
                 {
                   'identities': [
                     {
                       'name': 'admin',
-                      'credentials': [
-                        {
-                          'accessKey': object_storage_access_key_resolved,
-                          'secretKey': object_storage_secret_key_resolved
-                        }
-                      ],
-                      'actions': ['Admin', 'Read', 'Write', 'List', 'Tagging']
+                      'credentials': [{
+                        'accessKey': object_storage_access_key_resolved,
+                        'secretKey': object_storage_secret_key_resolved
+                      }],
+                      'actions': ['Admin']
+                    },
+                    {
+                      'name': 'bucket-bootstrap',
+                      'credentials': [{
+                        'accessKey': object_storage_bootstrap_access_key_resolved,
+                        'secretKey': object_storage_bootstrap_secret_key_resolved
+                      }],
+                      'actions': bootstrap_actions
+                    },
+                    {
+                      'name': 'gitlab',
+                      'credentials': [{
+                        'accessKey': object_storage_gitlab_access_key_resolved,
+                        'secretKey': object_storage_gitlab_secret_key_resolved
+                      }],
+                      'actions': gitlab_actions
+                    },
+                    {
+                      'name': 'backup',
+                      'credentials': [{
+                        'accessKey': object_storage_backup_access_key_resolved,
+                        'secretKey': object_storage_backup_secret_key_resolved
+                      }],
+                      'actions': backup_actions
+                    },
+                    {
+                      'name': 'observability',
+                      'credentials': [{
+                        'accessKey': object_storage_observability_access_key_resolved,
+                        'secretKey': object_storage_observability_secret_key_resolved
+                      }],
+                      'actions': observability_actions
+                    },
+                    {
+                      'name': 'gitlab-runner-cache',
+                      'credentials': [{
+                        'accessKey': object_storage_ci_cache_access_key_resolved,
+                        'secretKey': object_storage_ci_cache_secret_key_resolved
+                      }],
+                      'actions': ci_cache_actions
+                    },
+                    {
+                      'name': 'nx-cache-protected',
+                      'credentials': [{
+                        'accessKey': object_storage_nx_cache_protected_access_key_resolved,
+                        'secretKey': object_storage_nx_cache_protected_secret_key_resolved
+                      }],
+                      'actions': [
+                        'Read:nx-cache-protected', 'Write:nx-cache-protected',
+                        'List:nx-cache-protected', 'Tagging:nx-cache-protected'
+                      ]
+                    },
+                    {
+                      'name': 'nx-cache-development',
+                      'credentials': [{
+                        'accessKey': object_storage_nx_cache_development_access_key_resolved,
+                        'secretKey': object_storage_nx_cache_development_secret_key_resolved
+                      }],
+                      'actions': [
+                        'Read:nx-cache-development', 'Write:nx-cache-development',
+                        'List:nx-cache-development', 'Tagging:nx-cache-development'
+                      ]
                     }
                   ]
                 } | to_json
               }}
             admin_access_key_id: "{{ object_storage_access_key_resolved }}"
             admin_secret_access_key: "{{ object_storage_secret_key_resolved }}"
-            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
-            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
       register: _r_seaweedfs_s3_secret
       retries: 3
       delay: 10
@@ -119,8 +275,15 @@
         - name: object-storage-credentials
           namespace: "{{ object_storage_namespace_resolved }}"
           stringData:
-            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
-            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
+            AWS_ACCESS_KEY_ID: "{{ object_storage_bootstrap_access_key_resolved }}"
+            AWS_SECRET_ACCESS_KEY: "{{ object_storage_bootstrap_secret_key_resolved }}"
+            endpoint: "{{ object_storage_endpoint_resolved }}"
+            region: "{{ object_storage_region | default('us-east-1') }}"
+        - name: object-storage-bootstrap-credentials
+          namespace: "{{ object_storage_namespace_resolved }}"
+          stringData:
+            AWS_ACCESS_KEY_ID: "{{ object_storage_bootstrap_access_key_resolved }}"
+            AWS_SECRET_ACCESS_KEY: "{{ object_storage_bootstrap_secret_key_resolved }}"
             endpoint: "{{ object_storage_endpoint_resolved }}"
             region: "{{ object_storage_region | default('us-east-1') }}"
       register: _r_object_storage_compat_secrets
@@ -330,6 +493,15 @@
               port: 8333
               enableAuth: true
               existingConfigSecret: seaweedfs-s3-config
+              # Chart 4.25.1 creates these buckets before consumers start and
+              # applies fs.configure path TTL on every install/upgrade.
+              createBuckets: >-
+                {{
+                  object_storage_managed_bucket_policies | default([])
+                  if object_storage_managed_bucket_policies_enabled |
+                    default(false) | bool
+                  else []
+                }}
           s3:
             enabled: false
           metrics:
@@ -550,12 +722,12 @@
                       - name: AWS_ACCESS_KEY_ID
                         valueFrom:
                           secretKeyRef:
-                            name: seaweedfs-s3-config
+                            name: object-storage-bootstrap-credentials
                             key: AWS_ACCESS_KEY_ID
                       - name: AWS_SECRET_ACCESS_KEY
                         valueFrom:
                           secretKeyRef:
-                            name: seaweedfs-s3-config
+                            name: object-storage-bootstrap-credentials
                             key: AWS_SECRET_ACCESS_KEY
                       - name: AWS_DEFAULT_REGION
                         value: "{{ object_storage_region | default('us-east-1') }}"
@@ -580,6 +752,110 @@
         - >-
           _r_object_storage_bucket_bootstrap_status.resources[0].status.succeeded |
           default(0) | int == 1
+
+    - name: Install periodic SeaweedFS managed-bucket quota enforcement
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: seaweedfs-bucket-quota-enforcer
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: bucket-policy
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            schedule: "{{ object_storage_quota_enforcement_schedule | default('*/5 * * * *') }}"
+            concurrencyPolicy: Forbid
+            startingDeadlineSeconds: 240
+            successfulJobsHistoryLimit: 1
+            failedJobsHistoryLimit: 3
+            jobTemplate:
+              spec:
+                backoffLimit: 3
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: seaweedfs
+                      app.kubernetes.io/component: bucket-policy
+                  spec:
+                    restartPolicy: OnFailure
+                    automountServiceAccountToken: false
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: quota-enforcer
+                        image: "{{ object_storage_policy_image }}"
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/sh", "-ec"]
+                        args:
+                          - |
+                            {% for policy in object_storage_managed_bucket_policies | default([]) %}
+                            printf '%s\n' 's3.bucket.quota -name={{ policy.name }} -op=set -sizeMB={{ policy.quota_mib | int }}' | /usr/bin/weed shell
+                            {% endfor %}
+                            printf '%s\n' 's3.bucket.quota.enforce -apply' | /usr/bin/weed shell
+                        env:
+                          - name: WEED_CLUSTER_DEFAULT
+                            value: sw
+                          - name: WEED_CLUSTER_SW_MASTER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-master.{{ object_storage_namespace_resolved }}:9333"
+                          - name: WEED_CLUSTER_SW_FILER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-filer-client.{{ object_storage_namespace_resolved }}:8888"
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 32Mi
+                          limits:
+                            cpu: 200m
+                            memory: 128Mi
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          readOnlyRootFilesystem: true
+                          capabilities:
+                            drop: [ALL]
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
+
+    - name: Remove prior initial SeaweedFS bucket quota Job
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: "{{ object_storage_namespace_resolved }}"
+        name: seaweedfs-bucket-quota-initial
+      failed_when: false
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
+
+    - name: Apply SeaweedFS bucket quotas immediately
+      ansible.builtin.command: >-
+        kubectl create job
+        --namespace {{ object_storage_namespace_resolved }}
+        --from=cronjob/seaweedfs-bucket-quota-enforcer
+        seaweedfs-bucket-quota-initial
+      changed_when: true
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
+
+    - name: Require initial SeaweedFS bucket quota enforcement completion
+      kubernetes.core.k8s_info:
+        api_version: batch/v1
+        kind: Job
+        namespace: "{{ object_storage_namespace_resolved }}"
+        name: seaweedfs-bucket-quota-initial
+      register: _r_object_storage_bucket_quota_status
+      retries: 60
+      delay: 5
+      until:
+        - _r_object_storage_bucket_quota_status.resources | default([]) | length == 1
+        - >-
+          _r_object_storage_bucket_quota_status.resources[0].status.succeeded |
+          default(0) | int == 1
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
 
     - name: Finalize the verified resumable SeaweedFS index migration
       ansible.builtin.include_tasks: index_migration_finalize.yml
@@ -648,7 +924,7 @@
                 app.kubernetes.io/component: filer
             ingress:
               - fromEntities:
-                  - cluster
+                  - ingress
                 toPorts:
                   - ports:
                       - port: "8333"
@@ -741,16 +1017,16 @@
             namespace: "{{ item.namespace }}"
           type: Opaque
           stringData:
-            accesskey: "{{ object_storage_access_key_resolved }}"
-            secretkey: "{{ object_storage_secret_key_resolved }}"
+            accesskey: "{{ _object_storage_consumer_credentials[item.credential_group].access_key }}"
+            secretkey: "{{ _object_storage_consumer_credentials[item.credential_group].secret_key }}"
             endpoint: "{{ object_storage_endpoint_resolved }}"
-            AWS_ACCESS_KEY_ID: "{{ object_storage_access_key_resolved }}"
-            AWS_SECRET_ACCESS_KEY: "{{ object_storage_secret_key_resolved }}"
+            AWS_ACCESS_KEY_ID: "{{ _object_storage_consumer_credentials[item.credential_group].access_key }}"
+            AWS_SECRET_ACCESS_KEY: "{{ _object_storage_consumer_credentials[item.credential_group].secret_key }}"
             connection: |
               provider: AWS
               region: {{ object_storage_region | default('us-east-1') }}
-              aws_access_key_id: {{ object_storage_access_key_resolved }}
-              aws_secret_access_key: {{ object_storage_secret_key_resolved }}
+              aws_access_key_id: {{ _object_storage_consumer_credentials[item.credential_group].access_key }}
+              aws_secret_access_key: {{ _object_storage_consumer_credentials[item.credential_group].secret_key }}
               endpoint: {{ object_storage_endpoint_resolved }}
               path_style: true
       loop: >-
@@ -763,6 +1039,14 @@
       retries: 3
       delay: 10
       until: _r_object_storage_consumer_secrets is not failed
+      vars:
+        _object_storage_consumer_credentials:
+          gitlab:
+            access_key: "{{ object_storage_gitlab_access_key_resolved }}"
+            secret_key: "{{ object_storage_gitlab_secret_key_resolved }}"
+          observability:
+            access_key: "{{ object_storage_observability_access_key_resolved }}"
+            secret_key: "{{ object_storage_observability_secret_key_resolved }}"
 
     - name: Remove legacy invalid Cilium default-deny for object storage namespace
       kubernetes.core.k8s:
@@ -805,7 +1089,35 @@
           spec:
             endpointSelector: {}
             ingress:
-              - fromEntities: [cluster]
+              - fromEndpoints:
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: "{{ object_storage_namespace_resolved }}"
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: gitlab
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: monitoring
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: databases
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: vault
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: production
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: preproduction
+                toPorts:
+                  - ports:
+                      - { port: '8333', protocol: TCP }
+                      - { port: '8888', protocol: TCP }
+                      - { port: '9333', protocol: TCP }
+                      - { port: '8080', protocol: TCP }
+                      - { port: '18080', protocol: TCP }
+                      - { port: '18888', protocol: TCP }
+                      - { port: '19333', protocol: TCP }
+                      - { port: '9327', protocol: TCP }
+            egress:
+              - toEndpoints:
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: "{{ object_storage_namespace_resolved }}"
                 toPorts:
                   - ports:
                       - { port: '8333', protocol: TCP }

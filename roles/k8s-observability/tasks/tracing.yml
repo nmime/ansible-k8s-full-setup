@@ -42,8 +42,8 @@
         namespace: '{{ tempo_namespace }}'
       type: Opaque
       stringData:
-        S3_ACCESS_KEY: '{{ object_storage_access_key }}'
-        S3_SECRET_KEY: '{{ object_storage_secret_key }}'
+        S3_ACCESS_KEY: '{{ object_storage_observability_access_key }}'
+        S3_SECRET_KEY: '{{ object_storage_observability_secret_key }}'
   register: _r_create_tempo_s3_credentials_secret
   retries: 3
   delay: 10
@@ -79,12 +79,12 @@
                   - name: AWS_ACCESS_KEY_ID
                     valueFrom:
                       secretKeyRef:
-                        name: seaweedfs-s3-config
+                        name: object-storage-credentials
                         key: AWS_ACCESS_KEY_ID
                   - name: AWS_SECRET_ACCESS_KEY
                     valueFrom:
                       secretKeyRef:
-                        name: seaweedfs-s3-config
+                        name: object-storage-credentials
                         key: AWS_SECRET_ACCESS_KEY
                   - name: AWS_DEFAULT_REGION
                     value: us-east-1

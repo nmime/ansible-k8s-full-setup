@@ -55,6 +55,48 @@ change.
 The default bastion SSH source list is broad for bootstrap compatibility.
 Restrict `hetzner_ssh_source_ips` to operator/VPN CIDRs before production use.
 
+## Object-storage credential boundary
+
+The platform deploys one in-cluster SeaweedFS S3 service. Public
+`s3.<platform-domain>` and compatibility hostnames are routes to that same
+service, not additional object stores. The SeaweedFS root identity remains
+only in the S3 authentication configuration and is never copied into GitLab,
+database, observability, backup, or CI runtime Secrets.
+
+Runtime access is split into bounded identities:
+
+- GitLab application buckets;
+- PostgreSQL, MongoDB, Vault, and native backup buckets;
+- Loki and Tempo buckets;
+- GitLab Runner archive cache;
+- protected and development Nx cache buckets; and
+- an ephemeral bucket-bootstrap identity scoped to the declared bucket list.
+
+SeaweedFS static IAM expresses these grants as `Action:bucket`, for example
+`Write:gitlab-registry`. The role refuses duplicate root/runtime keys and
+enables the storage namespace default-deny policy by default. New consumers
+must receive a dedicated identity or join an explicitly documented bucket
+group; do not copy `object_storage_access_key` into a workload.
+
+Credential rotation is additive and ordered: persist the new scoped keys in
+the encrypted platform secrets file, reconcile the SeaweedFS auth Secret and
+wait for the S3 gateway rollout, update consumer Secrets/restart consumers,
+prove allowed bucket access and a cross-bucket `AccessDenied`, and only then
+remove the retired credential. Never rotate the S3 config and consumers in the
+opposite order.
+
+Nx cache retention is enforced in the single SeaweedFS service, not by
+deploying another S3 implementation. The audited `4.25.1` chart applies
+30-day protected and 7-day development path TTL before the cache workloads are
+enabled. Because SeaweedFS 4.25 stamps that TTL on new writes, an existing
+bucket must be drained before first policy activation. Native per-bucket quotas
+bound logical cache growth; a digest-pinned five-minute CronJob changes an
+over-quota bucket to read-only and a blocking initial Job closes the install
+race. Do not set `CACHE_TTL_HOURS` or `CACHE_MAX_BYTES` on an S3-backed
+`remotecache` 3.0.0 server: those controls apply only to its filesystem cache.
+Changing the SeaweedFS chart version requires explicitly extending the audited
+version gate after verifying both the TTL hook and quota shell commands.
+
 ## Supply-chain maintenance
 
 When changing a pinned binary or manifest:
