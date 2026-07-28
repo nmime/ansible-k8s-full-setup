@@ -26,6 +26,7 @@
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
     gitlab_runner_replicas: '{{ gitlab.runner.replicas | default(1) }}'
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
+    gitlab_public_webservice_enabled: '{{ gitlab.public_webservice_enabled | default(false) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
 - name: Set GitLab compatibility domains
   ansible.builtin.set_fact:
@@ -1448,7 +1449,7 @@
               - ports:
                   - port: '2222'
                     protocol: TCP
-- name: Create GitLab Gateway API HTTPRoute (VPN-only via admin-gateway)
+- name: Create GitLab Gateway API HTTPRoute
   kubernetes.core.k8s:
     state: present
     definition:
@@ -1458,13 +1459,33 @@
         name: gitlab-webservice
         namespace: '{{ gitlab_namespace }}'
       spec:
-        parentRefs:
-        - name: admin-gateway
-          namespace: cilium-system
-          sectionName: https
-        - name: admin-gateway
-          namespace: cilium-system
-          sectionName: cluster-https
+        parentRefs: >-
+          {{
+            [
+              {
+                'name': 'admin-gateway',
+                'namespace': 'cilium-system',
+                'sectionName': 'https'
+              },
+              {
+                'name': 'admin-gateway',
+                'namespace': 'cilium-system',
+                'sectionName': 'cluster-https'
+              }
+            ]
+            +
+            (
+              [
+                {
+                  'name': 'main-gateway',
+                  'namespace': 'cilium-system',
+                  'sectionName': 'https'
+                }
+              ]
+              if gitlab_public_webservice_enabled | bool
+              else []
+            )
+          }}
         hostnames: '{{ [gitlab_domain] + gitlab_domain_aliases }}'
         rules:
         - matches:

@@ -125,6 +125,31 @@ class TestChart10ValuesStructure:
             "{{ gitlab_webservice_memory_limit }}"
         )
 
+    def test_public_webservice_route_is_explicitly_opt_in(self):
+        tasks = yaml.safe_load(self.content)
+        facts = next(
+            task
+            for task in tasks
+            if task.get("name") == "Set GitLab tier-specific variables"
+        )
+        assert (
+            "default(false)"
+            in facts["set_fact"]["gitlab_public_webservice_enabled"]
+        )
+
+        route = next(
+            task
+            for task in tasks
+            if task.get("name") == "Create GitLab Gateway API HTTPRoute"
+        )
+        parent_refs = route["kubernetes.core.k8s"]["definition"]["spec"]["parentRefs"]
+        assert "'name': 'admin-gateway'" in parent_refs
+        assert "'name': 'main-gateway'" in parent_refs
+        assert "if gitlab_public_webservice_enabled | bool" in parent_refs
+        assert route["kubernetes.core.k8s"]["definition"]["spec"]["hostnames"] == (
+            "{{ [gitlab_domain] + gitlab_domain_aliases }}"
+        )
+
     def test_runner_uses_internal_service_behind_vpn_only_gateway(self):
         tasks = yaml.safe_load(self.content)
         install = next(
