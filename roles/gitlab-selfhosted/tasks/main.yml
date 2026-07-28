@@ -13,7 +13,10 @@
     gitlab_webservice_memory_limit: '{{ gitlab.webservice_memory_limit | default("2Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "5Gi") }}'
     gitlab_sidekiq_memory_request: '{{ gitlab.sidekiq_memory_request | default("1Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "1.5Gi") }}'
     gitlab_kas_memory_request: '{{ gitlab.kas_memory_request | default("256Mi") }}'
+    gitlab_toolbox_cpu_request: '{{ gitlab.toolbox_cpu_request | default("50m") }}'
+    gitlab_toolbox_cpu_limit: '{{ gitlab.toolbox_cpu_limit | default("1") }}'
     gitlab_toolbox_memory_request: '{{ gitlab.toolbox_memory_request | default("350M") }}'
+    gitlab_toolbox_memory_limit: '{{ gitlab.toolbox_memory_limit | default("2Gi") }}'
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
     gitlab_sidekiq_max_replicas: '{{ gitlab.sidekiq_max_replicas | default(10) }}'
     gitlab_registry_max_replicas: '{{ gitlab.registry_max_replicas | default(5) }}'
@@ -854,11 +857,11 @@
               limits: {cpu: 100m, memory: 64Mi}
           resources:
             requests:
-              cpu: 50m
+              cpu: '{{ gitlab_toolbox_cpu_request }}'
               memory: '{{ gitlab_toolbox_memory_request }}'
             limits:
-              cpu: 500m
-              memory: 1Gi
+              cpu: '{{ gitlab_toolbox_cpu_limit }}'
+              memory: '{{ gitlab_toolbox_memory_limit }}'
           extraEnvFrom:
             AWS_ACCESS_KEY_ID:
               secretKeyRef:

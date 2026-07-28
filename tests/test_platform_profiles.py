@@ -412,6 +412,10 @@ class TestMediumOptimizedContract:
     ):
         assert self.profile["gitlab"]["webservice_memory_request"] == "2Gi"
         assert self.profile["gitlab"]["webservice_memory_limit"] == "3Gi"
+        assert self.profile["gitlab"]["toolbox_cpu_request"] == "100m"
+        assert self.profile["gitlab"]["toolbox_cpu_limit"] == "1.5"
+        assert self.profile["gitlab"]["toolbox_memory_request"] == "512Mi"
+        assert self.profile["gitlab"]["toolbox_memory_limit"] == "3Gi"
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 4

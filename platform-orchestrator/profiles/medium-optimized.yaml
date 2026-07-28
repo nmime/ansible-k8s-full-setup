@@ -167,6 +167,13 @@ gitlab:
   # normal medium resource envelope.
   webservice_memory_request: 2Gi
   webservice_memory_limit: 3Gi
+  # Rails maintenance and backup commands exceeded the generic 1Gi toolbox
+  # limit in a live cluster. Keep the steady reservation small while allowing
+  # bounded burst memory for migrations and restores.
+  toolbox_cpu_request: 100m
+  toolbox_cpu_limit: "1.5"
+  toolbox_memory_request: 512Mi
+  toolbox_memory_limit: 3Gi
   sidekiq_replicas: 1
   sidekiq_max_replicas: 2
   registry_max_replicas: 2
