@@ -894,6 +894,8 @@
           {{ item.item.secret_name |
              default(item.item.name ~ '-postgresql') }}
         namespace: '{{ item.item.target_namespace }}'
+        annotations:
+          argocd.argoproj.io/compare-options: IgnoreExtraneous
       type: Opaque
       stringData:
         username: '{{ item.item.name }}'
