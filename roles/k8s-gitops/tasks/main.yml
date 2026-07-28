@@ -8,6 +8,9 @@
     argocd_server_replicas: '{{ gitops.server_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_repo_replicas: '{{ gitops.repo_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_controller_replicas: '{{ gitops.controller_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
+    argocd_insecure_mode_effective: >-
+      {{ gitops.insecure_mode |
+         default(argocd_insecure_mode | default(false)) | bool }}
     argocd_repo_host_aliases: >-
       {{ [{'ip': gitlab_shell_cluster_ip,
            'hostnames': ([gitlab.domain | default('gitlab.' ~ domain, true)] +
@@ -36,6 +39,32 @@
   retries: 3
   delay: 10
   until: _r_create_argocd_namespace is not failed
+- name: Read GitLab Shell public host keys for Argo CD
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ gitlab_namespace | default("gitlab") }}'
+    name: gitlab-gitlab-shell-host-keys
+  register: _argocd_gitlab_shell_host_keys
+  when: gitlab_shell_cluster_ip is defined
+- name: Build GitLab Shell known-host entries
+  no_log: true
+  ansible.builtin.set_fact:
+    argocd_gitlab_ssh_known_hosts: |
+      {% set hostnames = [gitlab.domain | default('gitlab.' ~ domain, true)] +
+                         (gitlab.domain_aliases | default([], true)) %}
+      {% set key_names = ['ssh_host_ecdsa_key.pub',
+                          'ssh_host_ed25519_key.pub',
+                          'ssh_host_rsa_key.pub'] %}
+      {% for hostname in hostnames | unique %}
+      {% for key_name in key_names %}
+      {{ hostname }} {{ _argocd_gitlab_shell_host_keys.resources[0].data[key_name] | b64decode | trim }}
+      {% endfor %}
+      {% endfor %}
+  when:
+    - gitlab_shell_cluster_ip is defined
+    - _argocd_gitlab_shell_host_keys.resources | default([]) | length == 1
 - name: Allow Argo CD repository egress to GitLab Shell
   kubernetes.core.k8s:
     state: present
@@ -107,6 +136,7 @@
     values:
       global:
         domain: '{{ argocd_domain }}'
+        hostAliases: '{{ argocd_repo_host_aliases }}'
         securityContext:
           runAsNonRoot: true
           seccompProfile:
@@ -115,7 +145,7 @@
         replicas: '{{ argocd_server_replicas | int }}'
         ingress:
           enabled: false
-        extraArgs: '{{ ["--insecure"] if argocd_insecure_mode | default(false) | bool else [] }}'
+        extraArgs: '{{ ["--insecure"] if argocd_insecure_mode_effective | bool else [] }}'
         resources:
           requests:
             cpu: '{{ "25m" if resource_tier in ["minimal", "small"] else "100m" }}'
@@ -134,7 +164,6 @@
             memory: 1Gi
       repoServer:
         replicas: '{{ argocd_repo_replicas | int }}'
-        hostAliases: '{{ argocd_repo_host_aliases }}'
         resources:
           requests:
             cpu: '{{ "25m" if resource_tier in ["minimal", "small"] else "100m" }}'
@@ -172,13 +201,15 @@
       dex:
         enabled: false
       configs:
+        ssh:
+          extraHosts: '{{ argocd_gitlab_ssh_known_hosts | default("") }}'
         cm:
           url: https://{{ argocd_domain }}
           admin.enabled: 'true'
           exec.enabled: 'false'
           application.resourceTrackingMethod: annotation
         params:
-          server.insecure: '{{ argocd_insecure_mode | default(false) | lower }}'
+          server.insecure: '{{ argocd_insecure_mode_effective | lower }}'
         rbac:
           policy.default: role:readonly
           policy.csv: 'g, admin, role:admin
