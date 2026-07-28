@@ -1281,6 +1281,11 @@ def test_argocd_reaches_private_gitlab_without_public_exposure():
     assert "name: cluster-https" in cluster
     assert "admin_gateway_private_ip:" in cluster
     assert "gitlab_shell_cluster_ip:" in gitlab
+    assert "name: allow-argocd-to-gitlab-shell" in gitlab
+    assert "app.kubernetes.io/name: argocd-repo-server" in gitlab
+    assert "k8s:app.kubernetes.io/name: argocd-repo-server" in gitlab
     assert "argocd_repo_host_aliases:" in gitops
     assert "hostAliases: '{{ argocd_repo_host_aliases }}'" in gitops
+    assert "name: allow-repo-server-to-gitlab-shell" in gitops
+    assert "k8s:app: gitlab-shell" in gitops
     assert "sectionName: cluster-https" in gitlab

@@ -1,0 +1,345 @@
+---
+- name: Validate requested edge-proxy mode
+  ansible.builtin.assert:
+    that:
+      - fun_games_edge_mode in ["audit", "canary", "cutover", "rollback"]
+    fail_msg: >-
+      fun_games_edge_mode must be audit, canary, cutover, or rollback
+
+- name: Validate edge host contracts
+  ansible.builtin.assert:
+    that:
+      - item.hostname is match('^[a-z0-9.-]+$')
+      - item.upstream_host is match('^[a-z0-9.-]+$')
+      - item.certificate_path | length > 0
+      - item.certificate_key_path | length > 0
+      - item.hostname != item.upstream_host
+    fail_msg: "Invalid or looping edge host definition: {{ item.hostname | default('unknown') }}"
+  loop: "{{ fun_games_edge_hosts }}"
+  loop_control:
+    label: "{{ item.hostname | default('unknown') }}"
+
+- name: Check Docker Compose availability
+  ansible.builtin.command:
+    argv: [docker, compose, version]
+  changed_when: false
+
+- name: Inspect SafeLine compose file
+  ansible.builtin.stat:
+    path: "{{ fun_games_edge_safeline_root }}/docker-compose.yaml"
+  register: _fun_games_edge_safeline_compose
+
+- name: Report audit state
+  ansible.builtin.debug:
+    msg:
+      mode: "{{ fun_games_edge_mode }}"
+      safeline_present: "{{ _fun_games_edge_safeline_compose.stat.exists }}"
+      configured_hosts: "{{ fun_games_edge_hosts | map(attribute='hostname') | list }}"
+      required_cutover_hosts: "{{ fun_games_edge_required_hosts }}"
+  when: fun_games_edge_mode == "audit"
+
+- name: Prepare the isolated edge proxy
+  when: fun_games_edge_mode in ["canary", "cutover"]
+  block:
+    - name: Require at least one proxy host
+      ansible.builtin.assert:
+        that:
+          - fun_games_edge_hosts | length > 0
+
+    - name: Create edge proxy directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: "{{ fun_games_edge_install_root }}", mode: "0750"}
+        - {path: "{{ fun_games_edge_install_root }}/certs", mode: "0750"}
+
+    - name: Verify source public certificates
+      ansible.builtin.stat:
+        path: "{{ item.certificate_path }}"
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}:{{ item.certificate_path }}"
+      register: _fun_games_edge_public_certificate_stats
+
+    - name: Verify source private certificate keys
+      ansible.builtin.stat:
+        path: "{{ item.certificate_key_path }}"
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}:private-key"
+      register: _fun_games_edge_private_key_stats
+      no_log: true
+
+    - name: Fail when a source public certificate is missing
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Missing public certificate: {{ item.item.certificate_path }}"
+      loop: "{{ _fun_games_edge_public_certificate_stats.results }}"
+      loop_control:
+        label: "{{ item.item.certificate_path }}"
+
+    - name: Fail when a source private key is missing
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Missing private certificate key"
+      loop: "{{ _fun_games_edge_private_key_stats.results }}"
+      loop_control:
+        label: "{{ item.item.hostname }}:private-key"
+      no_log: true
+
+    - name: Copy public certificates
+      ansible.builtin.copy:
+        src: "{{ item.certificate_path }}"
+        dest: "{{ fun_games_edge_install_root }}/certs/{{ item.hostname }}.crt"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+
+    - name: Copy private certificate keys
+      ansible.builtin.copy:
+        src: "{{ item.certificate_key_path }}"
+        dest: "{{ fun_games_edge_install_root }}/certs/{{ item.hostname }}.key"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      no_log: true
+
+    - name: Render Nginx edge configuration
+      ansible.builtin.template:
+        src: nginx.conf.j2
+        dest: "{{ fun_games_edge_install_root }}/nginx.conf"
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Render edge Compose project
+      ansible.builtin.template:
+        src: compose.yaml.j2
+        dest: "{{ fun_games_edge_install_root }}/compose.yaml"
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Validate edge Compose project
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --project-name
+          - "{{ fun_games_edge_compose_project }}"
+          - --file
+          - "{{ fun_games_edge_install_root }}/compose.yaml"
+          - config
+          - --quiet
+      changed_when: false
+
+- name: Start and verify isolated canary
+  when: fun_games_edge_mode == "canary"
+  block:
+    - name: Start canary edge proxy
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --project-name
+          - "{{ fun_games_edge_compose_project }}"
+          - --file
+          - "{{ fun_games_edge_install_root }}/compose.yaml"
+          - up
+          - --detach
+          - --remove-orphans
+      register: _fun_games_edge_canary_up
+      changed_when: >-
+        'Started' in _fun_games_edge_canary_up.stdout
+        or 'Created' in _fun_games_edge_canary_up.stdout
+        or 'Recreated' in _fun_games_edge_canary_up.stdout
+
+    - name: Wait for canary HTTPS
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ fun_games_edge_canary_https_port }}"
+        timeout: 45
+
+    - name: Verify every canary hostname
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail-with-body
+          - --silent
+          - --show-error
+          - --resolve
+          - "{{ item.hostname }}:{{ fun_games_edge_canary_https_port }}:127.0.0.1"
+          - "https://{{ item.hostname }}:{{ fun_games_edge_canary_https_port }}/_edge/health"
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      changed_when: false
+
+- name: Cut over from SafeLine with automatic rollback
+  when: fun_games_edge_mode == "cutover"
+  block:
+    - name: Require explicit cutover confirmation
+      ansible.builtin.assert:
+        that:
+          - fun_games_edge_confirm_cutover | bool
+          - _fun_games_edge_safeline_compose.stat.exists
+          - >-
+            fun_games_edge_required_hosts
+            | difference(fun_games_edge_hosts | map(attribute='hostname') | list)
+            | length == 0
+        fail_msg: >-
+          Cutover is fail-closed: confirm it and configure every required edge
+          hostname before SafeLine can be stopped.
+
+    - name: Create timestamp for immutable backup
+      ansible.builtin.set_fact:
+        _fun_games_edge_backup_id: "{{ ansible_date_time.iso8601_basic_short }}"
+
+    - name: Create edge backup directory
+      ansible.builtin.file:
+        path: "{{ fun_games_edge_backup_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Back up SafeLine configuration and certificates
+      community.general.archive:
+        path:
+          - "{{ fun_games_edge_safeline_root }}/docker-compose.yaml"
+          - "{{ fun_games_edge_safeline_root }}/.env"
+          - "{{ fun_games_edge_safeline_root }}/resources/nginx"
+          - "{{ fun_games_edge_safeline_root }}/resources/mgt/mgt.db"
+        dest: >-
+          {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+          _fun_games_edge_backup_id }}.tar.gz
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Switch edge listeners
+      block:
+        - name: Stop SafeLine after backup gate
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fun_games_edge_safeline_root }}/docker-compose.yaml"
+              - down
+          register: _fun_games_edge_safeline_down
+          changed_when: true
+
+        - name: Start production edge proxy
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --project-name
+              - "{{ fun_games_edge_compose_project }}"
+              - --file
+              - "{{ fun_games_edge_install_root }}/compose.yaml"
+              - up
+              - --detach
+              - --remove-orphans
+          changed_when: true
+
+        - name: Wait for production HTTPS
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: "{{ fun_games_edge_https_port }}"
+            timeout: 45
+
+        - name: Verify every production edge hostname
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --fail-with-body
+              - --silent
+              - --show-error
+              - --resolve
+              - "{{ item.hostname }}:{{ fun_games_edge_https_port }}:127.0.0.1"
+              - "https://{{ item.hostname }}/_edge/health"
+          loop: "{{ fun_games_edge_hosts }}"
+          loop_control:
+            label: "{{ item.hostname }}"
+          changed_when: false
+      rescue:
+        - name: Stop failed production edge proxy
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --project-name
+              - "{{ fun_games_edge_compose_project }}"
+              - --file
+              - "{{ fun_games_edge_install_root }}/compose.yaml"
+              - down
+          changed_when: true
+          failed_when: false
+
+        - name: Restore SafeLine immediately
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - --file
+              - "{{ fun_games_edge_safeline_root }}/docker-compose.yaml"
+              - up
+              - --detach
+          changed_when: true
+
+        - name: Stop after automatic rollback
+          ansible.builtin.fail:
+            msg: >-
+              Edge verification failed. SafeLine was restored automatically;
+              DNS must not be changed.
+
+- name: Roll back explicitly to SafeLine
+  when: fun_games_edge_mode == "rollback"
+  block:
+    - name: Stop edge proxy
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --project-name
+          - "{{ fun_games_edge_compose_project }}"
+          - --file
+          - "{{ fun_games_edge_install_root }}/compose.yaml"
+          - down
+      changed_when: true
+      failed_when: false
+
+    - name: Restore SafeLine
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --file
+          - "{{ fun_games_edge_safeline_root }}/docker-compose.yaml"
+          - up
+          - --detach
+      changed_when: true
+
+    - name: Wait for restored SafeLine HTTPS
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 443
+        timeout: 60
