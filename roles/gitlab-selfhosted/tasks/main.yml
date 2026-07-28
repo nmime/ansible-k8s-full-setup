@@ -2,7 +2,7 @@
   set_fact:
     gitlab_chart_version: 10.1.2
     gitlab_namespace: gitlab
-    gitlab_domain: gitlab.{{ domain }}
+    gitlab_domain: "{{ gitlab.domain | default('gitlab.' ~ domain, true) }}"
     registry_domain: registry.{{ domain }}
     kas_domain: kas.{{ domain }}
     gitlab_mode: '{{ gitlab.mode | default(''light'' if resource_tier in [''minimal'', ''small''] or tier == ''medium'' else ''full'') }}'
@@ -26,6 +26,11 @@
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
+- name: Set GitLab compatibility domains
+  ansible.builtin.set_fact:
+    gitlab_domain_aliases: >-
+      {{ gitlab.domain_aliases | default([], true) |
+         reject('equalto', gitlab_domain) | unique | list }}
 - name: Require a GitLab Runner authentication token when Runner is selected
   ansible.builtin.assert:
     that:
@@ -1394,8 +1399,7 @@
         - name: admin-gateway
           namespace: cilium-system
           sectionName: cluster-https
-        hostnames:
-        - '{{ gitlab_domain }}'
+        hostnames: '{{ [gitlab_domain] + gitlab_domain_aliases }}'
         rules:
         - matches:
           - path:
@@ -1478,10 +1482,9 @@
         issuerRef:
           name: '{{ cert_manager_cluster_issuer }}'
           kind: ClusterIssuer
-        dnsNames:
-        - '{{ gitlab_domain }}'
-        - '{{ registry_domain }}'
-        - '{{ kas_domain }}'
+        dnsNames: >-
+          {{ [gitlab_domain, registry_domain, kas_domain] +
+             gitlab_domain_aliases }}
   register: _r_create_tls_certificate_for_gitlab
   retries: 3
   delay: 10

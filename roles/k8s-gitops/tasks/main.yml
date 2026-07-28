@@ -3,15 +3,23 @@
     argocd_namespace: argocd
     argocd_chart_version: 9.5.14
     argocd_version: v3.4.2
-    argocd_domain: argocd.{{ domain }}
+    argocd_domain: "{{ gitops.domain | default('argocd.' ~ domain, true) }}"
     argocd_ha: '{{ gitops.ha_enabled | default(argocd_ha_enabled | default(true if resource_tier in [''medium'', ''production''] else false)) }}'
     argocd_server_replicas: '{{ gitops.server_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_repo_replicas: '{{ gitops.repo_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_controller_replicas: '{{ gitops.controller_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1) }}'
     argocd_repo_host_aliases: >-
       {{ [{'ip': gitlab_shell_cluster_ip,
-           'hostnames': ['gitlab.' ~ domain]}]
+           'hostnames': ([gitlab.domain | default('gitlab.' ~ domain, true)] +
+                         (gitlab.domain_aliases |
+                          default([], true)) |
+                         unique | list)}]
          if gitlab_shell_cluster_ip is defined else [] }}
+- name: Set ArgoCD compatibility domains
+  ansible.builtin.set_fact:
+    argocd_domain_aliases: >-
+      {{ gitops.domain_aliases | default([], true) |
+         reject('equalto', argocd_domain) | unique | list }}
 - name: Create ArgoCD namespace
   kubernetes.core.k8s:
     state: present
@@ -194,8 +202,10 @@
         - name: admin-gateway
           namespace: cilium-system
           sectionName: https
-        hostnames:
-        - '{{ argocd_domain }}'
+        - name: admin-gateway
+          namespace: cilium-system
+          sectionName: cluster-https
+        hostnames: '{{ [argocd_domain] + argocd_domain_aliases }}'
         rules:
         - matches:
           - path:
@@ -222,8 +232,7 @@
         issuerRef:
           name: '{{ cert_manager_cluster_issuer }}'
           kind: ClusterIssuer
-        dnsNames:
-        - '{{ argocd_domain }}'
+        dnsNames: '{{ [argocd_domain] + argocd_domain_aliases }}'
   register: _r_create_tls_certificate_for_argocd
   retries: 3
   delay: 10
@@ -266,7 +275,7 @@
         - missingkey=error
         generators:
         - git:
-            repoURL: https://gitlab.{{ domain }}/platform/deployments.git
+            repoURL: https://{{ gitlab.domain | default('gitlab.' ~ domain, true) }}/platform/deployments.git
             revision: HEAD
             directories:
             - path: envs/*/apps/*
@@ -277,7 +286,7 @@
           spec:
             project: platform
             source:
-              repoURL: https://gitlab.{{ domain }}/platform/deployments.git
+              repoURL: https://{{ gitlab.domain | default('gitlab.' ~ domain, true) }}/platform/deployments.git
               targetRevision: HEAD
               path: '{{ ''{{.path.path}}'' }}'
             destination:

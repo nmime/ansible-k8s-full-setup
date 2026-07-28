@@ -399,23 +399,19 @@
               - host all "_crunchypgbouncer" all reject
               - hostssl all all all scram-sha-256
               - host all all all scram-sha-256
-        users:
-        - name: '{{ project_name | default(''k8s'') }}'
-          databases:
-          - '{{ project_name | default(''k8s'') }}'
-        - name: gitlab
-          databases:
-          - gitlabhq_production
-        - name: '{{ app_name | default(''myapp'') }}'
-          databases:
-          - '{{ app_name | default(''myapp'') }}'
-        - name: temporal
-          databases:
-          - temporal
-          - temporal_visibility
-        - name: glitchtip
-          databases:
-          - glitchtip
+        users: >-
+          {{
+            [
+              {'name': project_name | default('k8s'),
+               'databases': [project_name | default('k8s')]},
+              {'name': 'gitlab', 'databases': ['gitlabhq_production']},
+              {'name': app_name | default('myapp'),
+               'databases': [app_name | default('myapp')]},
+              {'name': 'temporal',
+               'databases': ['temporal', 'temporal_visibility']},
+              {'name': 'glitchtip', 'databases': ['glitchtip']}
+            ] + (databases.postgresql.extra_users | default([]))
+          }}
   register: _r_create_postgresql_cluster
   retries: 3
   delay: 10
@@ -797,6 +793,83 @@
   retries: 3
   delay: 10
   until: _r_create_postgresql_connection_secret_for_app is not failed
+- name: Ensure extra PostgreSQL consumer namespaces exist
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ item.target_namespace }}'
+        labels:
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+  loop: '{{ databases.postgresql.extra_users | default([]) }}'
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - item.target_namespace | default('') | length > 0
+  register: _extra_pg_namespaces
+  retries: 3
+  delay: 10
+  until: _extra_pg_namespaces is not failed
+- name: Retrieve Percona-generated extra PostgreSQL credentials
+  no_log: true
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-pg-pguser-{{ item.name }}'
+  loop: '{{ databases.postgresql.extra_users | default([]) }}'
+  register: _extra_pg_credentials
+  until: >-
+    (_extra_pg_credentials.resources | default([])) | length > 0
+  retries: 30
+  delay: 10
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - item.target_namespace | default('') | length > 0
+- name: Retrieve the PostgreSQL cluster CA for extra consumers
+  no_log: true
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-pg-cluster-ca-cert'
+  register: _extra_pg_cluster_ca
+  until: (_extra_pg_cluster_ca.resources | default([])) | length == 1
+  retries: 30
+  delay: 10
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - databases.postgresql.extra_users | default([]) | length > 0
+- name: Publish extra PostgreSQL connection secrets
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: >-
+          {{ item.item.secret_name |
+             default(item.item.name ~ '-postgresql') }}
+        namespace: '{{ item.item.target_namespace }}'
+      type: Opaque
+      stringData:
+        username: '{{ item.item.name }}'
+        password: '{{ item.resources[0].data.password | b64decode }}'
+        host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        port: '5432'
+        database: '{{ item.item.databases | first }}'
+        sslmode: require
+        ca.crt: '{{ _extra_pg_cluster_ca.resources[0].data["ca.crt"] | b64decode }}'
+  loop: '{{ _extra_pg_credentials.results | default([]) }}'
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - item.resources | default([]) | length == 1
+  register: _extra_pg_connection_secrets
+  retries: 3
+  delay: 10
+  until: _extra_pg_connection_secrets is not failed
 - name: Display databases summary
   debug:
     msg: >-
