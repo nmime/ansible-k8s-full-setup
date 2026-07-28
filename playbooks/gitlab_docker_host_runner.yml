@@ -1,0 +1,220 @@
+---
+- name: Provision a protected Docker-host GitLab runner
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    gitlab_runner_version: 19.2.0
+    gitlab_runner_sha256: 0ef0d1c4435ffcf7da361b0b8219aac6da8ff1caaf276f11b893e9adb60b19d6
+    node_version: 24.18.0
+    node_sha256: 55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742
+    gitlab_runner_url: https://git.n0xeid.xyz
+    gitlab_runner_name: fun-games-protected-docker-host
+    gitlab_runner_token: "{{ lookup('env', 'GITLAB_DOCKER_HOST_RUNNER_TOKEN') }}"
+
+  pre_tasks:
+    - name: Require the one-time GitLab runner authentication token
+      ansible.builtin.assert:
+        that:
+          - gitlab_runner_token | length > 20
+        fail_msg: >-
+          Export GITLAB_DOCKER_HOST_RUNNER_TOKEN from the protected project
+          runner creation response.
+      no_log: true
+
+    - name: Restrict the runner playbook to Debian-family amd64 hosts
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'Debian'
+          - ansible_facts['architecture'] in ['x86_64', 'amd64']
+        fail_msg: This runner playbook supports Debian-family amd64 hosts only.
+
+  tasks:
+    - name: Install Docker-host runner dependencies
+      ansible.builtin.apt:
+        name:
+          - build-essential
+          - ca-certificates
+          - curl
+          - docker-compose-v2
+          - docker.io
+          - git
+          - jq
+          - make
+          - python3
+          - xz-utils
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Enable the Docker daemon
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Create the restricted runner account
+      ansible.builtin.user:
+        name: gitlab-runner
+        comment: Protected GitLab Docker-host runner
+        create_home: true
+        home: /var/lib/gitlab-runner
+        groups: docker
+        append: true
+        shell: /bin/bash
+        system: true
+
+    - name: Install the pinned GitLab Runner binary
+      ansible.builtin.get_url:
+        url: >-
+          https://gitlab-runner-downloads.s3.amazonaws.com/v{{ gitlab_runner_version
+          }}/binaries/gitlab-runner-linux-amd64
+        dest: /usr/local/bin/gitlab-runner
+        checksum: "sha256:{{ gitlab_runner_sha256 }}"
+        mode: '0755'
+        owner: root
+        group: root
+      notify: Restart protected GitLab runner
+
+    - name: Download the pinned Node.js runtime
+      ansible.builtin.get_url:
+        url: >-
+          https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version
+          }}-linux-x64.tar.xz
+        dest: "/var/cache/node-v{{ node_version }}-linux-x64.tar.xz"
+        checksum: "sha256:{{ node_sha256 }}"
+        mode: '0644'
+
+    - name: Install the pinned Node.js runtime
+      ansible.builtin.unarchive:
+        src: "/var/cache/node-v{{ node_version }}-linux-x64.tar.xz"
+        dest: /opt
+        remote_src: true
+        creates: "/opt/node-v{{ node_version }}-linux-x64/bin/node"
+
+    - name: Publish Node.js and Corepack commands
+      ansible.builtin.file:
+        src: "/opt/node-v{{ node_version }}-linux-x64/bin/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        state: link
+        force: true
+      loop:
+        - node
+        - npm
+        - npx
+        - corepack
+
+    - name: Create runner configuration and build directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: gitlab-runner
+        group: gitlab-runner
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /etc/gitlab-runner, mode: '0750'}
+        - {path: /var/lib/gitlab-runner/builds, mode: '0750'}
+        - {path: /var/lib/gitlab-runner/cache, mode: '0750'}
+
+    - name: Configure the protected shell runner
+      ansible.builtin.copy:
+        dest: /etc/gitlab-runner/config.toml
+        owner: root
+        group: gitlab-runner
+        mode: '0640'
+        content: |
+          concurrent = 1
+          check_interval = 3
+          shutdown_timeout = 7200
+          state_file = "/var/lib/gitlab-runner/.runner_system_id"
+
+          [[runners]]
+            name = "{{ gitlab_runner_name }}"
+            url = "{{ gitlab_runner_url }}"
+            token = "{{ gitlab_runner_token }}"
+            executor = "shell"
+            shell = "bash"
+            request_concurrency = 2
+            builds_dir = "/var/lib/gitlab-runner/builds"
+            cache_dir = "/var/lib/gitlab-runner/cache"
+            environment = [
+              "HOME=/var/lib/gitlab-runner",
+              "COREPACK_HOME=/var/lib/gitlab-runner/.cache/corepack",
+              "PNPM_HOME=/var/lib/gitlab-runner/.local/share/pnpm"
+            ]
+            [runners.feature_flags]
+              FF_ENABLE_JOB_CLEANUP = true
+      no_log: true
+      notify: Restart protected GitLab runner
+
+    - name: Install the protected runner systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/gitlab-runner.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Protected GitLab Docker-host Runner
+          After=network-online.target docker.service
+          Wants=network-online.target
+          Requires=docker.service
+
+          [Service]
+          User=gitlab-runner
+          Group=gitlab-runner
+          SupplementaryGroups=docker
+          WorkingDirectory=/var/lib/gitlab-runner
+          ExecStart=/usr/local/bin/gitlab-runner run --config /etc/gitlab-runner/config.toml --working-directory /var/lib/gitlab-runner --user gitlab-runner --service gitlab-runner
+          Restart=always
+          RestartSec=5
+          KillSignal=SIGQUIT
+          TimeoutStopSec=7200
+          NoNewPrivileges=true
+          PrivateDevices=true
+          PrivateTmp=true
+          ProtectClock=true
+          ProtectControlGroups=true
+          ProtectHome=true
+          ProtectKernelLogs=true
+          ProtectKernelModules=true
+          ProtectKernelTunables=true
+          ProtectSystem=full
+          ReadWritePaths=/var/lib/gitlab-runner
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          RestrictNamespaces=true
+          RestrictRealtime=true
+          SystemCallArchitectures=native
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart protected GitLab runner
+
+    - name: Enable and start the protected runner
+      ansible.builtin.systemd:
+        name: gitlab-runner
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Verify the local Docker and runner installations
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - docker version
+        - docker compose version
+        - node --version
+        - corepack --version
+        - gitlab-runner --version
+      changed_when: false
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart protected GitLab runner
+      ansible.builtin.systemd:
+        name: gitlab-runner
+        state: restarted
