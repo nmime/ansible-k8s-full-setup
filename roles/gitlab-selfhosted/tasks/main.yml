@@ -24,6 +24,7 @@
     gitlab_backup_persistence_enabled: '{{ gitlab.backup_persistence_enabled | default(true) | bool }}'
     gitlab_backup_persistence_size: '{{ gitlab.backup_persistence_size | default(''50Gi'') }}'
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
+    gitlab_runner_replicas: '{{ gitlab.runner.replicas | default(1) }}'
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
 - name: Set GitLab compatibility domains
@@ -39,6 +40,7 @@
       - gitlab_runner_token | default('') | string is match(
           '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
       - gitlab_runner_concurrent | int > 0
+      - gitlab_runner_replicas | int > 0
     fail_msg: >-
       gitlab.runner.enabled=true requires a positive runner.concurrent_jobs value
       and an existing GitLab Runner authentication token (glrt-...). Create an
@@ -84,13 +86,13 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        accesskey: "{{ object_storage_access_key }}"
-        secretkey: "{{ object_storage_secret_key }}"
+        accesskey: "{{ object_storage_gitlab_access_key }}"
+        secretkey: "{{ object_storage_gitlab_secret_key }}"
         connection: |
           provider: AWS
           region: us-east-1
-          aws_access_key_id: "{{ object_storage_access_key }}"
-          aws_secret_access_key: "{{ object_storage_secret_key }}"
+          aws_access_key_id: "{{ object_storage_gitlab_access_key }}"
+          aws_secret_access_key: "{{ object_storage_gitlab_secret_key }}"
           endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}"
           path_style: true
   register: _r_create_s3_object_storage_secret_for_gitl
@@ -108,7 +110,7 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ object_storage_access_key }}\"\n  secretkey: \"{{ object_storage_secret_key }}\"\n  region: us-east-1\n  regionendpoint: \"{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}\"\
+        config: "s3:\n  bucket: gitlab-registry\n  accesskey: \"{{ object_storage_gitlab_access_key }}\"\n  secretkey: \"{{ object_storage_gitlab_secret_key }}\"\n  region: us-east-1\n  regionendpoint: \"{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333') }}\"\
           \n  v4auth: true\n  pathstyle: true\n  checksum_disabled: true\n  rootdirectory: /registry\nredirect:\n  disable: true\n"
   register: _r_create_registry_storage_secret
   retries: 3
@@ -665,12 +667,21 @@
           installEnvoy: false
           configureCertmanager: false
         time_zone: UTC
+        extraEnv:
+          PGSSLMODE: verify-full
+          PGSSLROOTCERT: /etc/gitlab/postgresql/ca.crt
         email:
           from: gitlab@{{ domain }}
           display_name: GitLab
           reply_to: noreply@{{ domain }}
         psql:
-          host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.databases.svc.cluster.local'
+          host: >-
+            {{
+              (databases.postgresql.service_alias ~ '.databases.svc.cluster.local')
+              if (databases.postgresql.service_alias | default('') | length > 0)
+              else
+              ((project_name | default('k8s')) ~ '-pg-pgbouncer.databases.svc.cluster.local')
+            }}
           port: 5432
           database: gitlabhq_production
           username: gitlab
@@ -725,6 +736,17 @@
             tmpBucket: gitlab-tmp
       gitlab:
         webservice:
+          extraVolumes: |
+            - name: postgresql-ca
+              secret:
+                secretName: gitlab-postgresql-password
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+          extraVolumeMounts: |
+            - name: postgresql-ca
+              mountPath: /etc/gitlab/postgresql
+              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -768,6 +790,17 @@
               limits: {cpu: 500m, memory: 256Mi}
           workerProcesses: '{{ gitlab_webservice_worker_processes | int }}'
         sidekiq:
+          extraVolumes: |
+            - name: postgresql-ca
+              secret:
+                secretName: gitlab-postgresql-password
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+          extraVolumeMounts: |
+            - name: postgresql-ca
+              mountPath: /etc/gitlab/postgresql
+              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -856,6 +889,17 @@
               memory: 1Gi
         toolbox:
           enabled: true
+          extraVolumes: |
+            - name: postgresql-ca
+              secret:
+                secretName: gitlab-postgresql-password
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+          extraVolumeMounts: |
+            - name: postgresql-ca
+              mountPath: /etc/gitlab/postgresql
+              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -907,6 +951,17 @@
                 storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
                 size: '{{ gitlab_backup_persistence_size }}'
         gitlab-exporter:
+          extraVolumes: |
+            - name: postgresql-ca
+              secret:
+                secretName: gitlab-postgresql-password
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+          extraVolumeMounts: |
+            - name: postgresql-ca
+              mountPath: /etc/gitlab/postgresql
+              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -915,6 +970,17 @@
             requests: {cpu: 25m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
         migrations:
+          extraVolumes: |
+            - name: postgresql-ca
+              secret:
+                secretName: gitlab-postgresql-password
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+          extraVolumeMounts: |
+            - name: postgresql-ca
+              mountPath: /etc/gitlab/postgresql
+              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -1517,7 +1583,9 @@
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
         deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
-          payload=$(printf "{\"token\":\"%s\"}" "$token")
+          payload=$(printf \
+            "{\"token\":\"%s\",\"system_id\":\"s_ansible_k8s_reconcile\"}" \
+            "$token")
           printf "%s" "$payload" |
             curl -sS -o /dev/null -w "%{http_code}" \
               -H "Content-Type: application/json" --data-binary @- \
@@ -1643,6 +1711,7 @@
     release_namespace: '{{ gitlab_namespace }}'
     create_namespace: false
     release_state: present
+    force_conflicts: true
     wait: true
     values:
       # The public Gateway is VPN-only, so in-cluster runners must register and
@@ -1650,6 +1719,7 @@
       # through the external load balancer (which intentionally returns 404).
       gitlabUrl: http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
       runnerToken: '{{ _gitlab_runner_auth_token }}'
+      replicas: '{{ gitlab_runner_replicas | int }}'
       concurrent: '{{ gitlab_runner_concurrent | int }}'
       checkInterval: 3
       metrics:
@@ -1657,6 +1727,10 @@
       rbac:
         create: true
         clusterWideAccess: false
+      serviceAccount:
+        create: true
+      nodeSelector:
+        node-role.kubernetes.io/worker: 'true'
       podSecurityContext:
         runAsUser: 100
         fsGroup: 65533
@@ -1674,10 +1748,12 @@
             [runners.kubernetes]
               namespace = "{{ gitlab_namespace }}"
               image = "ubuntu:22.04"
+              node_selector = { "node-role.kubernetes.io/worker" = "true" }
               privileged = false
+              allow_privilege_escalation = false
+              cap_drop = ["ALL"]
+              automount_service_account_token = false
               [runners.kubernetes.pod_security_context]
-                run_as_non_root = true
-                run_as_user = 1000
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
               [runners.kubernetes.build_container_resources]
@@ -1695,7 +1771,7 @@
                 cpu_limit = "500m"
                 memory_request = "128Mi"
                 memory_limit = "512Mi"
-        tags: kubernetes,docker,k8s
+        tags: kubernetes,k8s
         runUntagged: true
       podAnnotations:
         prometheus.io/scrape: 'true'
@@ -1751,8 +1827,8 @@
         namespace: '{{ gitlab_namespace }}'
       type: Opaque
       stringData:
-        accesskey: '{{ object_storage_access_key }}'
-        secretkey: '{{ object_storage_secret_key }}'
+        accesskey: '{{ object_storage_ci_cache_access_key }}'
+        secretkey: '{{ object_storage_ci_cache_secret_key }}'
   register: _r_create_s3_cache_secret_for_gitlab_runner
   retries: 3
   delay: 10

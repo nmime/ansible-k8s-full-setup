@@ -109,6 +109,14 @@
   when: backup_dr_enabled | bool
   tags: [backup, backup-dr, velero]
 
+- name: "Backup | Remove disabled full-cluster disaster-recovery controller"
+  ansible.builtin.include_tasks:
+    file: velero_disabled.yml
+    apply:
+      tags: [backup, backup-dr, velero]
+  when: not (backup_dr_enabled | bool)
+  tags: [backup, backup-dr, velero]
+
 - name: "Backup | Include verification jobs"
   ansible.builtin.include_tasks: verification.yml
   when: backup_verify_all | bool

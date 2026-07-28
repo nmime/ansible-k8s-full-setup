@@ -781,6 +781,11 @@
         port: '8472'
         source_ips: ['{{ network_cidr }}']
         description: Cilium VXLAN overlay
+      - direction: in
+        protocol: udp
+        port: '51871'
+        source_ips: ['{{ network_cidr }}']
+        description: Cilium WireGuard encryption
 
 - name: Read current node firewall after creation
   ansible.builtin.command:

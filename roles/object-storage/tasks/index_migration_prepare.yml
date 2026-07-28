@@ -58,12 +58,12 @@
                   - name: AWS_ACCESS_KEY_ID
                     valueFrom:
                       secretKeyRef:
-                        name: seaweedfs-s3-config
+                        name: object-storage-bootstrap-credentials
                         key: AWS_ACCESS_KEY_ID
                   - name: AWS_SECRET_ACCESS_KEY
                     valueFrom:
                       secretKeyRef:
-                        name: seaweedfs-s3-config
+                        name: object-storage-bootstrap-credentials
                         key: AWS_SECRET_ACCESS_KEY
                   - name: AWS_DEFAULT_REGION
                     value: "{{ object_storage_region | default('us-east-1') }}"

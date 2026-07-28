@@ -232,6 +232,13 @@
       cilium_kube_proxy_replacement: "true"
       cilium_tunnel_mode: vxlan
       cilium_auto_direct_node_routes: false
+      # Encrypt Cilium-managed endpoint traffic between nodes. WireGuard keeps
+      # the compact cluster operational without distributing static IPsec keys;
+      # node encryption also protects host-networked service hops where Cilium
+      # supports them.
+      cilium_encryption_enabled: "{{ network.encryption | default(true) | bool }}"
+      cilium_encryption_type: wireguard
+      cilium_encryption_node_encryption: true
       cilium_enable_endpoint_health_checking: true
       cilium_enable_health_checking: true
       cilium_enable_bandwidth_manager: true
@@ -3188,6 +3195,29 @@
   retries: 3
   delay: 10
   until: _r_create_vault_netpol is not failed
+
+- name: Discover cluster nodes for workload-role labels
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _cluster_nodes_for_workload_labels
+
+- name: Persist the worker workload label on non-control-plane nodes
+  kubernetes.core.k8s:
+    state: present
+    merge_type: merge
+    definition:
+      apiVersion: v1
+      kind: Node
+      metadata:
+        name: '{{ item.metadata.name }}'
+        labels:
+          node-role.kubernetes.io/worker: 'true'
+  loop: '{{ _cluster_nodes_for_workload_labels.resources }}'
+  loop_control:
+    label: '{{ item.metadata.name }}'
+  when:
+    - "'node-role.kubernetes.io/control-plane' not in (item.metadata.labels | default({}))"
 
 - name: Display cluster management summary
   debug:

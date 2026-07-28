@@ -3,8 +3,8 @@ backup_storage_type: s3
 backup_storage_endpoint: "{{ object_storage_endpoint | default('http://seaweedfs-filer.storage.svc.cluster.local:8333', true) }}"
 backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
 backup_storage_bucket: backups
-backup_storage_access_key: "{{ object_storage_access_key | default('', true) }}"
-backup_storage_secret_key: "{{ object_storage_secret_key | default('', true) }}"
+backup_storage_access_key: "{{ object_storage_backup_access_key | default('', true) }}"
+backup_storage_secret_key: "{{ object_storage_backup_secret_key | default('', true) }}"
 backup_storage_path_style: true
 backup_schedule: "0 2 * * *"
 backup_retention_days: 30

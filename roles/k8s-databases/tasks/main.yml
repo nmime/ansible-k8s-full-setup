@@ -2,7 +2,7 @@
   set_fact:
     db_ns: databases
     pg_operator_ver: '{{ pg_operator_version | default("3.0.0") }}'
-    psmdb_operator_ver: 1.22.0
+    psmdb_operator_ver: '{{ databases.mongodb.operator_version | default("1.23.0") }}'
     pg_version: '{{ postgresql_version | default(18) }}'
     pg_replicas: '{{ databases.postgresql.replicas | default(postgresql_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     pg_storage: '{{ postgresql_storage | default(''20Gi'') }}'
@@ -10,10 +10,65 @@
     pg_repo_storage_class: '{{ postgresql_repo_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
     pg_repo_storage: '{{ postgresql_repo_storage | default(''10Gi'') }}'
     pg_proxy_replicas: '{{ databases.postgresql.proxy_replicas | default(postgresql_proxy_replicas | default(2 if resource_tier in [''medium'', ''production''] else 1)) }}'
+    pg_service_alias: '{{ databases.postgresql.service_alias | default('''') }}'
+    pg_tls_mode: '{{ databases.postgresql.tls_mode | default(''preferTLS'') }}'
+    pg_tls_cutover_confirmed: '{{ databases.postgresql.tls_cutover_confirmed | default(false) | bool }}'
     mongo_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     mongo_storage: '{{ mongodb_storage | default(''20Gi'') }}'
     mongo_data_storage_class: '{{ mongodb_data_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
     mongo_service_alias: '{{ databases.mongodb.service_alias | default('''') }}'
+    mongo_tls_mode: '{{ databases.mongodb.tls_mode | default(''preferTLS'') }}'
+    mongo_tls_cutover_confirmed: '{{ databases.mongodb.tls_cutover_confirmed | default(false) | bool }}'
+- name: Set stable database endpoint variables
+  set_fact:
+    database_alias_ca_name: database-client-ca
+    database_alias_tls_enabled: >-
+      {{
+        (pg_service_alias | length > 0)
+        or (mongo_service_alias | length > 0)
+      }}
+    pg_connection_host: >-
+      {{
+        (pg_service_alias ~ '.databases.svc.cluster.local')
+        if (pg_service_alias | length > 0)
+        else
+        ((project_name | default('k8s')) ~ '-pg-pgbouncer.databases.svc.cluster.local')
+      }}
+    pg_alias_tls_secret: >-
+      {{
+        (pg_service_alias ~ '-tls')
+        if (pg_service_alias | length > 0)
+        else ''
+      }}
+    mongo_alias_tls_secret: >-
+      {{
+        (mongo_service_alias ~ '-tls')
+        if (mongo_service_alias | length > 0)
+        else ''
+      }}
+- name: Validate the staged MongoDB TLS cutover gate
+  ansible.builtin.assert:
+    that:
+    - mongo_tls_mode in ['preferTLS', 'requireTLS']
+    - mongo_tls_mode != 'requireTLS' or mongo_tls_cutover_confirmed | bool
+    fail_msg: >-
+      MongoDB tls_mode=requireTLS is a final cutover, not a bootstrap setting.
+      First deploy the alias certificate with preferTLS, mount mongodb-client-ca
+      in every consumer, rotate all URIs to tls=true with tlsCAFile, prove every
+      client, then set tls_cutover_confirmed=true together with requireTLS.
+  when: mongo_service_alias | length > 0
+- name: Validate the staged PostgreSQL TLS cutover gate
+  ansible.builtin.assert:
+    that:
+    - pg_tls_mode in ['preferTLS', 'requireTLS']
+    - pg_tls_mode != 'requireTLS' or pg_tls_cutover_confirmed | bool
+    fail_msg: >-
+      PostgreSQL tls_mode=requireTLS is a final cutover, not a bootstrap
+      setting. First deploy the PgBouncer alias certificate with preferTLS,
+      mount the CA and enable verify-full in every direct and pooled consumer,
+      prove no plaintext sessions remain, then set tls_cutover_confirmed=true
+      together with requireTLS.
+  when: pg_service_alias | length > 0
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -33,6 +88,207 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
+- name: Create database alias bootstrap issuer
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Issuer
+      metadata:
+        name: database-client-selfsigned
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        selfSigned: {}
+  when: database_alias_tls_enabled | bool
+- name: Create database alias client CA
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: '{{ database_alias_ca_name }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        commonName: database-client-ca
+        secretName: '{{ database_alias_ca_name }}'
+        isCA: true
+        duration: 43800h
+        renewBefore: 720h
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+          rotationPolicy: Always
+        issuerRef:
+          name: database-client-selfsigned
+          kind: Issuer
+          group: cert-manager.io
+  when: database_alias_tls_enabled | bool
+- name: Wait for database alias client CA
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: '{{ db_ns }}'
+    name: '{{ database_alias_ca_name }}'
+  register: _database_alias_ca_certificate
+  until: >-
+    (_database_alias_ca_certificate.resources | default([])) | length == 1
+    and
+    (
+      _database_alias_ca_certificate.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) == 1
+  retries: 60
+  delay: 5
+  when: database_alias_tls_enabled | bool
+- name: Create database alias CA issuer
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Issuer
+      metadata:
+        name: database-client-ca
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        ca:
+          secretName: '{{ database_alias_ca_name }}'
+  when: database_alias_tls_enabled | bool
+- name: Issue hostname-verified PostgreSQL alias certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: '{{ pg_alias_tls_secret }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        secretName: '{{ pg_alias_tls_secret }}'
+        commonName: '{{ project_name | default(''k8s'') }}-pg-pgbouncer'
+        duration: 2160h
+        renewBefore: 360h
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+          rotationPolicy: Always
+        usages:
+        - server auth
+        - client auth
+        dnsNames:
+        - '{{ pg_service_alias }}'
+        - '{{ pg_service_alias }}.{{ db_ns }}'
+        - '{{ pg_service_alias }}.{{ db_ns }}.svc'
+        - '{{ pg_service_alias }}.{{ db_ns }}.svc.cluster.local'
+        - '{{ project_name | default(''k8s'') }}-pg-pgbouncer'
+        - '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}'
+        - '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc'
+        - '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        issuerRef:
+          name: database-client-ca
+          kind: Issuer
+          group: cert-manager.io
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - pg_service_alias | length > 0
+- name: Issue hostname-verified MongoDB alias certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: '{{ mongo_alias_tls_secret }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        secretName: '{{ mongo_alias_tls_secret }}'
+        commonName: '{{ project_name | default(''k8s'') }}-mongo'
+        subject:
+          organizations:
+          - PSMDB
+        duration: 2160h
+        renewBefore: 360h
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+          rotationPolicy: Always
+        usages:
+        - server auth
+        - client auth
+        dnsNames:
+        - localhost
+        - '{{ mongo_service_alias }}'
+        - '{{ mongo_service_alias }}.{{ db_ns }}'
+        - '{{ mongo_service_alias }}.{{ db_ns }}.svc'
+        - '{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local'
+        - '*.{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc.cluster.local'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc.cluster.local'
+        issuerRef:
+          name: database-client-ca
+          kind: Issuer
+          group: cert-manager.io
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Wait for database alias leaf certificates
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: '{{ db_ns }}'
+    name: '{{ item }}'
+  loop: >-
+    {{
+      ([pg_alias_tls_secret]
+       if (platform_postgresql_enabled | default(true) | bool)
+       and (pg_service_alias | length > 0)
+       else [])
+      +
+      ([mongo_alias_tls_secret]
+       if (platform_mongodb_enabled | default(true) | bool)
+       and (mongo_service_alias | length > 0)
+       else [])
+    }}
+  register: _database_alias_leaf_certificates
+  until: >-
+    (_database_alias_leaf_certificates.resources | default([])) | length == 1
+    and
+    (
+      _database_alias_leaf_certificates.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) == 1
+  retries: 60
+  delay: 5
+  when: database_alias_tls_enabled | bool
 - name: Bound operator-created database helper containers at admission
   kubernetes.core.k8s:
     state: present
@@ -137,8 +393,8 @@
       stringData:
         s3.conf: |
           [global]
-          repo2-s3-key={{ object_storage_access_key }}
-          repo2-s3-key-secret={{ object_storage_secret_key }}
+          repo2-s3-key={{ object_storage_backup_access_key }}
+          repo2-s3-key-secret={{ object_storage_backup_secret_key }}
   register: _r_create_pgbackrest_s3_credentials_secret
   retries: 3
   delay: 10
@@ -267,6 +523,7 @@
         image: percona/percona-distribution-postgresql:18.4-1
         postgresVersion: '{{ pg_version }}'
         port: 5432
+        tlsOnly: '{{ pg_tls_mode == ''requireTLS'' }}'
         instances:
         - name: instance1
           replicas: '{{ pg_replicas | int }}'
@@ -300,6 +557,12 @@
           pgBouncer:
             replicas: '{{ pg_proxy_replicas | int }}'
             image: percona/percona-pgbouncer:1.25.2-1
+            customTLSSecret: >-
+              {{
+                {'name': pg_alias_tls_secret}
+                if (pg_service_alias | length > 0)
+                else omit
+              }}
             config:
               global:
                 pool_mode: transaction
@@ -399,7 +662,7 @@
               - hostssl all "_crunchypgbouncer" all scram-sha-256
               - host all "_crunchypgbouncer" all reject
               - hostssl all all all scram-sha-256
-              - host all all all scram-sha-256
+              - "{{ 'host all all all reject' if pg_tls_mode == 'requireTLS' else 'host all all all scram-sha-256' }}"
         users: >-
           {{
             [
@@ -418,6 +681,36 @@
   delay: 10
   until: _r_create_postgresql_cluster is not failed
   when: platform_postgresql_enabled | default(true) | bool
+- name: Create stable short PostgreSQL service alias
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: '{{ pg_service_alias }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/name: pgbouncer
+          app.kubernetes.io/instance: '{{ project_name | default(''k8s'') }}-pg'
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        ports:
+        - appProtocol: postgresql
+          name: pgbouncer
+          port: 5432
+          protocol: TCP
+          targetPort: 5432
+        selector:
+          postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
+          postgres-operator.crunchydata.com/role: pgbouncer
+  register: _r_create_postgresql_service_alias
+  retries: 3
+  delay: 10
+  until: _r_create_postgresql_service_alias is not failed
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - pg_service_alias | length > 0
 - name: Discover unscheduled PostgreSQL pods left from an obsolete template
   kubernetes.core.k8s_info:
     kind: Pod
@@ -523,6 +816,25 @@
   - platform_mongodb_enabled | default(true) | bool
   - _mongo_operator_helm_status.rc == 0
   - (_mongo_operator_helm_status.stdout | from_json).info.status | default('') == 'failed'
+- name: Reconcile MongoDB Operator CRDs for the selected version
+  ansible.builtin.shell: |
+    set -o pipefail
+    helm show crds percona/psmdb-operator --version {{ psmdb_operator_ver }} |
+      kubectl apply --server-side \
+        --force-conflicts \
+        --field-manager=ansible-psmdb-crds \
+        -f -
+  args:
+    executable: /bin/bash
+  register: _psmdb_crd_reconcile
+  retries: 3
+  delay: 15
+  until: _psmdb_crd_reconcile.rc == 0
+  changed_when: >-
+    (' created' in _psmdb_crd_reconcile.stdout)
+    or (' configured' in _psmdb_crd_reconcile.stdout)
+    or (' serverside-applied' in _psmdb_crd_reconcile.stdout)
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Install Percona MongoDB Operator
   kubernetes.core.helm:
     name: percona-server-mongodb-operator
@@ -594,8 +906,8 @@
         name: object-storage-backup-credentials
         namespace: '{{ db_ns }}'
       stringData:
-        AWS_ACCESS_KEY_ID: '{{ object_storage_access_key }}'
-        AWS_SECRET_ACCESS_KEY: '{{ object_storage_secret_key }}'
+        AWS_ACCESS_KEY_ID: '{{ object_storage_backup_access_key }}'
+        AWS_SECRET_ACCESS_KEY: '{{ object_storage_backup_secret_key }}'
   register: _r_create_mongodb_backup_credentials_for_mi
   retries: 3
   delay: 10
@@ -616,6 +928,28 @@
         imagePullPolicy: IfNotPresent
         secrets:
           users: percona-server-mongodb-users
+          ssl: >-
+            {{
+              mongo_alias_tls_secret
+              if (mongo_service_alias | length > 0)
+              else omit
+            }}
+          sslInternal: >-
+            {{
+              mongo_alias_tls_secret
+              if (mongo_service_alias | length > 0)
+              else omit
+            }}
+        tls: >-
+          {{
+            {
+              'mode': mongo_tls_mode,
+              'allowInvalidCertificates': false,
+              'certManagementPolicy': 'userProvidedOnly'
+            }
+            if (mongo_service_alias | length > 0)
+            else omit
+          }}
         unsafeFlags:
           replsetSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
           mongosSize: '{{ true if tier in [''minimal'', ''small''] else false }}'
@@ -772,6 +1106,71 @@
   retries: 60
   delay: 15
   when: platform_mongodb_enabled | default(true) | bool
+- name: Retrieve the database alias client CA
+  no_log: true
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ database_alias_ca_name }}'
+  register: _database_alias_ca_secret
+  until: >-
+    (_database_alias_ca_secret.resources | default([])) | length == 1
+    and
+    (_database_alias_ca_secret.resources[0].data["ca.crt"] | default('') | length) > 0
+  retries: 30
+  delay: 5
+  when: database_alias_tls_enabled | bool
+- name: Retrieve the operator PostgreSQL client CA
+  no_log: true
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-pg-cluster-ca-cert'
+  register: _pg_cluster_ca_secret
+  until: >-
+    (_pg_cluster_ca_secret.resources | default([])) | length == 1
+    and
+    (_pg_cluster_ca_secret.resources[0].data["ca.crt"] | default('') | length) > 0
+  retries: 30
+  delay: 5
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - pg_service_alias | length == 0
+- name: Ensure MongoDB TLS consumer namespaces exist
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ item }}'
+        labels:
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+  loop: '{{ databases.mongodb.tls_consumer_namespaces | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Publish the hostname-verifying MongoDB client CA
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: mongodb-client-ca
+        namespace: '{{ item }}'
+        annotations:
+          argocd.argoproj.io/compare-options: IgnoreExtraneous
+      type: Opaque
+      stringData:
+        ca.crt: '{{ _database_alias_ca_secret.resources[0].data["ca.crt"] | b64decode }}'
+  loop: '{{ databases.mongodb.tls_consumer_namespaces | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
 - name: Retrieve Percona-generated GitLab PG password
   no_log: true
   kubernetes.core.k8s_info:
@@ -819,10 +1218,19 @@
       type: Opaque
       stringData:
         postgresql-password: '{{ gitlab_pg_password }}'
-        host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        host: '{{ pg_connection_host }}'
         port: '5432'
         database: gitlabhq_production
         username: gitlab
+        sslmode: verify-full
+        sslrootcert: /etc/gitlab/postgresql/ca.crt
+        ca.crt: >-
+          {{
+            _database_alias_ca_secret.resources[0].data["ca.crt"] | b64decode
+            if (pg_service_alias | length > 0)
+            else
+            _pg_cluster_ca_secret.resources[0].data["ca.crt"] | b64decode
+          }}
   register: _r_create_postgresql_connection_secret_for_
   retries: 3
   delay: 10
@@ -859,10 +1267,18 @@
       type: Opaque
       stringData:
         postgresql-password: '{{ app_pg_password }}'
-        host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        host: '{{ pg_connection_host }}'
         port: '5432'
         database: '{{ app_name | default(''myapp'') }}'
         username: '{{ app_name | default(''myapp'') }}'
+        sslmode: verify-full
+        ca.crt: >-
+          {{
+            _database_alias_ca_secret.resources[0].data["ca.crt"] | b64decode
+            if (pg_service_alias | length > 0)
+            else
+            _pg_cluster_ca_secret.resources[0].data["ca.crt"] | b64decode
+          }}
   when:
   - platform_postgresql_enabled | default(true) | bool
   - app_pg_password | length > 0
@@ -905,19 +1321,6 @@
   when:
   - platform_postgresql_enabled | default(true) | bool
   - item.target_namespace | default('') | length > 0
-- name: Retrieve the PostgreSQL cluster CA for extra consumers
-  no_log: true
-  kubernetes.core.k8s_info:
-    kind: Secret
-    namespace: '{{ db_ns }}'
-    name: '{{ project_name | default(''k8s'') }}-pg-cluster-ca-cert'
-  register: _extra_pg_cluster_ca
-  until: (_extra_pg_cluster_ca.resources | default([])) | length == 1
-  retries: 30
-  delay: 10
-  when:
-  - platform_postgresql_enabled | default(true) | bool
-  - databases.postgresql.extra_users | default([]) | length > 0
 - name: Publish extra PostgreSQL connection secrets
   no_log: true
   kubernetes.core.k8s:
@@ -936,11 +1339,17 @@
       stringData:
         username: '{{ item.item.name }}'
         password: '{{ item.resources[0].data.password | b64decode }}'
-        host: '{{ project_name | default(''k8s'') }}-pg-pgbouncer.{{ db_ns }}.svc.cluster.local'
+        host: '{{ pg_connection_host }}'
         port: '5432'
         database: '{{ item.item.databases | first }}'
-        sslmode: require
-        ca.crt: '{{ _extra_pg_cluster_ca.resources[0].data["ca.crt"] | b64decode }}'
+        sslmode: verify-full
+        ca.crt: >-
+          {{
+            _database_alias_ca_secret.resources[0].data["ca.crt"] | b64decode
+            if (pg_service_alias | length > 0)
+            else
+            _pg_cluster_ca_secret.resources[0].data["ca.crt"] | b64decode
+          }}
   loop: '{{ _extra_pg_credentials.results | default([]) }}'
   when:
   - platform_postgresql_enabled | default(true) | bool
@@ -961,6 +1370,8 @@
            '    Replicas: ' ~ pg_replicas,
            '    PgBouncer: ' ~ pg_proxy_replicas ~ ' replicas',
            '    Cluster: ' ~ (project_name | default('k8s')) ~ '-pg.' ~ db_ns,
+           '    Client endpoint: ' ~ pg_connection_host,
+           '    Client TLS: verify-full; server mode=' ~ pg_tls_mode,
            '    Backup: pgBackRest (daily full + 6h differential + S3 weekly)']
           if (platform_postgresql_enabled | default(true) | bool)
           else ['  PostgreSQL: DISABLED']
@@ -971,6 +1382,16 @@
            '    MongoDB: 8.0.x',
            '    Replicas: ' ~ mongo_replicas,
            '    Cluster: ' ~ (project_name | default('k8s')) ~ '-mongo.' ~ db_ns,
+           '    Client endpoint: ' ~ (
+             (mongo_service_alias ~ '.' ~ db_ns ~ '.svc.cluster.local')
+             if (mongo_service_alias | length > 0)
+             else ((project_name | default('k8s')) ~ '-mongo-rs0.' ~ db_ns ~ '.svc.cluster.local')
+           ),
+           '    Client TLS: ' ~ (
+             mongo_tls_mode ~ ' + hostname verification'
+             if (mongo_service_alias | length > 0)
+             else 'operator default'
+           ),
            '    Backup: PBM (daily logical + weekly physical + PITR/oplog)',
            '    Retention: ' ~ (backup_retention_days | default(30)) ~ ' days']
           if (platform_mongodb_enabled | default(true) | bool)

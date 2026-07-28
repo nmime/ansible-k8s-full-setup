@@ -42,14 +42,67 @@ object_storage_region: us-east-1
 object_storage_aws_cli_image: amazon/aws-cli:2.34.48
 # Matches the chart app version and supplies cp/cmp for offline index migration.
 object_storage_index_migration_image: chrislusf/seaweedfs:4.25
+# The quota enforcer uses SeaweedFS 4.25's native s3.bucket.quota commands.
+# Pin the multi-architecture index so this privileged storage-control job cannot
+# drift independently from the audited server release.
+object_storage_policy_image: chrislusf/seaweedfs@sha256:c42a5268ca13fcb65e0fae925886b107f4bf294d8db15e1be5509d55104eb509
+object_storage_managed_bucket_policies_enabled: true
+object_storage_managed_bucket_policy_supported_chart_versions:
+  - "4.25.1"
+object_storage_quota_enforcement_schedule: "*/5 * * * *"
+# SeaweedFS path TTL is stamped on new writes. The chart hook therefore applies
+# these policies before Nx cache GitOps is enabled. Native bucket quotas provide
+# a bounded logical-size target; the periodic enforcer switches an over-quota
+# bucket read-only within one schedule interval.
+object_storage_managed_bucket_policies:
+  - name: nx-cache-protected
+    ttl: 30d
+    quota_mib: >-
+      {{
+        4096
+        if resource_tier | default(tier | default('minimal')) == 'minimal'
+        else 10240
+        if resource_tier | default(tier | default('minimal')) == 'small'
+        else 40960
+        if resource_tier | default(tier | default('minimal')) == 'medium'
+        else 61440
+      }}
+  - name: nx-cache-development
+    ttl: 7d
+    quota_mib: >-
+      {{
+        2048
+        if resource_tier | default(tier | default('minimal')) == 'minimal'
+        else 5120
+        if resource_tier | default(tier | default('minimal')) == 'small'
+        else 20480
+        if resource_tier | default(tier | default('minimal')) == 'medium'
+        else 30720
+      }}
 
-# Safe static defaults are intentionally non-production; generate-secrets overrides and persists real values.
-object_storage_access_key: "{{ generated_object_storage_access_key | default('seaweedfsadmin') }}"
-object_storage_secret_key: "{{ generated_object_storage_secret_key | default('seaweedfsadmin123456789') }}"
+# Credentials are generated and persisted by generate-secrets. The storage role
+# fails closed when they are absent; repository-known fallback credentials are
+# never accepted, including in non-production profiles.
+object_storage_access_key: "{{ generated_object_storage_access_key | default('', true) }}"
+object_storage_secret_key: "{{ generated_object_storage_secret_key | default('', true) }}"
+object_storage_bootstrap_access_key: "{{ generated_object_storage_bootstrap_access_key | default('', true) }}"
+object_storage_bootstrap_secret_key: "{{ generated_object_storage_bootstrap_secret_key | default('', true) }}"
+object_storage_gitlab_access_key: "{{ generated_object_storage_gitlab_access_key | default('', true) }}"
+object_storage_gitlab_secret_key: "{{ generated_object_storage_gitlab_secret_key | default('', true) }}"
+object_storage_backup_access_key: "{{ generated_object_storage_backup_access_key | default('', true) }}"
+object_storage_backup_secret_key: "{{ generated_object_storage_backup_secret_key | default('', true) }}"
+object_storage_observability_access_key: "{{ generated_object_storage_observability_access_key | default('', true) }}"
+object_storage_observability_secret_key: "{{ generated_object_storage_observability_secret_key | default('', true) }}"
+object_storage_ci_cache_access_key: "{{ generated_object_storage_ci_cache_access_key | default('', true) }}"
+object_storage_ci_cache_secret_key: "{{ generated_object_storage_ci_cache_secret_key | default('', true) }}"
+object_storage_nx_cache_protected_access_key: "{{ generated_object_storage_nx_cache_protected_access_key | default('', true) }}"
+object_storage_nx_cache_protected_secret_key: "{{ generated_object_storage_nx_cache_protected_secret_key | default('', true) }}"
+object_storage_nx_cache_development_access_key: "{{ generated_object_storage_nx_cache_development_access_key | default('', true) }}"
+object_storage_nx_cache_development_secret_key: "{{ generated_object_storage_nx_cache_development_secret_key | default('', true) }}"
 
 
 object_storage_create_external_routes: true
-object_storage_network_policy_enabled: false
+object_storage_network_policy_enabled: true
 
 # Optional object storage credentials for consumer namespaces. Secrets are only
 # created in namespaces that already exist so the role can be validated or used
@@ -57,8 +110,10 @@ object_storage_network_policy_enabled: false
 object_storage_consumer_credential_secrets:
   - name: object-storage-credentials
     namespace: gitlab
+    credential_group: gitlab
   - name: object-storage-credentials
     namespace: monitoring
+    credential_group: observability
 
 # Buckets are representative defaults for current S3-compatible consumers. String
 # entries and dict entries with `name` are both supported by the bootstrap job.
@@ -76,10 +131,41 @@ object_storage_buckets:
   - gitlab-pages
   - gitlab-backups
   - gitlab-tmp
+  - gitlab-runner-cache
   - loki-chunks
   - loki-ruler
   - loki-admin
   - backups
   - velero
   - tempo-traces
+  - nx-cache-protected
+  - nx-cache-development
   - name: "{{ app_name | default('myapp') }}-uploads"
+
+# Static SeaweedFS IAM uses Action:bucket scoping. The bootstrap identity may
+# create and verify only this declared bucket inventory; runtime identities
+# never receive a global Admin action.
+object_storage_gitlab_buckets:
+  - gitlab-artifacts
+  - gitlab-uploads
+  - gitlab-packages
+  - gitlab-registry
+  - gitlab-lfs
+  - gitlab-terraform-state
+  - gitlab-ci-secure-files
+  - gitlab-dependency-proxy
+  - gitlab-mr-diffs
+  - gitlab-agent-plan-content
+  - gitlab-pages
+  - gitlab-backups
+  - gitlab-tmp
+object_storage_observability_buckets:
+  - loki-chunks
+  - loki-ruler
+  - loki-admin
+  - tempo-traces
+object_storage_backup_buckets:
+  - backups
+  - velero
+object_storage_ci_cache_buckets:
+  - gitlab-runner-cache
