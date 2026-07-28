@@ -81,6 +81,12 @@ def test_gitlab_and_argocd_domains_are_configurable_with_compatibility_aliases()
     assert "gitops.domain | default('argocd.' ~ domain, true)" in gitops
     assert "gitops.domain_aliases" in gitops
     assert "sectionName: cluster-https" in gitops
+    assert "hostAliases: '{{ argocd_repo_host_aliases }}'" in gitops
+    assert "repoServer:\n        replicas:" in gitops
+    assert "gitops.insecure_mode" in gitops
+    assert "argocd_insecure_mode_effective" in gitops
+    assert "gitlab-gitlab-shell-host-keys" in gitops
+    assert "extraHosts: '{{ argocd_gitlab_ssh_known_hosts" in gitops
 
 
 def test_postgresql_extra_users_publish_tls_connection_secrets():
