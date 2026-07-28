@@ -1037,6 +1037,24 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
     assert mongo_spec["pmm"]["resources"] == "{{ mongodb_pmm_resources }}"
 
 
+def test_mongodb_supports_a_stable_short_service_alias():
+    tasks = yaml.safe_load(read("roles/k8s-databases/tasks/main.yml"))
+    alias_task = next(
+        task
+        for task in tasks
+        if task.get("name") == "Create stable short MongoDB service alias"
+    )
+    service = alias_task["kubernetes.core.k8s"]["definition"]
+
+    assert service["kind"] == "Service"
+    assert service["metadata"]["name"] == "{{ mongo_service_alias }}"
+    assert service["spec"]["clusterIP"] == "None"
+    assert service["spec"]["publishNotReadyAddresses"] is False
+    assert service["spec"]["ports"][0]["port"] == 27017
+    assert service["spec"]["selector"]["app.kubernetes.io/replset"] == "rs0"
+    assert "mongo_service_alias | length > 0" in alias_task["when"]
+
+
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():
     observability_tasks = yaml.safe_load(read("roles/k8s-observability/tasks/main.yml"))
     vm_install = next(

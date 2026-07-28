@@ -13,6 +13,7 @@
     mongo_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(3 if resource_tier in [''medium'', ''production''] else 1)) }}'
     mongo_storage: '{{ mongodb_storage | default(''20Gi'') }}'
     mongo_data_storage_class: '{{ mongodb_data_storage_class | default(storage_class | default(''hcloud-volumes'')) }}'
+    mongo_service_alias: '{{ databases.mongodb.service_alias | default('''') }}'
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -681,6 +682,41 @@
   delay: 10
   until: _r_create_mongodb_cluster is not failed
   when: platform_mongodb_enabled | default(true) | bool
+- name: Create stable short MongoDB service alias
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: '{{ mongo_service_alias }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/name: percona-server-mongodb
+          app.kubernetes.io/instance: '{{ project_name | default(''k8s'') }}-mongo'
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        clusterIP: None
+        publishNotReadyAddresses: false
+        ports:
+        - appProtocol: mongo
+          name: mongodb
+          port: 27017
+          protocol: TCP
+          targetPort: 27017
+        selector:
+          app.kubernetes.io/instance: '{{ project_name | default(''k8s'') }}-mongo'
+          app.kubernetes.io/managed-by: percona-server-mongodb-operator
+          app.kubernetes.io/name: percona-server-mongodb
+          app.kubernetes.io/part-of: percona-server-mongodb
+          app.kubernetes.io/replset: rs0
+  register: _r_create_mongodb_service_alias
+  retries: 3
+  delay: 10
+  until: _r_create_mongodb_service_alias is not failed
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
 - name: Wait for the operator-managed MongoDB users source secret
   no_log: true
   kubernetes.core.k8s_info:

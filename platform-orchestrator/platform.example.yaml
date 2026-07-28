@@ -124,6 +124,9 @@ databases:
     # pgbackrest_init, pgbackrest_repo_host, and pgbackrest_job.
   mongodb:
     enabled: false
+    # Optional stable seed DNS:
+    # <service_alias>.databases.svc.cluster.local
+    service_alias: ""
     version: "8.0"
     replicas: 1
     storage_size: 30Gi
