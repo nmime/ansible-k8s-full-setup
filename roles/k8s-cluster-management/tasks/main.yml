@@ -670,21 +670,16 @@
   changed_when: "'changed=true' in schedulable_control_plane.stdout"
   when: cp_schedulable | default(false) | bool
 
-- name: Fix CoreDNS forward to use upstream DNS instead of resolv.conf loop
-  ansible.builtin.shell: |
-    kubectl -n kube-system get cm coredns -o json | \
-      python3 -c "import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('127.0.0.53','1.1.1.1 8.8.8.8').replace('/etc/resolv.conf','1.1.1.1 8.8.8.8'); json.dump(d,sys.stdout)" | \
-      kubectl apply -f -
-    kubectl -n kube-system get cm nodelocaldns -o json | \
-      python3 -c "import sys,json; d=json.load(sys.stdin); d['data']['Corefile']=d['data']['Corefile'].replace('/etc/resolv.conf','1.1.1.1 8.8.8.8'); json.dump(d,sys.stdout)" | \
-      kubectl apply -f - 2>/dev/null || true
-    kubectl -n kube-system rollout restart deployment coredns
-    kubectl -n kube-system delete pods -l k8s-app=node-local-dns 2>/dev/null || true
-  args:
-    executable: /bin/bash
+- name: Reconcile upstream and split-horizon cluster DNS
+  ansible.builtin.script:
+    cmd: reconcile_cluster_dns.py
+  environment:
+    PLATFORM_INTERNAL_DNS_ZONES: >-
+      {{ network.internal_dns.zones | default([]) | to_json }}
   delegate_to: localhost
   become: false
-  changed_when: true
+  register: _cluster_dns_reconcile
+  changed_when: "'changed=true' in _cluster_dns_reconcile.stdout"
 
 - name: Reconcile NodeLocal DNS complete resource bounds
   kubernetes.core.k8s:
