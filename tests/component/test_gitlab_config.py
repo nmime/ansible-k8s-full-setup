@@ -142,6 +142,17 @@ class TestChart10ValuesStructure:
             for task in tasks
             if task.get("name") == "Create GitLab Gateway API HTTPRoute"
         )
+        disable_signup = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Disable public GitLab self-registration before publishing the webservice"
+        )
+        assert disable_signup["when"] == "gitlab_public_webservice_enabled | bool"
+        assert "signup_enabled: false" in (
+            disable_signup["ansible.builtin.command"]["argv"][-1]
+        )
+        assert tasks.index(disable_signup) < tasks.index(route)
         parent_refs = route["kubernetes.core.k8s"]["definition"]["spec"]["parentRefs"]
         assert "'name': 'admin-gateway'" in parent_refs
         assert "'name': 'main-gateway'" in parent_refs
@@ -149,6 +160,12 @@ class TestChart10ValuesStructure:
         assert route["kubernetes.core.k8s"]["definition"]["spec"]["hostnames"] == (
             "{{ [gitlab_domain] + gitlab_domain_aliases }}"
         )
+
+        install = next(
+            task for task in tasks if task.get("name") == "Install GitLab with Helm"
+        )
+        app_config = install["kubernetes.core.helm"]["values"]["global"]["appConfig"]
+        assert app_config["initialDefaults"]["signupEnabled"] is False
 
     def test_runner_uses_internal_service_behind_vpn_only_gateway(self):
         tasks = yaml.safe_load(self.content)

@@ -157,6 +157,8 @@ databases:
 
 gitlab:
   enabled: true
+  # Keep the UI/API VPN-only unless a public developer endpoint is intentional.
+  public_webservice_enabled: false
   registry_public: true
   webservice_replicas: 1
   sidekiq_replicas: 1
