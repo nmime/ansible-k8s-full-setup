@@ -1151,9 +1151,22 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
     gate = by_name["Validate the staged MongoDB TLS cutover gate"][
         "ansible.builtin.assert"
     ]
-    assert "mongo_tls_mode != 'requireTLS' or mongo_tls_cutover_confirmed | bool" in (
-        gate["that"]
+    assert (
+        "not mongo_alias_tls_cutover_enabled | bool or "
+        "mongo_tls_cutover_confirmed | bool"
+    ) in gate["that"]
+    assert (
+        "mongo_tls_mode != 'requireTLS' or "
+        "(mongo_alias_tls_cutover_enabled | bool and "
+        "mongo_tls_cutover_confirmed | bool)"
+    ) in gate["that"]
+    assert "mongo_alias_tls_cutover_enabled | bool" in (
+        mongo_cluster["spec"]["secrets"]["ssl"]
     )
+    assert "mongo_alias_tls_cutover_enabled | bool" in (
+        mongo_cluster["spec"]["secrets"]["sslInternal"]
+    )
+    assert "mongo_alias_tls_cutover_enabled | bool" in mongo_cluster["spec"]["tls"]
     published_ca = by_name["Publish the hostname-verifying MongoDB client CA"][
         "kubernetes.core.k8s"
     ]["definition"]
