@@ -739,9 +739,12 @@ class TestNoDeprecatedKeys:
     def test_external_postgresql_verifies_the_internal_tls_identity(self):
         assert "databases.postgresql.service_alias" in self.content
         assert "PGSSLMODE: verify-full" in self.content
-        assert "PGSSLROOTCERT: /etc/gitlab/postgresql/ca.crt" in self.content
-        assert self.content.count("secretName: gitlab-postgresql-password") >= 5
-        assert self.content.count("mountPath: /etc/gitlab/postgresql") >= 5
+        assert "PGSSLROOTCERT: /etc/ssl/certs/ca-certificates.crt" in self.content
+        assert "certificates:" in self.content
+        assert "customCAs:" in self.content
+        assert "- secret: gitlab-postgresql-password" in self.content
+        assert "mountPath: /etc/gitlab/postgresql" not in self.content
+        assert "- ca.crt" in self.content
 
     @pytest.mark.component
     def test_no_obsolete_database_external_key(self):
