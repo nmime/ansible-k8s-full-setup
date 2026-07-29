@@ -233,7 +233,7 @@ The CX option is intentionally mixed instead of assigning `cx33` everywhere:
 | **Infrastructure** | | **38** | **76 GiB** | **760 GiB** | — | **€86.92** |
 | Provider CSI volumes | 17 volumes | — | — | — | 240 GiB | €13.73 |
 | Active local PVC claims | 15 volumes | — | — | 300 GiB | — | included |
-| Expandable static local pool | 18 slots | — | — | 360 GiB | — | included |
+| Expandable static local pool | 24 slots | — | — | 450 GiB | — | included |
 | **Total base claims** | | | | **300 GiB** | **240 GiB** | **€100.65** |
 
 Excluding the bastion, Kubernetes receives 36 vCPU, 72 GiB RAM, and 720 GiB
@@ -241,13 +241,13 @@ aggregate node-local SSD. The three `cx43` workers provide 24 vCPU, 48 GiB RAM,
 and 480 GiB local SSD. The three control planes remain schedulable and
 contribute another 12 vCPU and 24 GiB RAM. Of the Kubernetes nodes' 720 GiB
 aggregate SSD, base claims actively select 300 GiB and the pre-created pool
-exposes up to 360 GiB for the late MongoDB opt-in.
+exposes up to 450 GiB for selective MongoDB and low-priority Nx cache claims.
 
 ## Local disk and volume boundary
 
 The SSD column is node-local root storage, not shared storage. The
 `medium-optimized` profile now uses it selectively through a capacity-aware
-18-volume static local PV pool, `WaitForFirstConsumer`, retained PVs,
+24-volume static local PV pool, `WaitForFirstConsumer`, retained PVs,
 required hostname anti-affinity, minimum root-disk gates of 70 GiB on control
 planes and 140 GiB on workers, and a 40 GiB per-node free-space gate. Only
 SeaweedFS master/volume/index, Vault Raft data, and PostgreSQL use this class

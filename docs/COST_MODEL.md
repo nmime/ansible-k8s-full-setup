@@ -54,15 +54,15 @@ reserve 520 GiB; adding the 20 GiB GitLab staging claim produces 482 GiB
 requested and the larger 540 GiB envelope. This
 prevents the cost and capacity plan from depending on sub-10-GiB packing.
 
-The playbook creates 18 target-generation static local PV slots totaling
-360 GiB. Kubernetes uses
+The playbook creates 24 target-generation static local PV slots totaling
+450 GiB. Kubernetes uses
 `WaitForFirstConsumer` and explicit node affinity to account capacity during
 scheduling; every PV is retained. A deployment-time DaemonSet rejects nodes
 with less than 40 GiB free at the configured path, while a separate node gate
 requires at least 70 GiB of root-disk capacity on each control plane and
-140 GiB on each worker. The base setup actively uses 15 slots/300 GiB; the
-remaining three 20 GiB slots are the exact expandable capacity for the
-three-replica MongoDB opt-in. SeaweedFS,
+140 GiB on each worker. The base setup actively uses 15 slots/300 GiB. The
+remaining capacity supports the three-replica MongoDB opt-in, two worker-local
+Nx cache claims, and bounded operational headroom. SeaweedFS,
 Vault, PostgreSQL, and MongoDB use
 required or chart-provided hostname anti-affinity and application replication.
 Local volumes still cannot move with a failed node; application quorum and
@@ -77,7 +77,7 @@ and the retained 40 GiB deployment gate protect the remaining operating-system
 and container-runtime headroom.
 
 At €0.0572/GiB-month, 240 GiB of provider volumes costs €13.728/month, rounded
-to €13.73. The 360 GiB expandable static pool is already included in server
+to €13.73. The 450 GiB expandable static pool is already included in server
 prices. Enabling MongoDB consumes only the remaining replicated local-pool
 capacity and therefore does not increase this provider-volume baseline.
 

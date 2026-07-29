@@ -58,12 +58,15 @@ def test_static_local_pool_is_retained_capacity_aware_and_gated():
     assert "volumeBindingMode: WaitForFirstConsumer" in tasks
     assert "platform-local-storage-initializer" in tasks
     assert "local_storage_pv_slots" in tasks
-    assert 'test "$(jq \'.items | length\' <<<"$pool")" -eq 18' in tasks
-    assert 'tonumber] | add\' <<<"$pool")" -eq 360' in tasks
+    assert 'test "$(jq \'.items | length\' <<<"$pool")" -eq 24' in tasks
+    assert 'tonumber] | add\' <<<"$pool")" -eq 450' in tasks
     assert "three-plus-three-v1" in tasks
     assert "local_storage_min_free_gib_per_node" in tasks
     assert "capacity_kib >= (70 * 1024 * 1024)" in tasks
     assert "capacity_kib >= (140 * 1024 * 1024)" in tasks
+    assert "kind: PriorityClass" in tasks
+    assert "preemptionPolicy: Never" in tasks
+    assert "local_storage_cache_priority_class" in tasks
 
 
 def test_component_roles_use_independent_storage_classes():
