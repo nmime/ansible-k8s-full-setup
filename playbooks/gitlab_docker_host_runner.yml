@@ -104,17 +104,36 @@
         - npx
         - corepack
 
+    - name: Publish the pnpm Corepack shim for the restricted runner
+      ansible.builtin.command:
+        cmd: corepack enable --install-directory /usr/local/bin pnpm
+        creates: /usr/local/bin/pnpm
+
     - name: Create runner configuration and build directories
       ansible.builtin.file:
         path: "{{ item.path }}"
-        state: directory
+        state: "{{ item.state | default('directory') }}"
         owner: gitlab-runner
         group: gitlab-runner
         mode: "{{ item.mode }}"
+        access_time: "{{ item.time | default(omit) }}"
+        modification_time: "{{ item.time | default(omit) }}"
       loop:
         - {path: /etc/gitlab-runner, mode: '0750'}
         - {path: /var/lib/gitlab-runner/builds, mode: '0750'}
         - {path: /var/lib/gitlab-runner/cache, mode: '0750'}
+        - {path: /var/lib/gitlab-runner/.runner_system_id, mode: '0600', state: touch, time: preserve}
+
+    - name: Keep non-interactive runner login shells side-effect free
+      ansible.builtin.copy:
+        dest: /var/lib/gitlab-runner/.bash_logout
+        owner: gitlab-runner
+        group: gitlab-runner
+        mode: '0644'
+        content: |
+          # Managed by Ansible. GitLab Runner pipes generated scripts through a
+          # login shell; console cleanup returns non-zero without a real TTY.
+          true
 
     - name: Configure the protected shell runner
       ansible.builtin.copy:
@@ -165,7 +184,7 @@
           Group=gitlab-runner
           SupplementaryGroups=docker
           WorkingDirectory=/var/lib/gitlab-runner
-          ExecStart=/usr/local/bin/gitlab-runner run --config /etc/gitlab-runner/config.toml --working-directory /var/lib/gitlab-runner --user gitlab-runner --service gitlab-runner
+          ExecStart=/usr/local/bin/gitlab-runner run --config /etc/gitlab-runner/config.toml --working-directory /var/lib/gitlab-runner --service gitlab-runner
           Restart=always
           RestartSec=5
           KillSignal=SIGQUIT
@@ -208,6 +227,22 @@
         - corepack --version
         - gitlab-runner --version
       changed_when: false
+
+    - name: Verify the runner login-shell lifecycle
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          printf '%s\n' 'echo runner-shell-ok' |
+          /bin/bash --login
+        executable: /bin/bash
+      become_user: gitlab-runner
+      environment:
+        HOME: /var/lib/gitlab-runner
+      register: runner_login_shell
+      changed_when: false
+      failed_when: >-
+        runner_login_shell.rc != 0 or
+        'runner-shell-ok' not in runner_login_shell.stdout
 
   handlers:
     - name: Reload systemd
