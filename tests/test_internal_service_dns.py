@@ -105,6 +105,34 @@ def test_postgresql_extra_users_publish_tls_connection_secrets():
     assert "argocd.argoproj.io/compare-options: IgnoreExtraneous" in databases
 
 
+def test_medium_optimized_declares_scoped_application_database_users():
+    profile = yaml.safe_load(
+        (ROOT / "platform-orchestrator/profiles/medium-optimized.yaml").read_text()
+    )
+    postgresql = profile["databases"]["postgresql"]
+    mongodb = profile["databases"]["mongodb"]
+    assert postgresql["service_alias"] == "n0xeid-pg"
+    assert mongodb["service_alias"] == "n0xeid-mongo"
+
+    users = {
+        item["operator"]["name"]: item
+        for item in postgresql["extra_users"]
+    }
+    assert set(users) == {
+        "metabase",
+        "dadya-prod",
+        "dadya-pp",
+        "social-agents-owner",
+    }
+    assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS"
+    assert {
+        item["target_namespace"] for item in users.values()
+    } == {"fun", "dadya-production", "dadya-preproduction", "agents"}
+    for item in users.values():
+        assert "target_namespace" not in item["operator"]
+        assert "secret_name" not in item["operator"]
+
+
 def test_cluster_management_consumes_internal_dns_profile():
     tasks = yaml.safe_load(
         (ROOT / "roles/k8s-cluster-management/tasks/main.yml").read_text()
