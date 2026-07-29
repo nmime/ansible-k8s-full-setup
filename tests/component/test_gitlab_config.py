@@ -492,8 +492,27 @@ class TestChart10ValuesStructure:
         ):
             assert f"kind: {kind}\n            app: {app}" in gate
         assert "Require every critical GitLab controller to exist" in gate
-        assert "kubectl rollout status" in gate
         assert "release=gitlab,app=" in gate
+        assert "Align GitLab Deployment progress deadlines with bounded readiness" in gate
+        assert "progressDeadlineSeconds: '{{ gitlab_progress_deadline_seconds | int }}'" in gate
+        assert (
+            "Wait boundedly for all critical GitLab controllers to be current and ready"
+            in gate
+        )
+        assert "status.observedGeneration" in gate
+        assert "status.readyReplicas" in gate
+        assert "status.updatedReplicas" in gate
+        assert "status.availableReplicas" in gate
+        assert "status.currentRevision" in gate
+        assert "status.updateRevision" in gate
+        assert "Refresh required GitLab controller definitions after readiness" in gate
+        controller_wait = gate.split(
+            "- name: Wait boundedly for all critical GitLab controllers to be current and ready",
+            1,
+        )[1].split(
+            "- name: Refresh required GitLab controller definitions after readiness", 1
+        )[0]
+        assert "kubectl rollout status" not in controller_wait
 
     def test_readiness_failure_is_sanitized_and_fail_closed(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
@@ -510,6 +529,12 @@ class TestChart10ValuesStructure:
     def test_readiness_timeout_is_configurable_with_bounded_default(self):
         assert "gitlab_readiness_timeout:" in self.content
         assert "gitlab.readiness_timeout | default(''30m'')" in self.content
+        assert "gitlab_readiness_retries:" in self.content
+        assert "gitlab.readiness_retries | default(180)" in self.content
+        assert "gitlab_readiness_delay:" in self.content
+        assert "gitlab.readiness_delay | default(10)" in self.content
+        assert "gitlab_progress_deadline_seconds:" in self.content
+        assert "gitlab.progress_deadline_seconds | default(1800)" in self.content
 
     def test_chart_10_gitaly_persistence_contract_uses_rendered_values_path(self):
         gitaly = self.content.split("        gitaly:", 1)[1].split("        kas:", 1)[0]
