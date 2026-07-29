@@ -35,7 +35,7 @@ The runtime has four capability tiers and five named profiles:
 The current deployable `medium-optimized` balanced tariff is approximately
 **€254.15/month net** at the authenticated 2026-07-24 prices: six `cpx32`
 nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, 300 GiB of active
-server-local application-replicated claims in a 360 GiB expandable pool, and 240 GiB of
+server-local application-replicated claims in a 450 GiB expandable pool, and 240 GiB of
 provider-billable CSI volumes. The intermittent CX cost-optimized mapping is
 **€100.65/month net**
 whenever its required server types are placeable. It keeps three economical

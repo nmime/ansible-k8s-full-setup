@@ -1077,6 +1077,22 @@
 # Bounded node-local storage (optional)
 # ============================================
 
+- name: Configure the non-preempting low-priority cache class
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: scheduling.k8s.io/v1
+      kind: PriorityClass
+      metadata:
+        name: "{{ local_storage_cache_priority_class }}"
+      value: -10
+      globalDefault: false
+      preemptionPolicy: Never
+      description: >-
+        Evictable cache workloads; always lower priority than production
+        applications.
+  when: local_storage_enabled | bool
+
 - name: Configure the retained static local storage class
   kubernetes.core.k8s:
     state: present
@@ -1173,16 +1189,22 @@
       # dormant capacity for the optional three-member MongoDB deployment.
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 40, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 20, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 20, slot: 2}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 10, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 10, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[0] }}", size: 10, slot: 3}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 40, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 20, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 20, slot: 2}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 10, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 10, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[1] }}", size: 10, slot: 3}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 40, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 20, slot: 1}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 20, slot: 2}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 1}
       - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 2}
+      - {node: "{{ local_storage_worker_nodes_result.stdout_lines[2] }}", size: 10, slot: 3}
   when: local_storage_enabled | bool
 
 - name: Create and validate static local PV directories on every node
@@ -1301,8 +1323,8 @@
     pool=$(kubectl get pv -l \
       platform.example.com/project={{ project_name | quote }},platform.example.com/storage-pool=medium-optimized-local,platform.example.com/storage-pool-generation=three-plus-three-v1 \
       -o json)
-    test "$(jq '.items | length' <<<"$pool")" -eq 18
-    test "$(jq '[.items[].spec.capacity.storage | sub("Gi$"; "") | tonumber] | add' <<<"$pool")" -eq 360
+    test "$(jq '.items | length' <<<"$pool")" -eq 24
+    test "$(jq '[.items[].spec.capacity.storage | sub("Gi$"; "") | tonumber] | add' <<<"$pool")" -eq 450
     test "$(jq '[.items[].spec.persistentVolumeReclaimPolicy] | all(. == "Retain")' <<<"$pool")" = true
     test "$(jq '[.items[].spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values | length] | all(. == 1)' <<<"$pool")" = true
   args:

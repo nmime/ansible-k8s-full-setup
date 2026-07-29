@@ -59,7 +59,7 @@ Medium and production use two Elasticsearch data replicas.
 This keeps the default one shard replica assigned and makes Elasticsearch
 health gates truthfully require green status. Medium-optimized instead uses
 Loki and places 300 GiB of active replication-qualified claims on server SSD,
-keeps a 360 GiB expandable static local pool for the MongoDB opt-in, and
+keeps a 450 GiB expandable static local pool for selective MongoDB and Nx cache, and
 retains 240 GiB on provider CSI including GitLab backup staging.
 
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
@@ -122,7 +122,7 @@ backup-gated replacement/native-restore path rather than an ordinary
 reconcile. The three 2 GiB SeaweedFS index requests reserve a conservative
 10 GiB each on local SSD, contributing 30 GiB to the active 300 GiB local
 envelope even though their actual Kubernetes requests total 6 GiB. The static
-pool remains 360 GiB so late MongoDB selection does not require server
+pool remains 450 GiB so late MongoDB or Nx cache selection does not require server
 replacement. GitLab backup staging is a 20 GiB CSI claim; see
 [the current cost model](COST_MODEL.md).
 
