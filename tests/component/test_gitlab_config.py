@@ -514,6 +514,8 @@ class TestChart10ValuesStructure:
         assert "kubectl rollout status" not in controller_wait
         assert "--request-timeout=20s" in controller_wait
         assert "default('{\"items\":[]}', true) | from_json" in controller_wait
+        assert "from_json)['items']" in controller_wait
+        assert "(from_json).items" not in controller_wait
 
     def test_readiness_failure_is_sanitized_and_fail_closed(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
