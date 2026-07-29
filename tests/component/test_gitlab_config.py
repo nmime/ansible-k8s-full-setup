@@ -74,7 +74,7 @@ class TestChart10ValuesStructure:
             assert spread[0]["nodeTaintsPolicy"] == "Honor"
             expressions = spread[0]["labelSelector"]["matchExpressions"]
             assert expressions[0]["values"] == ["gitlab"]
-            assert expressions[1]["values"] == [component]
+            assert expressions[1]["values"] == ["webservice", "sidekiq"]
 
             # With three production workers, hard maxSkew=1 keeps the normal
             # two-replica floor on separate nodes while still admitting the
@@ -82,26 +82,14 @@ class TestChart10ValuesStructure:
             assert max([1, 1, 0]) - min([1, 1, 0]) <= spread[0]["maxSkew"]
             assert max([2, 1, 1]) - min([2, 1, 1]) <= spread[0]["maxSkew"]
 
-        affinity = next(
-            task
-            for task in tasks
-            if task.get("name")
-            == "Add preferred cross-component anti-affinity to GitLab Rails workloads"
+        assert (
+            "Add preferred cross-component anti-affinity to GitLab Rails workloads"
+            not in self.content
         )
-        assert affinity["loop"] == [
-            {"deployment": "gitlab-webservice-default", "component": "webservice"},
-            {"deployment": "gitlab-sidekiq-all-in-1-v2", "component": "sidekiq"},
-        ]
-        definition = affinity["kubernetes.core.k8s"]["definition"]
-        assert definition["metadata"]["name"] == "{{ item.deployment }}"
-        anti_affinity = definition["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"]
-        assert "requiredDuringSchedulingIgnoredDuringExecution" not in anti_affinity
-        preferred = anti_affinity["preferredDuringSchedulingIgnoredDuringExecution"]
-        assert preferred[0]["weight"] == 100
-        assert preferred[0]["podAffinityTerm"]["labelSelector"]["matchExpressions"][1][
-            "values"
-        ] == ["webservice", "sidekiq"]
-        assert "Rebalance GitLab Rails workloads when a rolling update co-locates them" in self.content
+        assert (
+            "Rebalance GitLab Rails workloads when a rolling update co-locates them"
+            not in self.content
+        )
 
     def test_webservice_memory_limit_is_profile_tunable(self):
         tasks = yaml.safe_load(self.content)
@@ -271,7 +259,7 @@ class TestChart10ValuesStructure:
     def test_readiness_fails_closed_on_rails_placement_and_gitaly_pdb_drift(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[
             1
-        ].split("- name: Add preferred cross-component anti-affinity", 1)[0]
+        ].split("- name: Discover the in-cluster GitLab Shell service", 1)[0]
         assert "Require hard per-component topology spread" in gate
         assert "whenUnsatisfiable == 'DoNotSchedule'" in gate
         assert "minDomains | default(0) | int) == 2" in gate
@@ -401,9 +389,9 @@ class TestChart10ValuesStructure:
     def test_helm_timeout(self):
         assert "timeout: 30m0s" in self.content
 
-    def test_helm_reclaims_server_side_apply_fields_before_post_patches(self):
+    def test_helm_reclaims_server_side_apply_fields(self):
         install = self.content.split("- name: Install GitLab with Helm", 1)[1].split(
-            "- name: Add cross-component anti-affinity", 1
+            "- name: Enforce GitLab post-reconcile readiness", 1
         )[0]
         assert "force_conflicts: true" in install
 
@@ -469,7 +457,7 @@ class TestChart10ValuesStructure:
 
     def test_post_reconcile_gate_requires_data_bearing_gitlab_pvcs_bound(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
-            "- name: Add cross-component anti-affinity", 1
+            "- name: Discover the in-cluster GitLab Shell service", 1
         )[0]
         assert "kind: PersistentVolumeClaim" in gate
         assert "release=gitlab" in gate
@@ -482,7 +470,7 @@ class TestChart10ValuesStructure:
 
     def test_post_reconcile_gate_selects_critical_controllers_by_labels(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
-            "- name: Add cross-component anti-affinity", 1
+            "- name: Discover the in-cluster GitLab Shell service", 1
         )[0]
         for kind, app in (
             ("StatefulSet", "gitaly"),
@@ -519,7 +507,7 @@ class TestChart10ValuesStructure:
 
     def test_readiness_failure_is_sanitized_and_fail_closed(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
-            "- name: Add cross-component anti-affinity", 1
+            "- name: Discover the in-cluster GitLab Shell service", 1
         )[0]
         assert "Collect sanitized GitLab PVC readiness metadata" in gate
         assert "Collect sanitized GitLab controller readiness metadata" in gate
