@@ -1759,7 +1759,7 @@
             # Restricted jobs run as a numeric UID that may not exist in the
             # image passwd database. Give Git and the helper a writable HOME
             # so source checkout never falls back to the read-only root path.
-            environment = ["HOME=/tmp"]
+            environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
             [runners.kubernetes]
               namespace = "{{ gitlab_namespace }}"
               image = "ubuntu:22.04"
@@ -1768,24 +1768,38 @@
               allow_privilege_escalation = false
               cap_drop = ["ALL"]
               automount_service_account_token = false
+              cpu_request = "500m"
+              cpu_limit = "2000m"
+              memory_request = "1Gi"
+              memory_limit = "4Gi"
+              service_cpu_request = "200m"
+              service_cpu_limit = "1000m"
+              service_memory_request = "512Mi"
+              service_memory_limit = "2Gi"
+              helper_cpu_request = "100m"
+              helper_cpu_limit = "500m"
+              helper_memory_request = "256Mi"
+              helper_memory_limit = "512Mi"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
-              [runners.kubernetes.build_container_resources]
-                cpu_request = "500m"
-                cpu_limit = "2000m"
-                memory_request = "1Gi"
-                memory_limit = "4Gi"
-              [runners.kubernetes.service_container_resources]
-                cpu_request = "200m"
-                cpu_limit = "1000m"
-                memory_request = "512Mi"
-                memory_limit = "2Gi"
-              [runners.kubernetes.helper_container_resources]
-                cpu_request = "100m"
-                cpu_limit = "500m"
-                memory_request = "128Mi"
-                memory_limit = "512Mi"
+              [runners.kubernetes.pod_labels]
+                "workload.n0xeid.xyz/class" = "ci-job"
+              [[runners.kubernetes.pod_spec]]
+                name = "spread-ci-jobs-across-workers"
+                patch = '''
+                  topologySpreadConstraints:
+                    - maxSkew: 1
+                      minDomains: 3
+                      topologyKey: kubernetes.io/hostname
+                      whenUnsatisfiable: DoNotSchedule
+                      nodeAffinityPolicy: Honor
+                      nodeTaintsPolicy: Honor
+                      labelSelector:
+                        matchLabels:
+                          workload.n0xeid.xyz/class: ci-job
+                '''
+                patch_type = "strategic"
         tags: kubernetes,k8s
         runUntagged: true
       podAnnotations:
