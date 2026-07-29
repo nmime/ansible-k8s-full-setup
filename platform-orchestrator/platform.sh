@@ -399,7 +399,11 @@ deploy_component() {
     dns)           deploy_dns ;;
     cluster)       run_playbook --tags cluster 2>&1 | tee -a "${LOG_DIR}/cluster.log" ;;
     tls)           run_playbook --tags cluster 2>&1 | tee -a "${LOG_DIR}/tls.log" ;;
-    object-storage) require_component_enabled "$component"; run_playbook --tags storage,object-storage,seaweedfs 2>&1 | tee -a "${LOG_DIR}/object-storage.log" ;;
+    # Storage credential rotation is incomplete until every selected backup
+    # consumer has reconciled the same scoped identity.  Include the database
+    # tag so pgBackRest/PBM Secrets and their operator CRs cannot retain a
+    # credential that SeaweedFS has already replaced.
+    object-storage) require_component_enabled "$component"; run_playbook --tags storage,object-storage,seaweedfs,databases 2>&1 | tee -a "${LOG_DIR}/object-storage.log" ;;
     secrets)       require_component_enabled "$component"; run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/secrets.log" ;;
     eso)           require_component_enabled "$component"; run_playbook --tags secrets 2>&1 | tee -a "${LOG_DIR}/eso.log" ;;
     databases)     require_component_enabled "$component"; run_playbook --tags databases 2>&1 | tee -a "${LOG_DIR}/databases.log" ;;
