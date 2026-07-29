@@ -419,7 +419,7 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["replicas"] == 2
-        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 2
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
