@@ -75,7 +75,7 @@ def test_gitlab_and_argocd_domains_are_configurable_with_compatibility_aliases()
         ROOT / "roles/gitlab-selfhosted/tasks/main.yml"
     ).read_text()
     gitops = (ROOT / "roles/k8s-gitops/tasks/main.yml").read_text()
-    assert "gitlab.domain | default('gitlab.' ~ domain, true)" in gitlab
+    assert "gitlab.domain | default('git.' ~ domain, true)" in gitlab
     assert "gitlab.domain_aliases" in gitlab
     assert "hostnames: '{{ [gitlab_domain] + gitlab_domain_aliases }}'" in gitlab
     assert "gitops.domain | default('argocd.' ~ domain, true)" in gitops

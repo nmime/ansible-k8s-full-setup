@@ -2,7 +2,7 @@
   set_fact:
     gitlab_chart_version: 10.1.2
     gitlab_namespace: gitlab
-    gitlab_domain: "{{ gitlab.domain | default('gitlab.' ~ domain, true) }}"
+    gitlab_domain: "{{ gitlab.domain | default('git.' ~ domain, true) }}"
     registry_domain: registry.{{ domain }}
     kas_domain: kas.{{ domain }}
     gitlab_mode: '{{ gitlab.mode | default(''light'' if resource_tier in [''minimal'', ''small''] or tier == ''medium'' else ''full'') }}'
