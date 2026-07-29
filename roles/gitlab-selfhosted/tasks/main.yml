@@ -670,7 +670,12 @@
         time_zone: UTC
         extraEnv:
           PGSSLMODE: verify-full
-          PGSSLROOTCERT: /etc/gitlab/postgresql/ca.crt
+          PGSSLROOTCERT: /etc/ssl/certs/ca-certificates.crt
+        certificates:
+          customCAs:
+            - secret: gitlab-postgresql-password
+              keys:
+                - ca.crt
         email:
           from: gitlab@{{ domain }}
           display_name: GitLab
@@ -739,17 +744,6 @@
             tmpBucket: gitlab-tmp
       gitlab:
         webservice:
-          extraVolumes: |
-            - name: postgresql-ca
-              secret:
-                secretName: gitlab-postgresql-password
-                items:
-                  - key: ca.crt
-                    path: ca.crt
-          extraVolumeMounts: |
-            - name: postgresql-ca
-              mountPath: /etc/gitlab/postgresql
-              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -793,17 +787,6 @@
               limits: {cpu: 500m, memory: 256Mi}
           workerProcesses: '{{ gitlab_webservice_worker_processes | int }}'
         sidekiq:
-          extraVolumes: |
-            - name: postgresql-ca
-              secret:
-                secretName: gitlab-postgresql-password
-                items:
-                  - key: ca.crt
-                    path: ca.crt
-          extraVolumeMounts: |
-            - name: postgresql-ca
-              mountPath: /etc/gitlab/postgresql
-              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -892,17 +875,6 @@
               memory: 1Gi
         toolbox:
           enabled: true
-          extraVolumes: |
-            - name: postgresql-ca
-              secret:
-                secretName: gitlab-postgresql-password
-                items:
-                  - key: ca.crt
-                    path: ca.crt
-          extraVolumeMounts: |
-            - name: postgresql-ca
-              mountPath: /etc/gitlab/postgresql
-              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -954,17 +926,6 @@
                 storageClass: '{{ storage_class | default(''hcloud-volumes'') }}'
                 size: '{{ gitlab_backup_persistence_size }}'
         gitlab-exporter:
-          extraVolumes: |
-            - name: postgresql-ca
-              secret:
-                secretName: gitlab-postgresql-password
-                items:
-                  - key: ca.crt
-                    path: ca.crt
-          extraVolumeMounts: |
-            - name: postgresql-ca
-              mountPath: /etc/gitlab/postgresql
-              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
@@ -973,17 +934,6 @@
             requests: {cpu: 25m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
         migrations:
-          extraVolumes: |
-            - name: postgresql-ca
-              secret:
-                secretName: gitlab-postgresql-password
-                items:
-                  - key: ca.crt
-                    path: ca.crt
-          extraVolumeMounts: |
-            - name: postgresql-ca
-              mountPath: /etc/gitlab/postgresql
-              readOnly: true
           init:
             resources:
               requests: {cpu: 10m, memory: 16Mi}
