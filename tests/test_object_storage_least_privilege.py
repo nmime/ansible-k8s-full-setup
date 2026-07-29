@@ -52,6 +52,20 @@ def test_root_credentials_are_not_used_by_runtime_consumers():
         assert "{{ object_storage_access_key }}" not in content
 
 
+def test_component_storage_reconcile_rotates_selected_database_consumers():
+    orchestrator = read("platform-orchestrator/platform.sh")
+    object_storage_case = next(
+        line
+        for line in orchestrator.splitlines()
+        if line.lstrip().startswith("object-storage)")
+        and "run_playbook" in line
+    )
+    assert (
+        "--tags storage,object-storage,seaweedfs,databases"
+        in object_storage_case
+    )
+
+
 def test_scoped_credentials_are_encrypted_and_persisted():
     tasks = read("roles/generate-secrets/tasks/main.yml")
     for group in (
