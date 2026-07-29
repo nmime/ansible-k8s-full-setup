@@ -653,6 +653,11 @@
       global:
         edition: "{{ gitlab_edition | default('ce') }}"
         gitlabVersion: 19.1.2
+        # Keep the stateful control plane isolated from GitLab application
+        # bursts. The medium-optimized profile has three production workers,
+        # so this preserves placement redundancy without adding nodes.
+        nodeSelector:
+          node-role.kubernetes.io/worker: ''
         hosts:
           domain: '{{ domain }}'
           gitlab:
@@ -1211,6 +1216,9 @@
           - >-
             ((item.resources | first).spec.template.spec.topologySpreadConstraints |
               first).nodeTaintsPolicy == 'Honor'
+          - >-
+            ((item.resources | first).spec.template.spec.nodeSelector[
+              'node-role.kubernetes.io/worker'] | default('missing')) == ''
           - >-
             ((((item.resources | first).spec.template.spec.topologySpreadConstraints |
               first).labelSelector.matchExpressions |
