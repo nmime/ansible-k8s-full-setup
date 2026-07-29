@@ -28,6 +28,10 @@
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
     gitlab_public_webservice_enabled: '{{ gitlab.public_webservice_enabled | default(false) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
+    gitlab_readiness_retries: '{{ gitlab.readiness_retries | default(180) }}'
+    gitlab_readiness_delay: '{{ gitlab.readiness_delay | default(10) }}'
+    gitlab_progress_deadline_seconds: >-
+      {{ gitlab.progress_deadline_seconds | default(1800) }}
 - name: Set GitLab compatibility domains
   ansible.builtin.set_fact:
     gitlab_domain_aliases: >-
@@ -1094,29 +1098,82 @@
       loop_control:
         label: '{{ item.item.kind }}/app={{ item.item.app }}'
 
-    - name: Wait boundedly for all critical GitLab controller rollouts
-      ansible.builtin.shell: |
-        set -euo pipefail
-        pids=()
-        {% for controller in _gitlab_required_controllers %}
-        kubectl rollout status \
-          --namespace {{ gitlab_namespace | quote }} \
-          {{ controller.kind | lower | quote }} \
-          --selector={{ ('release=gitlab,app=' ~ controller.app) | quote }} \
-          --timeout={{ gitlab_readiness_timeout | quote }} &
-        pids+=("$!")
-        {% endfor %}
+    # GitLab's Rails init containers can legitimately take more than the
+    # Kubernetes default 600 seconds on the resource-bounded production
+    # profile. Keep the deployment controller's own failure deadline aligned
+    # with this role's bounded readiness window.
+    - name: Align GitLab Deployment progress deadlines with bounded readiness
+      kubernetes.core.k8s:
+        state: patched
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: '{{ gitlab_namespace }}'
+            name: '{{ (item.resources | first).metadata.name }}'
+          spec:
+            progressDeadlineSeconds: '{{ gitlab_progress_deadline_seconds | int }}'
+      loop: '{{ _gitlab_required_controller_discovery.results }}'
+      loop_control:
+        label: 'Deployment/app={{ item.item.app }}'
+      when: item.item.kind == 'Deployment'
 
-        result=0
-        for pid in "${pids[@]}"; do
-          if ! wait "$pid"; then
-            result=1
-          fi
-        done
-        exit "$result"
-      args:
-        executable: /bin/bash
-      changed_when: false
+    # Polling the observed controller state is resilient to a transient watch
+    # disconnect through the controller's SSH API tunnel. Success still
+    # requires every desired replica to be observed, updated and ready; a
+    # disconnected API cannot be mistaken for readiness.
+    - name: Wait boundedly for all critical GitLab controllers to be current and ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: '{{ item.kind }}'
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - 'app={{ item.app }}'
+      register: _gitlab_controller_readiness
+      until:
+        - (_gitlab_controller_readiness.resources | default([]) | length) == 1
+        - >-
+          ((_gitlab_controller_readiness.resources | first).status.observedGeneration |
+           default(0) | int) >=
+          ((_gitlab_controller_readiness.resources | first).metadata.generation | int)
+        - >-
+          ((_gitlab_controller_readiness.resources | first).status.readyReplicas |
+           default(0) | int) ==
+          ((_gitlab_controller_readiness.resources | first).spec.replicas | int)
+        - >-
+          ((_gitlab_controller_readiness.resources | first).status.updatedReplicas |
+           default(0) | int) ==
+          ((_gitlab_controller_readiness.resources | first).spec.replicas | int)
+        - >-
+          item.kind != 'Deployment' or
+          (((_gitlab_controller_readiness.resources | first).status.availableReplicas |
+            default(0) | int) ==
+           ((_gitlab_controller_readiness.resources | first).spec.replicas | int))
+        - >-
+          item.kind != 'StatefulSet' or
+          (((_gitlab_controller_readiness.resources | first).status.currentRevision |
+            default('')) ==
+           ((_gitlab_controller_readiness.resources | first).status.updateRevision |
+            default('missing')))
+      retries: '{{ gitlab_readiness_retries | int }}'
+      delay: '{{ gitlab_readiness_delay | int }}'
+      loop: '{{ _gitlab_required_controllers }}'
+      loop_control:
+        label: '{{ item.kind }}/app={{ item.app }}'
+
+    - name: Refresh required GitLab controller definitions after readiness
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: '{{ item.kind }}'
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - 'app={{ item.app }}'
+      loop: '{{ _gitlab_required_controllers }}'
+      loop_control:
+        label: '{{ item.kind }}/app={{ item.app }}'
+      register: _gitlab_required_controller_discovery
 
     - name: Require hard per-component topology spread for GitLab Rails workloads
       ansible.builtin.assert:
