@@ -60,7 +60,7 @@ class TestChart10ValuesStructure:
         install = next(task for task in tasks if task.get("name") == "Install GitLab with Helm")
         rails = install["kubernetes.core.helm"]["values"]["gitlab"]
         assert install["kubernetes.core.helm"]["values"]["global"]["nodeSelector"] == {
-            "node-role.kubernetes.io/worker": ""
+            "node-role.kubernetes.io/worker": "true"
         }
         for component in ("webservice", "sidekiq"):
             strategy = rails[component]["deployment"]["strategy"]
@@ -268,7 +268,7 @@ class TestChart10ValuesStructure:
         assert "minDomains | default(0) | int) == 2" in gate
         assert "nodeAffinityPolicy == 'Honor'" in gate
         assert "nodeTaintsPolicy == 'Honor'" in gate
-        assert "'node-role.kubernetes.io/worker'] | default('missing')) == ''" in gate
+        assert "'node-role.kubernetes.io/worker'] | default('missing')) == 'true'" in gate
         assert "name: gitlab-gitaly" in gate
         assert "spec.maxUnavailable | int) == 0" in gate
         assert "spec.minAvailable is not defined" in gate
