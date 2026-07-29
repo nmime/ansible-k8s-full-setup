@@ -657,7 +657,7 @@
         # bursts. The medium-optimized profile has three production workers,
         # so this preserves placement redundancy without adding nodes.
         nodeSelector:
-          node-role.kubernetes.io/worker: ''
+          node-role.kubernetes.io/worker: 'true'
         hosts:
           domain: '{{ domain }}'
           gitlab:
@@ -1218,7 +1218,7 @@
               first).nodeTaintsPolicy == 'Honor'
           - >-
             ((item.resources | first).spec.template.spec.nodeSelector[
-              'node-role.kubernetes.io/worker'] | default('missing')) == ''
+              'node-role.kubernetes.io/worker'] | default('missing')) == 'true'
           - >-
             ((((item.resources | first).spec.template.spec.topologySpreadConstraints |
               first).labelSelector.matchExpressions |
