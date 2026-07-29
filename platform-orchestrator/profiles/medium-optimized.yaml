@@ -187,6 +187,10 @@ databases:
 gitlab:
   enabled: true
   mode: light
+  # The canonical GitLab UI/API must be reachable at git.n0xeid.xyz for users,
+  # webhooks, and external repository mirrors. Registration remains disabled,
+  # while authentication and project/group ACLs enforce access.
+  public_webservice_enabled: true
   webservice_replicas: 1
   webservice_max_replicas: 2
   worker_processes: 2
