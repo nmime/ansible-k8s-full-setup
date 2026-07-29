@@ -1139,44 +1139,44 @@
         - (_gitlab_controller_readiness.rc | default(1) | int) == 0
         - >-
           (((_gitlab_controller_readiness.stdout |
-             default('{"items":[]}', true) | from_json).items |
+             default('{"items":[]}', true) | from_json)['items'] |
             default([]) | length) == 1)
         - >-
           ((((_gitlab_controller_readiness.stdout |
-              default('{"items":[]}', true) | from_json).items |
+              default('{"items":[]}', true) | from_json)['items'] |
              first).status.observedGeneration | default(0) | int) >=
            (((_gitlab_controller_readiness.stdout |
-              default('{"items":[]}', true) | from_json).items |
+              default('{"items":[]}', true) | from_json)['items'] |
              first).metadata.generation | int))
         - >-
           ((((_gitlab_controller_readiness.stdout |
-              default('{"items":[]}', true) | from_json).items |
+              default('{"items":[]}', true) | from_json)['items'] |
              first).status.readyReplicas | default(0) | int) ==
            (((_gitlab_controller_readiness.stdout |
-              default('{"items":[]}', true) | from_json).items |
+              default('{"items":[]}', true) | from_json)['items'] |
              first).spec.replicas | int))
         - >-
           ((((_gitlab_controller_readiness.stdout |
-              default('{"items":[]}', true) | from_json).items |
+              default('{"items":[]}', true) | from_json)['items'] |
              first).status.updatedReplicas | default(0) | int) ==
            (((_gitlab_controller_readiness.stdout |
-              default('{"items":[]}', true) | from_json).items |
+              default('{"items":[]}', true) | from_json)['items'] |
              first).spec.replicas | int))
         - >-
           item.kind != 'Deployment' or
           (((((_gitlab_controller_readiness.stdout |
-               default('{"items":[]}', true) | from_json).items |
+               default('{"items":[]}', true) | from_json)['items'] |
               first).status.availableReplicas | default(0) | int) ==
             (((_gitlab_controller_readiness.stdout |
-               default('{"items":[]}', true) | from_json).items |
+               default('{"items":[]}', true) | from_json)['items'] |
               first).spec.replicas | int)))
         - >-
           item.kind != 'StatefulSet' or
           (((((_gitlab_controller_readiness.stdout |
-               default('{"items":[]}', true) | from_json).items |
+               default('{"items":[]}', true) | from_json)['items'] |
               first).status.currentRevision | default('')) ==
             (((_gitlab_controller_readiness.stdout |
-               default('{"items":[]}', true) | from_json).items |
+               default('{"items":[]}', true) | from_json)['items'] |
               first).status.updateRevision | default('missing'))))
       retries: '{{ gitlab_readiness_retries | int }}'
       delay: '{{ gitlab_readiness_delay | int }}'
