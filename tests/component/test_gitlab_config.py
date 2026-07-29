@@ -282,6 +282,7 @@ class TestChart10ValuesStructure:
         assert "spec.minAvailable is not defined" in gate
 
     def test_enabled_runner_requires_modern_authentication_token(self):
+        assert "default('git.' ~ domain, true)" in self.content
         gate = self.content.split(
             "- name: Require a GitLab Runner authentication token when Runner is selected",
             1,

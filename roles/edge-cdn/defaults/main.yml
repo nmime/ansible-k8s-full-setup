@@ -38,7 +38,7 @@ edge_cdn_domains:
 edge_direct_domains:
   - "vpn.{{ domain }}"      # VPN must be direct
   - "api.{{ domain }}"      # API can't be cached
-  - "gitlab.{{ domain }}"   # Admin via VPN
+  - "git.{{ domain }}"      # Admin via VPN
   - "grafana.{{ domain }}"
   - "argocd.{{ domain }}"
 
