@@ -1094,6 +1094,7 @@
           Required GitLab {{ item.item.kind }} with labels
           release=gitlab,app={{ item.item.app }} was not found in namespace
           {{ gitlab_namespace }}.
+        quiet: true
       loop: '{{ _gitlab_required_controller_discovery.results }}'
       loop_control:
         label: '{{ item.item.kind }}/app={{ item.item.app }}'
@@ -1123,57 +1124,66 @@
     # requires every desired replica to be observed, updated and ready; a
     # disconnected API cannot be mistaken for readiness.
     - name: Wait boundedly for all critical GitLab controllers to be current and ready
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: '{{ item.kind }}'
-        namespace: '{{ gitlab_namespace }}'
-        label_selectors:
-          - release=gitlab
-          - 'app={{ item.app }}'
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - '{{ item.kind | lower }}'
+          - --namespace
+          - '{{ gitlab_namespace }}'
+          - '--selector=release=gitlab,app={{ item.app }}'
+          - --output=json
+          - --request-timeout=20s
       register: _gitlab_controller_readiness
       until:
-        - (_gitlab_controller_readiness.resources | default([]) | length) == 1
+        - (_gitlab_controller_readiness.rc | default(1) | int) == 0
         - >-
-          ((_gitlab_controller_readiness.resources | first).status.observedGeneration |
-           default(0) | int) >=
-          ((_gitlab_controller_readiness.resources | first).metadata.generation | int)
+          (((_gitlab_controller_readiness.stdout |
+             default('{"items":[]}', true) | from_json).items |
+            default([]) | length) == 1)
         - >-
-          ((_gitlab_controller_readiness.resources | first).status.readyReplicas |
-           default(0) | int) ==
-          ((_gitlab_controller_readiness.resources | first).spec.replicas | int)
+          ((((_gitlab_controller_readiness.stdout |
+              default('{"items":[]}', true) | from_json).items |
+             first).status.observedGeneration | default(0) | int) >=
+           (((_gitlab_controller_readiness.stdout |
+              default('{"items":[]}', true) | from_json).items |
+             first).metadata.generation | int))
         - >-
-          ((_gitlab_controller_readiness.resources | first).status.updatedReplicas |
-           default(0) | int) ==
-          ((_gitlab_controller_readiness.resources | first).spec.replicas | int)
+          ((((_gitlab_controller_readiness.stdout |
+              default('{"items":[]}', true) | from_json).items |
+             first).status.readyReplicas | default(0) | int) ==
+           (((_gitlab_controller_readiness.stdout |
+              default('{"items":[]}', true) | from_json).items |
+             first).spec.replicas | int))
+        - >-
+          ((((_gitlab_controller_readiness.stdout |
+              default('{"items":[]}', true) | from_json).items |
+             first).status.updatedReplicas | default(0) | int) ==
+           (((_gitlab_controller_readiness.stdout |
+              default('{"items":[]}', true) | from_json).items |
+             first).spec.replicas | int))
         - >-
           item.kind != 'Deployment' or
-          (((_gitlab_controller_readiness.resources | first).status.availableReplicas |
-            default(0) | int) ==
-           ((_gitlab_controller_readiness.resources | first).spec.replicas | int))
+          (((((_gitlab_controller_readiness.stdout |
+               default('{"items":[]}', true) | from_json).items |
+              first).status.availableReplicas | default(0) | int) ==
+            (((_gitlab_controller_readiness.stdout |
+               default('{"items":[]}', true) | from_json).items |
+              first).spec.replicas | int)))
         - >-
           item.kind != 'StatefulSet' or
-          (((_gitlab_controller_readiness.resources | first).status.currentRevision |
-            default('')) ==
-           ((_gitlab_controller_readiness.resources | first).status.updateRevision |
-            default('missing')))
+          (((((_gitlab_controller_readiness.stdout |
+               default('{"items":[]}', true) | from_json).items |
+              first).status.currentRevision | default('')) ==
+            (((_gitlab_controller_readiness.stdout |
+               default('{"items":[]}', true) | from_json).items |
+              first).status.updateRevision | default('missing'))))
       retries: '{{ gitlab_readiness_retries | int }}'
       delay: '{{ gitlab_readiness_delay | int }}'
+      changed_when: false
       loop: '{{ _gitlab_required_controllers }}'
       loop_control:
         label: '{{ item.kind }}/app={{ item.app }}'
-
-    - name: Refresh required GitLab controller definitions after readiness
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: '{{ item.kind }}'
-        namespace: '{{ gitlab_namespace }}'
-        label_selectors:
-          - release=gitlab
-          - 'app={{ item.app }}'
-      loop: '{{ _gitlab_required_controllers }}'
-      loop_control:
-        label: '{{ item.kind }}/app={{ item.app }}'
-      register: _gitlab_required_controller_discovery
 
     - name: Require hard per-component topology spread for GitLab Rails workloads
       ansible.builtin.assert:
@@ -1208,6 +1218,7 @@
           GitLab {{ item.item.app }} does not have the required hard,
           per-component hostname topology spread; refusing to report a
           successful reconcile that can co-locate its two-replica floor.
+        quiet: true
       loop: '{{ _gitlab_required_controller_discovery.results }}'
       loop_control:
         label: 'Deployment/app={{ item.item.app }}'
