@@ -645,7 +645,7 @@
     release_state: present
     # Helm 4 uses server-side apply. Reclaim fields previously patched by the
     # platform or older kubectl-based migration tooling before reapplying the
-    # chart, then reapply the declared post-Helm affinity below.
+    # chart-owned workload placement contract.
     force_conflicts: true
     timeout: 30m0s
     wait: false
@@ -778,6 +778,7 @@
                     operator: In
                     values:
                       - webservice
+                      - sidekiq
           resources:
             requests:
               cpu: '{{ ''100m'' if gitlab_mode == ''light'' else ''300m'' }}'
@@ -820,6 +821,7 @@
                   - key: app
                     operator: In
                     values:
+                      - webservice
                       - sidekiq
           resources:
             requests:
@@ -1213,7 +1215,8 @@
             ((((item.resources | first).spec.template.spec.topologySpreadConstraints |
               first).labelSelector.matchExpressions |
               selectattr('key', 'equalto', 'app') |
-              map(attribute='values') | first | default([])) == [item.item.app])
+              map(attribute='values') | first | default([])) ==
+             ['webservice', 'sidekiq'])
         fail_msg: >-
           GitLab {{ item.item.app }} does not have the required hard,
           per-component hostname topology spread; refusing to report a
@@ -1318,94 +1321,6 @@
 
           Warning events (last timestamp, reason, object kind, object name, count):
           {{ _gitlab_readiness_warning_events.stdout | default('none', true) }}
-- name: Add preferred cross-component anti-affinity to GitLab Rails workloads
-  kubernetes.core.k8s:
-    state: present
-    merge_type: strategic-merge
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: '{{ item.deployment }}'
-        namespace: '{{ gitlab_namespace }}'
-      spec:
-        template:
-          spec:
-            affinity:
-              podAntiAffinity:
-                preferredDuringSchedulingIgnoredDuringExecution:
-                  - weight: 100
-                    podAffinityTerm:
-                      labelSelector:
-                        matchExpressions:
-                          - key: release
-                            operator: In
-                            values:
-                              - gitlab
-                          - key: app
-                            operator: In
-                            values:
-                              - webservice
-                              - sidekiq
-                      topologyKey: kubernetes.io/hostname
-  loop:
-    - deployment: gitlab-webservice-default
-      component: webservice
-    - deployment: gitlab-sidekiq-all-in-1-v2
-      component: sidekiq
-  register: gitlab_rails_affinity
-- name: Wait for optimized GitLab Rails workload rollouts
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - rollout
-      - status
-      - --namespace
-      - '{{ gitlab_namespace }}'
-      - 'deployment/{{ item.deployment }}'
-      - --timeout=10m
-  loop:
-    - deployment: gitlab-webservice-default
-      component: webservice
-    - deployment: gitlab-sidekiq-all-in-1-v2
-      component: sidekiq
-  register: _r_wait_for_gitlab_rails_rollouts
-  retries: 3
-  delay: 10
-  until: _r_wait_for_gitlab_rails_rollouts.rc == 0
-  changed_when: false
-- name: Rebalance GitLab Rails workloads when a rolling update co-locates them
-  ansible.builtin.shell: |
-    set -euo pipefail
-    web_node=$(kubectl get pod -n {{ gitlab_namespace | quote }} -l release=gitlab,app=webservice \
-      --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp \
-      -o jsonpath='{.items[-1].spec.nodeName}')
-    sidekiq_pod=$(kubectl get pod -n {{ gitlab_namespace | quote }} -l release=gitlab,app=sidekiq \
-      --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp \
-      -o jsonpath='{.items[-1].metadata.name}')
-    sidekiq_node=$(kubectl get pod -n {{ gitlab_namespace | quote }} "$sidekiq_pod" \
-      -o jsonpath='{.spec.nodeName}')
-    if [[ -n "$web_node" && "$web_node" == "$sidekiq_node" ]]; then
-      kubectl delete pod -n {{ gitlab_namespace | quote }} "$sidekiq_pod" --wait=false
-      kubectl rollout status -n {{ gitlab_namespace | quote }} deployment/gitlab-sidekiq-all-in-1-v2 --timeout=10m
-      printf 'rebalanced\n'
-    fi
-  args:
-    executable: /bin/bash
-  register: gitlab_rails_rebalance
-  changed_when: "'rebalanced' in gitlab_rails_rebalance.stdout"
-- name: Wait for GitLab webservice to be ready
-  kubernetes.core.k8s_info:
-    kind: Deployment
-    namespace: '{{ gitlab_namespace }}'
-    label_selectors:
-    - app=webservice
-  register: gitlab_webservice_deploy
-  until: 'gitlab_webservice_deploy.resources is defined and gitlab_webservice_deploy.resources | length > 0 and (gitlab_webservice_deploy.resources[0].status.readyReplicas | default(0)) >= 1
-
-    '
-  retries: 120
-  delay: 15
 - name: Discover the in-cluster GitLab Shell service
   kubernetes.core.k8s_info:
     api_version: v1
