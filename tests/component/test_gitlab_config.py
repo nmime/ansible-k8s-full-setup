@@ -1,5 +1,5 @@
 """Component tests: GitLab Helm values structure vs chart 10.x."""
-import os, re, pytest, yaml
+import os, re, tomllib, pytest, yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GITLAB_TASKS_PATH = os.path.join(REPO_ROOT, "roles", "gitlab-selfhosted", "tasks", "main.yml")
@@ -202,7 +202,11 @@ class TestChart10ValuesStructure:
             'node_selector = { "node-role.kubernetes.io/worker" = "true" }'
             in values["runners"]["config"]
         )
-        assert 'environment = ["HOME=/tmp"]' in values["runners"]["config"]
+        assert (
+            'environment = ["HOME=/tmp", '
+            '"FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]'
+            in values["runners"]["config"]
+        )
         assert values["podSecurityContext"]["seccompProfile"] == {
             "type": "RuntimeDefault"
         }
@@ -224,6 +228,51 @@ class TestChart10ValuesStructure:
         }
         assert scrape_definition["spec"]["podMetricsEndpoints"] == [
             {"port": "metrics", "interval": "30s", "path": "/metrics"}
+        ]
+
+    def test_runner_toml_uses_supported_flat_resources_and_job_spread(self):
+        from jinja2 import Environment
+
+        tasks = yaml.safe_load(self.content)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name") == "Install GitLab Runner with Helm"
+        )
+        rendered = Environment().from_string(
+            install["kubernetes.core.helm"]["values"]["runners"]["config"]
+        ).render(gitlab_namespace="gitlab", gitlab_runner_concurrent=1)
+        runner = tomllib.loads(rendered)["runners"][0]
+        kubernetes = runner["kubernetes"]
+
+        assert runner["request_concurrency"] == 1
+        assert kubernetes["node_selector"] == {
+            "node-role.kubernetes.io/worker": "true"
+        }
+        assert kubernetes["cpu_request"] == "500m"
+        assert kubernetes["memory_request"] == "1Gi"
+        assert kubernetes["helper_memory_request"] == "256Mi"
+        assert kubernetes["service_memory_request"] == "512Mi"
+        assert kubernetes["pod_labels"] == {
+            "workload.n0xeid.xyz/class": "ci-job"
+        }
+        assert len(kubernetes["pod_spec"]) == 1
+        pod_spec = kubernetes["pod_spec"][0]
+        assert pod_spec["name"] == "spread-ci-jobs-across-workers"
+        assert pod_spec["patch_type"] == "strategic"
+        spread = yaml.safe_load(pod_spec["patch"])["topologySpreadConstraints"]
+        assert spread == [
+            {
+                "maxSkew": 1,
+                "minDomains": 3,
+                "topologyKey": "kubernetes.io/hostname",
+                "whenUnsatisfiable": "DoNotSchedule",
+                "nodeAffinityPolicy": "Honor",
+                "nodeTaintsPolicy": "Honor",
+                "labelSelector": {
+                    "matchLabels": {"workload.n0xeid.xyz/class": "ci-job"}
+                },
+            }
         ]
 
         policy = next(
@@ -303,6 +352,30 @@ class TestChart10ValuesStructure:
         assert "allow_privilege_escalation = false" in install
         assert 'cap_drop = ["ALL"]' in install
         assert "automount_service_account_token = false" in install
+        assert 'environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]' in install
+        for resource_setting in (
+            'cpu_request = "500m"',
+            'cpu_limit = "2000m"',
+            'memory_request = "1Gi"',
+            'memory_limit = "4Gi"',
+            'service_cpu_request = "200m"',
+            'service_cpu_limit = "1000m"',
+            'service_memory_request = "512Mi"',
+            'service_memory_limit = "2Gi"',
+            'helper_cpu_request = "100m"',
+            'helper_cpu_limit = "500m"',
+            'helper_memory_request = "256Mi"',
+            'helper_memory_limit = "512Mi"',
+        ):
+            assert resource_setting in install
+        assert "[runners.kubernetes.build_container_resources]" not in install
+        assert "[runners.kubernetes.service_container_resources]" not in install
+        assert "[runners.kubernetes.helper_container_resources]" not in install
+        assert '"workload.n0xeid.xyz/class" = "ci-job"' in install
+        assert 'name = "spread-ci-jobs-across-workers"' in install
+        assert "minDomains: 3" in install
+        assert "workload.n0xeid.xyz/class: ci-job" in install
+        assert 'patch_type = "strategic"' in install
         assert "gitlab_runner_token is defined" not in install
         assert "gitlab_runner_token != ''" not in install
         assert "no_log: true" in install
