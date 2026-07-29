@@ -505,14 +505,15 @@ class TestChart10ValuesStructure:
         assert "status.availableReplicas" in gate
         assert "status.currentRevision" in gate
         assert "status.updateRevision" in gate
-        assert "Refresh required GitLab controller definitions after readiness" in gate
         controller_wait = gate.split(
             "- name: Wait boundedly for all critical GitLab controllers to be current and ready",
             1,
         )[1].split(
-            "- name: Refresh required GitLab controller definitions after readiness", 1
+            "- name: Require hard per-component topology spread", 1
         )[0]
         assert "kubectl rollout status" not in controller_wait
+        assert "--request-timeout=20s" in controller_wait
+        assert "default('{\"items\":[]}', true) | from_json" in controller_wait
 
     def test_readiness_failure_is_sanitized_and_fail_closed(self):
         gate = self.content.split("- name: Enforce GitLab post-reconcile readiness", 1)[1].split(
