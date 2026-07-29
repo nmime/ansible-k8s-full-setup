@@ -73,6 +73,21 @@
       prove no plaintext sessions remain, then set tls_cutover_confirmed=true
       together with requireTLS.
   when: pg_service_alias | length > 0
+- name: Validate extra PostgreSQL consumer declarations
+  ansible.builtin.assert:
+    that:
+    - item.operator is mapping
+    - item.operator.name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.operator.databases is sequence
+    - item.operator.databases | length > 0
+    - item.target_namespace is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    fail_msg: >-
+      Each databases.postgresql.extra_users entry must separate the
+      operator-supported user spec under operator from delivery metadata.
+      Required fields are operator.name, operator.databases, and
+      target_namespace.
+  loop: '{{ databases.postgresql.extra_users | default([]) }}'
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -678,7 +693,10 @@
               {'name': 'temporal',
                'databases': ['temporal', 'temporal_visibility']},
               {'name': 'glitchtip', 'databases': ['glitchtip']}
-            ] + (databases.postgresql.extra_users | default([]))
+            ] + (
+              databases.postgresql.extra_users | default([]) |
+              map(attribute='operator') | list
+            )
           }}
   register: _r_create_postgresql_cluster
   retries: 3
@@ -766,11 +784,11 @@
 - name: Validate extra PostgreSQL role search paths
   ansible.builtin.assert:
     that:
-    - item.name is match('^[a-z_][a-z0-9_]*$')
+    - item.operator.name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
     - item.search_path is match('^[a-z_][a-z0-9_]*$')
     fail_msg: >-
-      PostgreSQL extra-user names and search_path values must be lowercase
-      SQL identifiers.
+      PostgreSQL extra-user names must be DNS-compatible operator identities,
+      and search_path values must be lowercase SQL identifiers.
   loop: '{{ databases.postgresql.extra_users | default([]) }}'
   when:
   - platform_postgresql_enabled | default(true) | bool
@@ -798,7 +816,7 @@
     container: database
     command: >-
       psql -v ON_ERROR_STOP=1 -d postgres
-      -c 'ALTER ROLE "{{ item.name }}" SET search_path TO
+      -c 'ALTER ROLE "{{ item.operator.name }}" SET search_path TO
       "{{ item.search_path }}", pg_catalog;'
   loop: '{{ databases.postgresql.extra_users | default([]) }}'
   when:
@@ -1314,7 +1332,9 @@
   kubernetes.core.k8s_info:
     kind: Secret
     namespace: '{{ db_ns }}'
-    name: '{{ project_name | default(''k8s'') }}-pg-pguser-{{ item.name }}'
+    name: >-
+      {{ project_name | default('k8s') }}-pg-pguser-{{
+         item.operator.name }}
   loop: '{{ databases.postgresql.extra_users | default([]) }}'
   register: _extra_pg_credentials
   until: >-
@@ -1334,17 +1354,17 @@
       metadata:
         name: >-
           {{ item.item.secret_name |
-             default(item.item.name ~ '-postgresql') }}
+             default(item.item.operator.name ~ '-postgresql') }}
         namespace: '{{ item.item.target_namespace }}'
         annotations:
           argocd.argoproj.io/compare-options: IgnoreExtraneous
       type: Opaque
       stringData:
-        username: '{{ item.item.name }}'
+        username: '{{ item.item.operator.name }}'
         password: '{{ item.resources[0].data.password | b64decode }}'
         host: '{{ pg_connection_host }}'
         port: '5432'
-        database: '{{ item.item.databases | first }}'
+        database: '{{ item.item.operator.databases | first }}'
         sslmode: verify-full
         ca.crt: >-
           {{

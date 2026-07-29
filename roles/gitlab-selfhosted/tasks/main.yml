@@ -1765,7 +1765,7 @@
   kubernetes.core.helm:
     name: gitlab-runner
     chart_ref: gitlab/gitlab-runner
-    chart_version: 0.88.3
+    chart_version: 0.91.0
     release_namespace: '{{ gitlab_namespace }}'
     create_namespace: false
     release_state: present
@@ -1780,6 +1780,22 @@
       replicas: '{{ gitlab_runner_replicas | int }}'
       concurrent: '{{ gitlab_runner_concurrent | int }}'
       checkInterval: 3
+      strategy:
+        rollingUpdate:
+          maxSurge: 1
+          maxUnavailable: 0
+      topologySpreadConstraints:
+        - maxSkew: 1
+          minDomains: 2
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app: gitlab-runner
+      podDisruptionBudget:
+        maxUnavailable: 1
       metrics:
         enabled: true
       rbac:

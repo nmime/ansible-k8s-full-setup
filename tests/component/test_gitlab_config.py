@@ -298,6 +298,15 @@ class TestChart10ValuesStructure:
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
         assert "replicas: '{{ gitlab_runner_replicas | int }}'" in install
         assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
+        assert "chart_version: 0.91.0" in install
+        assert "maxSurge: 1" in install
+        assert "maxUnavailable: 0" in install
+        assert "topologySpreadConstraints:" in install
+        assert "topologyKey: kubernetes.io/hostname" in install
+        assert "whenUnsatisfiable: DoNotSchedule" in install
+        assert "nodeAffinityPolicy: Honor" in install
+        assert "nodeTaintsPolicy: Honor" in install
+        assert "podDisruptionBudget:" in install
         assert "allow_privilege_escalation = false" in install
         assert 'cap_drop = ["ALL"]' in install
         assert "automount_service_account_token = false" in install
