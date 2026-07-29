@@ -318,6 +318,10 @@ class TestChart10ValuesStructure:
         assert "nodeAffinityPolicy == 'Honor'" in gate
         assert "nodeTaintsPolicy == 'Honor'" in gate
         assert "'node-role.kubernetes.io/worker'] | default('missing')) == 'true'" in gate
+        assert "Discover ready GitLab Rails pods after controller convergence" in gate
+        assert "Recreate one co-located Sidekiq pod after a rolling upgrade" in gate
+        assert "Require the ready GitLab Rails floor to span workers" in gate
+        assert "map(attribute='spec.nodeName') | unique | list | length) >= 2" in gate
         assert "name: gitlab-gitaly" in gate
         assert "spec.maxUnavailable | int) == 0" in gate
         assert "spec.minAvailable is not defined" in gate

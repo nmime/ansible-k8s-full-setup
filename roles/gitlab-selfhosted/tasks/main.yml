@@ -1235,6 +1235,118 @@
         label: 'Deployment/app={{ item.item.app }}'
       when: item.item.app in ['webservice', 'sidekiq']
 
+    - name: Discover ready GitLab Rails pods after controller convergence
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - app in (webservice,sidekiq)
+      register: _gitlab_rails_pods
+
+    - name: Classify ready GitLab Rails pod placement
+      ansible.builtin.set_fact:
+        _gitlab_ready_rails_pods: >-
+          {{
+            _gitlab_rails_pods.resources |
+            rejectattr('metadata.deletionTimestamp', 'defined') |
+            selectattr('status.phase', 'defined') |
+            selectattr('status.phase', 'equalto', 'Running') |
+            selectattr('spec.nodeName', 'defined') | list
+          }}
+        _gitlab_ready_rails_nodes: >-
+          {{
+            _gitlab_rails_pods.resources |
+            rejectattr('metadata.deletionTimestamp', 'defined') |
+            selectattr('status.phase', 'defined') |
+            selectattr('status.phase', 'equalto', 'Running') |
+            selectattr('spec.nodeName', 'defined') |
+            map(attribute='spec.nodeName') | unique | list
+          }}
+
+    # During a rolling Helm upgrade, terminating predecessor pods can
+    # temporarily satisfy topology spread and leave the final Webservice and
+    # Sidekiq floor co-located. Recreate one Sidekiq pod only when the converged
+    # Rails floor is actually on one node; unlike a controller patch this is
+    # conditional and idempotent on every subsequent reconcile.
+    - name: Select one Sidekiq pod for conditional post-upgrade rebalance
+      ansible.builtin.set_fact:
+        _gitlab_sidekiq_rebalance_pod: >-
+          {{
+            _gitlab_ready_rails_pods |
+            selectattr('metadata.labels.app', 'equalto', 'sidekiq') | first
+          }}
+      when:
+        - _gitlab_ready_rails_pods | length >= 2
+        - _gitlab_ready_rails_nodes | length == 1
+
+    - name: Recreate one co-located Sidekiq pod after a rolling upgrade
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: '{{ gitlab_namespace }}'
+        name: '{{ _gitlab_sidekiq_rebalance_pod.metadata.name }}'
+        wait: true
+        wait_timeout: 180
+      when:
+        - _gitlab_ready_rails_pods | length >= 2
+        - _gitlab_ready_rails_nodes | length == 1
+
+    - name: Wait for Sidekiq after conditional post-upgrade rebalance
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: '{{ gitlab_namespace }}'
+        name: gitlab-sidekiq-all-in-1-v2
+      register: _gitlab_sidekiq_rebalanced
+      until: >-
+        ((_gitlab_sidekiq_rebalanced.resources | default([]) | length) == 1) and
+        (((_gitlab_sidekiq_rebalanced.resources | first).status.observedGeneration |
+          default(0) | int) >=
+         ((_gitlab_sidekiq_rebalanced.resources | first).metadata.generation | int)) and
+        (((_gitlab_sidekiq_rebalanced.resources | first).status.readyReplicas |
+          default(0) | int) ==
+         ((_gitlab_sidekiq_rebalanced.resources | first).spec.replicas | int))
+      retries: 90
+      delay: 10
+      when:
+        - _gitlab_ready_rails_pods | length >= 2
+        - _gitlab_ready_rails_nodes | length == 1
+
+    - name: Rediscover GitLab Rails pods after conditional rebalance
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: '{{ gitlab_namespace }}'
+        label_selectors:
+          - release=gitlab
+          - app in (webservice,sidekiq)
+      register: _gitlab_rebalanced_rails_pods
+
+    - name: Require the ready GitLab Rails floor to span workers
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_gitlab_rebalanced_rails_pods.resources |
+             rejectattr('metadata.deletionTimestamp', 'defined') |
+             selectattr('status.phase', 'defined') |
+             selectattr('status.phase', 'equalto', 'Running') |
+             selectattr('spec.nodeName', 'defined') | list | length) >= 2
+          - >-
+            (_gitlab_rebalanced_rails_pods.resources |
+             rejectattr('metadata.deletionTimestamp', 'defined') |
+             selectattr('status.phase', 'defined') |
+             selectattr('status.phase', 'equalto', 'Running') |
+             selectattr('spec.nodeName', 'defined') |
+             map(attribute='spec.nodeName') | unique | list | length) >= 2
+        fail_msg: >-
+          The converged GitLab Webservice and Sidekiq floor is not ready across
+          at least two worker nodes; refusing to report a production-ready
+          reconcile.
+        quiet: true
+
     - name: Discover singleton Gitaly PodDisruptionBudget
       kubernetes.core.k8s_info:
         api_version: policy/v1
