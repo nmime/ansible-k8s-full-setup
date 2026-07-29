@@ -17,6 +17,27 @@ fun_games_edge_https_port: 443
 fun_games_edge_proxy_connect_timeout: 10s
 fun_games_edge_proxy_read_timeout: 3600s
 fun_games_edge_proxy_send_timeout: 3600s
+fun_games_edge_hsts_max_age: 31536000
+fun_games_edge_container_cpus: "1.0"
+fun_games_edge_container_memory: 256m
+fun_games_edge_container_pids_limit: 128
+
+# A production cutover is not allowed until the SafeLine archive has been
+# encrypted and round-trip verified in the disaster-recovery object store.
+fun_games_edge_backup_age_recipient: >-
+  {{ lookup('env', 'CLUSTER_BACKUP_AGE_RECIPIENT') | default('', true) }}
+fun_games_edge_backup_dr_endpoint: >-
+  {{ lookup('env', 'BACKUP_DR_ENDPOINT') | default('', true) }}
+fun_games_edge_backup_dr_region: >-
+  {{ lookup('env', 'BACKUP_DR_REGION') | default('us-east-1', true) }}
+fun_games_edge_backup_dr_bucket: >-
+  {{ lookup('env', 'BACKUP_DR_BUCKET') | default('', true) }}
+fun_games_edge_backup_dr_prefix: >-
+  {{ lookup('env', 'BACKUP_DR_PREFIX') | default('cluster-backups', true) }}/edge/safeline
+fun_games_edge_backup_dr_access_key: >-
+  {{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}
+fun_games_edge_backup_dr_secret_key: >-
+  {{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}
 
 # Every entry must use a distinct certificate that covers hostname. Upstream
 # DNS is resolved by Nginx independently from the compatibility hostname to
@@ -32,9 +53,19 @@ fun_games_edge_required_hosts:
   - backend.uno.funfiesta.games
   - bot.uno.funfiesta.games
   - admin.uno.funfiesta.games
+  - uno.pp.funfiesta.games
+  - api.uno.pp.funfiesta.games
+  - backend.uno.pp.funfiesta.games
+  - bot.uno.pp.funfiesta.games
+  - admin.uno.pp.funfiesta.games
   - durak.funfiesta.games
   - api.durak.funfiesta.games
   - backend.durak.funfiesta.games
   - bot.durak.funfiesta.games
   - admin.durak.funfiesta.games
+  - durak.pp.funfiesta.games
+  - api.durak.pp.funfiesta.games
+  - backend.durak.pp.funfiesta.games
+  - bot.durak.pp.funfiesta.games
+  - admin.durak.pp.funfiesta.games
   - s3.funfiesta.games

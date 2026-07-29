@@ -7,6 +7,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cpus: "{{ fun_games_edge_container_cpus }}"
+    mem_limit: "{{ fun_games_edge_container_memory }}"
+    pids_limit: {{ fun_games_edge_container_pids_limit }}
     ports:
 {% if fun_games_edge_mode == 'canary' %}
       - "127.0.0.1:{{ fun_games_edge_canary_http_port }}:8080"

@@ -17,11 +17,44 @@ http {
     "" close;
   }
 
+  # Unknown authorities must never fall through to the first application.
+  server {
+    listen 8080 default_server;
+    server_name _;
+    return 444;
+  }
+
+  server {
+    listen 8443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+  }
+
 {% for edge_host in fun_games_edge_hosts %}
   server {
     listen 8080;
     server_name {{ edge_host.hostname }};
-    return 308 https://$host$request_uri;
+
+    # Keep HTTP-01 renewals working while every other plaintext request is
+    # redirected. The origin Gateway owns the actual solver route.
+    location ^~ /.well-known/acme-challenge/ {
+      set $edge_upstream "{{ edge_host.upstream_host }}";
+      proxy_pass https://$edge_upstream{% if edge_host.upstream_port | default(443) | int != 443 %}:{{ edge_host.upstream_port }}{% endif %};
+      proxy_ssl_server_name on;
+      proxy_ssl_name {{ edge_host.upstream_sni | default(edge_host.upstream_host) }};
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+      proxy_ssl_verify_depth 3;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-Host $host;
+      proxy_set_header X-Forwarded-Proto http;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location / {
+      return 308 https://$host$request_uri;
+    }
   }
 
   server {
@@ -33,6 +66,7 @@ http {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
+    add_header Strict-Transport-Security "max-age={{ fun_games_edge_hsts_max_age }}" always;
 
     client_max_body_size 0;
     proxy_request_buffering off;
@@ -55,13 +89,17 @@ http {
       proxy_ssl_verify on;
       proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
       proxy_ssl_verify_depth 3;
+      proxy_hide_header Server;
 
       # Preserve the public authority. AWS SigV4 signs the Host header and
       # Colyseus/API callers also depend on the original authority.
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-Host $host;
       proxy_set_header X-Forwarded-Proto https;
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Port 443;
+      # This is the outermost trusted proxy. Never inherit a client-supplied
+      # forwarding chain.
+      proxy_set_header X-Forwarded-For $remote_addr;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection $connection_upgrade;

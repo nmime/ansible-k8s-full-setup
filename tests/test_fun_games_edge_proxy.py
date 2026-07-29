@@ -17,10 +17,35 @@ def test_cutover_is_fail_closed_and_reversible():
 
     assert defaults["fun_games_edge_mode"] == "audit"
     assert defaults["fun_games_edge_confirm_cutover"] is False
-    assert "s3.funfiesta.games" in defaults["fun_games_edge_required_hosts"]
+    assert defaults["fun_games_edge_required_hosts"] == [
+        "uno.funfiesta.games",
+        "api.uno.funfiesta.games",
+        "backend.uno.funfiesta.games",
+        "bot.uno.funfiesta.games",
+        "admin.uno.funfiesta.games",
+        "uno.pp.funfiesta.games",
+        "api.uno.pp.funfiesta.games",
+        "backend.uno.pp.funfiesta.games",
+        "bot.uno.pp.funfiesta.games",
+        "admin.uno.pp.funfiesta.games",
+        "durak.funfiesta.games",
+        "api.durak.funfiesta.games",
+        "backend.durak.funfiesta.games",
+        "bot.durak.funfiesta.games",
+        "admin.durak.funfiesta.games",
+        "durak.pp.funfiesta.games",
+        "api.durak.pp.funfiesta.games",
+        "backend.durak.pp.funfiesta.games",
+        "bot.durak.pp.funfiesta.games",
+        "admin.durak.pp.funfiesta.games",
+        "s3.funfiesta.games",
+    ]
     assert "fun_games_edge_confirm_cutover | bool" in tasks
     assert "difference(fun_games_edge_hosts | map(attribute='hostname') | list)" in tasks
     assert "Back up SafeLine configuration and certificates" in tasks
+    assert "Encrypt the SafeLine archive with age" in tasks
+    assert "Download encrypted SafeLine backup for round-trip verification" in tasks
+    assert "Require exact DR backup round-trip" in tasks
     assert "Restore SafeLine immediately" in tasks
     assert 'fun_games_edge_mode == "rollback"' in tasks
 
@@ -35,6 +60,10 @@ def test_s3_proxy_preserves_sigv4_and_uses_canonical_tls_sni():
     assert "proxy_buffering off;" in template
     assert "client_max_body_size 0;" in template
     assert "resolver {{ fun_games_edge_resolvers | join(' ') }}" in template
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in template
+    assert "$proxy_add_x_forwarded_for" not in template
+    assert "ssl_reject_handshake on;" in template
+    assert "location ^~ /.well-known/acme-challenge/" in template
 
 
 def test_canary_is_loopback_only_and_runtime_is_hardened():
@@ -44,4 +73,16 @@ def test_canary_is_loopback_only_and_runtime_is_hardened():
     assert "read_only: true" in template
     assert "no-new-privileges:true" in template
     assert "cap_drop:" in template
+    assert "cpus:" in template
+    assert "mem_limit:" in template
+    assert "pids_limit:" in template
     assert "max-size: 20m" in template
+
+
+def test_canary_and_cutover_verify_real_upstream_responses():
+    tasks = (ROLE / "tasks/main.yml").read_text()
+
+    assert "Verify every canary upstream response" in tasks
+    assert "Verify every production upstream response" in tasks
+    assert "item.health_path | default('/')" in tasks
+    assert "item.health_statuses" in tasks
