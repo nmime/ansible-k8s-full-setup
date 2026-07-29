@@ -32,13 +32,26 @@ fun_games_edge_hosts:
   - hostname: s3.funfiesta.games
     upstream_host: s3.n0xeid.xyz
     upstream_sni: s3.n0xeid.xyz
+    health_path: /
+    health_statuses: [403]
     certificate_path: /data/safeline/resources/nginx/certs/cert_4.crt
     certificate_key_path: /data/safeline/resources/nginx/certs/cert_4.key
 ```
 
 Before a production cutover, the inventory must cover every hostname in
 `fun_games_edge_required_hosts`. This prevents stopping SafeLine while an
-existing game/API entrypoint still depends on it.
+existing game/API entrypoint still depends on it. The fail-closed list includes
+all production and `*.pp.funfiesta.games` UNO/Durak frontend, API, backend,
+bot and admin names, plus S3.
+
+Each entry may define an exact `health_path` and accepted `health_statuses`.
+The canary and production gates test both the local proxy liveness endpoint and
+a real request through the configured upstream; a healthy Nginx process with a
+dead origin cannot pass.
+
+The outer edge discards any client-supplied forwarding chain, rejects unknown
+authorities, enforces container CPU/memory/PID limits, and proxies HTTP-01
+requests to the origin so certificate renewal remains possible.
 
 ## Gates
 
@@ -67,8 +80,16 @@ ansible-playbook -i inventory.yml playbooks/fun-games-edge.yml \
   -e fun_games_edge_confirm_cutover=true
 ```
 
-The cutover archives SafeLine configuration and certificates, starts the
-pinned and hardened Nginx proxy, verifies every hostname, and restores SafeLine
+The controller environment must provide `CLUSTER_BACKUP_AGE_RECIPIENT` and the
+`BACKUP_DR_*` endpoint, region, bucket and credentials. The edge host must have
+`age` and the AWS CLI. Before SafeLine is stopped, the playbook archives its
+configuration and certificates, encrypts the archive, uploads the ciphertext
+and checksum to DR storage, downloads the ciphertext, and requires an exact
+round-trip checksum. Plaintext and verification copies are removed in an
+`always` block.
+
+Only after that gate does the playbook start the pinned and hardened Nginx
+proxy, verify every hostname and real upstream response, and restore SafeLine
 automatically if any verification fails. Change GCore DNS only after this
 playbook succeeds. Explicit rollback is:
 

@@ -14,6 +14,8 @@
       - item.certificate_path | length > 0
       - item.certificate_key_path | length > 0
       - item.hostname != item.upstream_host
+      - item.health_path | default('/') is match('^/')
+      - item.health_statuses | default([200, 204, 301, 302, 307, 308, 401, 403, 404]) | length > 0
     fail_msg: "Invalid or looping edge host definition: {{ item.hostname | default('unknown') }}"
   loop: "{{ fun_games_edge_hosts }}"
   loop_control:
@@ -191,6 +193,32 @@
         label: "{{ item.hostname }}"
       changed_when: false
 
+    - name: Verify every canary upstream response
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --resolve
+          - "{{ item.hostname }}:{{ fun_games_edge_canary_https_port }}:127.0.0.1"
+          - >-
+            https://{{ item.hostname }}:{{ fun_games_edge_canary_https_port
+            }}{{ item.health_path | default('/') }}
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      register: _fun_games_edge_canary_upstream_checks
+      changed_when: false
+      failed_when: >-
+        (_fun_games_edge_canary_upstream_checks.stdout | int)
+        not in
+        (item.health_statuses
+         | default([200, 204, 301, 302, 307, 308, 401, 403, 404]))
+
 - name: Cut over from SafeLine with automatic rollback
   when: fun_games_edge_mode == "cutover"
   block:
@@ -199,6 +227,11 @@
         that:
           - fun_games_edge_confirm_cutover | bool
           - _fun_games_edge_safeline_compose.stat.exists
+          - fun_games_edge_backup_age_recipient | length > 0
+          - fun_games_edge_backup_dr_endpoint | length > 0
+          - fun_games_edge_backup_dr_bucket | length > 0
+          - fun_games_edge_backup_dr_access_key | length > 0
+          - fun_games_edge_backup_dr_secret_key | length > 0
           - >-
             fun_games_edge_required_hosts
             | difference(fun_games_edge_hosts | map(attribute='hostname') | list)
@@ -206,6 +239,14 @@
         fail_msg: >-
           Cutover is fail-closed: confirm it and configure every required edge
           hostname before SafeLine can be stopped.
+
+    - name: Verify encrypted DR backup tools
+      ansible.builtin.command:
+        argv: [sh, -c, "command -v {{ item }}"]
+      loop:
+        - age
+        - aws
+      changed_when: false
 
     - name: Create timestamp for immutable backup
       ansible.builtin.set_fact:
@@ -232,6 +273,149 @@
         owner: root
         group: root
         mode: "0600"
+      no_log: true
+
+    - name: Verify, encrypt, publish, and round-trip the SafeLine backup
+      block:
+        - name: Verify the plaintext SafeLine archive
+          ansible.builtin.command:
+            argv:
+              - tar
+              - --list
+              - --gzip
+              - --file
+              - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz
+          changed_when: false
+          no_log: true
+
+        - name: Encrypt the SafeLine archive with age
+          ansible.builtin.command:
+            argv:
+              - age
+              - --encrypt
+              - --recipient
+              - "{{ fun_games_edge_backup_age_recipient }}"
+              - --output
+              - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age
+              - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz
+          no_log: true
+
+        - name: Calculate encrypted SafeLine backup checksum
+          ansible.builtin.command:
+            argv:
+              - sha256sum
+              - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age
+          register: _fun_games_edge_backup_checksum
+          changed_when: false
+
+        - name: Persist encrypted SafeLine backup checksum
+          ansible.builtin.copy:
+            content: >-
+              {{ _fun_games_edge_backup_checksum.stdout.split()[0] }}
+              safeline-before-edge-{{ _fun_games_edge_backup_id }}.tar.gz.age
+            dest: >-
+              {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+              _fun_games_edge_backup_id }}.tar.gz.age.sha256
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Publish encrypted SafeLine backup and checksum
+          ansible.builtin.command:
+            argv:
+              - aws
+              - --endpoint-url
+              - "{{ fun_games_edge_backup_dr_endpoint }}"
+              - --region
+              - "{{ fun_games_edge_backup_dr_region }}"
+              - s3
+              - cp
+              - "{{ item.source }}"
+              - "s3://{{ fun_games_edge_backup_dr_bucket }}/{{ item.key }}"
+              - --only-show-errors
+          environment:
+            AWS_ACCESS_KEY_ID: "{{ fun_games_edge_backup_dr_access_key }}"
+            AWS_SECRET_ACCESS_KEY: "{{ fun_games_edge_backup_dr_secret_key }}"
+          loop:
+            - source: >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age
+              key: >-
+                {{ fun_games_edge_backup_dr_prefix }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age
+            - source: >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age.sha256
+              key: >-
+                {{ fun_games_edge_backup_dr_prefix }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age.sha256
+          loop_control:
+            label: "{{ item.key }}"
+          changed_when: true
+          no_log: true
+
+        - name: Download encrypted SafeLine backup for round-trip verification
+          ansible.builtin.command:
+            argv:
+              - aws
+              - --endpoint-url
+              - "{{ fun_games_edge_backup_dr_endpoint }}"
+              - --region
+              - "{{ fun_games_edge_backup_dr_region }}"
+              - s3
+              - cp
+              - >-
+                s3://{{ fun_games_edge_backup_dr_bucket }}/{{
+                fun_games_edge_backup_dr_prefix }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz.age
+              - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.roundtrip.age
+              - --only-show-errors
+          environment:
+            AWS_ACCESS_KEY_ID: "{{ fun_games_edge_backup_dr_access_key }}"
+            AWS_SECRET_ACCESS_KEY: "{{ fun_games_edge_backup_dr_secret_key }}"
+          changed_when: true
+          no_log: true
+
+        - name: Calculate round-trip SafeLine backup checksum
+          ansible.builtin.command:
+            argv:
+              - sha256sum
+              - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.roundtrip.age
+          register: _fun_games_edge_backup_roundtrip_checksum
+          changed_when: false
+
+        - name: Require exact DR backup round-trip
+          ansible.builtin.assert:
+            that:
+              - >-
+                _fun_games_edge_backup_roundtrip_checksum.stdout.split()[0]
+                == _fun_games_edge_backup_checksum.stdout.split()[0]
+            fail_msg: "SafeLine encrypted DR backup round-trip checksum mismatch"
+      always:
+        - name: Remove plaintext and round-trip SafeLine backup copies
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.tar.gz
+            - >-
+                {{ fun_games_edge_backup_root }}/safeline-before-edge-{{
+                _fun_games_edge_backup_id }}.roundtrip.age
+          no_log: true
 
     - name: Switch edge listeners
       block:
@@ -280,6 +464,31 @@
           loop_control:
             label: "{{ item.hostname }}"
           changed_when: false
+
+        - name: Verify every production upstream response
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --silent
+              - --show-error
+              - --output
+              - /dev/null
+              - --write-out
+              - "%{http_code}"
+              - --resolve
+              - "{{ item.hostname }}:{{ fun_games_edge_https_port }}:127.0.0.1"
+              - >-
+                https://{{ item.hostname }}{{ item.health_path | default('/') }}
+          loop: "{{ fun_games_edge_hosts }}"
+          loop_control:
+            label: "{{ item.hostname }}"
+          register: _fun_games_edge_production_upstream_checks
+          changed_when: false
+          failed_when: >-
+            (_fun_games_edge_production_upstream_checks.stdout | int)
+            not in
+            (item.health_statuses
+             | default([200, 204, 301, 302, 307, 308, 401, 403, 404]))
       rescue:
         - name: Stop failed production edge proxy
           ansible.builtin.command:
