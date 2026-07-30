@@ -217,6 +217,21 @@
     bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type, true) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
     node_type_overrides: "{{ infrastructure.node_type_overrides | default({}) }}"
+    dedicated_ci_worker_index: >-
+      {{ gitlab_docker_host_runner_worker_index | default(0) | int }}
+
+- name: Validate the dedicated CI worker index
+  ansible.builtin.assert:
+    that:
+      - dedicated_ci_worker_index | int >= 0
+      - dedicated_ci_worker_index | int <= worker_count | int
+      - >-
+        not (gitlab_docker_host_runner_enabled | default(false) | bool)
+        or dedicated_ci_worker_index | int > 0
+    fail_msg: >-
+      The protected Docker-smoke Runner must use a dedicated worker index
+      between 1 and infrastructure.workers.count. Zero is allowed only while
+      that Runner is disabled.
 
 - name: Validate per-node server type override structure
   ansible.builtin.assert:
@@ -226,6 +241,17 @@
       infrastructure.node_type_overrides must be a mapping from a full
       {{ project }}-master-N or {{ project }}-worker-N server name to a server
       type.
+
+- name: Build the per-node worker type plan
+  ansible.builtin.set_fact:
+    worker_type_plan: >-
+      {%- set ns = namespace(items=[]) -%}
+      {%- for index in range(1, (worker_count | int) + 1) -%}
+      {%- set node = project + '-worker-' + (index | string) -%}
+      {%- set _ = ns.items.append(
+        node + '=' + node_type_overrides.get(node, worker_type)) -%}
+      {%- endfor -%}
+      {{ ns.items }}
 
 - name: Build valid per-node server type override names
   ansible.builtin.set_fact:
@@ -340,7 +366,7 @@
       - "Tier: {{ infra_tier }} | Region: {{ region }}"
       - "Bastion: {{ bastion_type }} (~€{{ type_price_map[bastion_type] | default('?') }}/mo)"
       - "Control plane: {{ cp_type }} x{{ cp_count }} (~€{{ type_price_map[cp_type] | default('?') }}/mo each)"
-      - "Workers: {{ worker_type }} x{{ worker_count }} (~€{{ type_price_map[worker_type] | default('?') }}/mo each)"
+      - "Workers: {{ worker_type_plan | join(', ') }}"
 
 - name: Map region to network zone
   set_fact:
@@ -600,6 +626,39 @@
 # Firewalls
 # ============================================
 
+- name: Resolve explicit bastion SSH source CIDRs
+  ansible.builtin.set_fact:
+    _hetzner_profile_ssh_source_ips: >-
+      {{ hetzner_ssh_source_ips |
+         default(network.ssh_source_ips | default([]), true) }}
+    _hetzner_env_ssh_source_ips: >-
+      {{ lookup('env', 'HETZNER_SSH_SOURCE_IPS') |
+         default('', true) | split(',') | map('trim') |
+         reject('equalto', '') | list }}
+
+- name: Select the effective bastion SSH source CIDRs
+  ansible.builtin.set_fact:
+    effective_hetzner_ssh_source_ips: >-
+      {{ _hetzner_profile_ssh_source_ips
+         if (_hetzner_profile_ssh_source_ips | length > 0)
+         else _hetzner_env_ssh_source_ips }}
+
+- name: Reject public or missing bastion SSH exposure
+  ansible.builtin.assert:
+    that:
+      - effective_hetzner_ssh_source_ips | length > 0
+      - effective_hetzner_ssh_source_ips | length <= 16
+      - "'0.0.0.0/0' not in effective_hetzner_ssh_source_ips"
+      - "'::/0' not in effective_hetzner_ssh_source_ips"
+      - effective_hetzner_ssh_source_ips |
+        select('match', '^[0-9A-Fa-f:.]+/[0-9]{1,3}$') |
+        list | length == effective_hetzner_ssh_source_ips | length
+    fail_msg: >-
+      Bastion SSH must be restricted to explicit operator/VPN CIDRs. Set
+      network.ssh_source_ips, hetzner_ssh_source_ips, or comma-separated
+      HETZNER_SSH_SOURCE_IPS. World-open 0.0.0.0/0 and ::/0 are forbidden.
+    quiet: true
+
 - name: Check if bastion firewall already exists
   ansible.builtin.command:
     cmd: hcloud firewall describe {{ project }}-fw-bastion -o json
@@ -639,8 +698,8 @@
       - direction: in
         protocol: tcp
         port: '22'
-        source_ips: '{{ hetzner_ssh_source_ips | default(["0.0.0.0/0", "::/0"]) }}'
-        description: SSH access
+        source_ips: '{{ effective_hetzner_ssh_source_ips }}'
+        description: SSH access from approved operator and VPN CIDRs
       - direction: in
         protocol: tcp
         port: '80'
@@ -1076,7 +1135,13 @@
           '--network', project + '-network',
           '--firewall', project + '-fw-nodes',
           '--without-ipv4', '--without-ipv6',
-          '--label', 'project=' + project + ',role=worker,index=' + (item | string)
+          '--label',
+          'project=' + project
+          + ',role='
+          + ('ci-worker'
+             if item == (dedicated_ci_worker_index | int)
+             else 'worker')
+          + ',index=' + (item | string)
         ]
         + (['--placement-group', project + '-spread']
            if infra_tier in ['medium', 'production'] else [])
@@ -1370,7 +1435,10 @@
       hcloud load-balancer add-target {{ project }}-lb
       --server {{ project }}-worker-{{ item }}
       --use-private-ip
-  loop: "{{ range(1, (worker_count | int) + 1) | list }}"
+  loop: >-
+    {{ range(1, (worker_count | int) + 1)
+       | reject('equalto', dedicated_ci_worker_index | int)
+       | list }}
   register: lb_target
   changed_when: lb_target.rc == 0
   retries: "{{ hcloud_write_retries }}"
@@ -1381,6 +1449,27 @@
     'target' in (lb_target.stderr | default('') | lower)
   failed_when: lb_target.rc != 0 and 'already' not in (lb_target.stderr | default('')) and 'target' not in (lb_target.stderr | default(''))
   when: lb_enabled | bool
+
+- name: Ensure the dedicated CI worker is not an LB target
+  ansible.builtin.command:
+    cmd: >
+      hcloud load-balancer remove-target {{ project }}-lb
+      --server {{ project }}-worker-{{ dedicated_ci_worker_index }}
+  register: ci_lb_target_removal
+  changed_when: ci_lb_target_removal.rc == 0
+  retries: "{{ hcloud_write_retries }}"
+  delay: "{{ hcloud_write_delay }}"
+  until: >-
+    ci_lb_target_removal.rc == 0 or
+    'not' in (ci_lb_target_removal.stderr | default('') | lower) or
+    'target' in (ci_lb_target_removal.stderr | default('') | lower)
+  failed_when: >-
+    ci_lb_target_removal.rc != 0 and
+    'not' not in (ci_lb_target_removal.stderr | default('') | lower) and
+    'target' not in (ci_lb_target_removal.stderr | default('') | lower)
+  when:
+    - lb_enabled | bool
+    - dedicated_ci_worker_index | int > 0
 
 - name: Get load balancer public IP
   ansible.builtin.command:
@@ -1652,7 +1741,7 @@
       - "  Bastion IP: {{ bastion_public_ip }} (private: {{ bastion_private_ip }})"
       - "  LB IP: {{ lb_public_ip }}"
       - "  Masters: {{ cp_count }}x {{ cp_type }}"
-      - "  Workers: {{ worker_count }}x {{ worker_type }}"
+      - "  Workers: {{ worker_type_plan | join(', ') }}"
       - "  Master IPs: {{ master_ips }}"
       - "  Worker IPs: {{ worker_ips }}"
       - "=========================================="

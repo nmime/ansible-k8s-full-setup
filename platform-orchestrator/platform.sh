@@ -60,6 +60,11 @@ load_config() {
   DOMAIN=$(yq '.global.domain' "$CONFIG_FILE")
   EMAIL=$(yq '.global.email' "$CONFIG_FILE")
   K8S_API_LOCAL_PORT=$(yq '.k8s_api_local_port // 16443' "$CONFIG_FILE")
+  if [[ ! "$PROJECT" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] \
+    || (( ${#PROJECT} > 63 )); then
+    error "global.project must be a valid Kubernetes DNS label"
+    exit 1
+  fi
   [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "global.domain is required in $CONFIG_FILE"; exit 1; }
   [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "global.email is required in $CONFIG_FILE"; exit 1; }
   if [[ ! "$K8S_API_LOCAL_PORT" =~ ^[0-9]+$ ]] \
@@ -327,7 +332,19 @@ disable_component() {
 }
 
 run_playbook() {
+  local platform_secrets_file
+
   check_env
+  if [[ -n "${PLATFORM_SECRETS_FILE:-}" ]]; then
+    platform_secrets_file="$PLATFORM_SECRETS_FILE"
+  elif [[ -d "${ANSIBLE_DIR}/.campaign-state/${PROJECT}" ]]; then
+    # Tier runners and resumable migrations persist credentials per cluster.
+    # Reusing that project-scoped file prevents a later component-only deploy
+    # from generating a second credential set and rotating live dependencies.
+    platform_secrets_file="${ANSIBLE_DIR}/.campaign-state/${PROJECT}/.platform-secrets.yml"
+  else
+    platform_secrets_file="${ANSIBLE_DIR}/playbooks/.platform-secrets.yml"
+  fi
   ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
     -e "@${CONFIG_FILE}" \
     -e "platform_profile=${PROFILE}" \
@@ -336,7 +353,7 @@ run_playbook() {
     -e "project_name=${PROJECT}" \
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
-    -e "platform_secrets_file=${PLATFORM_SECRETS_FILE:-${ANSIBLE_DIR}/playbooks/.platform-secrets.yml}" \
+    -e "platform_secrets_file=${platform_secrets_file}" \
     "$@"
 }
 
@@ -448,7 +465,7 @@ deploy_all() {
     -e "deploy_daytona=${daytona_flag}" \
     2>&1 | tee -a "${LOG_DIR}/deploy.log"
   log "Platform deployed!"
-  show_credentials
+  log "Credentials are not printed into deployment logs; run './platform.sh credentials' explicitly."
 }
 
 deploy_daytona() {
@@ -554,15 +571,17 @@ show_status() {
 show_credentials() {
   echo "Credentials for $DOMAIN"
   echo "=========================================="
-  kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' &>/dev/null && {
+  kubectl get secret gitlab-gitlab-initial-root-password -n gitlab \
+    --request-timeout=3s -o jsonpath='{.data.password}' &>/dev/null && {
     echo "GitLab: https://gitlab.$DOMAIN"
     echo "  User: root"
-    echo "  Pass: $(kubectl get secret gitlab-gitlab-initial-root-password -n gitlab -o jsonpath='{.data.password}' | base64 -d)"
+    echo "  Pass: $(kubectl get secret gitlab-gitlab-initial-root-password -n gitlab --request-timeout=3s -o jsonpath='{.data.password}' | base64 -d)"
   }
-  kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' &>/dev/null && {
+  kubectl get secret argocd-initial-admin-secret -n argocd \
+    --request-timeout=3s -o jsonpath='{.data.password}' &>/dev/null && {
     echo "ArgoCD: https://argocd.$DOMAIN"
     echo "  User: admin"
-    echo "  Pass: $(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
+    echo "  Pass: $(kubectl get secret argocd-initial-admin-secret -n argocd --request-timeout=3s -o jsonpath='{.data.password}' | base64 -d)"
   }
   echo "Vault: https://vault.$DOMAIN"
   echo "PostgreSQL: kubectl get secret ${PROJECT:-k8s}-pg-pguser-app -n databases -o jsonpath='{.data.password}' | base64 -d"

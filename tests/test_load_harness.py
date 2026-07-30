@@ -76,7 +76,7 @@ def test_evidence_dry_run_writes_json_and_tsv_without_kubeconfig(tmp_path: Path)
     evidence = json.loads((output / "evidence.json").read_text())
     assert evidence["schema"] == "tier-live-evidence/v1"
     assert evidence["profile"] == "production"
-    assert evidence["expected_nodes"] == 6
+    assert evidence["expected_nodes"] == 7
     for filename in ("resources.tsv", "top-nodes.tsv", "top-pods.tsv", "warning-events.tsv"):
         assert (output / filename).is_file()
 

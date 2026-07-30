@@ -38,6 +38,34 @@ def test_service_network_policies_allow_cilium_gateway_ingress_identity():
     assert "- ingress" in tasks
 
 
+def test_kubespray_execution_is_bounded_and_secret_safe():
+    tasks = load_yaml("roles/k8s-cluster-management/tasks/main.yml")
+    by_name = {task["name"]: task for task in tasks if "name" in task}
+
+    boundary = by_name["Validate the Kubespray execution boundary"]
+    run = by_name[
+        "Run Kubespray cluster deployment without exposing remote secrets"
+    ]
+    summary = by_name[
+        "Summarize a failed Kubespray run without secret-bearing task results"
+    ]
+
+    assert "cluster.yml" in str(boundary)
+    assert "scale.yml" in str(boundary)
+    assert "one exact project worker hostname" in boundary["ansible.builtin.assert"][
+        "fail_msg"
+    ]
+    assert run["no_log"] is True
+    assert "umask 077" in run["ansible.builtin.shell"]
+    assert "chmod 0600" in run["ansible.builtin.shell"]
+    assert "> {{ kubespray_secure_log | quote }} 2>&1" in run[
+        "ansible.builtin.shell"
+    ]
+    assert "details redacted; inspect protected log" in summary[
+        "ansible.builtin.shell"
+    ]
+
+
 def test_vault_tls_covers_the_required_short_raft_addresses() -> None:
     tls = read("roles/k8s-secrets/tasks/vault_tls.yml")
     tasks = read("roles/k8s-secrets/tasks/reconcile.yml")
@@ -208,10 +236,20 @@ class TestGenerateSecrets:
         assert "playbook_dir ~ '/.platform-secrets.yml'" in self.content
 
         orchestrator = read("platform-orchestrator/platform.sh")
+        assert 'platform_secrets_file="$PLATFORM_SECRETS_FILE"' in orchestrator
         assert (
-            '-e "platform_secrets_file=${PLATFORM_SECRETS_FILE:-'
-            '${ANSIBLE_DIR}/playbooks/.platform-secrets.yml}"'
+            'platform_secrets_file="${ANSIBLE_DIR}/.campaign-state/'
+            '${PROJECT}/.platform-secrets.yml"'
         ) in orchestrator
+        assert '-e "platform_secrets_file=${platform_secrets_file}"' in orchestrator
+
+    def test_orchestrator_rejects_project_path_traversal(self):
+        orchestrator = read("platform-orchestrator/platform.sh")
+        assert (
+            'if [[ ! "$PROJECT" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]'
+            in orchestrator
+        )
+        assert "${#PROJECT} > 63" in orchestrator
 
 
 # ─── 4. k8s-secrets: Vault TLS ──────────────────────────
@@ -644,13 +682,23 @@ def test_velero_network_policy_uses_configured_external_storage_port():
     assert "name: allow-velero-required-traffic" in policy
     assert "- kube-apiserver" in policy
     assert "- host" in policy
-    assert 'port: "{{ backup_dr_storage_port | string }}"' in policy
-    assert "toFQDNs:" in policy
-    assert 'matchName: "{{ backup_dr_storage_hostname }}"' in policy
     egress = policy.split("egress:", 1)[1]
     assert "- world" not in egress
     assert "- remote-node" not in egress
     assert "port: '8085'" in policy
+
+    external_policies = content.split(
+        'name: "Backup-DR | Allow external storage through its validated DNS name"',
+        1,
+    )[1].split('- name: "Backup-DR | Wait for the Velero server"', 1)[0]
+    assert "name: allow-velero-external-storage" in external_policies
+    assert 'port: "{{ backup_dr_storage_port | string }}"' in external_policies
+    assert "toFQDNs:" in external_policies
+    assert 'matchName: "{{ backup_dr_storage_hostname }}"' in external_policies
+    assert 'toCIDR:' in external_policies
+    assert '"{{ backup_dr_storage_hostname }}/32"' in external_policies
+    assert "- world" not in external_policies
+    assert "- remote-node" not in external_policies
 
 
 def test_health_gate_rejects_invalid_cilium_policies():
@@ -688,6 +736,35 @@ def test_recycled_private_ip_host_keys_are_reset_only_for_new_servers():
     assert "ssh-keygen" in network
 
 
+def test_bastion_ssh_firewall_is_explicit_and_fail_closed():
+    infra = read("roles/hetzner-infra/tasks/main.yml")
+    gate = infra.split(
+        "- name: Reject public or missing bastion SSH exposure", 1
+    )[1].split("- name: Check if bastion firewall already exists", 1)[0]
+    policy = infra.split(
+        "- name: Define the complete bastion firewall policy", 1
+    )[1].split("- name: Read current bastion firewall", 1)[0]
+
+    assert "effective_hetzner_ssh_source_ips | length > 0" in gate
+    assert "'0.0.0.0/0' not in effective_hetzner_ssh_source_ips" in gate
+    assert "'::/0' not in effective_hetzner_ssh_source_ips" in gate
+    assert "HETZNER_SSH_SOURCE_IPS" in infra
+    assert "source_ips: '{{ effective_hetzner_ssh_source_ips }}'" in policy
+    assert 'default(["0.0.0.0/0", "::/0"])' not in policy
+
+    defaults = load_yaml("defaults/main.yml")
+    assert defaults["hetzner_ssh_source_ips"] == []
+    for profile in (
+        "minimal",
+        "small",
+        "medium",
+        "medium-optimized",
+        "production",
+    ):
+        values = load_yaml(f"platform-orchestrator/profiles/{profile}.yaml")
+        assert values["network"]["ssh_source_ips"] == []
+
+
 def test_storage_egress_includes_the_selected_seaweedfs_s3_port():
     cluster = read("roles/k8s-cluster-management/tasks/main.yml")
     policy = cluster.split(
@@ -699,6 +776,7 @@ def test_storage_egress_includes_the_selected_seaweedfs_s3_port():
         "name: Create allow-storage-from-apps NetworkPolicy", 1
     )[1].split("- name:", 1)[0]
     assert "kubernetes.io/metadata.name: vault" in ingress
+    assert 'backup-restore.io/drill: "true"' in ingress
 
 
 def test_medium_and_production_enable_cilium_wireguard_transport_encryption():
@@ -1380,6 +1458,27 @@ def test_platform_honors_explicit_kubeconfig_before_home_fallback():
     kube_index = playbook.index("lookup('env', 'KUBECONFIG')")
     home_index = playbook.index("lookup('env', 'HOME') ~ '/.kube/config'")
     assert auth_index < kube_index < home_index
+
+
+def test_bastion_default_route_reconcile_is_inventory_driven_and_idempotent():
+    tasks = load_yaml("roles/network-security/tasks/main.yml")
+    by_name = {task["name"]: task for task in tasks if "name" in task}
+
+    inventory = by_name["Read existing routes on the private network"]
+    classify = by_name["Classify the bastion default route"]
+    create = by_name["Add bastion as default route on private network"]
+
+    assert inventory["changed_when"] is False
+    assert inventory["ansible.builtin.command"]["argv"][-2:] == ["--output", "json"]
+    expression = classify["ansible.builtin.set_fact"][
+        "bastion_default_route_exists"
+    ]
+    assert "private_network_inventory.stdout | from_json" in expression
+    assert "'destination', 'equalto', '0.0.0.0/0'" in expression
+    assert re.search(r"'gateway',\s*'equalto'", expression)
+    assert create["when"] == "not bastion_default_route_exists | bool"
+    assert create["changed_when"] is True
+    assert create["ansible.builtin.command"]["argv"][2] == "add-route"
 
 
 def test_elasticsearch_password_rotation_precedes_secret_update():

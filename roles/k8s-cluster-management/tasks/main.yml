@@ -23,6 +23,26 @@
     cluster_manifest_dir: >-
       {{ lookup('env', 'HOME') }}/.cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests
     local_api_port: "{{ k8s_api_local_port | default(16443) | int }}"
+    controller_kubeconfig_file: >-
+      {{ (lookup('env', 'KUBECONFIG').split(':') | first)
+         if lookup('env', 'KUBECONFIG') | length > 0
+         else lookup('env', 'HOME') + '/.kube/config' }}
+    controller_tunnel_pid_file: >-
+      {{ ((lookup('env', 'KUBECONFIG').split(':') | first | dirname)
+          if lookup('env', 'KUBECONFIG') | length > 0
+          else lookup('env', 'HOME') + '/.kube')
+         + '/' + (project_name | default('k8s')) + '-api-tunnel.pid' }}
+    dedicated_ci_worker_index: >-
+      {{ gitlab_docker_host_runner_worker_index | default(0) | int }}
+    selected_kubespray_playbook: >-
+      {{ kubespray_execution_playbook | default('cluster.yml') }}
+    selected_kubespray_limit: >-
+      {{ kubespray_execution_limit | default('') | string | trim }}
+    kubespray_secure_log: >-
+      {{ lookup('env', 'HOME') }}/.cache/ansible-k8s/{{
+      project_name | default('k8s') }}/manifests/kubespray-{{
+      kubespray_execution_playbook | default('cluster.yml') |
+      regex_replace('[^A-Za-z0-9_.-]', '_') }}.log
 
 - name: Validate the controller-local Kubernetes API port
   ansible.builtin.assert:
@@ -31,6 +51,21 @@
       - local_api_port | int >= 1024
       - local_api_port | int <= 65535
     fail_msg: k8s_api_local_port must be an integer between 1024 and 65535.
+
+- name: Validate the Kubespray execution boundary
+  ansible.builtin.assert:
+    that:
+      - selected_kubespray_playbook in ['cluster.yml', 'scale.yml']
+      - >-
+        selected_kubespray_playbook != 'scale.yml'
+        or selected_kubespray_limit is match(
+          '^' ~ project ~ '-worker-[1-9][0-9]*$')
+      - >-
+        selected_kubespray_playbook != 'cluster.yml'
+        or selected_kubespray_limit | length == 0
+    fail_msg: >-
+      Full convergence must use cluster.yml without a limit. Worker expansion
+      may use scale.yml only with one exact project worker hostname.
 
 - name: Create project-scoped controller state directories
   ansible.builtin.file:
@@ -41,6 +76,7 @@
     - {path: "{{ controller_known_hosts_file | dirname }}", mode: '0700'}
     - {path: "{{ kubespray_control_path_dir }}", mode: '0700'}
     - {path: "{{ cluster_manifest_dir }}", mode: '0700'}
+    - {path: "{{ controller_kubeconfig_file | dirname }}", mode: '0700'}
   delegate_to: localhost
   become: false
 
@@ -140,6 +176,12 @@
             ansible_host: {{ ip }}
             ip: {{ ip }}
             access_ip: {{ ip }}
+      {% if i == (dedicated_ci_worker_index | int) %}
+            node_labels:
+              workload.n0xeid.xyz/ci-docker: "true"
+            node_taints:
+              - "workload.n0xeid.xyz/ci-docker=true:NoSchedule"
+      {% endif %}
       {% endfor %}
         children:
           kube_control_plane:
@@ -370,22 +412,69 @@
   become: false
   changed_when: false
 
-- name: Run Kubespray cluster deployment
+- name: Run Kubespray cluster deployment without exposing remote secrets
+  no_log: true
   ansible.builtin.shell: |
+    umask 077
     unset ANSIBLE_CONFIG ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS
     export ANSIBLE_CONFIG={{ playbook_dir }}/kubespray/ansible.cfg
     cd {{ playbook_dir }}/kubespray
     {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook \
       -i inventory/{{ project }}/hosts.yml \
       --become --become-user=root \
-      cluster.yml
+      {% if selected_kubespray_limit | length > 0 -%}
+      --limit {{ selected_kubespray_limit | quote }} \
+      {% endif -%}
+      {{ selected_kubespray_playbook | quote }} \
+      > {{ kubespray_secure_log | quote }} 2>&1
+    result=$?
+    chmod 0600 {{ kubespray_secure_log | quote }}
+    exit "$result"
   args:
     executable: /bin/bash
   delegate_to: localhost
   become: false
   register: kubespray_result
   changed_when: true
+  failed_when: false
   when: not (skip_kubespray | default(false) | bool)
+
+- name: Summarize a failed Kubespray run without secret-bearing task results
+  ansible.builtin.shell: |
+    awk '
+      /^TASK \[/ { last_task=$0 }
+      /^(fatal|failed|UNREACHABLE):/ {
+        print last_task
+        sub(/=>.*/, "=> [details redacted; inspect protected log]")
+        print
+      }
+      /^PLAY RECAP/ { recap=1; print; next }
+      recap && /^[A-Za-z0-9_.-]+[[:space:]]+:/ { print }
+    ' {{ kubespray_secure_log | quote }} | tail -n 80
+  args:
+    executable: /bin/bash
+  register: kubespray_failure_summary
+  changed_when: false
+  when:
+    - not (skip_kubespray | default(false) | bool)
+    - kubespray_result.rc | default(0) != 0
+
+- name: Display the redacted Kubespray failure summary
+  ansible.builtin.debug:
+    var: kubespray_failure_summary.stdout_lines
+  when:
+    - not (skip_kubespray | default(false) | bool)
+    - kubespray_result.rc | default(0) != 0
+
+- name: Stop after a failed Kubespray reconciliation
+  ansible.builtin.fail:
+    msg: >-
+      Kubespray {{ selected_kubespray_playbook }} failed with rc={{
+      kubespray_result.rc }}. Secret-bearing task data is retained only in the
+      mode-0600 controller log {{ kubespray_secure_log }}.
+  when:
+    - not (skip_kubespray | default(false) | bool)
+    - kubespray_result.rc | default(0) != 0
 
 - name: Record the completed Kubespray reconciliation checkpoint
   ansible.builtin.file:
@@ -421,13 +510,13 @@
 
 - name: Copy kubeconfig from master via ProxyCommand
   ansible.builtin.shell: |
-    mkdir -p {{ (lookup('env', 'HOME') + '/.kube') | quote }}
+    mkdir -p {{ (controller_kubeconfig_file | dirname) | quote }}
     ssh -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
       -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
       root@{{ first_master_ip | default('10.0.1.1') }} 'cat /etc/kubernetes/admin.conf' \
-      > {{ (lookup('env', 'HOME') + '/.kube/config') | quote }}
-    chmod 600 {{ (lookup('env', 'HOME') + '/.kube/config') | quote }}
+      > {{ controller_kubeconfig_file | quote }}
+    chmod 600 {{ controller_kubeconfig_file | quote }}
   args:
     executable: /bin/bash
   delegate_to: localhost
@@ -437,9 +526,34 @@
 - name: Ensure SSH tunnel to k8s API is active
   ansible.builtin.shell: |
     set -euo pipefail
-    kubeconfig={{ lookup('env', 'HOME') }}/.kube/config
-    tunnel_pid_file={{ lookup('env', 'HOME') }}/.kube/{{ project }}-api-tunnel.pid
+    kubeconfig={{ controller_kubeconfig_file | quote }}
+    tunnel_pid_file={{ controller_tunnel_pid_file | quote }}
     local_api_port={{ local_api_port | int }}
+    managed_tunnel_pid=
+    for candidate_pid in $(pgrep -f '[k]ube-api-tunnel-supervisor.sh' || true); do
+      candidate_command=$(ps -p "$candidate_pid" -o command=)
+      if [[ "$candidate_command" == *"--kubeconfig ${kubeconfig}"* &&
+            "$candidate_command" == *"--local-port ${local_api_port}"* ]]; then
+        managed_tunnel_pid=$candidate_pid
+        break
+      fi
+    done
+    if nc -z 127.0.0.1 "$local_api_port" >/dev/null 2>&1; then
+      kubectl --kubeconfig "$kubeconfig" config set-cluster cluster.local \
+        --server="https://127.0.0.1:${local_api_port}" >/dev/null
+      if [[ -n "$managed_tunnel_pid" ]] &&
+         KUBECONFIG="$kubeconfig" kubectl get --raw=/readyz >/dev/null 2>&1; then
+        echo "Managed campaign API tunnel is already healthy (PID $managed_tunnel_pid)"
+        exit 0
+      fi
+      echo "Local port $local_api_port is occupied by an unmanaged or unhealthy process" >&2
+      if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$local_api_port" -sTCP:LISTEN >&2 || true
+      elif [ -x /usr/sbin/lsof ]; then
+        /usr/sbin/lsof -nP -iTCP:"$local_api_port" -sTCP:LISTEN >&2 || true
+      fi
+      exit 1
+    fi
     if [ -f "$tunnel_pid_file" ]; then
       old_pid=$(cat "$tunnel_pid_file")
       if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
@@ -463,11 +577,6 @@
         done
       fi
       rm -f "$tunnel_pid_file"
-    fi
-    if nc -z 127.0.0.1 "$local_api_port" >/dev/null 2>&1; then
-      echo "Local port $local_api_port is occupied by an unmanaged process" >&2
-      lsof -nP -iTCP:"$local_api_port" -sTCP:LISTEN >&2 || true
-      exit 1
     fi
     nohup {{ playbook_dir }}/../scripts/kube-api-tunnel-supervisor.sh \
       --bastion {{ bastion_public_ip | quote }} \
@@ -1132,6 +1241,7 @@
     kubectl get nodes -o json |
       jq -r '.items[]
         | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
+        | select(.metadata.labels["workload.n0xeid.xyz/ci-docker"] != "true")
         | .metadata.name' |
       sort
   args:
@@ -1148,9 +1258,9 @@
       - local_storage_worker_nodes_result.stdout_lines | length >= 3
     fail_msg: >-
       The medium-optimized local PV pool requires exactly three schedulable
-      control planes and at least three workers. Only the first three workers
-      receive target-generation slots; a temporary fourth worker is tolerated
-      during a checkpointed scale-in migration.
+      control planes and at least three non-CI workers. The dedicated CI worker
+      is label-excluded from target generation, so its root disk can never
+      become application or database storage.
   when: local_storage_enabled | bool
 
 - name: Enforce root-disk capacity for the static local PV reservation
@@ -1225,6 +1335,13 @@
             labels:
               app.kubernetes.io/name: platform-local-storage-initializer
           spec:
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: workload.n0xeid.xyz/ci-docker
+                          operator: DoesNotExist
             tolerations:
               - operator: Exists
             containers:
@@ -1234,9 +1351,11 @@
                   - sh
                   - -ec
                   - >-
+                    if [ ! -f /storage/.platform-static-local-pv-ready ]; then
                     free_kib=$(df -Pk /storage | awk 'NR==2 {print $4}');
                     test "$free_kib" -ge {{
                     (local_storage_min_free_gib_per_node | int) * 1024 * 1024 }};
+                    fi;
                     for slot in
                     10gi-1 10gi-2 10gi-3 10gi-4
                     20gi-1 20gi-2 30gi-1 40gi-1 40gi-2;
@@ -1535,6 +1654,29 @@
   until: _r_create_referencegrant_for_gateway_to_acc is not failed
   no_log: true
 
+- name: Require unique public Gateway listener names
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          ['http', 'https']
+          + (
+            gateway_extra_https_listeners | default([])
+            | map(attribute='name') | list
+          )
+        ) | length
+        ==
+        (
+          ['http', 'https']
+          + (
+            gateway_extra_https_listeners | default([])
+            | map(attribute='name') | list
+          )
+        ) | unique | list | length
+    fail_msg: >-
+      kubernetes.gateway.extra_https_listeners must contain unique names and
+      must not duplicate the managed http or https listeners.
+
 - name: Create Cilium main Gateway
   kubernetes.core.k8s:
     state: present
@@ -1546,24 +1688,35 @@
         namespace: cilium-system
       spec:
         gatewayClassName: cilium
-        listeners:
-          - name: http
-            protocol: HTTP
-            port: 80
-            allowedRoutes:
-              namespaces:
-                from: All
-          - name: https
-            protocol: HTTPS
-            port: 443
-            tls:
-              mode: Terminate
-              certificateRefs:
-                - name: wildcard-tls
-                  namespace: gateway-secrets
-            allowedRoutes:
-              namespaces:
-                from: All
+        listeners: >-
+          {{
+            [
+              {
+                'name': 'http',
+                'protocol': 'HTTP',
+                'port': 80,
+                'allowedRoutes': {'namespaces': {'from': 'All'}}
+              },
+              {
+                'name': 'https',
+                'protocol': 'HTTPS',
+                'port': 443,
+                'tls': {
+                  'mode': 'Terminate',
+                  'certificateRefs':
+                    [{'name': 'wildcard-tls', 'namespace': 'gateway-secrets'}]
+                    + (gateway_extra_certificate_refs | default([]))
+                },
+                'allowedRoutes': {'namespaces': {'from': 'All'}}
+              }
+              | combine(
+                  {'hostname': gateway_https_hostname}
+                  if gateway_https_hostname | default('') | length > 0
+                  else {}
+                )
+            ]
+            + (gateway_extra_https_listeners | default([]))
+          }}
   when: k8s_create_external_tls | default(true) | bool
   register: _r_create_cilium_main_gateway
   retries: 3
@@ -1762,7 +1915,14 @@
   ansible.builtin.shell: |
     set -euo pipefail
     hcloud load-balancer describe {{ (project ~ '-lb') | quote }} -o json |
-      jq -e --argjson expected {{ ((worker_count | int) * 2) | quote }} '
+      jq -e --argjson expected {{
+        (
+          (
+            (worker_count | int)
+            - (1 if (dedicated_ci_worker_index | int) > 0 else 0)
+          ) * 2
+        ) | quote
+      }} '
         [ .targets[].health_status[]
           | select(.listen_port == 80 or .listen_port == 443) ] as $checks
         | ($checks | length) == $expected
@@ -3182,6 +3342,12 @@
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: production
+              # Restore drills run in disposable, isolated namespaces. Access is
+              # granted only when the platform drill explicitly applies this
+              # security label.
+              - namespaceSelector:
+                  matchLabels:
+                    backup-restore.io/drill: "true"
             ports:
               - protocol: TCP
                 port: 8333

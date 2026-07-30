@@ -2,7 +2,8 @@
 # PRODUCTION TIER - higher-availability platform footprint
 # ============================================
 # Best for: Selective critical HA with a small production resource envelope
-# Nodes: 6 x cpx42 16Gi-class nodes (3 masters, 3 workers) + cpx22 bastion + lb11
+# Nodes: 3 x cpx42 masters + 3 x cpx42 application workers
+#        + 1 x cpx42 isolated CI worker + cpx22 bastion + lb11
 # HA: Three-way control plane plus explicit quorum and selected workload replicas
 # Recovery: Gitaly, Grafana, and Coroot retain intentional
 # singleton boundaries and require backup-driven recovery. Elasticsearch data
@@ -19,7 +20,7 @@ tier: production
 # envelope used by medium-optimized. Critical replica counts are explicit below
 # so reducing reservations never silently reduces availability.
 resource_tier: small
-cost_estimate: "Current balanced tariff: 3 x cpx42 control plane, 3 x cpx42 workers, cpx22 bastion, lb11"
+cost_estimate: "Current balanced tariff: 3 x cpx42 control plane, 3 x cpx42 application workers, 1 x cpx42 isolated CI worker, cpx22 bastion, lb11"
 
 global:
   project: k8s
@@ -40,13 +41,14 @@ infrastructure:
     schedulable: false
 
   workers:
-    count: 3
+    count: 4
     type: cpx42
 
 # ---------------------------------------------
 # Network
 # ---------------------------------------------
 network:
+  ssh_source_ips: []
   bastion:
     enabled: true
     server_type: cpx22
@@ -144,6 +146,15 @@ gitlab:
     # Four concurrent jobs preserve scheduling and burst headroom for the
     # platform control workloads on three 16Gi workers.
     concurrent_jobs: 4
+    image_builder:
+      enabled: true
+      replicas: 1
+      concurrent_jobs: 1
+    docker_host:
+      enabled: true
+      replicas: 1
+      concurrent_jobs: 1
+      dedicated_worker_index: 4
 
 # ---------------------------------------------
 # GitOps

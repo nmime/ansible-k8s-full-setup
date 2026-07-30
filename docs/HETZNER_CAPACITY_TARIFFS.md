@@ -17,12 +17,19 @@ monthly totals.
 
 ## Telegram capacity monitor
 
-The stateful monitor checks every location whose provider-reported country is
-in the European Union. It tracks all three shapes required by the
+The stateful monitor checks only Hetzner's Helsinki location (`hel1`). It tracks
+all three shapes required by the
 `medium-optimized` CX mapping: `cx23` for the bastion, `cx33` for three control
 planes, and `cx43` for three workers. Telegram reports partial availability,
-complete deployable availability, and capacity loss. Each message lists the
-available and missing shapes plus the exact transition.
+complete availability, and capacity loss. Each message lists the available and
+missing shapes plus the exact transition.
+
+The protected Docker-in-Docker runner is a separate fourth worker. It can use
+an `infrastructure.node_type_overrides` entry without changing the 3+3
+application topology. During a CX shortage, `cpx32` is the production-safe
+x86 fallback; it is tainted, excluded from the load balancer and local-PV
+discovery, and can later be replaced one node at a time when CX capacity
+returns.
 
 Add the bot credentials to the protected, gitignored `.env`. The monitor can
 reuse the Alertmanager destination:
@@ -57,67 +64,10 @@ unchanged capacity is silent.
 The message includes the exact 3+3 target, available and missing shapes,
 infrastructure and volume split, local-claim reservation, and current net
 monthly total. A partial report is informational and is not permission to
-deploy. In its default notification-only mode, the monitor never creates,
-resizes, or deletes resources. Re-run the location-specific report and set
-`infrastructure.region` to the reported location before manual provisioning;
-availability can disappear between the notification and server creation.
-
-### Optional one-shot automatic deployment
-
-Automatic deployment is disabled by default. Enable it only after the protected
-`.env` contains `HCLOUD_TOKEN`, the DR credentials, the GitLab Runner token,
-and `ANSIBLE_VAULT_PASSWORD_FILE`:
-
-```dotenv
-CX_CAPACITY_AUTO_DEPLOY=true
-CX_CAPACITY_DEPLOY_PROJECT=n0xeid-medium-optimized-cx
-CX_CAPACITY_DEPLOY_DOMAIN=n0xeid.xyz
-CX_CAPACITY_DNS_ZONE=n0xeid.xyz
-CX_CAPACITY_MANAGE_DNS=true
-CX_CAPACITY_CERTIFICATE_ISSUER=letsencrypt-prod
-CX_CAPACITY_DEPLOY_RETRY_SECONDS=300
-CX_CAPACITY_DEPLOY_STALE_SECONDS=900
-```
-
-When a location becomes `COMPLETE`, the monitor selects one deterministic EU
-location and immediately performs a second authenticated capacity query. It
-does nothing if any required shape disappeared. If the second gate passes, it
-executes the equivalent of:
-
-```bash
-./run_tier.sh medium-optimized \
-  --campaign-id cx-auto \
-  --project n0xeid-medium-optimized-cx \
-  --domain n0xeid.xyz \
-  --location LOCATION \
-  --capacity-family cx \
-  --dns-zone n0xeid.xyz \
-  --certificate-issuer letsencrypt-prod \
-  --manage-dns
-```
-
-The location override is written into the generated desired-state profile and
-the campaign status. The stable project, run root, operator state, and playbook
-inputs make retries reconcile the same cluster instead of creating another
-one. State is marked `running`, `failed`, or `succeeded`; a successful
-deployment is never launched again. A failed attempt retries after the
-configured backoff. A persisted `running` attempt is not reclaimed until its
-stale timeout, which prevents a second scheduler process from racing an active
-campaign. Telegram receives start, failure, and success messages. Console
-output is retained in the protected campaign directory.
-
-This automation purchases billable cloud resources. Disabling the flag stops
-future starts but does not delete an existing cluster. Use the reviewed
-teardown workflow for deletion.
-
-`CX_CAPACITY_DEPLOY_DOMAIN=n0xeid.xyz` intentionally uses the zone apex. The
-Hetzner DNS role converges `@`, `*`, and `vpn` records, so the platform root is
-`n0xeid.xyz` and individual services use names below it. Before the first
-deployment, change this variable and `CX_CAPACITY_DNS_ZONE` freely and validate
-with `run_tier.sh --dry-run`. After deployment, changing the domain requires a
-planned migration of DNS records, certificates, Gateway/Ingress hosts, GitLab
-external URLs and callbacks, application configuration, and verification; it
-must not be treated as an in-place rename.
+deploy. The monitor is notification-only: it contains no provisioning path and
+never creates, resizes, or deletes resources. Re-run the `hel1` report before
+any separate manual provisioning because availability can disappear between
+the notification and server creation.
 
 ## Capacity tariff policy
 

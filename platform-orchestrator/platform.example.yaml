@@ -16,6 +16,9 @@ tier: small
 resource_tier: small
 
 network:
+  # Leave empty only in the template; deployment then requires the ignored
+  # HETZNER_SSH_SOURCE_IPS environment variable and rejects public CIDRs.
+  ssh_source_ips: []
   private_network:
     cidr: 10.0.0.0/16
     infrastructure: 10.0.0.0/24
@@ -165,6 +168,17 @@ gitlab:
   runner:
     enabled: true
     concurrent_jobs: 5
+    image_builder:
+      enabled: false
+      replicas: 1
+      concurrent_jobs: 1
+    docker_host:
+      enabled: false
+      replicas: 1
+      concurrent_jobs: 1
+      # When enabled, reserve this worker exclusively for the digest-pinned
+      # privileged DinD service. Increase infrastructure.workers.count first.
+      dedicated_worker_index: 0
 
 gitops:
   enabled: true

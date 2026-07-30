@@ -31,14 +31,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOKEN_RE = re.compile(
     r"^glrt-(?=.{16,}$)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$"
 )
-ENV_ASSIGNMENT_RE = re.compile(
-    r"^(?:export\s+)?GITLAB_RUNNER_TOKEN=(?P<value>.*)$", re.MULTILINE
-)
-YAML_KEY_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<key>gitlab_runner_token|['\"]gitlab_runner_token['\"])[ \t]*:"
-    r"(?P<raw>[^\n]*)$",
-    re.MULTILINE,
-)
 SIMPLE_YAML_SCALAR_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 
@@ -101,8 +93,26 @@ def require_secure_regular_file(path: Path, label: str) -> None:
         raise BootstrapError(f"{label} must have mode 0600 or stricter: {path}")
 
 
-def parse_env_token(content: str) -> str | None:
-    match = ENV_ASSIGNMENT_RE.search(content)
+def env_assignment_re(env_name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^(?:export\s+)?{re.escape(env_name)}=(?P<value>.*)$",
+        re.MULTILINE,
+    )
+
+
+def yaml_key_re(yaml_key: str) -> re.Pattern[str]:
+    escaped = re.escape(yaml_key)
+    return re.compile(
+        rf"^(?P<indent>[ \t]*)(?P<key>{escaped}|['\"]{escaped}['\"])[ \t]*:"
+        r"(?P<raw>[^\n]*)$",
+        re.MULTILINE,
+    )
+
+
+def parse_env_token(
+    content: str, env_name: str = "GITLAB_RUNNER_TOKEN"
+) -> str | None:
+    match = env_assignment_re(env_name).search(content)
     if not match:
         return None
     value = match.group("value").strip()
@@ -111,62 +121,81 @@ def parse_env_token(content: str) -> str | None:
     return value or None
 
 
-def inspect_yaml_token_assignment(content: str) -> tuple[re.Match[str] | None, str | None]:
-    matches = list(YAML_KEY_RE.finditer(content))
+def inspect_yaml_token_assignment(
+    content: str, yaml_key: str = "gitlab_runner_token"
+) -> tuple[re.Match[str] | None, str | None]:
+    matches = list(yaml_key_re(yaml_key).finditer(content))
     if len(matches) > 1:
-        raise BootstrapError("encrypted platform secrets contain duplicate gitlab_runner_token keys")
+        raise BootstrapError(
+            f"encrypted platform secrets contain duplicate {yaml_key} keys"
+        )
     if not matches:
         return None, None
 
     match = matches[0]
-    if match.group("indent") or match.group("key") != "gitlab_runner_token":
+    if match.group("indent") or match.group("key") != yaml_key:
         raise BootstrapError(
-            "gitlab_runner_token must be one unquoted top-level scalar assignment"
+            f"{yaml_key} must be one unquoted top-level scalar assignment"
         )
     raw = match.group("raw").rstrip("\r").strip()
     if not raw or raw in {"~", "null", "Null", "NULL"}:
         return match, None
     if raw[0] in "'\"":
         if len(raw) < 2 or raw[-1] != raw[0]:
-            raise BootstrapError("gitlab_runner_token has an unterminated quoted scalar")
+            raise BootstrapError(f"{yaml_key} has an unterminated quoted scalar")
         value = raw[1:-1]
         if raw[0] in value or "\\" in value:
-            raise BootstrapError("gitlab_runner_token uses unsupported YAML escaping")
+            raise BootstrapError(f"{yaml_key} uses unsupported YAML escaping")
         if value and not TOKEN_RE.fullmatch(value):
-            raise BootstrapError("gitlab_runner_token contains an invalid scalar token")
+            raise BootstrapError(f"{yaml_key} contains an invalid scalar token")
         return match, value or None
     if not SIMPLE_YAML_SCALAR_RE.fullmatch(raw):
-        raise BootstrapError("gitlab_runner_token must be a simple scalar, not a complex YAML value")
+        raise BootstrapError(
+            f"{yaml_key} must be a simple scalar, not a complex YAML value"
+        )
     if not TOKEN_RE.fullmatch(raw):
-        raise BootstrapError("gitlab_runner_token contains an invalid scalar token")
+        raise BootstrapError(f"{yaml_key} contains an invalid scalar token")
     return match, raw
 
 
-def parse_yaml_token(content: str) -> str | None:
-    _, value = inspect_yaml_token_assignment(content)
+def parse_yaml_token(
+    content: str, yaml_key: str = "gitlab_runner_token"
+) -> str | None:
+    _, value = inspect_yaml_token_assignment(content, yaml_key)
     return value
 
 
-def replace_env_token(content: str, token: str) -> str:
-    replacement = f"GITLAB_RUNNER_TOKEN='{token}'"
-    if ENV_ASSIGNMENT_RE.search(content):
-        return ENV_ASSIGNMENT_RE.sub(replacement, content, count=1)
+def replace_env_token(
+    content: str,
+    token: str,
+    env_name: str = "GITLAB_RUNNER_TOKEN",
+) -> str:
+    assignment = env_assignment_re(env_name)
+    replacement = f"{env_name}='{token}'"
+    if assignment.search(content):
+        return assignment.sub(replacement, content, count=1)
     separator = "" if not content or content.endswith("\n") else "\n"
     return f"{content}{separator}{replacement}\n"
 
 
-def replace_yaml_token(content: str, token: str) -> str:
+def replace_yaml_token(
+    content: str,
+    token: str,
+    yaml_key: str = "gitlab_runner_token",
+) -> str:
     if not TOKEN_RE.fullmatch(token):
         raise BootstrapError("refusing to persist an invalid GitLab Runner authentication token")
-    replacement = f'gitlab_runner_token: "{token}"'
-    match, _ = inspect_yaml_token_assignment(content)
+    replacement = f'{yaml_key}: "{token}"'
+    match, _ = inspect_yaml_token_assignment(content, yaml_key)
     if match:
         updated = f"{content[:match.start()]}{replacement}{content[match.end():]}"
     else:
         separator = "" if not content or content.endswith("\n") else "\n"
         updated = f"{content}{separator}{replacement}\n"
 
-    resulting_match, resulting_value = inspect_yaml_token_assignment(updated)
+    resulting_match, resulting_value = inspect_yaml_token_assignment(
+        updated, yaml_key
+    )
     if resulting_match is None or resulting_value != token:
         raise BootstrapError("failed to produce exactly one GitLab Runner token scalar")
     return updated
@@ -379,6 +408,9 @@ class KubernetesLeaseLock:
 class Bootstrapper:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
+        self.runner_tags = getattr(args, "runner_tags", "kubernetes,docker,k8s")
+        self.run_untagged = bool(getattr(args, "run_untagged", True))
+        self.access_level = getattr(args, "access_level", "not_protected")
         self.kubectl = ["kubectl", "--kubeconfig", str(args.kubeconfig), "-n", args.namespace]
 
     def toolbox_pod(self) -> str:
@@ -595,8 +627,9 @@ request['PRIVATE-TOKEN'] = {json.dumps(pat)}
 request.set_form_data(
   'runner_type' => 'instance_type',
   'description' => {json.dumps(self.args.runner_description)},
-  'tag_list' => 'kubernetes,docker,k8s',
-  'run_untagged' => 'true',
+  'tag_list' => {json.dumps(self.runner_tags)},
+  'run_untagged' => {json.dumps(str(self.run_untagged).lower())},
+  'access_level' => {json.dumps(self.access_level)},
   'paused' => 'false',
   'maintenance_note' => 'Managed by ansible-k8s-full-setup'
 )
@@ -701,8 +734,41 @@ def parse_args() -> argparse.Namespace:
         "--gitlab-internal-url",
         default="http://gitlab-webservice-default.gitlab.svc.cluster.local:8181",
     )
-    parser.add_argument("--runner-description", default="ansible-k8s-platform-runner")
-    return parser.parse_args()
+    parser.add_argument(
+        "--runner-kind",
+        choices=("standard", "image-builder", "docker-host"),
+        default="standard",
+    )
+    parser.add_argument("--runner-description")
+    args = parser.parse_args()
+    if args.runner_kind == "image-builder":
+        args.runner_description = (
+            args.runner_description or "ansible-k8s-protected-image-builder"
+        )
+        args.runner_tags = "image-build"
+        args.run_untagged = False
+        args.access_level = "ref_protected"
+        args.token_env_name = "GITLAB_IMAGE_BUILDER_RUNNER_TOKEN"
+        args.token_yaml_key = "gitlab_image_builder_runner_token"
+    elif args.runner_kind == "docker-host":
+        args.runner_description = (
+            args.runner_description or "ansible-k8s-protected-docker-host"
+        )
+        args.runner_tags = "docker-host"
+        args.run_untagged = False
+        args.access_level = "ref_protected"
+        args.token_env_name = "GITLAB_DOCKER_HOST_RUNNER_TOKEN"
+        args.token_yaml_key = "gitlab_docker_host_runner_token"
+    else:
+        args.runner_description = (
+            args.runner_description or "ansible-k8s-platform-runner"
+        )
+        args.runner_tags = "kubernetes,docker,k8s"
+        args.run_untagged = True
+        args.access_level = "not_protected"
+        args.token_env_name = "GITLAB_RUNNER_TOKEN"
+        args.token_yaml_key = "gitlab_runner_token"
+    return args
 
 
 def main() -> int:
@@ -732,7 +798,10 @@ def main() -> int:
             )
             candidates = {
                 token
-                for token in (parse_yaml_token(vault_plaintext), parse_env_token(env_content))
+                for token in (
+                    parse_yaml_token(vault_plaintext, args.token_yaml_key),
+                    parse_env_token(env_content, args.token_env_name),
+                )
                 if token and TOKEN_RE.fullmatch(token)
             }
 
@@ -767,9 +836,16 @@ def main() -> int:
             encrypt_secrets(
                 args.secrets_file,
                 args.vault_password_file,
-                replace_yaml_token(vault_plaintext, runner_token),
+                replace_yaml_token(
+                    vault_plaintext, runner_token, args.token_yaml_key
+                ),
             )
-            atomic_write(args.env_file, replace_env_token(env_content, runner_token))
+            atomic_write(
+                args.env_file,
+                replace_env_token(
+                    env_content, runner_token, args.token_env_name
+                ),
+            )
             bootstrap_lock.assert_held()
         print(f"GitLab {version}: {action}; encrypted secrets and ignored .env are synchronized.")
         print("The authentication token was not printed or passed in a command argument.")
