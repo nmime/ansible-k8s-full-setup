@@ -91,6 +91,27 @@ cd platform-orchestrator
 Disabling the selector does not remove GitLab. Enabling it after the token gate
 reconciles the separate Runner Helm release.
 
+## Protected Docker compatibility worker
+
+Jobs tagged `docker-host` use a separate protected runner identity. Set
+`gitlab.runner.docker_host.dedicated_worker_index` to a worker included in
+`infrastructure.workers.count`. The playbook:
+
+1. creates that server without public IP addresses and labels its provider role
+   `ci-worker`;
+2. adds a Kubernetes label plus a `NoSchedule` taint;
+3. excludes it from public load-balancer targets and local-PV discovery;
+4. pins the only allowed build image and DinD service by digest;
+5. strategically patches only the service container named `docker` as
+   privileged; and
+6. refuses runner reconciliation unless exactly one correctly tainted node
+   matches the configured worker index.
+
+The advanced PodSpec patch fails closed: changing the CI service alias means
+the expected `docker` container is not patched and the job cannot start DinD.
+Do not enable Kubernetes-executor-wide `privileged`; that would also privilege
+the build and helper containers. Keep `concurrent_jobs: 1` for this runner.
+
 ## Version compatibility
 
 The helper requires GitLab 17.1 through 19.x and fails closed outside that

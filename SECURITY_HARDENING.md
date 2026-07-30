@@ -16,6 +16,12 @@
   allowlists.
 - GitLab chart 10 uses explicit external PostgreSQL, Dragonfly, and object
   storage. Passwords are Kubernetes Secrets, not Helm literal values.
+- The protected Docker compatibility Runner never mounts a host Docker socket.
+  Its exact digest-pinned DinD service is the only privileged job container,
+  and it can schedule only on one label-selected, `NoSchedule`-tainted CI
+  worker. Build/helper containers remain non-privileged with RuntimeDefault
+  seccomp and dropped capabilities. The CI worker has no public IP, is not a
+  load-balancer target, and is excluded from local-PV discovery.
 - Elasticsearch uses the Basic license and verified TLS clients; no forged
   license artifact or paid-feature bypass is present.
 - External CLI/manifests changed by this audit are version pinned and verified
@@ -53,7 +59,11 @@ for the private/admin gateway. Review DNS and Gateway API resources after every
 change.
 
 The default bastion SSH source list is broad for bootstrap compatibility.
-Restrict `hetzner_ssh_source_ips` to operator/VPN CIDRs before production use.
+Public SSH is fail-closed. Set `network.ssh_source_ips`,
+`hetzner_ssh_source_ips`, or comma-separated `HETZNER_SSH_SOURCE_IPS` to
+operator/VPN CIDRs before provisioning. The infrastructure role rejects an
+empty list, `0.0.0.0/0`, and `::/0`; HTTP/HTTPS and VPN transport ports retain
+their independent public rules.
 
 ## Object-storage credential boundary
 

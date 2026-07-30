@@ -1,0 +1,305 @@
+---
+# Rootless BuildKit needs an Unconfined seccomp/AppArmor profile in the build
+# container. This is intentionally isolated from the general-purpose Runner:
+# separate protected GitLab identity, namespace, release, job tag, concurrency
+# limit, security context, and egress policy.
+
+- name: Image builder | Create the isolated namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ gitlab_image_builder_runner_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          workload.n0xeid.xyz/trust-boundary: protected-image-builds
+          # Restricted/baseline reject an explicitly Unconfined build
+          # container. Admission is privileged only in this namespace; the
+          # concrete manager/helper/job security contexts below remain narrow.
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+
+- name: Image builder | Establish the fail-closed network boundary
+  ansible.builtin.include_tasks: image-builder-network.yml
+
+- name: Image builder | Read the persisted Runner authentication token
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ gitlab_image_builder_runner_namespace }}'
+    name: platform-gitlab-image-builder-runner-auth
+  register: _gitlab_image_builder_auth_secret
+
+- name: Image builder | Resolve the persisted Runner token candidate
+  no_log: true
+  ansible.builtin.set_fact:
+    _gitlab_image_builder_auth_candidate: >-
+      {{
+        ((_gitlab_image_builder_auth_secret.resources | first).
+         data['runner-token'] | b64decode)
+        if (_gitlab_image_builder_auth_secret.resources |
+            default([]) | length) == 1
+        else ''
+      }}
+
+- name: Image builder | Verify the persisted Runner identity
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
+      kubectl exec -i --namespace "{{ gitlab_namespace }}" \
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
+          token=$(cat)
+          payload=$(printf \
+            "{\"token\":\"%s\",\"system_id\":\"s_ansible_image_builder\"}" \
+            "$token")
+          printf "%s" "$payload" |
+            curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners/verify
+        ')
+    test "$status" = 200
+  args:
+    executable: /bin/bash
+  environment:
+    GITLAB_RUNNER_TOKEN: '{{ _gitlab_image_builder_auth_candidate }}'
+  register: _gitlab_image_builder_auth_verification
+  changed_when: false
+  failed_when: false
+  when: _gitlab_image_builder_auth_candidate | length > 0
+
+- name: Image builder | Verify the declared Runner identity after drift
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
+      kubectl exec -i --namespace "{{ gitlab_namespace }}" \
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
+          token=$(cat)
+          payload=$(printf \
+            "{\"token\":\"%s\",\"system_id\":\"s_ansible_image_builder\"}" \
+            "$token")
+          printf "%s" "$payload" |
+            curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners/verify
+        ')
+    test "$status" = 200
+  args:
+    executable: /bin/bash
+  environment:
+    GITLAB_RUNNER_TOKEN: >-
+      {{ gitlab_image_builder_runner_token | string | trim }}
+  register: _gitlab_image_builder_declared_verification
+  changed_when: false
+  failed_when: false
+  when:
+    - (_gitlab_image_builder_auth_verification.rc |
+       default(1) | int) != 0
+
+- name: Image builder | Reject an invalid declared Runner identity
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - (_gitlab_image_builder_declared_verification.rc |
+         default(1) | int) == 0
+    fail_msg: >-
+      The persisted protected image-builder identity is stale and the declared
+      GITLAB_IMAGE_BUILDER_RUNNER_TOKEN is invalid. Rotate the protected
+      instance Runner and rerun the playbook.
+  when:
+    - (_gitlab_image_builder_auth_verification.rc |
+       default(1) | int) != 0
+
+- name: Image builder | Resolve the reconciled Runner token
+  no_log: true
+  ansible.builtin.set_fact:
+    _gitlab_image_builder_auth_token: >-
+      {{
+        _gitlab_image_builder_auth_candidate
+        if (_gitlab_image_builder_auth_verification.rc |
+            default(1) | int) == 0
+        else (gitlab_image_builder_runner_token | string | trim)
+      }}
+
+- name: Image builder | Persist the reconciled Runner token
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: platform-gitlab-image-builder-runner-auth
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      type: Opaque
+      stringData:
+        runner-token: '{{ _gitlab_image_builder_auth_token }}'
+
+- name: Image builder | Install the dedicated Runner release
+  no_log: true
+  kubernetes.core.helm:
+    name: gitlab-image-builder-runner
+    chart_ref: gitlab/gitlab-runner
+    chart_version: 0.91.0
+    release_namespace: '{{ gitlab_image_builder_runner_namespace }}'
+    create_namespace: false
+    release_state: present
+    force_conflicts: true
+    wait: true
+    values:
+      gitlabUrl: >-
+        http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
+      runnerToken: '{{ _gitlab_image_builder_auth_token }}'
+      replicas: '{{ gitlab_image_builder_runner_replicas | int }}'
+      concurrent: '{{ gitlab_image_builder_runner_concurrent | int }}'
+      checkInterval: 3
+      strategy:
+        rollingUpdate:
+          maxSurge: 1
+          maxUnavailable: 0
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: gitlab-image-builder-runner
+      podDisruptionBudget:
+        maxUnavailable: 0
+      metrics:
+        enabled: true
+      rbac:
+        create: true
+        clusterWideAccess: false
+      serviceAccount:
+        create: true
+      nodeSelector:
+        node-role.kubernetes.io/worker: 'true'
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        fsGroup: 65533
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      runners:
+        config: |
+          [[runners]]
+            clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
+            request_concurrency = 1
+            environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
+            [runners.kubernetes]
+              namespace = "{{ gitlab_image_builder_runner_namespace }}"
+              image = "ubuntu:22.04"
+              node_selector = { "node-role.kubernetes.io/worker" = "true" }
+              privileged = false
+              allow_privilege_escalation = false
+              cap_drop = ["ALL"]
+              automount_service_account_token = false
+              cpu_request = "1000m"
+              cpu_limit = "4000m"
+              memory_request = "2Gi"
+              memory_limit = "8Gi"
+              helper_cpu_request = "100m"
+              helper_cpu_limit = "500m"
+              helper_memory_request = "256Mi"
+              helper_memory_limit = "512Mi"
+              [runners.kubernetes.pod_security_context]
+                [runners.kubernetes.pod_security_context.seccomp_profile]
+                  type = "RuntimeDefault"
+              [runners.kubernetes.build_container_security_context]
+                allow_privilege_escalation = false
+                [runners.kubernetes.build_container_security_context.seccomp_profile]
+                  type = "Unconfined"
+              [runners.kubernetes.pod_labels]
+                "workload.n0xeid.xyz/class" = "protected-image-build-job"
+              [[runners.kubernetes.pod_spec]]
+                name = "buildkit-build-container-only-security-exception"
+                patch = '''
+                  containers:
+                    - name: build
+                      securityContext:
+                        allowPrivilegeEscalation: false
+                        appArmorProfile:
+                          type: Unconfined
+                        capabilities:
+                          drop:
+                            - ALL
+                        seccompProfile:
+                          type: Unconfined
+                '''
+                patch_type = "strategic"
+        tags: image-build
+        runUntagged: false
+      podLabels:
+        workload.n0xeid.xyz/class: protected-image-build-manager
+      podAnnotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9252'
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+  register: _r_install_gitlab_image_builder_runner
+  retries: 3
+  delay: 10
+  until: _r_install_gitlab_image_builder_runner is not failed
+
+- name: Image builder | Wait for the Runner deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ gitlab_image_builder_runner_namespace }}'
+    name: gitlab-image-builder-runner-gitlab-runner
+  register: _gitlab_image_builder_deployment
+  until: >-
+    ((_gitlab_image_builder_deployment.resources |
+      default([]) | length) == 1) and
+    (((_gitlab_image_builder_deployment.resources | first).
+      status.readyReplicas | default(0) | int) ==
+     ((_gitlab_image_builder_deployment.resources | first).
+      spec.replicas | int)) and
+    (((_gitlab_image_builder_deployment.resources | first).
+      status.updatedReplicas | default(0) | int) ==
+     ((_gitlab_image_builder_deployment.resources | first).
+      spec.replicas | int))
+  retries: 60
+  delay: 10
+
+- name: Image builder | Create manager metrics scrape
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMPodScrape
+      metadata:
+        name: gitlab-image-builder-runner
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-image-build-manager
+        podMetricsEndpoints:
+          - port: metrics
+            interval: 30s
+            path: /metrics
+  when: platform_observability_enabled | default(false) | bool

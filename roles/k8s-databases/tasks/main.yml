@@ -107,6 +107,43 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
+- name: Read the active SeaweedFS backup identity before reconciling database clients
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: seaweedfs-backup-credentials
+    namespace: storage
+  register: _active_seaweedfs_backup_identity
+  no_log: true
+  when:
+  - platform_backup_enabled | default(backup_enabled) | bool
+  - >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
+- name: Reject unilateral database backup credential rotation
+  ansible.builtin.assert:
+    that:
+    - (_active_seaweedfs_backup_identity.resources | default([])) | length == 1
+    - >-
+      _active_seaweedfs_backup_identity.resources[0].data.AWS_ACCESS_KEY_ID
+      | b64decode
+      == object_storage_backup_access_key
+    - >-
+      _active_seaweedfs_backup_identity.resources[0].data.AWS_SECRET_ACCESS_KEY
+      | b64decode
+      == object_storage_backup_secret_key
+    fail_msg: >-
+      The persisted database backup identity differs from the active SeaweedFS
+      backup identity. Refusing to rotate only PostgreSQL/MongoDB because that
+      would make every backup and restore fail. Reconcile the encrypted
+      project-scoped platform secret with storage/seaweedfs-backup-credentials,
+      then rerun the database component.
+  no_log: true
+  when:
+  - platform_backup_enabled | default(backup_enabled) | bool
+  - >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Create database alias bootstrap issuer
   kubernetes.core.k8s:
     state: present
@@ -1000,7 +1037,10 @@
           enabled: false
         backup:
           enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
-          image: percona/percona-backup-mongodb:2.13.0
+          # Allow scheduled backups to survive a brief operator or control-plane
+          # interruption instead of permanently missing the daily window.
+          startingDeadlineSeconds: '{{ mongodb_backup_starting_deadline_seconds | int }}'
+          image: '{{ mongodb_backup_image }}'
           resources: '{{ mongodb_backup_resources }}'
           storages:
             s3-object-storage:

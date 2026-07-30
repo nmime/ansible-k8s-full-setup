@@ -1,0 +1,172 @@
+---
+- name: Image builder | Create default-deny policy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Ingress, Egress]
+        ingress: []
+        egress: []
+
+- name: Image builder | Allow namespace-local DNS
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-dns
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - {port: 53, protocol: UDP}
+              - {port: 53, protocol: TCP}
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - {port: 53, protocol: UDP}
+              - {port: 53, protocol: TCP}
+
+- name: Image builder | Allow NodeLocal DNS in the Cilium policy plane
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-nodelocal-dns
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: kube-system
+                  k8s:k8s-app: kube-dns
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+          - toCIDR:
+              - 169.254.25.10/32
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+          - toEntities: [host]
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+
+- name: Image builder | Allow only internal GitLab control-plane traffic
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-gitlab
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_namespace }}'
+            ports:
+              - {port: 8181, protocol: TCP}
+              - {port: 5000, protocol: TCP}
+
+- name: Image builder | Allow manager access to Kubernetes API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-manager-kube-api
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-image-build-manager
+        egress:
+          - toEntities: [kube-apiserver]
+
+- name: Image builder | Allow audited HTTPS build dependencies
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-build-dependencies
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-image-build-job
+        egress:
+          - toFQDNs:
+              - {matchName: registry.n0xeid.xyz}
+              - {matchName: registry-1.docker.io}
+              - {matchName: auth.docker.io}
+              - {matchName: production.cloudflare.docker.com}
+              - {matchName: registry.npmjs.org}
+              - {matchName: dl-cdn.alpinelinux.org}
+              - {matchName: deb.debian.org}
+              - {matchName: security.debian.org}
+            toPorts:
+              - ports:
+                  - {port: '443', protocol: TCP}
+
+- name: Image builder | Allow VictoriaMetrics to scrape manager metrics
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-runner-metrics
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-image-build-manager
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: monitoring
+            toPorts:
+              - ports:
+                  - {port: '9252', protocol: TCP}
+  when: platform_observability_enabled | default(false) | bool

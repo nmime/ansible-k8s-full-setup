@@ -184,16 +184,52 @@
     \ -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \\\n  iptables -A FORWARD -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state RELATED,ESTABLISHED -j\
     \ ACCEPT\nmkdir -p /etc/iptables\niptables-save > /etc/iptables/rules.v4\nmkdir -p /etc/network/if-pre-up.d\nprintf '#!/bin/sh\\niptables-restore < /etc/iptables/rules.v4\\n' > /etc/network/if-pre-up.d/iptables\n\
     chmod +x /etc/network/if-pre-up.d/iptables\nREMOTECMD\n"
-- name: Add bastion as default route on private network
+- name: Read existing routes on the private network
   ansible.builtin.command:
-    cmd: 'hcloud network add-route {{ project }}-network --destination 0.0.0.0/0 --gateway {{ bastion_private_ip | default(''10.0.2.1'') }}
-
-      '
+    argv:
+      - hcloud
+      - network
+      - describe
+      - "{{ project }}-network"
+      - --output
+      - json
   delegate_to: localhost
   become: false
-  register: nat_route
-  changed_when: nat_route.rc == 0
-  failed_when: nat_route.rc != 0 and 'already' not in (nat_route.stderr | default('')) and 'exists' not in (nat_route.stderr | default('')) and 'route' not in (nat_route.stderr | default(''))
+  register: private_network_inventory
+  changed_when: false
+
+- name: Classify the bastion default route
+  ansible.builtin.set_fact:
+    bastion_default_route_exists: >-
+      {{
+        (
+          (private_network_inventory.stdout | from_json).routes | default([])
+          | selectattr('destination', 'equalto', '0.0.0.0/0')
+          | selectattr(
+              'gateway',
+              'equalto',
+              bastion_private_ip | default('10.0.2.1')
+            )
+          | list
+          | length
+        ) > 0
+      }}
+
+- name: Add bastion as default route on private network
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - network
+      - add-route
+      - "{{ project }}-network"
+      - --destination
+      - 0.0.0.0/0
+      - --gateway
+      - "{{ bastion_private_ip | default('10.0.2.1') }}"
+  delegate_to: localhost
+  become: false
+  when: not bastion_default_route_exists | bool
+  changed_when: true
 - name: Remove stale host keys only for nodes provisioned in this run
   ansible.builtin.command:
     argv:

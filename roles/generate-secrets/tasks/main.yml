@@ -114,12 +114,30 @@
     generated_gitlab_runner_token: >-
       {{ lookup('env', 'GITLAB_RUNNER_TOKEN') |
          default(saved_secrets.gitlab_runner_token | default(''), true) }}
+    generated_gitlab_image_builder_runner_token: >-
+      {{ lookup('env', 'GITLAB_IMAGE_BUILDER_RUNNER_TOKEN') |
+         default(
+           saved_secrets.gitlab_image_builder_runner_token | default(''),
+           true
+         ) }}
+    generated_gitlab_docker_host_runner_token: >-
+      {{ lookup('env', 'GITLAB_DOCKER_HOST_RUNNER_TOKEN') |
+         default(
+           saved_secrets.gitlab_docker_host_runner_token | default(''),
+           true
+         ) }}
   no_log: true
 
 - name: Require encrypted persistence for the GitLab Runner token
   ansible.builtin.assert:
     that:
       - not (platform_gitlab_runner_enabled | default(false) | bool) or
+        (vault_encrypt_secrets | default(true) | bool)
+      - not (platform_gitlab_image_builder_runner_enabled |
+             default(false) | bool) or
+        (vault_encrypt_secrets | default(true) | bool)
+      - not (platform_gitlab_docker_host_runner_enabled |
+             default(false) | bool) or
         (vault_encrypt_secrets | default(true) | bool)
     fail_msg: >-
       gitlab.runner.enabled=true requires vault_encrypt_secrets=true so the
@@ -138,6 +156,37 @@
       runner authentication token (glrt-...). Create an instance runner under
       GitLab Admin > CI/CD > Runners and rerun. Legacy registration tokens are
       intentionally unsupported; the Runner will not be silently omitted.
+    quiet: true
+
+- name: Require a modern authentication token for the protected image builder
+  ansible.builtin.assert:
+    that:
+      - not (platform_gitlab_image_builder_runner_enabled |
+             default(false) | bool) or
+        (generated_gitlab_image_builder_runner_token |
+         string | trim | length > 20 and
+         generated_gitlab_image_builder_runner_token | string is match(
+           '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'))
+    fail_msg: >-
+      gitlab.runner.image_builder.enabled=true requires
+      GITLAB_IMAGE_BUILDER_RUNNER_TOKEN from a protected instance runner tagged
+      only image-build with run_untagged=false. Legacy registration tokens and
+      reuse of the general-purpose Runner identity are forbidden.
+    quiet: true
+
+- name: Require a modern authentication token for protected Docker smoke jobs
+  ansible.builtin.assert:
+    that:
+      - not (platform_gitlab_docker_host_runner_enabled |
+             default(false) | bool) or
+        (generated_gitlab_docker_host_runner_token |
+         string | trim | length > 20 and
+         generated_gitlab_docker_host_runner_token | string is match(
+           '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'))
+    fail_msg: >-
+      gitlab.runner.docker_host.enabled=true requires
+      GITLAB_DOCKER_HOST_RUNNER_TOKEN from a protected instance runner tagged
+      only docker-host with run_untagged=false.
     quiet: true
 
 - name: Set unified secret variables for all roles
@@ -174,6 +223,10 @@
     postal_rails_secret: "{{ generated_postal_rails_secret }}"
     postal_admin_password: "{{ generated_postal_admin_password }}"
     gitlab_runner_token: "{{ generated_gitlab_runner_token }}"
+    gitlab_image_builder_runner_token: >-
+      {{ generated_gitlab_image_builder_runner_token }}
+    gitlab_docker_host_runner_token: >-
+      {{ generated_gitlab_docker_host_runner_token }}
     alert_telegram_bot_token: "{{ generated_alert_telegram_bot_token }}"
     alert_telegram_chat_id: "{{ generated_alert_telegram_chat_id }}"
     alert_email_to: "{{ generated_alert_email_to }}"
@@ -217,6 +270,8 @@
       postal_rails_secret: "{{ postal_rails_secret }}"
       postal_admin_password: "{{ postal_admin_password }}"
       gitlab_runner_token: "{{ gitlab_runner_token }}"
+      gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"
+      gitlab_docker_host_runner_token: "{{ gitlab_docker_host_runner_token }}"
       alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
       alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
       alert_email_to: "{{ alert_email_to }}"
@@ -267,6 +322,8 @@
           postal_rails_secret: "{{ postal_rails_secret }}"
           postal_admin_password: "{{ postal_admin_password }}"
           gitlab_runner_token: "{{ gitlab_runner_token }}"
+          gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"
+          gitlab_docker_host_runner_token: "{{ gitlab_docker_host_runner_token }}"
           alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
           alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
           alert_email_to: "{{ alert_email_to }}"
@@ -332,7 +389,7 @@
       - "  Platform Secrets Generated"
       - "============================================"
       - "  Secrets file: {{ secrets_file }}"
-      - "  Object storage user: {{ object_storage_access_key }}"
+      - "  Object storage credentials: configured"
       - "  Object storage password: ****"
       - "  Grafana user: {{ grafana_admin_user }}"
       - "  Grafana password: ****"
@@ -341,6 +398,8 @@
       - "  ES password: ****"
       - "  Postal admin: ****"
       - "  GitLab Runner token: {{ 'configured' if gitlab_runner_token | length > 0 else 'NOT SET' }}"
+      - "  GitLab image-builder Runner token: {{ 'configured' if gitlab_image_builder_runner_token | length > 0 else 'NOT SET' }}"
+      - "  GitLab Docker-smoke Runner token: {{ 'configured' if gitlab_docker_host_runner_token | length > 0 else 'NOT SET' }}"
       - "  Alert Telegram: {{ 'configured' if alert_telegram_bot_token | length > 0 else 'NOT SET (silent)' }}"
       - "  Alert email to: {{ alert_email_to }}"
       - "============================================"

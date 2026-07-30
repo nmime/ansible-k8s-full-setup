@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Notify Telegram when the complete medium-optimized CX mapping returns in the EU."""
+"""Notify Telegram when medium-optimized CX availability changes in Helsinki."""
 
 from __future__ import annotations
 
@@ -9,56 +9,28 @@ import html
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_STATE_FILE = ROOT / "platform-orchestrator" / ".state" / "cx-capacity-monitor.json"
-EU_COUNTRY_CODES = frozenset(
-    {
-        "AT",
-        "BE",
-        "BG",
-        "HR",
-        "CY",
-        "CZ",
-        "DE",
-        "DK",
-        "EE",
-        "ES",
-        "FI",
-        "FR",
-        "GR",
-        "HU",
-        "IE",
-        "IT",
-        "LT",
-        "LU",
-        "LV",
-        "MT",
-        "NL",
-        "PL",
-        "PT",
-        "RO",
-        "SE",
-        "SI",
-        "SK",
-    }
+DEFAULT_STATE_FILE = (
+    ROOT / "platform-orchestrator" / ".state" / "cx-capacity-monitor.json"
 )
+TARGET_LOCATION = "hel1"
 ROLE_ORDER = ("bastion", "control_plane", "worker")
 
 
 def load_capacity_report() -> Any:
     module_path = ROOT / "scripts" / "hetzner-capacity-report.py"
-    spec = importlib.util.spec_from_file_location("hetzner_capacity_report", module_path)
+    spec = importlib.util.spec_from_file_location(
+        "hetzner_capacity_report", module_path
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load Hetzner capacity report")
     module = importlib.util.module_from_spec(spec)
@@ -70,21 +42,19 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def eu_locations(document: dict[str, Any]) -> list[dict[str, str]]:
-    result: list[dict[str, str]] = []
+def helsinki_location(document: dict[str, Any]) -> dict[str, str]:
     for location in document.get("locations", []):
-        country = str(location.get("country", "")).upper()
         name = str(location.get("name", ""))
-        if country in EU_COUNTRY_CODES and name:
-            result.append(
-                {
-                    "name": name,
-                    "city": str(location.get("city", "")),
-                    "country": country,
-                    "network_zone": str(location.get("network_zone", "")),
-                }
-            )
-    return sorted(result, key=lambda item: item["name"])
+        if name == TARGET_LOCATION:
+            return {
+                "name": name,
+                "city": str(location.get("city", "")),
+                "country": str(location.get("country", "")).upper(),
+                "network_zone": str(location.get("network_zone", "")),
+            }
+    raise RuntimeError(
+        f"Hetzner API returned no location named {TARGET_LOCATION} (Helsinki)"
+    )
 
 
 def collect_snapshot(
@@ -98,50 +68,45 @@ def collect_snapshot(
     location_document = getter("locations?per_page=50", token, endpoint)
     server_document = getter("server_types?per_page=50", token, endpoint)
     pricing_document = getter("pricing", token, endpoint)
-    locations = eu_locations(location_document)
-    if not locations:
-        raise RuntimeError("Hetzner API returned no EU locations")
+    location = helsinki_location(location_document)
 
     pricing = pricing_document.get("pricing", {})
-    location_results: dict[str, dict[str, Any]] = {}
-    for location in locations:
-        name = location["name"]
-        catalog = report.normalize_catalog(server_document.get("server_types", []), name)
-        plans = report.build_plans(catalog, pricing, profiles_dir, name)
-        plan = next(
-            (
-                item
-                for item in plans
-                if item["profile"] == "medium-optimized" and item["family"] == "cx"
-            ),
-            None,
-        )
-        if plan is None:
-            raise RuntimeError("medium-optimized CX mapping is missing from capacity plans")
-        location_results[name] = {
-            **location,
-            "available": bool(plan["all_types_available"]),
-            "types": plan["types"],
-            "availability": plan["availability"],
-            "control_plane_count": plan["control_plane_count"],
-            "worker_count": plan["worker_count"],
-            "infrastructure_monthly_net": plan["infrastructure_monthly_net"],
-            "volume_gib": plan["volume_gib"],
-            "volume_monthly_net": plan["volume_monthly_net"],
-            "local_reserved_gib": plan["local_reserved_gib"],
-            "total_monthly_net": plan["total_monthly_net"],
-        }
-
-    complete = sorted(
-        name for name, location in location_results.items() if location["available"]
+    catalog = report.normalize_catalog(
+        server_document.get("server_types", []), TARGET_LOCATION
     )
+    plans = report.build_plans(catalog, pricing, profiles_dir, TARGET_LOCATION)
+    plan = next(
+        (
+            item
+            for item in plans
+            if item["profile"] == "medium-optimized" and item["family"] == "cx"
+        ),
+        None,
+    )
+    if plan is None:
+        raise RuntimeError("medium-optimized CX mapping is missing from capacity plans")
+    location_result = {
+        **location,
+        "available": bool(plan["all_types_available"]),
+        "types": plan["types"],
+        "availability": plan["availability"],
+        "control_plane_count": plan["control_plane_count"],
+        "worker_count": plan["worker_count"],
+        "infrastructure_monthly_net": plan["infrastructure_monthly_net"],
+        "volume_gib": plan["volume_gib"],
+        "volume_monthly_net": plan["volume_monthly_net"],
+        "local_reserved_gib": plan["local_reserved_gib"],
+        "total_monthly_net": plan["total_monthly_net"],
+    }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "checked_at": utc_now(),
         "profile": "medium-optimized",
         "family": "cx",
-        "complete_locations": complete,
-        "locations": location_results,
+        "complete_locations": (
+            [TARGET_LOCATION] if location_result["available"] else []
+        ),
+        "locations": {TARGET_LOCATION: location_result},
     }
 
 
@@ -179,8 +144,7 @@ def atomic_write_state(path: Path, state: dict[str, Any]) -> None:
 def availability_signature(snapshot: dict[str, Any]) -> dict[str, dict[str, bool]]:
     return {
         name: {
-            role: bool(location["availability"].get(role, False))
-            for role in ROLE_ORDER
+            role: bool(location["availability"].get(role, False)) for role in ROLE_ORDER
         }
         for name, location in sorted(snapshot["locations"].items())
     }
@@ -203,7 +167,7 @@ def build_message(
             types[role] for role in ROLE_ORDER if not location["availability"][role]
         ]
         if not missing_types:
-            status = "🟢 COMPLETE — deployable"
+            status = "🟢 COMPLETE — available"
         elif available_types:
             status = f"🟡 PARTIAL — {len(available_types)}/{len(ROLE_ORDER)} shapes"
         else:
@@ -261,7 +225,9 @@ def build_message(
     complete_locations = [
         name for name in changed_locations if snapshot["locations"][name]["available"]
     ]
-    first_location = complete_locations[0] if complete_locations else changed_locations[0]
+    first_location = (
+        complete_locations[0] if complete_locations else changed_locations[0]
+    )
     return "\n".join(
         [
             "📊 <b>Hetzner CX capacity changed</b>",
@@ -275,9 +241,8 @@ def build_message(
             "Inspect the current location report:",
             f"<code>./scripts/hetzner-capacity-report.sh --location "
             f"{html.escape(first_location)}</code>",
-            "Provision only when the location is COMPLETE. Then set "
-            "<code>infrastructure.region</code> to that location and use "
-            "<code>--capacity-family cx</code>. This monitor never provisions resources.",
+            "Notification only: this monitor contains no provisioning path and "
+            "never creates, resizes, or deletes resources.",
         ]
     )
 
@@ -292,278 +257,6 @@ def telegram_credentials() -> tuple[str, str]:
         os.environ.get("ALERT_TELEGRAM_CHAT_ID", ""),
     )
     return token, chat_id
-
-
-def env_enabled(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise RuntimeError(f"{name} must be true or false")
-
-
-def deployment_settings() -> dict[str, Any]:
-    project = os.environ.get(
-        "CX_CAPACITY_DEPLOY_PROJECT", "n0xeid-medium-optimized-cx"
-    )
-    run_root = Path(
-        os.environ.get(
-            "CX_CAPACITY_DEPLOY_RUN_ROOT",
-            str(ROOT / ".campaign-state" / project / "controller"),
-        )
-    ).expanduser()
-    if not run_root.is_absolute():
-        raise RuntimeError("CX_CAPACITY_DEPLOY_RUN_ROOT must be absolute")
-    try:
-        retry_seconds = int(
-            os.environ.get("CX_CAPACITY_DEPLOY_RETRY_SECONDS", "300")
-        )
-        stale_seconds = int(
-            os.environ.get("CX_CAPACITY_DEPLOY_STALE_SECONDS", "900")
-        )
-    except ValueError as exc:
-        raise RuntimeError(
-            "CX capacity deployment retry/stale intervals must be integers"
-        ) from exc
-    return {
-        "project": project,
-        "domain": os.environ.get(
-            "CX_CAPACITY_DEPLOY_DOMAIN", "n0xeid.xyz"
-        ),
-        "dns_zone": os.environ.get("CX_CAPACITY_DNS_ZONE", "n0xeid.xyz"),
-        "certificate_issuer": os.environ.get(
-            "CX_CAPACITY_CERTIFICATE_ISSUER", "letsencrypt-prod"
-        ),
-        "manage_dns": env_enabled("CX_CAPACITY_MANAGE_DNS", True),
-        "run_root": run_root,
-        "retry_seconds": retry_seconds,
-        "stale_seconds": stale_seconds,
-    }
-
-
-def build_deploy_command(location: str, settings: dict[str, Any]) -> list[str]:
-    run_root = settings["run_root"]
-    command = [
-        str(ROOT / "run_tier.sh"),
-        "medium-optimized",
-        "--campaign-id",
-        "cx-auto",
-        "--project",
-        settings["project"],
-        "--domain",
-        settings["domain"],
-        "--location",
-        location,
-        "--run-root",
-        str(run_root),
-        "--config",
-        str(run_root / "platform.yaml"),
-        "--log-file",
-        str(run_root / "logs" / "deploy.log"),
-        "--capacity-family",
-        "cx",
-        "--dns-zone",
-        settings["dns_zone"],
-        "--certificate-issuer",
-        settings["certificate_issuer"],
-    ]
-    if settings["manage_dns"]:
-        command.append("--manage-dns")
-    return command
-
-
-def execute_deploy(command: list[str], log_path: Path) -> int:
-    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(log_path.parent, 0o700)
-    with log_path.open("a", encoding="utf-8") as stream:
-        os.chmod(log_path, 0o600)
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
-    return completed.returncode
-
-
-def deployment_message(
-    status: str,
-    location: str,
-    settings: dict[str, Any],
-    *,
-    exit_code: int | None = None,
-    log_path: Path | None = None,
-) -> str:
-    icons = {"running": "🚀", "succeeded": "✅", "failed": "❌"}
-    lines = [
-        f"{icons[status]} <b>CX medium-optimized deployment {html.escape(status)}</b>",
-        f"Location: <code>{html.escape(location)}</code>",
-        f"Project: <code>{html.escape(settings['project'])}</code>",
-        f"Domain: <code>{html.escape(settings['domain'])}</code>",
-    ]
-    if exit_code is not None:
-        lines.append(f"Exit code: <code>{exit_code}</code>")
-    if log_path is not None:
-        lines.append(f"Log: <code>{html.escape(str(log_path))}</code>")
-    return "\n".join(lines)
-
-
-def parse_state_time(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
-def maybe_auto_deploy(
-    snapshot: dict[str, Any],
-    state_file: Path,
-    token: str,
-    chat_id: str,
-    *,
-    notify: Callable[[str, str, str], None] | None = None,
-    executor: Callable[[list[str], Path], int] = execute_deploy,
-    recheck: Callable[[], dict[str, Any]] | None = None,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    notify = notify or send_telegram
-    if not env_enabled("CX_CAPACITY_AUTO_DEPLOY", False):
-        return {"enabled": False, "triggered": False}
-    settings = deployment_settings()
-    if settings["retry_seconds"] < 60:
-        raise RuntimeError("CX_CAPACITY_DEPLOY_RETRY_SECONDS must be at least 60")
-    if settings["stale_seconds"] < 60:
-        raise RuntimeError("CX_CAPACITY_DEPLOY_STALE_SECONDS must be at least 60")
-    complete_locations = list(snapshot["complete_locations"])
-    if not complete_locations:
-        return {"enabled": True, "triggered": False, "reason": "no-complete-location"}
-
-    current_time = now or datetime.now(timezone.utc)
-    state = read_state(state_file)
-    deployment = state.get("deployment", {})
-    if deployment.get("status") == "succeeded":
-        return {
-            "enabled": True,
-            "triggered": False,
-            "reason": "already-succeeded",
-            "location": deployment.get("location"),
-        }
-    running_updated = parse_state_time(deployment.get("updated_at"))
-    if (
-        deployment.get("status") == "running"
-        and running_updated is not None
-        and current_time
-        < running_updated + timedelta(seconds=settings["stale_seconds"])
-    ):
-        return {
-            "enabled": True,
-            "triggered": False,
-            "reason": "deployment-running",
-            "location": deployment.get("location"),
-        }
-    next_retry = parse_state_time(deployment.get("next_retry_at"))
-    if (
-        deployment.get("status") == "failed"
-        and next_retry is not None
-        and current_time < next_retry
-    ):
-        return {
-            "enabled": True,
-            "triggered": False,
-            "reason": "retry-backoff",
-            "location": deployment.get("location"),
-        }
-
-    previous_location = str(deployment.get("location", ""))
-    location = (
-        previous_location
-        if previous_location in complete_locations
-        else sorted(complete_locations)[0]
-    )
-    if recheck is not None:
-        refreshed = recheck()
-        if location not in refreshed["complete_locations"]:
-            return {
-                "enabled": True,
-                "triggered": False,
-                "reason": "capacity-disappeared-on-recheck",
-                "location": location,
-            }
-
-    run_root = settings["run_root"]
-    console_log = run_root / "logs" / "auto-deploy-console.log"
-    command = build_deploy_command(location, settings)
-    attempts = int(deployment.get("attempts", 0)) + 1
-    started_at = current_time.replace(microsecond=0).isoformat()
-    state["deployment"] = {
-        "status": "running",
-        "location": location,
-        "project": settings["project"],
-        "domain": settings["domain"],
-        "attempts": attempts,
-        "started_at": started_at,
-        "updated_at": started_at,
-        "command": command,
-        "console_log": str(console_log),
-    }
-    atomic_write_state(state_file, state)
-    notify(
-        token,
-        chat_id,
-        deployment_message("running", location, settings, log_path=console_log),
-    )
-    execution_error = None
-    try:
-        exit_code = executor(command, console_log)
-    except OSError as exc:
-        exit_code = 127
-        execution_error = f"{type(exc).__name__}: {exc}"
-
-    finished_at = datetime.now(timezone.utc).replace(microsecond=0)
-    state = read_state(state_file)
-    final_status = "succeeded" if exit_code == 0 else "failed"
-    deployment = {
-        **state.get("deployment", {}),
-        "status": final_status,
-        "exit_code": exit_code,
-        "finished_at": finished_at.isoformat(),
-        "updated_at": finished_at.isoformat(),
-    }
-    if exit_code != 0:
-        deployment["next_retry_at"] = (
-            finished_at + timedelta(seconds=settings["retry_seconds"])
-        ).isoformat()
-    if execution_error is not None:
-        deployment["execution_error"] = execution_error
-    state["deployment"] = deployment
-    atomic_write_state(state_file, state)
-    notify(
-        token,
-        chat_id,
-        deployment_message(
-            final_status,
-            location,
-            settings,
-            exit_code=exit_code,
-            log_path=console_log,
-        ),
-    )
-    return {
-        "enabled": True,
-        "triggered": True,
-        "status": final_status,
-        "location": location,
-        "exit_code": exit_code,
-    }
 
 
 def send_telegram(
@@ -633,7 +326,9 @@ def reconcile(
         # Schema-v1 states only tracked complete placement. On migration, send
         # one current snapshot for locations with any required CX shape.
         changed_locations = sorted(
-            name for name, availability in signature.items() if any(availability.values())
+            name
+            for name, availability in signature.items()
+            if any(availability.values())
         )
     notification_sent = False
     message = (
@@ -660,8 +355,6 @@ def reconcile(
             else previous.get("last_notification_at")
         ),
     }
-    if isinstance(previous.get("deployment"), dict):
-        state["deployment"] = previous["deployment"]
     if not dry_run:
         atomic_write_state(state_file, state)
     return {
@@ -676,7 +369,9 @@ def reconcile(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Notify Telegram when medium-optimized CX capacity returns in the EU."
+        description=(
+            "Notify Telegram when medium-optimized CX availability changes in Helsinki."
+        )
     )
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
     parser.add_argument(
@@ -733,9 +428,7 @@ def main() -> int:
         with lock_path.open("a+", encoding="utf-8") as lock:
             os.chmod(lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            snapshot = collect_snapshot(
-                hcloud_token, args.endpoint, args.profiles_dir
-            )
+            snapshot = collect_snapshot(hcloud_token, args.endpoint, args.profiles_dir)
             result = reconcile(
                 snapshot,
                 args.state_file,
@@ -743,16 +436,6 @@ def main() -> int:
                 chat_id,
                 dry_run=args.dry_run,
             )
-            if not args.dry_run:
-                result["deployment"] = maybe_auto_deploy(
-                    snapshot,
-                    args.state_file,
-                    token,
-                    chat_id,
-                    recheck=lambda: collect_snapshot(
-                        hcloud_token, args.endpoint, args.profiles_dir
-                    ),
-                )
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

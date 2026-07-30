@@ -7,6 +7,34 @@ DEFAULTS_PATH = os.path.join(REPO_ROOT, "defaults", "main.yml")
 GENERATE_SECRETS_PATH = os.path.join(
     REPO_ROOT, "roles", "generate-secrets", "tasks", "main.yml"
 )
+IMAGE_BUILDER_TASKS_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "image-builder-runner.yml",
+)
+IMAGE_BUILDER_NETWORK_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "image-builder-network.yml",
+)
+DOCKER_HOST_TASKS_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "docker-host-runner.yml",
+)
+DOCKER_HOST_NETWORK_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "docker-host-network.yml",
+)
 
 def read(path):
     with open(path) as f:
@@ -390,13 +418,15 @@ class TestChart10ValuesStructure:
         assert "platform-gitlab-runner-auth" in bootstrap
         assert "/api/v4/runners/verify" in bootstrap
         assert "s_ansible_k8s_reconcile" in bootstrap
-        assert "/api/v4/runners" in bootstrap
-        assert "gitlab-gitlab-runner-secret" in bootstrap
-        assert "'runner-registration-token'] | b64decode" in bootstrap
-        assert "GITLAB_RUNNER_REGISTRATION_TOKEN" in bootstrap
+        assert "Verify the declared GitLab Runner identity after persisted-token drift" in bootstrap
+        assert "Reject an invalid declared GitLab Runner identity" in bootstrap
+        assert "gitlab_runner_token | string | trim" in bootstrap
+        assert "legacy registration-token bootstrap" in bootstrap
+        assert "gitlab-gitlab-runner-secret" not in bootstrap
+        assert "GITLAB_RUNNER_REGISTRATION_TOKEN" not in bootstrap
         assert "deployment/gitlab-toolbox -c toolbox" in bootstrap
         assert "runner-token: '{{ _gitlab_runner_auth_token }}'" in bootstrap
-        assert bootstrap.count("no_log: true") >= 8
+        assert bootstrap.count("no_log: true") >= 6
 
         secrets = read(GENERATE_SECRETS_PATH)
         resolution = secrets.split("- name: Resolve GitLab Runner authentication token", 1)[
@@ -437,6 +467,267 @@ class TestChart10ValuesStructure:
         assert "readyReplicas" in converge["until"]
         assert "availableReplicas" in converge["until"]
         assert "updatedReplicas" in converge["until"]
+
+    def test_image_builder_exception_is_isolated_and_fail_closed(self):
+        assert "include_tasks: image-builder-runner.yml" in self.content
+        assert "when: gitlab_image_builder_runner_enabled | bool" in self.content
+        gate = self.content.split(
+            "- name: Require a dedicated protected image-builder Runner identity",
+            1,
+        )[1].split("- name: Create GitLab namespace", 1)[0]
+        assert "gitlab_image_builder_runner_token" in gate
+        assert "gitlab_runner_token" in gate
+        assert "gitlab_image_builder_runner_concurrent | int == 1" in gate
+        assert "no_log: true" in gate
+
+        builder = read(IMAGE_BUILDER_TASKS_PATH)
+        tasks = yaml.safe_load(builder)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Image builder | Install the dedicated Runner release"
+        )
+        values = install["kubernetes.core.helm"]["values"]
+        config = values["runners"]["config"]
+        assert values["concurrent"] == (
+            "{{ gitlab_image_builder_runner_concurrent | int }}"
+        )
+        assert values["runners"]["tags"] == "image-build"
+        assert values["runners"]["runUntagged"] is False
+        assert values["rbac"]["clusterWideAccess"] is False
+        assert values["podSecurityContext"]["seccompProfile"]["type"] == (
+            "RuntimeDefault"
+        )
+        assert values["securityContext"]["allowPrivilegeEscalation"] is False
+        assert "app" not in values["podLabels"]
+        assert 'privileged = false' in config
+        assert 'automount_service_account_token = false' in config
+        assert (
+            "[runners.kubernetes.build_container_security_context]" in config
+        )
+        assert 'type = "Unconfined"' in config
+        assert (
+            'name = "buildkit-build-container-only-security-exception"' in config
+        )
+        assert "name: build" in config
+        assert "appArmorProfile:" in config
+        assert 'workload.n0xeid.xyz/class" = "protected-image-build-job"' in config
+        assert "service_container_security_context" not in config
+        assert "helper_container_security_context" not in config
+        assert install["no_log"] is True
+        converge = next(
+            task
+            for task in tasks
+            if task.get("name") == "Image builder | Wait for the Runner deployment"
+        )
+        assert converge["kubernetes.core.k8s_info"]["name"] == (
+            "gitlab-image-builder-runner-gitlab-runner"
+        )
+
+        namespace = next(
+            task
+            for task in tasks
+            if task.get("name") == "Image builder | Create the isolated namespace"
+        )["kubernetes.core.k8s"]["definition"]
+        labels = namespace["metadata"]["labels"]
+        assert labels["pod-security.kubernetes.io/enforce"] == "privileged"
+        assert labels["pod-security.kubernetes.io/audit"] == "restricted"
+        assert labels["pod-security.kubernetes.io/warn"] == "restricted"
+
+        network = read(IMAGE_BUILDER_NETWORK_PATH)
+        assert (
+            "Establish the fail-closed network boundary" in builder
+            and builder.index("Establish the fail-closed network boundary")
+            < builder.index("Install the dedicated Runner release")
+        )
+        policies = {
+            task["name"]: task
+            for task in yaml.safe_load(network)
+            if "kubernetes.core.k8s" in task
+            and task["kubernetes.core.k8s"].get("definition", {}).get("kind")
+            in {"NetworkPolicy", "CiliumNetworkPolicy"}
+        }
+        assert "Image builder | Create default-deny policy" in policies
+        dns_policy = policies["Image builder | Allow namespace-local DNS"][
+            "kubernetes.core.k8s"
+        ]["definition"]
+        assert {"ipBlock": {"cidr": "169.254.25.10/32"}} in (
+            dns_policy["spec"]["egress"][1]["to"]
+        )
+        cilium_dns = policies[
+            "Image builder | Allow NodeLocal DNS in the Cilium policy plane"
+        ]["kubernetes.core.k8s"]["definition"]
+        assert cilium_dns["spec"]["egress"][1]["toCIDR"] == [
+            "169.254.25.10/32"
+        ]
+        assert cilium_dns["spec"]["egress"][2]["toEntities"] == ["host"]
+        for dns_egress in cilium_dns["spec"]["egress"]:
+            assert dns_egress["toPorts"][0]["rules"]["dns"] == [
+                {"matchPattern": "*"}
+            ]
+        dependency_policy = policies[
+            "Image builder | Allow audited HTTPS build dependencies"
+        ]["kubernetes.core.k8s"]["definition"]
+        fqdn_rule = dependency_policy["spec"]["egress"][0]
+        assert fqdn_rule["toPorts"] == [
+            {"ports": [{"port": "443", "protocol": "TCP"}]}
+        ]
+        allowed = {
+            item["matchName"]
+            for item in fqdn_rule["toFQDNs"]
+        }
+        assert {
+            "registry.n0xeid.xyz",
+            "registry-1.docker.io",
+            "auth.docker.io",
+            "production.cloudflare.docker.com",
+            "registry.npmjs.org",
+            "dl-cdn.alpinelinux.org",
+            "deb.debian.org",
+            "security.debian.org",
+        } == allowed
+
+        secrets = read(GENERATE_SECRETS_PATH)
+        assert "GITLAB_IMAGE_BUILDER_RUNNER_TOKEN" in secrets
+        assert "saved_secrets.gitlab_image_builder_runner_token" in secrets
+        assert secrets.count(
+            'gitlab_image_builder_runner_token: '
+            '"{{ gitlab_image_builder_runner_token }}"'
+        ) == 2
+
+    def test_docker_smoke_privilege_is_service_only_and_digest_pinned(self):
+        assert "include_tasks: docker-host-runner.yml" in self.content
+        assert "when: gitlab_docker_host_runner_enabled | bool" in self.content
+        gate = self.content.split(
+            "- name: Require a dedicated protected Docker-smoke Runner identity",
+            1,
+        )[1].split("- name: Create GitLab namespace", 1)[0]
+        assert "gitlab_docker_host_runner_token" in gate
+        assert "gitlab_runner_token" in gate
+        assert "gitlab_image_builder_runner_token" in gate
+        assert "gitlab_docker_host_runner_concurrent | int == 1" in gate
+        assert "gitlab_docker_host_runner_worker_index | int > 0" in gate
+        assert "no_log: true" in gate
+
+        runner = read(DOCKER_HOST_TASKS_PATH)
+        network = read(DOCKER_HOST_NETWORK_PATH)
+        tasks = yaml.safe_load(runner)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Docker smoke | Install the dedicated Runner release"
+        )
+        values = install["kubernetes.core.helm"]["values"]
+        config = values["runners"]["config"]
+        dind = (
+            "docker.io/library/docker:27.5.1-dind@sha256:"
+            "aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+        )
+        node = (
+            "docker.io/library/node:24.18.0-alpine@sha256:"
+            "a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd"
+        )
+        assert values["concurrent"] == (
+            "{{ gitlab_docker_host_runner_concurrent | int }}"
+        )
+        assert values["runners"]["tags"] == "docker-host"
+        assert values["runners"]["runUntagged"] is False
+        assert values["rbac"]["clusterWideAccess"] is False
+        assert "app" not in values["podLabels"]
+        assert 'privileged = false' in config
+        assert "services_privileged" not in config
+        assert "allowed_privileged_services" not in config
+        assert f'allowed_services = ["{dind}"]' in config
+        assert f'allowed_images = ["{node}"]' in config
+        assert (
+            'node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }'
+            in config
+        )
+        assert (
+            'node_tolerations = { '
+            '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }'
+            in config
+        )
+        assert "host_path" not in config
+        assert "/var/run/docker.sock" not in config
+        assert "name: build" in config
+        assert "name: helper" in config
+        assert "name: docker" in config
+        assert "privileged: true" in config
+        assert "allowPrivilegeEscalation: true" in config
+        assert "type: Unconfined" in config
+        assert config.count("type: RuntimeDefault") == 2
+        assert config.count("privileged: true") == 1
+        assert install["no_log"] is True
+        worker_gate = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Docker smoke | Enforce the dedicated CI worker boundary"
+        )
+        assert "NoSchedule-tainted CI node" in worker_gate["ansible.builtin.assert"][
+            "fail_msg"
+        ]
+        converge = next(
+            task
+            for task in tasks
+            if task.get("name") == "Docker smoke | Wait for the Runner deployment"
+        )
+        assert converge["kubernetes.core.k8s_info"]["name"] == (
+            "gitlab-docker-host-runner-gitlab-runner"
+        )
+
+        namespace = next(
+            task
+            for task in tasks
+            if task.get("name") == "Docker smoke | Create the isolated namespace"
+        )["kubernetes.core.k8s"]["definition"]
+        assert (
+            namespace["metadata"]["labels"][
+                "pod-security.kubernetes.io/enforce"
+            ]
+            == "privileged"
+        )
+        assert (
+            "Establish the fail-closed network boundary" in runner
+            and runner.index("Establish the fail-closed network boundary")
+            < runner.index("Install the dedicated Runner release")
+        )
+        assert "Docker smoke | Create default-deny policy" in network
+        docker_policies = {
+            task["name"]: task
+            for task in yaml.safe_load(network)
+            if "kubernetes.core.k8s" in task
+        }
+        dns_policy = docker_policies[
+            "Docker smoke | Allow namespace-local DNS"
+        ]["kubernetes.core.k8s"]["definition"]
+        assert {"ipBlock": {"cidr": "169.254.25.10/32"}} in (
+            dns_policy["spec"]["egress"][1]["to"]
+        )
+        cilium_dns = docker_policies[
+            "Docker smoke | Allow NodeLocal DNS in the Cilium policy plane"
+        ]["kubernetes.core.k8s"]["definition"]
+        assert cilium_dns["spec"]["egress"][1]["toCIDR"] == [
+            "169.254.25.10/32"
+        ]
+        assert cilium_dns["spec"]["egress"][2]["toEntities"] == ["host"]
+        for dns_egress in cilium_dns["spec"]["egress"]:
+            assert dns_egress["toPorts"][0]["rules"]["dns"] == [
+                {"matchPattern": "*"}
+            ]
+        assert "workload.n0xeid.xyz/class: protected-docker-smoke-job" in network
+        assert "port: '443'" in network
+
+        secrets = read(GENERATE_SECRETS_PATH)
+        assert "GITLAB_DOCKER_HOST_RUNNER_TOKEN" in secrets
+        assert "saved_secrets.gitlab_docker_host_runner_token" in secrets
+        assert secrets.count(
+            'gitlab_docker_host_runner_token: '
+            '"{{ gitlab_docker_host_runner_token }}"'
+        ) == 2
 
     @pytest.mark.component
     def test_gitlab_shell_configured(self):

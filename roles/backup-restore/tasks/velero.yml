@@ -1,11 +1,52 @@
 ---
+- name: "Backup-DR | Classify the external disaster-recovery endpoint"
+  ansible.builtin.set_fact:
+    backup_dr_storage_hostname: "{{ backup_dr_storage_endpoint | urlsplit('hostname') }}"
+    backup_dr_storage_port: >-
+      {{ backup_dr_storage_endpoint | urlsplit('port') |
+         default(443 if (backup_dr_storage_endpoint | urlsplit('scheme')) == 'https' else 80, true) }}
+    backup_dr_storage_is_literal_ip: >-
+      {{
+        (backup_dr_storage_endpoint | urlsplit('hostname') | default('', true))
+        is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+      }}
+
+- name: "Backup-DR | Detect a literal endpoint collision with protected-cluster addresses"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl get nodes,pods,services --all-namespaces -o json |
+      jq --arg endpoint "$BACKUP_DR_HOST" '
+        [
+          .items[] |
+          (.status.addresses[]?.address // empty),
+          (.status.podIP // empty),
+          (.status.podIPs[]?.ip // empty),
+          (.spec.clusterIP // empty),
+          (.spec.clusterIPs[]? // empty),
+          (.status.loadBalancer.ingress[]?.ip // empty)
+        ] |
+        map(select(. == $endpoint)) |
+        length'
+  args:
+    executable: /bin/bash
+  environment:
+    BACKUP_DR_HOST: "{{ backup_dr_storage_hostname }}"
+  register: backup_dr_cluster_address_collisions
+  changed_when: false
+  when: backup_dr_storage_is_literal_ip | bool
+
 - name: "Backup-DR | Reject an in-cluster disaster-recovery target"
   ansible.builtin.assert:
     that:
       - backup_dr_storage_endpoint | length > 0
       - (backup_dr_storage_endpoint | urlsplit('scheme')) in ['http', 'https']
       - (backup_dr_storage_endpoint | urlsplit('hostname') | default('', true)) | length > 0
-      - (backup_dr_storage_endpoint | urlsplit('hostname')) is not match('^[0-9]{1,3}(\\.[0-9]{1,3}){3}$')
+      - >-
+        not (backup_dr_storage_is_literal_ip | bool)
+        or (backup_dr_allow_literal_ip_endpoint | bool)
+      - >-
+        not (backup_dr_storage_is_literal_ip | bool)
+        or (backup_dr_cluster_address_collisions.stdout | default('1') | int) == 0
       - "':' not in (backup_dr_storage_endpoint | urlsplit('hostname'))"
       - "'.svc' not in backup_dr_storage_endpoint"
       - "'seaweedfs' not in backup_dr_storage_endpoint"
@@ -15,16 +56,20 @@
     fail_msg: >-
       Full-cluster recovery requires an external S3-compatible target and
       independently supplied BACKUP_DR_ACCESS_KEY/BACKUP_DR_SECRET_KEY.
-      The protected cluster's SeaweedFS endpoint is not a disaster-recovery
-      destination.
+      A literal IPv4 endpoint additionally requires
+      BACKUP_DR_ALLOW_LITERAL_IP=true and must not collide with any protected
+      cluster node, Pod, Service, or load-balancer address. The protected
+      cluster's SeaweedFS endpoint is never a disaster-recovery destination.
   no_log: true
 
-- name: "Backup-DR | Resolve the bounded object-storage network destination"
+- name: "Backup-DR | Resolve the bounded object-storage DNS policy"
   ansible.builtin.set_fact:
-    backup_dr_storage_hostname: "{{ backup_dr_storage_endpoint | urlsplit('hostname') }}"
-    backup_dr_storage_port: >-
-      {{ backup_dr_storage_endpoint | urlsplit('port') |
-         default(443 if (backup_dr_storage_endpoint | urlsplit('scheme')) == 'https' else 80, true) }}
+    backup_dr_storage_dns_rules: >-
+      {{
+        [{'matchPattern': '*'}]
+        if (backup_dr_storage_is_literal_ip | bool)
+        else [{'matchName': backup_dr_storage_hostname}]
+      }}
 
 - name: "Backup-DR | Create privileged Velero namespace"
   kubernetes.core.k8s:
@@ -287,8 +332,7 @@
                   - port: '53'
                     protocol: TCP
                 rules:
-                  dns:
-                    - matchName: "{{ backup_dr_storage_hostname }}"
+                  dns: "{{ backup_dr_storage_dns_rules }}"
           - toCIDR:
               - 169.254.25.10/32
             toPorts:
@@ -298,8 +342,7 @@
                   - port: '53'
                     protocol: TCP
                 rules:
-                  dns:
-                    - matchName: "{{ backup_dr_storage_hostname }}"
+                  dns: "{{ backup_dr_storage_dns_rules }}"
           - toEntities:
               - host
             toPorts:
@@ -309,22 +352,52 @@
                   - port: '53'
                     protocol: TCP
                 rules:
-                  dns:
-                    - matchName: "{{ backup_dr_storage_hostname }}"
+                  dns: "{{ backup_dr_storage_dns_rules }}"
           - toEntities:
               - kube-apiserver
           - toEndpoints:
               - matchLabels:
                   k8s:io.kubernetes.pod.namespace: "{{ backup_dr_namespace }}"
-          # DR storage must remain outside the protected cluster. Match only
-          # the validated DNS name and configured HTTP(S) port; literal IP
-          # endpoints are rejected above because they cannot be DNS-bound.
+
+- name: "Backup-DR | Allow external storage through its validated DNS name"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-velero-external-storage
+        namespace: "{{ backup_dr_namespace }}"
+      spec:
+        endpointSelector: {}
+        egress:
           - toFQDNs:
               - matchName: "{{ backup_dr_storage_hostname }}"
             toPorts:
               - ports:
                   - port: "{{ backup_dr_storage_port | string }}"
                     protocol: TCP
+  when: not (backup_dr_storage_is_literal_ip | bool)
+
+- name: "Backup-DR | Allow an explicitly approved external storage IPv4 endpoint"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-velero-external-storage
+        namespace: "{{ backup_dr_namespace }}"
+      spec:
+        endpointSelector: {}
+        egress:
+          - toCIDR:
+              - "{{ backup_dr_storage_hostname }}/32"
+            toPorts:
+              - ports:
+                  - port: "{{ backup_dr_storage_port | string }}"
+                    protocol: TCP
+  when: backup_dr_storage_is_literal_ip | bool
 
 - name: "Backup-DR | Wait for the Velero server"
   ansible.builtin.command:
