@@ -506,12 +506,16 @@ class TestChart10ValuesStructure:
         assert (
             "[runners.kubernetes.build_container_security_context]" in config
         )
+        assert "allow_privilege_escalation = true" in config
         assert 'type = "Unconfined"' in config
         assert (
             'name = "buildkit-build-container-only-security-exception"' in config
         )
         assert "name: build" in config
         assert "appArmorProfile:" in config
+        assert "allowPrivilegeEscalation: true" in config
+        assert "- SETGID" in config
+        assert "- SETUID" in config
         assert 'workload.n0xeid.xyz/class" = "protected-image-build-job"' in config
         assert "service_container_security_context" not in config
         assert "helper_container_security_context" not in config
