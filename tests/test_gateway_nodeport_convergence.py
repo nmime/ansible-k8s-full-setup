@@ -44,7 +44,7 @@ def test_hetzner_lb_tracks_live_gateway_ports_and_fails_closed():
 
     gate = tasks[health:]
     assert "all($checks[]; .status == \"healthy\")" in gate
-    assert "(dedicated_ci_worker_index | int) > 0" in gate
+    assert "(dedicated_ci_worker_indices | length)" in gate
     assert "(worker_count | int)" in gate
     assert "retries: 40" in gate
 
