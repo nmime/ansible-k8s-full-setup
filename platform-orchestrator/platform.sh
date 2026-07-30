@@ -52,6 +52,8 @@ check_env() {
 }
 
 load_config() {
+  local campaign_kubeconfig
+
   [[ ! -f "$CONFIG_FILE" ]] && { error "Run: ./platform.sh init"; exit 1; }
   PROJECT=$(yq '.global.project // "k8s"' "$CONFIG_FILE")
   PROFILE=$(yq '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
@@ -64,6 +66,12 @@ load_config() {
     || (( ${#PROJECT} > 63 )); then
     error "global.project must be a valid Kubernetes DNS label"
     exit 1
+  fi
+  campaign_kubeconfig="${ANSIBLE_DIR}/.campaign-state/${PROJECT}/controller/home/.kube/config"
+  if [[ -z "${K8S_AUTH_KUBECONFIG:-}" && -z "${KUBECONFIG:-}" \
+    && -f "$campaign_kubeconfig" ]]; then
+    K8S_AUTH_KUBECONFIG="$campaign_kubeconfig"
+    export K8S_AUTH_KUBECONFIG
   fi
   [[ -z "$DOMAIN" || "$DOMAIN" == "null" ]] && { error "global.domain is required in $CONFIG_FILE"; exit 1; }
   [[ -z "$EMAIL" || "$EMAIL" == "null" ]] && { error "global.email is required in $CONFIG_FILE"; exit 1; }
