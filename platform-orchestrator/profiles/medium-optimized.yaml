@@ -220,10 +220,11 @@ gitlab:
   backup_persistence_size: 30Gi
   runner:
     enabled: true
-    replicas: 2
-    # Keep two manager replicas for availability, but allow only one build per
-    # manager. General CI shares the application worker pool in this compact
-    # profile, so a four-build burst can evict or starve production workloads.
+    replicas: 3
+    # Match the three general-purpose workers with one manager each, but allow
+    # only one build per manager. This removes the observed two-runner queue
+    # without allowing multiple general jobs to contend on the same compact
+    # worker; protected image and Docker builds stay on their isolated runners.
     concurrent_jobs: 1
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
