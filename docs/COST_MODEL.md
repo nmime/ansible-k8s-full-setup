@@ -1,7 +1,7 @@
 # Medium-optimized Hetzner cost model
 
 This is the repository's audited cost baseline for the default, currently
-placeable `medium-optimized` profile. Prices and availability were read from
+placeable `medium-optimized` profile and the live CX deployment. Prices and availability were read from
 Hetzner Cloud's authenticated APIs on 2026-07-24. They are net EUR values for
 the queried account, whose API response reported 0% VAT. Re-query before
 purchasing because provider prices, tax, and included traffic can change:
@@ -10,7 +10,7 @@ purchasing because provider prices, tax, and included traffic can change:
 ./scripts/hetzner-capacity-report.sh --location hel1
 ```
 
-## Infrastructure
+## CPX platform base
 
 | Resource | Quantity | Hourly each | Monthly each | Monthly total |
 |---|---:|---:|---:|---:|
@@ -26,8 +26,8 @@ balancer's public address is part of the load-balancer resource.
 
 ## Hybrid persistent capacity
 
-The base profile has 31 operational PVCs in 17 claim groups plus one GitLab
-staging PVC. It has a conservative 540 GiB active-claim envelope and assigns only
+The base profile has 31 operational PVCs in 17 claim groups. It has a
+conservative 520 GiB active-claim envelope and assigns only
 application-replicated data to server-local SSD:
 
 | Claim group | Storage class | Reserved GiB |
@@ -43,32 +43,31 @@ application-replicated data to server-local SSD:
 | GitLab Gitaly | `hcloud-volumes` | 30 |
 | Dragonfly | `hcloud-volumes` | 10 |
 | Coroot, ClickHouse, and Keepers | `hcloud-volumes` | 60 |
-| GitLab backup staging | `hcloud-volumes` | 20 |
-| **Provider-billable CSI capacity** | | **240** |
-| **Total conservative active-claim envelope** | | **540** |
+| **Provider-billable CSI capacity** | | **220** |
+| **Total conservative active-claim envelope** | | **520** |
 
 `scripts/profile-storage-capacity.py` applies Hetzner's 10 GiB minimum to CSI
 claims and uses the same minimum as a conservative reservation for small local
 claims. Operational Kubernetes requests total 462 GiB and conservatively
-reserve 520 GiB; adding the 20 GiB GitLab staging claim produces 482 GiB
-requested and the larger 540 GiB envelope. This
+reserve 520 GiB. This
 prevents the cost and capacity plan from depending on sub-10-GiB packing.
 
-The playbook creates 24 target-generation static local PV slots totaling
-450 GiB. Kubernetes uses
+The playbook creates 21 target-generation static local PV slots totaling
+420 GiB. Kubernetes uses
 `WaitForFirstConsumer` and explicit node affinity to account capacity during
 scheduling; every PV is retained. A deployment-time DaemonSet rejects nodes
 with less than 40 GiB free at the configured path, while a separate node gate
 requires at least 70 GiB of root-disk capacity on each control plane and
-140 GiB on each worker. The base setup actively uses 15 slots/300 GiB. The
-remaining capacity supports the three-replica MongoDB opt-in, two worker-local
-Nx cache claims, and bounded operational headroom. SeaweedFS,
+140 GiB on each worker. The base setup actively uses 15 slots/300 GiB; the
+remaining three 20 GiB slots are the exact expandable capacity for the
+three-replica MongoDB opt-in. SeaweedFS,
 Vault, PostgreSQL, and MongoDB use
 required or chart-provided hostname anti-affinity and application replication.
 Local volumes still cannot move with a failed node; application quorum and
 external native/Velero backups are therefore recovery requirements, not
-optional optimizations. Singleton, audit, and staging claims stay on Hetzner
-CSI when their owning component is selected.
+optional optimizations. Singleton and audit claims stay on Hetzner CSI when
+their owning component is selected. GitLab backup staging is transient
+node-local scratch uploaded immediately to object storage.
 
 The static PV sizes are scheduler reservations, not filesystem quotas: all
 slots on a node share its root filesystem. Workloads must keep their own data
@@ -76,24 +75,28 @@ within the requested size. `NodeDiskUsageHigh` at 85%, kubelet `DiskPressure`,
 and the retained 40 GiB deployment gate protect the remaining operating-system
 and container-runtime headroom.
 
-At €0.0572/GiB-month, 240 GiB of provider volumes costs €13.728/month, rounded
-to €13.73. The 450 GiB expandable static pool is already included in server
-prices. Enabling MongoDB consumes only the remaining replicated local-pool
+At €0.0572/GiB-month, 220 GiB of provider volumes costs €12.584/month, rounded
+to €12.58. The 420 GiB expandable static pool is already included in server
+prices. GitLab uses up to 30 GiB of transient node-local backup scratch and
+uploads completed archives to object storage; that scratch is not durable
+state. Enabling MongoDB consumes only the remaining replicated local-pool
 capacity and therefore does not increase this provider-volume baseline.
 
-## Total
+## CPX platform-base total
 
-The full-month default is:
+The six-node workload platform base, before the isolated CI worker, is:
 
 ```text
-€240.420 infrastructure + €13.728 volumes = €254.148/month net
+€240.420 infrastructure + €12.584 volumes = €253.004/month net
 ```
 
-That is **€254.15/month net** rounded to cents. Hetzner's API supplies explicit
+That is **€253.00/month net** rounded to cents. Adding the required isolated
+`cpx32` CI worker makes the complete currently placeable named profile
+**€288.49/month net**. Hetzner's API supplies explicit
 hourly rates for servers, the load balancer, and Primary IPv4, giving a direct
 uncapped infrastructure rate of **€0.3854/hour**. It supplies volumes as a
 monthly GiB price, not an hourly tariff. Dividing the complete monthly-capped
-total by 730 hours gives **€0.34815/hour** as a planning equivalent only; it is
+total by 730 hours gives **€0.34658/hour** as a planning equivalent only; it is
 not a provider-quoted hourly price.
 
 The API response listed 20 TiB included traffic and €1/TB excess traffic for
@@ -116,11 +119,12 @@ The optimized CX mapping uses three `cx33` schedulable control planes, three
 | `lb11` | 1 | €7.49 | €7.49 |
 | Bastion Primary IPv4 | 1 | €0.50 | €0.50 |
 | **Infrastructure subtotal** | | | **€86.92** |
-| 240 GiB durable CSI volumes | | €0.0572/GiB | **€13.73** |
-| 300 GiB active claims in a 360 GiB server-SSD pool | | included | **€0.00** |
-| **Total** | | | **€100.65** |
+| 220 GiB durable CSI volumes | | €0.0572/GiB | **€12.58** |
+| Up to 30 GiB transient GitLab backup scratch | | server-local SSD | **€0.00** |
+| 360 GiB active claims in a 420 GiB server-SSD pool | | included | **€0.00** |
+| **Total** | | | **€99.50** |
 
-The production deployment also needs one tainted worker when the protected
+The production deployment needs one tainted worker when the protected
 Docker-in-Docker compatibility runner is enabled. It is not an ingress target,
 does not receive local PVs, has no public IP, and runs at most one protected
 job. On 2026-07-29 all CX33/CX43 placements were unavailable in every EU
@@ -130,19 +134,19 @@ location, so the immediately deployable isolated worker is a `cpx32`:
 |---|---:|---:|---:|
 | Isolated `cpx32` CI worker | 1 | €35.49 | **€35.49** |
 | **Infrastructure subtotal with CI** | | | **€122.41** |
-| 240 GiB durable CSI volumes | | €0.0572/GiB | **€13.73** |
-| **Production total with CI** | | | **€136.14** |
+| 220 GiB durable CSI volumes | | €0.0572/GiB | **€12.58** |
+| **Live CX production total with CI** | | | **€134.99** |
 
 The Kubernetes nodes then provide 40 vCPU, 80 GiB RAM, and 880 GiB aggregate
 node-local SSD. Only the original three `cx43` workers contribute to the
 replication-qualified local-PV pool. Including the bastion, the account
 receives 42 vCPU, 84 GiB RAM, and 920 GiB local SSD. The direct infrastructure
 rate is €0.1961/hour; the complete monthly-capped planning equivalent is
-€0.18649/hour.
+€0.18492/hour.
 
 When CX capacity returns, migrate only the CI worker from `cpx32` to `cx33` or
 `cx43` through the one-node-at-a-time migration gate. A `cx33` would reduce the
-complete total to €109.14/month; a `cx43` would make it €116.64/month. Do not
+complete total to €107.99/month; a `cx43` would make it €115.49/month. Do not
 resize the application workers or count the CI disk as durable storage.
 
 The original 3+3 mapping is retained as an opportunistic purchase option and

@@ -75,12 +75,15 @@ Choose the `production` profile when stateless workload continuity during node
 maintenance is required. Production backups must also be copied to storage
 outside this cluster.
 
-At the authenticated Hetzner API prices audited on 2026-07-24, this currently
-placeable balanced shape is €254.148/month net (€254.15 rounded), including its
-bastion IPv4, 300 GiB of active replication-qualified local claims in a
-360 GiB expandable static pool, and 240 GiB
-of billable CSI volumes. The intermittent CX cost-optimized mapping is
-€100.65/month whenever all required shapes are
+At the authenticated Hetzner API prices audited on 2026-07-24, the complete
+currently placeable balanced shape is €288.494/month net (€288.49 rounded),
+including the isolated `cpx32` CI worker, bastion IPv4, 300 GiB of active
+replication-qualified local claims in a
+420 GiB expandable static pool, and 220 GiB
+of billable CSI volumes. Its six-node platform base without the CI worker is
+€253.00/month. GitLab backup staging uses transient node SSD before its immediate
+object-storage upload. The intermittent CX cost-optimized platform base is
+€99.50/month whenever all required shapes are
 placeable: three `cx33` control planes retain economical quorum capacity while
 three `cx43` workers provide 24 vCPU, 48 GiB RAM, and 480 GiB worker-local SSD.
 It was temporarily unavailable for new `hel1`
@@ -89,6 +92,11 @@ application-level replication across nodes. Singleton, audit, and backup
 claims remain on CSI. External DR storage and traffic overages are separate;
 see [the cost model](docs/COST_MODEL.md) and
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md).
+
+The current live deployment uses the CX platform base plus one isolated
+`cpx32` CI worker. At the current authenticated prices, the resulting footprint is
+**€134.99/month net**, including 220 GiB of provider volumes. Deleting that
+worker would save €35.49/month but would remove CI workload isolation.
 
 Its three SeaweedFS volume servers use placement `001`, not SeaweedFS's unsafe
 single-copy `000` default. Reconciliation upgrades old volumes in bounded
