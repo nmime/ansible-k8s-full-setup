@@ -29,14 +29,15 @@ The runtime has four capability tiers and five named profiles:
 | `minimal` | minimal | minimal | 1 schedulable 4 vCPU/8 GiB control plane + 1 4 vCPU/8 GiB worker | Core development platform; no GitLab or medium-only services |
 | `small` | small | small | 1 control plane + 2 workers | Compact platform with Dragonfly, storage, secrets, GitOps, and monitoring; data/application services are opt-in |
 | `medium` | medium | medium | 3 schedulable control planes + 2 workers | Base platform with standard medium sizing; control-plane capacity is part of the workload envelope |
-| `medium-optimized` | medium | small | 3 schedulable control planes + 3 workers | Coroot-centric production baseline with GitLab, PostgreSQL, compact Loki/OTel, conservative requests, retention, and autoscaling |
+| `medium-optimized` | medium | small | 3 schedulable control planes + 3 application workers + 2 isolated CI workers | Coroot-centric production baseline with GitLab, PostgreSQL, compact Loki/OTel, conservative requests, retention, and autoscaling |
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 The current deployable `medium-optimized` balanced tariff is approximately
-**€288.49/month net** at the authenticated 2026-07-24 prices: six `cpx32`
-platform nodes, one isolated `cpx32` CI worker, one `cpx22` bastion, `lb11`,
+**€357.98/month net** at the authenticated 2026-07-30 prices: six `cpx32`
+platform nodes, one isolated `cpx32` Docker worker, one isolated `cpx42`
+general/image-build worker, one `cpx22` bastion, `lb11`,
 one bastion IPv4, 300 GiB of active
-server-local application-replicated claims in a 420 GiB expandable pool, and 220 GiB of
+server-local application-replicated claims in a 450 GiB expandable pool, and 220 GiB of
 provider-billable CSI volumes. The six-node platform base without the isolated
 CI worker is **€253.00/month net**. GitLab backup staging uses transient node
 SSD and is uploaded to object storage. The intermittent CX cost-optimized
@@ -52,11 +53,12 @@ arithmetic in [the cost model](docs/COST_MODEL.md) and the complete live CX,
 CAX, CPX, and CCX matrix in
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md).
 
-The live production cluster uses the CX platform base plus one isolated
-`cpx32` CI worker because replacement CX placement is currently exhausted.
-With that worker and the actual 220 GiB of provider volumes, its footprint is
-**€134.99/month net**. The base workload cluster remains €99.50/month when the
-CI worker is omitted.
+The live production cluster uses the CX platform base plus an isolated
+`cpx32` Docker worker and an isolated `cpx42` general/image-build worker
+because replacement CX placement is currently exhausted. With both workers
+and the actual 220 GiB of provider volumes, its footprint is
+**€204.48/month net**. The base workload cluster remains €99.50/month when CI
+capacity is omitted.
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is

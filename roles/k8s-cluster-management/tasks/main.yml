@@ -32,8 +32,17 @@
           if lookup('env', 'KUBECONFIG') | length > 0
           else lookup('env', 'HOME') + '/.kube')
          + '/' + (project_name | default('k8s')) + '-api-tunnel.pid' }}
-    dedicated_ci_worker_index: >-
+    dedicated_build_ci_worker_index: >-
+      {{ gitlab_runner_worker_index | default(0) | int }}
+    dedicated_docker_ci_worker_index: >-
       {{ gitlab_docker_host_runner_worker_index | default(0) | int }}
+    dedicated_ci_worker_indices: >-
+      {{
+        [
+          gitlab_runner_worker_index | default(0) | int,
+          gitlab_docker_host_runner_worker_index | default(0) | int
+        ] | reject('equalto', 0) | unique | list
+      }}
     selected_kubespray_playbook: >-
       {{ kubespray_execution_playbook | default('cluster.yml') }}
     selected_kubespray_limit: >-
@@ -176,7 +185,12 @@
             ansible_host: {{ ip }}
             ip: {{ ip }}
             access_ip: {{ ip }}
-      {% if i == (dedicated_ci_worker_index | int) %}
+      {% if i == (dedicated_build_ci_worker_index | int) %}
+            node_labels:
+              workload.n0xeid.xyz/ci-build: "true"
+            node_taints:
+              - "workload.n0xeid.xyz/ci-build=true:NoSchedule"
+      {% elif i == (dedicated_docker_ci_worker_index | int) %}
             node_labels:
               workload.n0xeid.xyz/ci-docker: "true"
             node_taints:
@@ -1242,6 +1256,7 @@
       jq -r '.items[]
         | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
         | select(.metadata.labels["workload.n0xeid.xyz/ci-docker"] != "true")
+        | select(.metadata.labels["workload.n0xeid.xyz/ci-build"] != "true")
         | .metadata.name' |
       sort
   args:
@@ -1341,6 +1356,8 @@
                   nodeSelectorTerms:
                     - matchExpressions:
                         - key: workload.n0xeid.xyz/ci-docker
+                          operator: DoesNotExist
+                        - key: workload.n0xeid.xyz/ci-build
                           operator: DoesNotExist
             tolerations:
               - operator: Exists
@@ -1919,7 +1936,7 @@
         (
           (
             (worker_count | int)
-            - (1 if (dedicated_ci_worker_index | int) > 0 else 0)
+            - (dedicated_ci_worker_indices | length)
           ) * 2
         ) | quote
       }} '

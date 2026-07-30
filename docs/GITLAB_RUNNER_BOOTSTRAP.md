@@ -98,7 +98,7 @@ Jobs tagged `docker-host` use a separate protected runner identity. Set
 `infrastructure.workers.count`. The playbook:
 
 1. creates that server without public IP addresses and labels its provider role
-   `ci-worker`;
+   `ci-docker-worker`;
 2. adds a Kubernetes label plus a `NoSchedule` taint;
 3. excludes it from public load-balancer targets and local-PV discovery;
 4. pins the only allowed build image and DinD service by digest;
@@ -111,6 +111,21 @@ The advanced PodSpec patch fails closed: changing the CI service alias means
 the expected `docker` container is not patched and the job cannot start DinD.
 Do not enable Kubernetes-executor-wide `privileged`; that would also privilege
 the build and helper containers. Keep `concurrent_jobs: 1` for this runner.
+
+## General and rootless image-build worker
+
+Set `gitlab.runner.dedicated_worker_index` to a different worker for ordinary
+Kubernetes-executor jobs and the protected rootless BuildKit runner. The
+playbook labels and taints that node with
+`workload.n0xeid.xyz/ci-build=true:NoSchedule`, excludes it from ingress and
+the local-PV pool, and fails runner reconciliation unless exactly one matching
+node exists. Both runner classes receive the matching selector and toleration;
+application workloads receive neither.
+
+For the medium-optimized profile, use CPX42 or larger and keep the general
+runner at one replica/concurrent job. Its 320 GB SSD prevents container-image
+snapshots from consuming the 160 GB application-worker disks. The protected
+image runner remains a separate identity and namespace with concurrency one.
 
 ## Version compatibility
 

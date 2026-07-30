@@ -211,6 +211,9 @@
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1) }}'
     gitlab_runner_concurrent_jobs: >-
       {{ gitlab.runner.concurrent_jobs | default(gitlab_runner_concurrent_jobs) }}
+    gitlab_runner_worker_index: >-
+      {{ gitlab.runner.dedicated_worker_index |
+         default(gitlab_runner_worker_index) }}
     gitlab_runner_enabled: '{{ platform_gitlab_runner_enabled }}'
     gitlab_image_builder_runner_enabled: >-
       {{ platform_gitlab_image_builder_runner_enabled }}
@@ -337,6 +340,22 @@
       public load balancer and local-PV pool, and reserved for the protected
       digest-pinned DinD service.
   when: platform_gitlab_docker_host_runner_enabled | bool
+
+- name: Validate the dedicated CI-build worker boundary
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_worker_index | int >= 0
+      - gitlab_runner_worker_index | int <= worker_count | int
+      - >-
+        gitlab_runner_worker_index | int == 0
+        or gitlab_runner_worker_index | int !=
+           gitlab_docker_host_runner_worker_index | int
+    fail_msg: >-
+      gitlab.runner.dedicated_worker_index must be zero (shared scheduling) or
+      identify a real worker reserved for general and rootless image-build
+      jobs. A dedicated CI-build worker must differ from the protected
+      Docker-smoke worker so concurrent CI classes cannot exhaust one node.
+  when: platform_gitlab_runner_enabled | bool
 
 - name: Validate local SSD storage policy
   ansible.builtin.assert:

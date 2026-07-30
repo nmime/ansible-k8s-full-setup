@@ -264,6 +264,7 @@ mongodb_pmm_resources:
 # renovate: datasource=helm depName=gitlab
 gitlab_chart_version: "10.1.2"
 gitlab_runner_concurrent_jobs: 10
+gitlab_runner_worker_index: 0
 gitlab_image_builder_runner_enabled: false
 gitlab_image_builder_runner_replicas: 1
 gitlab_image_builder_runner_concurrent_jobs: 1
