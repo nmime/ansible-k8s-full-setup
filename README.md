@@ -264,6 +264,17 @@ keeps `vpn.<domain>` on Caddy/Headscale and passes all other HTTP/TLS traffic to
 the same discovered Gateway ports. This preserves the small resource envelope
 without leaving the tier's public DNS disconnected from Kubernetes.
 
+Headscale access is deny-by-default. The playbook gives the tagged bastion
+subnet router only the advertised private route and allows the `admin` user the
+configured management ports plus optional ICMP. The `dev` user has no private
+access unless HTTPS is explicitly enabled in the selected profile. Router
+enrollment uses a one-use, one-hour pre-authentication key created and consumed
+on the bastion; the key is never copied to the controller or stored in Git.
+MagicDNS records are rendered from the same `network.internal_dns.zones` data
+used by cluster DNS, without overriding the client's global DNS resolver. See
+[`docs/DNS_AND_TRAFFIC_FLOW.md`](docs/DNS_AND_TRAFFIC_FLOW.md) for laptop
+enrollment and verification.
+
 New named-profile plans default to the current `cpx` balanced tariff.
 `--capacity-family cx`, `cax`, `cpx`, or `ccx` selects the economy x86,
 economy ARM64, balanced x86, or dedicated x86 mapping without changing node
