@@ -1099,6 +1099,7 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
         if task.get("name") == "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
     )
     pg_spec = pg_task["kubernetes.core.k8s"]["definition"]["spec"]
+    assert "map(attribute='operator')" in pg_spec["users"]
     assert pg_spec["instances"][0]["containers"]["replicaCertCopy"]["resources"] == (
         "{{ postgresql_replica_cert_copy_resources }}"
     )
@@ -1458,6 +1459,21 @@ def test_platform_honors_explicit_kubeconfig_before_home_fallback():
     kube_index = playbook.index("lookup('env', 'KUBECONFIG')")
     home_index = playbook.index("lookup('env', 'HOME') ~ '/.kube/config'")
     assert auth_index < kube_index < home_index
+
+
+def test_orchestrator_defaults_to_the_project_campaign_kubeconfig():
+    orchestrator = read("platform-orchestrator/platform.sh")
+
+    assert (
+        'campaign_kubeconfig="${ANSIBLE_DIR}/.campaign-state/${PROJECT}/'
+        'controller/home/.kube/config"'
+    ) in orchestrator
+    assert (
+        '[[ -z "${K8S_AUTH_KUBECONFIG:-}" && -z "${KUBECONFIG:-}"'
+        in orchestrator
+    )
+    assert 'K8S_AUTH_KUBECONFIG="$campaign_kubeconfig"' in orchestrator
+    assert "export K8S_AUTH_KUBECONFIG" in orchestrator
 
 
 def test_bastion_default_route_reconcile_is_inventory_driven_and_idempotent():
