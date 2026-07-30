@@ -141,6 +141,7 @@
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
+              - {matchName: production.cloudfront.docker.com}
               - {matchName: registry.npmjs.org}
               - {matchName: dl-cdn.alpinelinux.org}
               - {matchName: deb.debian.org}

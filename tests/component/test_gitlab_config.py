@@ -586,6 +586,7 @@ class TestChart10ValuesStructure:
             "registry-1.docker.io",
             "auth.docker.io",
             "production.cloudflare.docker.com",
+            "production.cloudfront.docker.com",
             "registry.npmjs.org",
             "dl-cdn.alpinelinux.org",
             "deb.debian.org",
