@@ -222,7 +222,11 @@
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
               [runners.kubernetes.build_container_security_context]
-                allow_privilege_escalation = false
+                # Rootless BuildKit's newuidmap/newgidmap helpers are setuid
+                # binaries. Keep the exception build-container-only and retain
+                # the isolated namespace, protected tag, no service-account
+                # token, non-privileged mode, and fail-closed egress policy.
+                allow_privilege_escalation = true
                 [runners.kubernetes.build_container_security_context.seccomp_profile]
                   type = "Unconfined"
               [runners.kubernetes.pod_labels]
@@ -233,12 +237,15 @@
                   containers:
                     - name: build
                       securityContext:
-                        allowPrivilegeEscalation: false
+                        allowPrivilegeEscalation: true
                         appArmorProfile:
                           type: Unconfined
                         capabilities:
                           drop:
                             - ALL
+                          add:
+                            - SETGID
+                            - SETUID
                         seccompProfile:
                           type: Unconfined
                 '''
