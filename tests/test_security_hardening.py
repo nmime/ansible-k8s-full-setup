@@ -1099,6 +1099,7 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
         if task.get("name") == "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
     )
     pg_spec = pg_task["kubernetes.core.k8s"]["definition"]["spec"]
+    assert "map(attribute='operator')" in pg_spec["users"]
     assert pg_spec["instances"][0]["containers"]["replicaCertCopy"]["resources"] == (
         "{{ postgresql_replica_cert_copy_resources }}"
     )
