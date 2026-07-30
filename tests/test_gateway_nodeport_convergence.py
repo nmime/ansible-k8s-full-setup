@@ -84,6 +84,9 @@ def test_minimal_tier_reuses_bastion_as_an_sni_aware_edge():
     assert "gateway-secrets-wildcard-tls" in cluster[sync:served]
     assert "expected_gateway_certificate_fingerprint.stdout" in cluster[served:strict_tls]
     assert "regex_replace('(?i)^sha256 fingerprint=', '')" in cluster[served:strict_tls]
+    # openssl s_client can return a non-zero close-notify status after it has
+    # emitted a valid certificate. The x509 consumer is the authoritative gate.
+    assert "set -o pipefail" not in cluster[served:strict_tls]
     assert "not (lb_enabled | default(false) | bool)" not in cluster[strict_tls:]
 
     assert "127.0.0.1:8443:443" in compose
