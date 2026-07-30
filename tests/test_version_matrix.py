@@ -42,6 +42,7 @@ EXPECTED = {
     "vault_version": "2.0.3",
     "vault_chart_version": "0.34.0",
     "caddy_image_tag": "2.11.4-alpine",
+    "tailscale_version": "1.98.10",
     "coroot_operator_chart_version": "0.9.7",
     "coroot_chart_version": "0.3.3",
     "coroot_image_tag": "1.23.3",

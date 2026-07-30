@@ -3,6 +3,30 @@
     project: '{{ project_name | default(''k8s'') }}'
     vpn_domain: '{{ network.vpn.domain | default("vpn." + domain, true) }}'
     headscale_version: '{{ headscale_version | default("0.28.0") }}'
+    tailscale_version: '{{ tailscale_version }}'
+    headscale_dns_base_domain: >-
+      {{ network.vpn.dns_base_domain |
+         default(headscale_dns_base_domain, true) }}
+    headscale_admin_user: >-
+      {{ network.vpn.admin_user | default(headscale_admin_user, true) }}
+    headscale_developer_user: >-
+      {{ network.vpn.developer_user |
+         default(headscale_developer_user, true) }}
+    headscale_subnet_router_tag: >-
+      {{ network.vpn.subnet_router_tag |
+         default(headscale_subnet_router_tag, true) }}
+    headscale_preauth_key_expiration: >-
+      {{ network.vpn.preauth_key_expiration |
+         default(headscale_preauth_key_expiration, true) }}
+    headscale_admin_private_tcp_ports: >-
+      {{ network.vpn.admin_private_tcp_ports |
+         default(headscale_admin_private_tcp_ports, true) }}
+    headscale_admin_private_icmp_enabled: >-
+      {{ network.vpn.admin_private_icmp_enabled |
+         default(headscale_admin_private_icmp_enabled, true) | bool }}
+    headscale_developer_https_enabled: >-
+      {{ network.vpn.developer_https_enabled |
+         default(headscale_developer_https_enabled, true) | bool }}
     bastion_host: '{{ bastion_public_ip | default(bastion_ip | default('''')) }}'
     network_control_plane_ips: '{{ master_ips | default({}) | dict2items | map(attribute=''value'') | list }}'
     network_worker_ips: '{{ worker_ips | default({}) | dict2items | map(attribute=''value'') | list }}'
@@ -259,29 +283,138 @@
     $PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT 2>/dev/null || \\\n  iptables -A FORWARD -i \"$PRIV_IF\" -o \"$DEFAULT_IF\" -j ACCEPT\niptables -C FORWARD -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state\
     \ RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \\\n  iptables -A FORWARD -i \"$DEFAULT_IF\" -o \"$PRIV_IF\" -m state --state RELATED,ESTABLISHED -j ACCEPT\niptables-save > /etc/iptables/rules.v4\nREMOTECMD\n"
 - name: Create Headscale directories
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'mkdir -p /etc/headscale /var/lib/headscale /opt/headscale'\n"
-- name: Deploy Headscale configuration
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /etc/headscale/config.yaml << 'EOF'\nserver_url: https://{{\
-    \ vpn_domain }}\nlisten_addr: 0.0.0.0:8080\nmetrics_listen_addr: 0.0.0.0:9090\nnoise:\n  private_key_path: /var/lib/headscale/noise_private.key\nprefixes:\n  v4: 100.64.0.0/10\n  v6: fd7a:115c:a1e0::/48\n\
-    derp:\n  server:\n    enabled: true\n    region_id: 999\n    stun_listen_addr: 0.0.0.0:3478\n    private_key_path: /var/lib/headscale/derp_server_private.key\n  urls:\n      - https://controlplane.tailscale.com/derpmap/default\n\
-    \  auto_update_enabled: true\n  update_frequency: 24h\ndatabase:\n  type: sqlite\n  sqlite:\n    path: /var/lib/headscale/db.sqlite\ndns:\n  magic_dns: true\n  base_domain: vpn.internal\n  nameservers:\n\
-    \    global:\n      - 1.1.1.1\n      - 8.8.8.8\nlog:\n  level: info\nEOF\nREMOTECMD\n"
-- name: Create Caddyfile for Headscale TLS termination
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/Caddyfile << 'EOF'\n{{ vpn_domain }} {\n  reverse_proxy\
-    \ headscale:8080\n}\nEOF\nREMOTECMD\n"
-- name: Deploy Headscale Docker Compose
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << REMOTECMD\ncat > /opt/headscale/docker-compose.yml << 'EOF'\nservices:\n  headscale:\n\
-    \    container_name: headscale\n    image: headscale/headscale:{{ headscale_version }}\n    restart: always\n    command: serve\n    ports:\n      - \"9090:9090\"\n      - \"3478:3478/udp\"\n    volumes:\n\
-    \      - /var/lib/headscale:/var/lib/headscale\n      - /etc/headscale:/etc/headscale:ro\n    environment:\n      - TZ=UTC\n    security_opt:\n      - no-new-privileges:true\n    read_only: true\n \
-    \   tmpfs:\n      - /tmp\n      - /run\n      - /var/run/headscale\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\n  caddy:\n    container_name: caddy\n    image: caddy:{{ caddy_image_tag }}\n\
-    \    restart: always\n    ports:\n      - \"127.0.0.1:8443:443\"\n      - \"127.0.0.1:8080:80\"\n    volumes:\n      - /opt/headscale/Caddyfile:/etc/caddy/Caddyfile:ro\n      - caddy_data:/data\n      - caddy_config:/config\n\
-    \    depends_on:\n      - headscale\n    security_opt:\n      - no-new-privileges:true\n    cap_drop:\n      - ALL\n    cap_add:\n      - NET_BIND_SERVICE\nvolumes:\n  caddy_data:\n  caddy_config:\n\
-    EOF\nREMOTECMD\n"
+  ansible.builtin.shell: >-
+    ssh -o StrictHostKeyChecking=accept-new
+    -o UserKnownHostsFile={{ controller_known_hosts_file | quote }}
+    root@{{ bastion_host }}
+    'install -d -m 0700 /etc/headscale /var/lib/headscale
+    && install -d -m 0750 /opt/headscale'
+  changed_when: false
+
+- name: Create a private controller staging directory for Headscale
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: 'headscale-{{ project }}-'
+  register: _headscale_stage
+  delegate_to: localhost
+  become: false
+
+- name: Render the complete Headscale deployment on the controller
+  ansible.builtin.template:
+    src: '{{ item.template }}'
+    dest: '{{ _headscale_stage.path }}/{{ item.filename }}'
+    mode: '0600'
+  loop:
+    - template: headscale-config.yaml.j2
+      filename: config.yaml
+    - template: headscale-policy.hujson.j2
+      filename: policy.hujson
+    - template: headscale-extra-records.json.j2
+      filename: extra-records.json
+    - template: headscale-docker-compose.yml.j2
+      filename: docker-compose.yml
+    - template: headscale-Caddyfile.j2
+      filename: Caddyfile
+  loop_control:
+    label: '{{ item.filename }}'
+  delegate_to: localhost
+  become: false
+
+- name: Reconcile Headscale managed files atomically
+  ansible.builtin.shell: |
+    set -euo pipefail
+    local_file={{ (_headscale_stage.path + '/' + item.filename) | quote }}
+    remote_stage={{ ('/tmp/' + project + '-headscale-' + item.filename) | quote }}
+    ssh_options=(
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }}
+    )
+    scp "${ssh_options[@]}" "$local_file" "root@{{ bastion_host }}:$remote_stage"
+    ssh "${ssh_options[@]}" root@{{ bastion_host }} \
+      "destination={{ item.destination | quote }}; stage=$remote_stage; \
+       if [ ! -f \"\$destination\" ] || ! cmp -s \"\$stage\" \"\$destination\"; then \
+         install -m {{ item.mode }} \"\$stage\" \"\$destination\"; changed=true; \
+       else changed=false; fi; \
+       rm -f \"\$stage\"; echo changed=\$changed"
+  args:
+    executable: /bin/bash
+  loop:
+    - filename: config.yaml
+      destination: /etc/headscale/config.yaml
+      mode: '0640'
+    - filename: policy.hujson
+      destination: /etc/headscale/policy.hujson
+      mode: '0640'
+    - filename: extra-records.json
+      destination: /var/lib/headscale/extra-records.json
+      mode: '0640'
+    - filename: docker-compose.yml
+      destination: /opt/headscale/docker-compose.yml
+      mode: '0640'
+    - filename: Caddyfile
+      destination: /opt/headscale/Caddyfile
+      mode: '0644'
+  loop_control:
+    label: '{{ item.destination }}'
+  register: _headscale_files
+  changed_when: "'changed=true' in _headscale_files.stdout"
+
+- name: Remove the private Headscale controller staging directory
+  ansible.builtin.file:
+    path: '{{ _headscale_stage.path }}'
+    state: absent
+  delegate_to: localhost
+  become: false
+  when: _headscale_stage.path is defined
+
+- name: Validate Headscale configuration and Compose before rollout
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    jq -e 'type == "array"' /var/lib/headscale/extra-records.json >/dev/null
+    validation_state="$(mktemp -d /tmp/headscale-configtest.XXXXXX)"
+    trap 'rm -rf "$validation_state"' EXIT
+    install -m 0644 /var/lib/headscale/extra-records.json \
+      "$validation_state/extra-records.json"
+    docker run --rm --read-only \
+      -v /etc/headscale:/etc/headscale:ro \
+      -v "$validation_state:/var/lib/headscale" \
+      headscale/headscale:{{ headscale_version }} configtest
+    docker compose -f /opt/headscale/docker-compose.yml config -q
+    REMOTECMD
+  changed_when: false
+
 - name: Start Headscale container
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'cd /opt/headscale && docker compose up -d'\n"
+  ansible.builtin.shell: >-
+    ssh -o StrictHostKeyChecking=accept-new
+    -o UserKnownHostsFile={{ controller_known_hosts_file | quote }}
+    root@{{ bastion_host }}
+    'cd /opt/headscale && docker compose up -d --remove-orphans'
+  register: _headscale_compose
+  changed_when: >-
+    'Started' in _headscale_compose.stderr or
+    'Created' in _headscale_compose.stderr or
+    'Recreated' in _headscale_compose.stderr
+
 - name: Wait for Headscale to be ready
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nfor i in $(seq 1 30); do\n  docker exec headscale headscale version\
-    \ 2>/dev/null && break\n  sleep 2\ndone\nREMOTECMD\n"
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    for _ in $(seq 1 60); do
+      if [ "$(docker inspect headscale | jq -r '.[0].State.Health.Status // empty')" = healthy ]; then
+        docker exec headscale headscale health
+        exit 0
+      fi
+      sleep 2
+    done
+    docker inspect headscale | jq '.[0].State'
+    exit 1
+    REMOTECMD
+  changed_when: false
 - name: Install HAProxy edge multiplexer on bastion
   ansible.builtin.shell: |
     ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
@@ -350,19 +483,158 @@
   delay: 5
   until: _r_headscale_public_edge is not failed
 - name: Create Headscale admin user
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create admin 2>/dev/null || true'\n"
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    if docker exec headscale headscale users list -o json |
+        jq -e --arg user '{{ headscale_admin_user }}' \
+          'any(.[]; .name == $user)' >/dev/null; then
+      echo changed=false
+    else
+      docker exec headscale headscale users create '{{ headscale_admin_user }}'
+      echo changed=true
+    fi
+    REMOTECMD
+  register: _headscale_admin_user
+  changed_when: "'changed=true' in _headscale_admin_user.stdout"
+
 - name: Create Headscale dev user
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale users create dev 2>/dev/null || true'\n"
-- name: Create pre-auth key for admin
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  'docker exec headscale headscale preauthkeys create --user admin --reusable --expiration\
-    \ 720h 2>/dev/null | tail -1'\n"
-  register: admin_preauth_key
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    if docker exec headscale headscale users list -o json |
+        jq -e --arg user '{{ headscale_developer_user }}' \
+          'any(.[]; .name == $user)' >/dev/null; then
+      echo changed=false
+    else
+      docker exec headscale headscale users create '{{ headscale_developer_user }}'
+      echo changed=true
+    fi
+    REMOTECMD
+  register: _headscale_developer_user
+  changed_when: "'changed=true' in _headscale_developer_user.stdout"
+
+- name: Validate and reload the deny-by-default Headscale policy
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    docker exec headscale headscale policy check \
+      --file /etc/headscale/policy.hujson
+    docker kill --signal HUP headscale >/dev/null
+    sleep 2
+    docker exec headscale headscale health
+    REMOTECMD
+  changed_when: false
+
 - name: Install Tailscale client on bastion
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' << 'REMOTECMD'\nif ! command -v tailscale &>/dev/null; then\n  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg\n  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list\n  apt-get -o DPkg::Lock::Timeout=300 update\n  apt-get -o DPkg::Lock::Timeout=300 install -y tailscale\nfi\nREMOTECMD\n"
-- name: Connect bastion to Headscale VPN
-  ansible.builtin.shell: "ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} \\\n  \"tailscale up --login-server https://{{ vpn_domain }} --authkey {{ admin_preauth_key.stdout\
-    \ | trim }} --hostname {{ project }}-bastion --advertise-routes=10.0.0.0/16 2>/dev/null || true\"\n"
-  when: admin_preauth_key.stdout is defined and admin_preauth_key.stdout | trim | length > 0
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v tailscale >/dev/null ||
+        [ "$(tailscale version | head -1)" != '{{ tailscale_version }}' ]; then
+      curl --retry 5 --retry-all-errors -fsSL \
+        https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
+        -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+      curl --retry 5 --retry-all-errors -fsSL \
+        https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list \
+        -o /etc/apt/sources.list.d/tailscale.list
+      apt-get -o DPkg::Lock::Timeout=300 update
+      apt-get -o DPkg::Lock::Timeout=300 install -y \
+        'tailscale={{ tailscale_version }}'
+      echo changed=true
+    else
+      echo changed=false
+    fi
+    systemctl enable --now tailscaled >/dev/null
+    REMOTECMD
+  register: _tailscale_install
+  changed_when: "'changed=true' in _tailscale_install.stdout"
+
+- name: Connect and converge the bastion subnet router
+  no_log: true
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    hostname='{{ project }}-bastion'
+    backend_state="$(tailscale status --json 2>/dev/null |
+      jq -r '.BackendState // "Unknown"')"
+    if [ "$backend_state" != Running ]; then
+      admin_id="$(docker exec headscale headscale users list -o json |
+        jq -er --arg user '{{ headscale_admin_user }}' \
+          '.[] | select(.name == $user) | .id')"
+      key_file="$(mktemp /run/headscale-bastion-key.XXXXXX)"
+      trap 'rm -f "$key_file"' EXIT
+      docker exec headscale headscale preauthkeys create \
+        --user "$admin_id" \
+        --tags '{{ headscale_subnet_router_tag }}' \
+        --expiration '{{ headscale_preauth_key_expiration }}' \
+        -o json |
+        jq -er '.key' >"$key_file"
+      chmod 0600 "$key_file"
+      tailscale up \
+        --login-server 'https://{{ vpn_domain }}' \
+        --auth-key "$(cat "$key_file")" \
+        --hostname "$hostname" \
+        --advertise-routes '{{ private_network_cidr }}' \
+        --accept-dns=false \
+        --accept-routes=false \
+        --snat-subnet-routes=true \
+        --ssh=false
+      echo changed=true
+    else
+      tailscale set \
+        --hostname "$hostname" \
+        --advertise-routes '{{ private_network_cidr }}' \
+        --accept-dns=false \
+        --accept-routes=false \
+        --snat-subnet-routes=true \
+        --ssh=false \
+        --auto-update=false \
+        --update-check=false
+      echo changed=false
+    fi
+    REMOTECMD
+  register: _headscale_bastion_registration
+  changed_when: "'changed=true' in _headscale_bastion_registration.stdout"
+
+- name: Require the bastion subnet router and route to be active
+  ansible.builtin.shell: |
+    ssh -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    hostname='{{ project }}-bastion'
+    [ "$(tailscale status --json | jq -r '.BackendState')" = Running ]
+    node_id="$(docker exec headscale headscale nodes list -o json |
+      jq -er --arg hostname "$hostname" \
+        '.[] |
+         select(.name == $hostname or
+                .given_name == $hostname or
+                .hostname == $hostname) |
+         .id')"
+    docker exec headscale headscale nodes list -o json |
+      jq -e --argjson id "$node_id" \
+        --arg tag '{{ headscale_subnet_router_tag }}' \
+        'any(.[]; .id == $id and
+          ((.online // .connected // false) == true) and
+          ((.tags // .valid_tags // []) | index($tag) != null))' >/dev/null
+    docker exec headscale headscale nodes list-routes \
+      --identifier "$node_id" -o json |
+      jq -e --arg route '{{ private_network_cidr }}' \
+        'tostring | contains($route)' >/dev/null
+    REMOTECMD
+  changed_when: false
 - name: Display network security summary
   debug:
     msg:

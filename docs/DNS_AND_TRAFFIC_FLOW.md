@@ -295,6 +295,47 @@ certbot certonly --nginx \
 7. Request reaches GitLab webservice pod
 ```
 
+#### Headscale policy, enrollment, and private DNS
+
+The managed policy is deny-by-default:
+
+- `admin` may reach the tagged subnet router over SSH and the private network
+  over the configured TCP management ports (22, 80, 443, and 6443 by default)
+  plus ICMP when enabled.
+- `dev` has no private-network access by default. A profile may explicitly
+  enable HTTPS-only access to the services subnet.
+- The bastion advertises `10.0.0.0/16` with the
+  `tag:subnet-router` tag. `autoApprovers` accepts only that tagged route.
+- Pre-authentication keys are one-use and expire after one hour. The playbook
+  creates and consumes the router key entirely on the bastion and deletes the
+  temporary key file on every exit path.
+
+For a laptop, create a separate one-use key for the intended Headscale user on
+the bastion, use it immediately, and never store it in a shell profile, Git,
+Ansible variables, or CI:
+
+```bash
+# Run on the bastion. Resolve the user ID first; do not use a reusable key.
+ADMIN_ID="$(docker exec headscale headscale users list -o json |
+  jq -er '.[] | select(.name == "admin") | .id')"
+docker exec headscale headscale preauthkeys create \
+  --user "$ADMIN_ID" --expiration 1h
+
+# Run on the laptop with the newly created one-use key.
+tailscale up \
+  --login-server=https://vpn.example.com \
+  --auth-key='<one-use-key>' \
+  --accept-routes \
+  --accept-dns
+```
+
+Confirm the client is registered under the expected user, the private route is
+accepted, and an allowed HTTPS endpoint resolves and connects. Also verify that
+a disallowed port is rejected. MagicDNS extra records are generated from
+`network.internal_dns.zones`, the same profile data used by cluster CoreDNS.
+Headscale does not replace the laptop's global resolver
+(`override_local_dns: false`); it adds only managed tailnet/private records.
+
 For the load-balancer-free `minimal` tier, root and wildcard DNS point to the
 bastion. HAProxy listens on public ports 80/443, routes `vpn.<domain>` to the
 loopback-only Caddy/Headscale listener, and forwards every other HTTP host or
@@ -446,7 +487,7 @@ curl -H "Authorization: APIKey $GCORE_API_KEY" \
 |------|-------------|--------------|-------------|
 | `*.example.com` | hetzner-infra | Hetzner DNS | cert-manager (K8s) |
 | `example.com` | hetzner-infra | Hetzner DNS | cert-manager (K8s) |
-| `vpn.example.com` | hetzner-infra | Hetzner DNS | Headscale self-signed |
+| `vpn.example.com` | hetzner-infra | Hetzner DNS | Caddy / Let's Encrypt |
 | `origin.example.com` | hetzner-infra | Hetzner DNS | cert-manager (K8s) |
 | `cdn.example.com` | edge-cdn | Gcore DNS (GeoDNS) | certbot (on edge VMs) |
 | `_acme-challenge.*` | cert-manager | Hetzner DNS (temp) | N/A (DNS validation) |
