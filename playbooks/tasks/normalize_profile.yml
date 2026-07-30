@@ -172,6 +172,9 @@
     postgresql_pgbackrest_job_resources: >-
       {{ (databases.postgresql.resources | default({})).pgbackrest_job |
          default(postgresql_pgbackrest_job_resources) }}
+    postgresql_pgbackrest_job_ttl_seconds: >-
+      {{ databases.postgresql.backup_job_ttl_seconds |
+         default(postgresql_pgbackrest_job_ttl_seconds) }}
     mongodb_replicas: '{{ databases.mongodb.replicas | default(mongodb_replicas | default(1)) }}'
     mongodb_storage: '{{ databases.mongodb.storage_size | default(mongodb_storage) }}'
     mongodb_data_storage_class: >-
