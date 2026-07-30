@@ -13,17 +13,21 @@ BACKUP_TYPE=""
 STORAGE_NAME="s3-object-storage"
 DRILL_NAMESPACE="mongodb-restore-drill"
 TARGET_CLUSTER="mongodb-drill"
-OPERATOR_VERSION="1.22.0"
+OPERATOR_VERSION="1.23.0"
+PBM_IMAGE="percona/percona-backup-mongodb:2.15.0"
+PBM_MEMORY_LIMIT="2Gi"
 VERIFY_DATABASE=""
 VERIFY_COLLECTION=""
 MIN_DOCUMENTS=1
 TIMEOUT_SECONDS=3600
 TTL_HOURS=24
 STORAGE_SIZE="20Gi"
+STORAGE_CLASS="hcloud-volumes"
 SKIP_CLEANUP=false
 DRY_RUN=false
 DRILL_CREATED=false
 DRILL_SUCCEEDED=false
+RESTORE_FAILURE=""
 
 usage() {
   cat <<'EOF'
@@ -39,13 +43,16 @@ Options:
   --storage-name NAME         Source backup storage (default: s3-object-storage)
   --namespace NS              Isolated drill namespace (default: mongodb-restore-drill)
   --target-cluster NAME       Disposable cluster name (default: mongodb-drill)
-  --operator-version VERSION  PSMDB Operator/chart version (default: 1.22.0)
+  --operator-version VERSION  PSMDB Operator/chart version (default: 1.23.0)
+  --pbm-image IMAGE           Compatible PBM agent image (default: percona/percona-backup-mongodb:2.15.0)
+  --pbm-memory-limit SIZE     Restore-agent memory limit (default: 2Gi)
   --verify-database NAME      Database containing a recovery sentinel
   --verify-collection NAME    Collection containing a recovery sentinel
   --min-documents COUNT       Minimum sentinel documents (default: 1)
   --timeout-seconds SECONDS   Restore timeout (default: 3600)
   --ttl-hours HOURS           Expiry label for external janitors (default: 24)
   --storage-size SIZE         Disposable MongoDB PVC size (default: 20Gi)
+  --storage-class NAME        Disposable PVC StorageClass (default: hcloud-volumes)
   --skip-cleanup              Preserve the namespace after a successful drill
   --dry-run                   Print the exact plan without changing the cluster
   -h, --help                  Show this help
@@ -88,12 +95,15 @@ while [[ $# -gt 0 ]]; do
     --namespace) DRILL_NAMESPACE="${2:?missing namespace}"; shift 2 ;;
     --target-cluster) TARGET_CLUSTER="${2:?missing target cluster}"; shift 2 ;;
     --operator-version) OPERATOR_VERSION="${2:?missing operator version}"; shift 2 ;;
+    --pbm-image) PBM_IMAGE="${2:?missing PBM image}"; shift 2 ;;
+    --pbm-memory-limit) PBM_MEMORY_LIMIT="${2:?missing PBM memory limit}"; shift 2 ;;
     --verify-database) VERIFY_DATABASE="${2:?missing database}"; shift 2 ;;
     --verify-collection) VERIFY_COLLECTION="${2:?missing collection}"; shift 2 ;;
     --min-documents) MIN_DOCUMENTS="${2:?missing count}"; shift 2 ;;
     --timeout-seconds) TIMEOUT_SECONDS="${2:?missing timeout}"; shift 2 ;;
     --ttl-hours) TTL_HOURS="${2:?missing TTL}"; shift 2 ;;
     --storage-size) STORAGE_SIZE="${2:?missing storage size}"; shift 2 ;;
+    --storage-class) STORAGE_CLASS="${2:?missing storage class}"; shift 2 ;;
     --skip-cleanup) SKIP_CLEANUP=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -107,6 +117,11 @@ done
 [[ "$TTL_HOURS" =~ ^[1-9][0-9]*$ ]] || die "--ttl-hours must be positive"
 [[ "$STORAGE_SIZE" =~ ^[1-9][0-9]*(Mi|Gi|Ti)$ ]] \
   || die "--storage-size must be a positive Kubernetes binary quantity"
+[[ "$STORAGE_CLASS" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] \
+  || die "--storage-class must be a valid lowercase Kubernetes name"
+[[ "$PBM_IMAGE" =~ ^[A-Za-z0-9._/:@-]+$ ]] || die "--pbm-image is not a safe OCI image reference"
+[[ "$PBM_MEMORY_LIMIT" =~ ^[1-9][0-9]*(Mi|Gi|Ti)$ ]] \
+  || die "--pbm-memory-limit must be a positive Kubernetes binary quantity"
 [[ -z "$VERIFY_COLLECTION" || -n "$VERIFY_DATABASE" ]] || die "--verify-collection requires --verify-database"
 [[ "$VERIFY_DATABASE" =~ ^[A-Za-z0-9_.-]*$ ]] || die "Unsafe database name"
 [[ "$VERIFY_COLLECTION" =~ ^[A-Za-z0-9_.-]*$ ]] || die "Unsafe collection name"
@@ -129,6 +144,9 @@ Backup:          ${BACKUP_REF}
 Storage:         ${STORAGE_NAME}
 Target:          ${DRILL_NAMESPACE}/${TARGET_CLUSTER}
 Operator:        ${OPERATOR_VERSION}
+PBM image:       ${PBM_IMAGE}
+PBM memory:      ${PBM_MEMORY_LIMIT}
+Storage class:   ${STORAGE_CLASS}
 Expiry label:    ${TTL_HOURS}h
 Cleanup:         $([[ "$SKIP_CLEANUP" == true ]] && printf 'preserve' || printf 'delete after success')
 
@@ -172,38 +190,29 @@ if kubectl get perconaservermongodbbackup "$BACKUP_REF" --namespace "$SOURCE_NAM
     ready|succeeded) ;;
     *) die "Backup ${BACKUP_REF} is not restorable (state=${BACKUP_STATE})" ;;
   esac
+  [[ $(jq -r '.type // empty' <<<"$STORAGE_JSON") == s3 ]] \
+    || die "The isolated restore drill currently requires S3-compatible backup storage"
   BACKUP_SOURCE=$(jq -cn \
-    --argjson status "$(jq -c '.status' <<<"$BACKUP_JSON")" \
-    --argjson storage "$STORAGE_JSON" \
-    --arg credential "$CREDENTIAL_SECRET" '
-      ($status | {
-        destination,
-        type,
-        storageName,
-        s3,
-        azure,
-        gcs
-      } | with_entries(select(.value != null))) as $source
-      | if ($source.destination // "") == "" then error("backup has no destination") else . end
-      | $source
-      | if has("s3") then .s3.credentialsSecret = $credential
-        elif has("azure") then .azure.credentialsSecret = $credential
-        elif has("gcs") then .gcs.credentialsSecret = $credential
-        elif ($storage.type // "") == "s3" then .s3 = ($storage.s3 + {credentialsSecret: $credential})
-        elif ($storage.type // "") == "azure" then .azure = ($storage.azure + {credentialsSecret: $credential})
-        elif ($storage.type // "") == "gcs" then .gcs = ($storage.gcs + {credentialsSecret: $credential})
-        else error("unsupported backup storage") end') \
+    --arg destination "$(jq -r '.status.destination // empty' <<<"$BACKUP_JSON")" \
+    --arg type "$(jq -r '.status.type // empty' <<<"$BACKUP_JSON")" \
+    --arg credential "$CREDENTIAL_SECRET" --argjson storage "$STORAGE_JSON" '
+      if $destination == "" then error("backup has no destination")
+      elif $type == "" then error("backup has no type")
+      else {
+        destination: $destination,
+        type: $type,
+        s3: ($storage.s3 + {credentialsSecret: $credential})
+      }
+      end') \
     || die "Could not construct backupSource from ${BACKUP_REF}"
 else
   [[ "$BACKUP_REF" == *://* ]] || die "Backup CR ${BACKUP_REF} was not found; use an S3 URI for off-cluster metadata"
   [[ $(jq -r '.type // empty' <<<"$STORAGE_JSON") == s3 ]] \
     || die "Direct URI restore currently requires S3-compatible storage"
   BACKUP_SOURCE=$(jq -cn --arg destination "$BACKUP_REF" --arg type "$BACKUP_TYPE" \
-    --arg credential "$CREDENTIAL_SECRET" --arg storage_name "$STORAGE_NAME" \
-    --argjson storage "$STORAGE_JSON" '{
+    --arg credential "$CREDENTIAL_SECRET" --argjson storage "$STORAGE_JSON" '{
       destination: $destination,
       type: $type,
-      storageName: $storage_name,
       s3: ($storage.s3 + {credentialsSecret: $credential})
     }')
 fi
@@ -213,7 +222,12 @@ if ! kubectl get secret "$SOURCE_USERS_SECRET" --namespace "$SOURCE_NAMESPACE" >
   SOURCE_USERS_SECRET=$(jq -r --arg fallback "$SOURCE_USERS_SECRET" \
     '.spec.secrets.users // $fallback' <<<"$SOURCE_JSON")
 fi
-TARGET_USERS_SECRET="internal-${TARGET_CLUSTER}-users"
+# Never use the Operator's reserved internal-<cluster>-users name for the
+# declarative input secret. Since PSMDB 1.19 the Operator creates that internal
+# secret itself and adds URL-escaped copies of every key. Reusing the reserved
+# name makes the input and generated secret the same object, so every reconcile
+# appends another _ESCAPED suffix until Kubernetes rejects the key length.
+TARGET_USERS_SECRET="restore-${TARGET_CLUSTER}-users"
 kubectl get secret "$SOURCE_USERS_SECRET" --namespace "$SOURCE_NAMESPACE" >/dev/null 2>&1 \
   || die "Source users secret ${SOURCE_USERS_SECRET} was not found"
 kubectl get secret "$CREDENTIAL_SECRET" --namespace "$SOURCE_NAMESPACE" >/dev/null 2>&1 \
@@ -256,7 +270,35 @@ copy_secret() {
         | .metadata.namespace = $namespace' \
     | kubectl apply --namespace "$DRILL_NAMESPACE" -f - >/dev/null
 }
-copy_secret "$SOURCE_USERS_SECRET" "$TARGET_USERS_SECRET"
+
+copy_users_secret() {
+  local source_name=$1 target_name=$2
+  kubectl get secret "$source_name" --namespace "$SOURCE_NAMESPACE" -o json \
+    | jq --arg name "$target_name" --arg namespace "$DRILL_NAMESPACE" '
+        del(.metadata.annotations,.metadata.creationTimestamp,.metadata.finalizers,
+            .metadata.generateName,.metadata.generation,.metadata.labels,
+            .metadata.managedFields,.metadata.ownerReferences,.metadata.resourceVersion,
+            .metadata.selfLink,.metadata.uid)
+        | .metadata.name = $name
+        | .metadata.namespace = $namespace
+        | .data = (.data | with_entries(select(.key | IN(
+            "MONGODB_BACKUP_PASSWORD",
+            "MONGODB_BACKUP_USER",
+            "MONGODB_CLUSTER_ADMIN_PASSWORD",
+            "MONGODB_CLUSTER_ADMIN_USER",
+            "MONGODB_CLUSTER_MONITOR_PASSWORD",
+            "MONGODB_CLUSTER_MONITOR_USER",
+            "MONGODB_DATABASE_ADMIN_PASSWORD",
+            "MONGODB_DATABASE_ADMIN_USER",
+            "MONGODB_USER_ADMIN_PASSWORD",
+            "MONGODB_USER_ADMIN_USER"
+          ))))
+        | if (.data | length) == 10 then .
+          else error("source users secret does not contain the canonical PSMDB system-user keys")
+          end' \
+    | kubectl apply --namespace "$DRILL_NAMESPACE" -f - >/dev/null
+}
+copy_users_secret "$SOURCE_USERS_SECRET" "$TARGET_USERS_SECRET"
 copy_secret "$CREDENTIAL_SECRET" "$CREDENTIAL_SECRET"
 
 helm repo add percona https://percona.github.io/percona-helm-charts --force-update >/dev/null
@@ -264,6 +306,7 @@ helm repo update percona >/dev/null
 helm upgrade --install mongodb-restore-drill-operator percona/psmdb-operator \
   --namespace "$DRILL_NAMESPACE" \
   --version "$OPERATOR_VERSION" \
+  --skip-crds \
   --set watchNamespace="$DRILL_NAMESPACE" \
   --set watchAllNamespaces=false \
   --set disableTelemetry=true \
@@ -274,7 +317,9 @@ helm upgrade --install mongodb-restore-drill-operator percona/psmdb-operator \
   --wait --timeout 10m >/dev/null
 
 TARGET_JSON=$(jq --arg name "$TARGET_CLUSTER" --arg namespace "$DRILL_NAMESPACE" \
-  --arg users_secret "$TARGET_USERS_SECRET" --arg storage_size "$STORAGE_SIZE" '
+  --arg users_secret "$TARGET_USERS_SECRET" --arg storage_size "$STORAGE_SIZE" \
+  --arg storage_class "$STORAGE_CLASS" --arg pbm_image "$PBM_IMAGE" \
+  --arg pbm_memory_limit "$PBM_MEMORY_LIMIT" '
     del(.metadata.annotations,.metadata.creationTimestamp,.metadata.finalizers,
         .metadata.generateName,.metadata.generation,.metadata.labels,
         .metadata.managedFields,.metadata.ownerReferences,.metadata.resourceVersion,
@@ -284,6 +329,7 @@ TARGET_JSON=$(jq --arg name "$TARGET_CLUSTER" --arg namespace "$DRILL_NAMESPACE"
     | .spec.replsets |= map(
         .size = 1
         | .volumeSpec.persistentVolumeClaim.resources.requests.storage = $storage_size
+        | .volumeSpec.persistentVolumeClaim.storageClassName = $storage_class
         | .tolerations = [])
     | .spec.sharding.enabled = false
     | del(.spec.sharding.mongos, .spec.sharding.configsvrReplSet)
@@ -294,6 +340,10 @@ TARGET_JSON=$(jq --arg name "$TARGET_CLUSTER" --arg namespace "$DRILL_NAMESPACE"
     # starts PBM. Keep the agent enabled, but remove schedules and PITR so the
     # disposable cluster cannot create independent backups.
     | .spec.backup.enabled = true
+    | .spec.backup.image = $pbm_image
+    | .spec.backup.resources.requests.memory = "256Mi"
+    | .spec.backup.resources.limits.memory = $pbm_memory_limit
+    | .spec.backup.resources.limits.cpu = "2"
     | .spec.backup.tasks = []
     | .spec.backup.pitr.enabled = false
     | .spec.pmm.enabled = false' <<<"$SOURCE_JSON")
@@ -316,9 +366,97 @@ wait_for_state() {
   return 1
 }
 
+wait_for_backup_agent_stability() {
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local pod first_identity second_identity status
+  while (( SECONDS < deadline )); do
+    pod=$(kubectl get pods --namespace "$DRILL_NAMESPACE" \
+      -l "app.kubernetes.io/instance=${TARGET_CLUSTER},app.kubernetes.io/component=mongod" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$pod" ]]; then
+      first_identity=$(kubectl get pod "$pod" --namespace "$DRILL_NAMESPACE" -o json \
+        | jq -r '
+          .metadata.uid as $uid
+          | (.status.containerStatuses[]? | select(.name == "backup-agent")) as $agent
+          | select($agent.ready == true)
+          | "\($uid):\($agent.restartCount)"' 2>/dev/null || true)
+      status=$(kubectl exec --namespace "$DRILL_NAMESPACE" "$pod" -c backup-agent -- \
+        pbm status 2>/dev/null || true)
+      if [[ -n "$first_identity" ]] && grep -Eq 'pbm-agent .* OK' <<<"$status"; then
+        # The Operator can report the cluster Ready just before its first PBM
+        # configuration resync restarts backup-agent. Starting a restore in that
+        # window orphans the PBM operation. Require the same ready container to
+        # survive a bounded stability window and answer a second health check.
+        sleep 30
+        second_identity=$(kubectl get pod "$pod" --namespace "$DRILL_NAMESPACE" -o json \
+          | jq -r '
+            .metadata.uid as $uid
+            | (.status.containerStatuses[]? | select(.name == "backup-agent")) as $agent
+            | select($agent.ready == true)
+            | "\($uid):\($agent.restartCount)"' 2>/dev/null || true)
+        status=$(kubectl exec --namespace "$DRILL_NAMESPACE" "$pod" -c backup-agent -- \
+          pbm status 2>/dev/null || true)
+        if [[ "$first_identity" == "$second_identity" ]] \
+          && grep -Eq 'pbm-agent .* OK' <<<"$status"; then
+          return 0
+        fi
+      fi
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+backup_agent_identity() {
+  local pod=$1
+  kubectl get pod "$pod" --namespace "$DRILL_NAMESPACE" -o json \
+    | jq -r '
+      .metadata.uid as $uid
+      | (.status.containerStatuses[]? | select(.name == "backup-agent")) as $agent
+      | select($agent.ready == true)
+      | "\($uid):\($agent.restartCount):\($agent.lastState.terminated.reason // "none"):\($agent.lastState.terminated.exitCode // 0)"'
+}
+
+wait_for_restore_completion() {
+  local resource=$1 name=$2 pod=$3 baseline=$4
+  local deadline=$((SECONDS + TIMEOUT_SECONDS)) state current
+  while (( SECONDS < deadline )); do
+    state=$(kubectl get "$resource" "$name" --namespace "$DRILL_NAMESPACE" \
+      -o jsonpath='{.status.state}' 2>/dev/null || true)
+    state=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
+    if [[ "$state" == ready ]]; then
+      return 0
+    fi
+    case "$state" in
+      error|failed)
+        RESTORE_FAILURE="restore controller entered state ${state}"
+        return 1
+        ;;
+    esac
+
+    current=$(backup_agent_identity "$pod" 2>/dev/null || true)
+    if [[ -z "$current" || "${current%:*:*}" != "${baseline%:*:*}" ]]; then
+      RESTORE_FAILURE="backup-agent restarted or became unready during restore (before=${baseline}, after=${current:-unavailable})"
+      return 1
+    fi
+    sleep 10
+  done
+  RESTORE_FAILURE="restore exceeded ${TIMEOUT_SECONDS}s"
+  return 1
+}
+
 log INFO "Waiting for disposable MongoDB cluster to become ready"
 wait_for_state perconaservermongodb "$TARGET_CLUSTER" ready \
   || die "Disposable cluster did not become ready within ${TIMEOUT_SECONDS}s"
+log INFO "Waiting for PBM configuration and backup-agent to become stable"
+wait_for_backup_agent_stability \
+  || die "PBM backup-agent did not become stable within ${TIMEOUT_SECONDS}s"
+RESTORE_MONGO_POD=$(kubectl get pods --namespace "$DRILL_NAMESPACE" \
+  -l "app.kubernetes.io/instance=${TARGET_CLUSTER},app.kubernetes.io/component=mongod" \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+[[ -n "$RESTORE_MONGO_POD" ]] || die "Disposable mongod pod was not found"
+RESTORE_AGENT_IDENTITY=$(backup_agent_identity "$RESTORE_MONGO_POD" 2>/dev/null || true)
+[[ -n "$RESTORE_AGENT_IDENTITY" ]] || die "PBM backup-agent identity is unavailable"
 
 RESTORE_NAME="restore-$(date -u +%Y%m%d%H%M%S)"
 RESTORE_JSON=$(jq -cn --arg name "$RESTORE_NAME" --arg namespace "$DRILL_NAMESPACE" \
@@ -326,14 +464,18 @@ RESTORE_JSON=$(jq -cn --arg name "$RESTORE_NAME" --arg namespace "$DRILL_NAMESPA
     apiVersion: "psmdb.percona.com/v1",
     kind: "PerconaServerMongoDBRestore",
     metadata: {name: $name, namespace: $namespace},
-    spec: {clusterName: $cluster, backupSource: $source}
+    spec: {
+      clusterName: $cluster,
+      backupSource: $source
+    }
   }')
 kubectl apply --namespace "$DRILL_NAMESPACE" -f - >/dev/null <<<"$RESTORE_JSON"
 log INFO "Waiting for ${RESTORE_NAME} to finish"
-if ! wait_for_state perconaservermongodbrestore "$RESTORE_NAME" ready; then
+if ! wait_for_restore_completion perconaservermongodbrestore "$RESTORE_NAME" \
+  "$RESTORE_MONGO_POD" "$RESTORE_AGENT_IDENTITY"; then
   RESTORE_STATUS=$(kubectl get perconaservermongodbrestore "$RESTORE_NAME" \
     --namespace "$DRILL_NAMESPACE" -o json 2>/dev/null | jq -c '.status' || true)
-  die "MongoDB restore failed or timed out: ${RESTORE_STATUS:-no status}"
+  die "MongoDB restore failed: ${RESTORE_FAILURE}; status=${RESTORE_STATUS:-no status}"
 fi
 
 wait_for_state perconaservermongodb "$TARGET_CLUSTER" ready \

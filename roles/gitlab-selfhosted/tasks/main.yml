@@ -26,6 +26,32 @@
     gitlab_runner_concurrent: '{{ gitlab_runner_concurrent_jobs | default(10) }}'
     gitlab_runner_replicas: '{{ gitlab.runner.replicas | default(1) }}'
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
+    gitlab_image_builder_runner_enabled: >-
+      {{ ((gitlab.runner.image_builder | default({})).enabled |
+          default(gitlab_image_builder_runner_enabled | default(false))) | bool }}
+    gitlab_image_builder_runner_replicas: >-
+      {{ (gitlab.runner.image_builder | default({})).replicas |
+         default(gitlab_image_builder_runner_replicas | default(1)) }}
+    gitlab_image_builder_runner_concurrent: >-
+      {{ (gitlab.runner.image_builder | default({})).concurrent_jobs |
+         default(gitlab_image_builder_runner_concurrent_jobs | default(1)) }}
+    gitlab_image_builder_runner_namespace: >-
+      {{ gitlab_image_builder_runner_namespace | default('gitlab-image-builds') }}
+    gitlab_docker_host_runner_enabled: >-
+      {{ ((gitlab.runner.docker_host | default({})).enabled |
+          default(gitlab_docker_host_runner_enabled | default(false))) | bool }}
+    gitlab_docker_host_runner_replicas: >-
+      {{ (gitlab.runner.docker_host | default({})).replicas |
+         default(gitlab_docker_host_runner_replicas | default(1)) }}
+    gitlab_docker_host_runner_concurrent: >-
+      {{ (gitlab.runner.docker_host | default({})).concurrent_jobs |
+         default(gitlab_docker_host_runner_concurrent_jobs | default(1)) }}
+    gitlab_docker_host_runner_namespace: >-
+      {{ gitlab_docker_host_runner_namespace |
+         default('gitlab-docker-builds') }}
+    gitlab_docker_host_runner_worker_index: >-
+      {{ (gitlab.runner.docker_host | default({})).dedicated_worker_index |
+         default(gitlab_docker_host_runner_worker_index | default(0)) }}
     gitlab_public_webservice_enabled: '{{ gitlab.public_webservice_enabled | default(false) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
     gitlab_readiness_retries: '{{ gitlab.readiness_retries | default(180) }}'
@@ -55,6 +81,52 @@
       registration tokens are intentionally unsupported.
     quiet: true
   when: gitlab_runner_enabled | bool
+- name: Require a dedicated protected image-builder Runner identity
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_enabled | bool
+      - vault_encrypt_secrets | default(true) | bool
+      - gitlab_image_builder_runner_token | default('') |
+        string | trim | length > 20
+      - gitlab_image_builder_runner_token | default('') | string is match(
+          '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
+      - gitlab_image_builder_runner_token | string | trim !=
+        gitlab_runner_token | string | trim
+      - gitlab_image_builder_runner_replicas | int > 0
+      - gitlab_image_builder_runner_concurrent | int == 1
+    fail_msg: >-
+      The rootless image builder requires a distinct protected GitLab Runner
+      authentication token, one replica, and exactly one concurrent job. The
+      general Runner identity must never receive its Unconfined build-container
+      exception.
+    quiet: true
+  no_log: true
+  when: gitlab_image_builder_runner_enabled | bool
+- name: Require a dedicated protected Docker-smoke Runner identity
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_enabled | bool
+      - vault_encrypt_secrets | default(true) | bool
+      - gitlab_docker_host_runner_token | default('') |
+        string | trim | length > 20
+      - gitlab_docker_host_runner_token | default('') | string is match(
+          '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
+      - gitlab_docker_host_runner_token | string | trim !=
+        gitlab_runner_token | string | trim
+      - gitlab_docker_host_runner_token | string | trim !=
+        gitlab_image_builder_runner_token | string | trim
+      - gitlab_docker_host_runner_replicas | int > 0
+      - gitlab_docker_host_runner_concurrent | int == 1
+      - gitlab_docker_host_runner_worker_index | int > 0
+      - gitlab_docker_host_runner_worker_index | int <= worker_count | int
+    fail_msg: >-
+      Docker smoke jobs require a distinct protected Runner identity, one
+      replica, exactly one concurrent job, and a valid dedicated worker index.
+      Reusing either restricted Runner identity or a shared production worker
+      for the privileged DinD service is forbidden.
+    quiet: true
+  no_log: true
+  when: gitlab_docker_host_runner_enabled | bool
 - name: Create GitLab namespace
   kubernetes.core.k8s:
     state: present
@@ -1713,68 +1785,44 @@
   when:
     - gitlab_runner_enabled | bool
     - _gitlab_runner_auth_candidate | length > 0
-- name: Read the GitLab-managed Runner registration token for bootstrap
-  no_log: true
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: '{{ gitlab_namespace }}'
-    name: gitlab-gitlab-runner-secret
-  register: _gitlab_runner_registration_secret
-  when:
-    - gitlab_runner_enabled | bool
-    - >-
-      (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
-- name: Require the GitLab-managed Runner registration token for bootstrap
-  no_log: true
-  ansible.builtin.assert:
-    that:
-      - (_gitlab_runner_registration_secret.resources | default([]) | length) == 1
-      - >-
-        ((_gitlab_runner_registration_secret.resources | first).data[
-          'runner-registration-token'] | default('') | b64decode | length) >= 20
-    fail_msg: >-
-      GitLab did not publish a usable Runner registration token; refusing to
-      install an unregistered Runner.
-  when:
-    - gitlab_runner_enabled | bool
-    - >-
-      (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
-- name: Bootstrap a GitLab Runner identity through the internal API
+- name: Verify the declared GitLab Runner identity after persisted-token drift
   no_log: true
   ansible.builtin.shell: |
     set -euo pipefail
-    printf '%s' "$GITLAB_RUNNER_REGISTRATION_TOKEN" |
+    status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
         deployment/gitlab-toolbox -c toolbox -- sh -ec '
-          registration=$(cat)
+          token=$(cat)
           payload=$(printf \
-            "{\"token\":\"%s\",\"description\":\"%s\",\"tag_list\":\"kubernetes,docker,k8s\",\"run_untagged\":true,\"locked\":false}" \
-            "$registration" "{{ project_name }}")
+            "{\"token\":\"%s\",\"system_id\":\"s_ansible_k8s_reconcile\"}" \
+            "$token")
           printf "%s" "$payload" |
-            curl -fsS -H "Content-Type: application/json" --data-binary @- \
-              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners
-        '
+            curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners/verify
+        ')
+    test "$status" = 200
   args:
     executable: /bin/bash
   environment:
-    GITLAB_RUNNER_REGISTRATION_TOKEN: >-
-      {{
-        (_gitlab_runner_registration_secret.resources | first).data[
-          'runner-registration-token'] | b64decode
-      }}
-  register: _gitlab_runner_bootstrap
-  changed_when: true
+    GITLAB_RUNNER_TOKEN: '{{ gitlab_runner_token | string | trim }}'
+  register: _gitlab_runner_declared_verification
+  changed_when: false
+  failed_when: false
   when:
     - gitlab_runner_enabled | bool
     - >-
       (_gitlab_runner_auth_verification.rc | default(1) | int) != 0
-- name: Validate the bootstrapped GitLab Runner authentication token
+- name: Reject an invalid declared GitLab Runner identity
   no_log: true
   ansible.builtin.assert:
     that:
-      - (_gitlab_runner_bootstrap.stdout | from_json).token | default('') | length >= 20
-    fail_msg: GitLab Runner bootstrap did not return a usable authentication token.
+      - (_gitlab_runner_declared_verification.rc | default(1) | int) == 0
+    fail_msg: >-
+      The persisted GitLab Runner identity is stale and the declarative glrt-
+      authentication token is not valid. Rotate GITLAB_RUNNER_TOKEN in the
+      encrypted project secrets and rerun; legacy registration-token bootstrap
+      is intentionally forbidden.
   when:
     - gitlab_runner_enabled | bool
     - >-
@@ -1786,7 +1834,7 @@
       {{
         _gitlab_runner_auth_candidate
         if (_gitlab_runner_auth_verification.rc | default(1) | int) == 0
-        else (_gitlab_runner_bootstrap.stdout | from_json).token
+        else (gitlab_runner_token | string | trim)
       }}
   when: gitlab_runner_enabled | bool
 - name: Persist the reconciled GitLab Runner authentication token
@@ -1957,6 +2005,12 @@
   retries: 60
   delay: 10
   when: gitlab_runner_enabled | bool
+- name: Deploy the isolated protected image-builder Runner
+  ansible.builtin.include_tasks: image-builder-runner.yml
+  when: gitlab_image_builder_runner_enabled | bool
+- name: Deploy the isolated protected Docker-smoke Runner
+  ansible.builtin.include_tasks: docker-host-runner.yml
+  when: gitlab_docker_host_runner_enabled | bool
 - name: Create S3 cache secret for GitLab Runner
   no_log: true
   when:

@@ -65,6 +65,8 @@ ansible_ssh_strict_host_key_checking: true
 # concurrently. Override the port per cluster and run each controller with an
 # isolated HOME; project-specific SSH state is created below that HOME.
 k8s_api_local_port: 16443
+kubespray_execution_playbook: cluster.yml
+kubespray_execution_limit: ""
 
 # Kubernetes
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
@@ -131,6 +133,9 @@ hetzner_manage_dns: true
 # hetzner_dns_zone=example.com). Records are then written relative to this zone.
 hetzner_dns_zone: "{{ domain | default('', true) }}"
 k8s_create_external_tls: true
+gateway_extra_certificate_refs: []
+gateway_https_hostname: ""
+gateway_extra_https_listeners: []
 object_storage_create_external_routes: true
 object_storage_enabled: true
 
@@ -237,6 +242,8 @@ mongodb_backup_resources:
   limits:
     cpu: "{{ '500m' if resource_tier in ['minimal', 'small'] else '1' }}"
     memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
+mongodb_backup_starting_deadline_seconds: 1800
+mongodb_backup_image: percona/percona-backup-mongodb:2.15.0
 mongodb_replset_resources:
   requests:
     cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '250m' }}"
@@ -257,6 +264,19 @@ mongodb_pmm_resources:
 # renovate: datasource=helm depName=gitlab
 gitlab_chart_version: "10.1.2"
 gitlab_runner_concurrent_jobs: 10
+gitlab_image_builder_runner_enabled: false
+gitlab_image_builder_runner_replicas: 1
+gitlab_image_builder_runner_concurrent_jobs: 1
+gitlab_image_builder_runner_namespace: gitlab-image-builds
+gitlab_docker_host_runner_enabled: false
+gitlab_docker_host_runner_replicas: 1
+gitlab_docker_host_runner_concurrent_jobs: 1
+gitlab_docker_host_runner_namespace: gitlab-docker-builds
+gitlab_docker_host_runner_worker_index: 0
+
+# Public SSH is fail-closed. Supply operator/VPN CIDRs through a profile,
+# extra-vars, or comma-separated HETZNER_SSH_SOURCE_IPS in the ignored .env.
+hetzner_ssh_source_ips: []
 
 # GitOps (ArgoCD)
 # renovate: datasource=helm depName=argo-cd
@@ -392,6 +412,9 @@ backup_dr_enabled: false
 # duplicating it into platform.yaml; explicit profile values still win during
 # normalization. Credentials remain process-environment-only.
 backup_dr_storage_endpoint: "{{ lookup('env', 'BACKUP_DR_ENDPOINT') | default('', true) }}"
+backup_dr_allow_literal_ip_endpoint: >-
+  {{ lookup('env', 'BACKUP_DR_ALLOW_LITERAL_IP') |
+     default('false', true) | bool }}
 backup_dr_storage_region: "{{ lookup('env', 'BACKUP_DR_REGION') | default('us-east-1', true) }}"
 backup_dr_storage_bucket: "{{ lookup('env', 'BACKUP_DR_BUCKET') | default('', true) }}"
 backup_dr_storage_prefix: >-

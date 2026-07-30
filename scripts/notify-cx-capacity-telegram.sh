@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Check the complete medium-optimized CX mapping in every EU Hetzner location
-# and notify Telegram only when a location becomes newly deployable.
+# Check the medium-optimized CX mapping in Hetzner Helsinki (hel1) and notify
+# Telegram when availability changes. This wrapper never provisions resources.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

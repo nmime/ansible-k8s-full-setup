@@ -2,7 +2,8 @@
 # MEDIUM-OPTIMIZED PROFILE - medium foundation, small resource envelope
 # ============================================
 # Best for: Medium base platform on a constrained current-generation x86 shape
-# Nodes: 3 x cpx32 control plane + 3 x cpx32 workers + 1 x cpx22 bastion + lb11
+# Nodes: 3 x cpx32 control plane + 3 x cpx32 application workers
+#        + 1 x cpx32 isolated CI worker + 1 x cpx22 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -12,10 +13,11 @@ platform_profile: medium-optimized
 tier: medium
 resource_tier: small
 cost_estimate: >-
-  Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 workers, cpx22
-  bastion, lb11, one bastion IPv4, 300 GiB active replication-qualified local
-  claims in a 360 GiB expandable static pool, and 240 GiB provider-billable
-  persistent volumes including GitLab staging. See docs/COST_MODEL.md.
+  Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
+  workers, one isolated cpx32 CI worker, cpx22 bastion, lb11, one bastion IPv4,
+  300 GiB active replication-qualified local claims, and 240 GiB
+  provider-billable persistent volumes including GitLab staging. See
+  docs/COST_MODEL.md.
 
 global:
   project: k8s
@@ -32,7 +34,7 @@ hetzner_tier_specs:
     cp_min_cores: 4
     cp_min_memory: 8
     cp_schedulable: true
-    worker_count: 3
+    worker_count: 4
     worker_min_cores: 4
     worker_min_memory: 8
     lb_enabled: true
@@ -46,13 +48,14 @@ infrastructure:
     type: cpx32
     schedulable: true
   workers:
-    count: 3
+    count: 4
     type: cpx32
 
 # ---------------------------------------------
 # Network
 # ---------------------------------------------
 network:
+  ssh_source_ips: []
   bastion:
     enabled: true
     server_type: cpx22
@@ -214,7 +217,24 @@ gitlab:
   runner:
     enabled: true
     replicas: 2
-    concurrent_jobs: 2
+    # Keep two manager replicas for availability, but allow only one build per
+    # manager. General CI shares the application worker pool in this compact
+    # profile, so a four-build burst can evict or starve production workloads.
+    concurrent_jobs: 1
+    # Image builds need build-container-only Unconfined seccomp/AppArmor for
+    # rootless BuildKit. Keep that narrow exception in a protected, tagged,
+    # single-job runner rather than weakening the general CI runner.
+    image_builder:
+      enabled: true
+      replicas: 1
+      concurrent_jobs: 1
+    # Backward-compatible docker-host tag without Docker access on bastion:
+    # only the digest-pinned DinD service is privileged in its own namespace.
+    docker_host:
+      enabled: true
+      replicas: 1
+      concurrent_jobs: 1
+      dedicated_worker_index: 4
 
 # ---------------------------------------------
 # GitOps

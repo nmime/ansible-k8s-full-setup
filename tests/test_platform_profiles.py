@@ -34,6 +34,8 @@ COMPONENT_PATHS = (
     "databases.mongodb.enabled",
     "gitlab.enabled",
     "gitlab.runner.enabled",
+    "gitlab.runner.image_builder.enabled",
+    "gitlab.runner.docker_host.enabled",
     "gitops.enabled",
     "observability.enabled",
     "observability.pmm.enabled",
@@ -263,6 +265,18 @@ class TestNamedProfileContract:
             assert profile["databases"]["postgresql"]["enabled"]
             assert profile["dragonfly"]["enabled"]
 
+    @pytest.mark.parametrize("profile_name", EXPECTED_PROFILE_TIERS)
+    def test_privileged_dind_has_an_exclusive_worker(self, profile_name):
+        profile = load_profile(profile_name)
+        docker_host = profile["gitlab"]["runner"]["docker_host"]
+        worker_count = profile["infrastructure"]["workers"]["count"]
+        worker_index = docker_host["dedicated_worker_index"]
+        if docker_host["enabled"]:
+            assert 1 <= worker_index <= worker_count
+            assert worker_count >= 2
+        else:
+            assert worker_index == 0
+
     def test_small_workers_meet_the_declared_eight_gib_floor(self):
         assert load_profile("small")["infrastructure"]["workers"]["type"] == "cpx32"
 
@@ -271,12 +285,18 @@ class TestNamedProfileContract:
         production = load_profile("production")
 
         # Medium intentionally counts its three HA control-plane nodes in the
-        # workload envelope; production adds a third worker and dedicates its
-        # control plane to cluster services.
+        # workload envelope; production has three application workers, one
+        # tainted CI worker, and dedicates its control plane to cluster services.
         assert medium["infrastructure"]["control_plane"]["schedulable"] is True
         assert medium["infrastructure"]["workers"]["count"] == 2
         assert production["infrastructure"]["control_plane"]["schedulable"] is False
-        assert production["infrastructure"]["workers"]["count"] == 3
+        assert production["infrastructure"]["workers"]["count"] == 4
+        assert (
+            production["gitlab"]["runner"]["docker_host"][
+                "dedicated_worker_index"
+            ]
+            == 4
+        )
 
     def test_production_keeps_ha_explicit_on_the_conservative_envelope(self):
         profile = load_profile("production")
@@ -371,8 +391,14 @@ class TestMediumOptimizedContract:
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
         assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
-        assert self.profile["infrastructure"]["workers"]["count"] == 3
+        assert self.profile["infrastructure"]["workers"]["count"] == 4
         assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
+        assert (
+            self.profile["gitlab"]["runner"]["docker_host"][
+                "dedicated_worker_index"
+            ]
+            == 4
+        )
         assert self.profile["secrets"]["vault"]["replicas"] == 3
         assert self.profile["databases"]["postgresql"]["replicas"] == 3
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
@@ -419,7 +445,9 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["replicas"] == 2
-        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 2
+        # Two manager replicas provide HA while one job per manager bounds
+        # general CI to two concurrent builds on the application worker pool.
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
@@ -544,6 +572,8 @@ class TestResourceTierConsumers:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "profile=production" in result.stdout
         assert "resource_tier=small" in result.stdout
+        assert "Credentials for production.example.test" not in result.stdout
+        assert "./platform.sh credentials" in result.stdout
 
     def test_ansible_normalization_enforces_profile_contract(self):
         content = (
@@ -607,6 +637,19 @@ class TestResourceTierConsumers:
         assert content.count("node_type_overrides.get(desired_node_name") == 2
         assert content.count("'--type', node_type_overrides.get(") == 2
         assert "node_type_overrides.get(server.name, role_type)" in content
+        assert "Build the per-node worker type plan" in content
+        assert content.count('"Workers: {{ worker_type_plan | join(\', \') }}"') == 1
+        assert content.count('"  Workers: {{ worker_type_plan | join(\', \') }}"') == 1
+
+    def test_dedicated_ci_worker_is_private_and_not_an_ingress_target(self):
+        content = (
+            REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "Validate the dedicated CI worker index" in content
+        assert "'ci-worker'" in content
+        assert "reject('equalto', dedicated_ci_worker_index | int)" in content
+        assert "Ensure the dedicated CI worker is not an LB target" in content
+        assert "--without-ipv4', '--without-ipv6" in content
 
     def test_minimal_nodes_retain_live_test_headroom(self):
         defaults = yaml.safe_load(
@@ -715,6 +758,9 @@ class TestResourceTierConsumers:
         assert "for target in (master_ips" in tasks
         assert 'KUBECONFIG="$KUBECONFIG_FILE" kubectl' in supervisor
         assert "--known-hosts-file" in tasks
+        assert "controller_kubeconfig_file" in tasks
+        assert "Managed campaign API tunnel is already healthy" in tasks
+        assert "pgrep -f '[k]ube-api-tunnel-supervisor.sh'" in tasks
         assert 'UserKnownHostsFile=${KNOWN_HOSTS_FILE}' in supervisor
         assert "get --raw=/readyz" in supervisor
         assert "config set-cluster cluster.local" in tasks
@@ -749,6 +795,7 @@ class TestResourceTierConsumers:
         assert "fact_caching_connection = ~/.ansible/facts" in ansible_cfg
         assert "control_path_dir = ~/.ansible/cp" in ansible_cfg
         assert "known_hosts-{{ project_name | default('k8s') }}" in cluster
+        assert "lookup('env', 'KUBECONFIG').split(':') | first" in cluster
         assert "/tmp/ansible-k8s-cp/" in cluster
         assert "hash('sha256')" in cluster
         assert ".cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests" in cluster

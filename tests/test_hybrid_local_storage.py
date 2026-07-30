@@ -62,6 +62,17 @@ def test_static_local_pool_is_retained_capacity_aware_and_gated():
     assert 'tonumber] | add\' <<<"$pool")" -eq 450' in tasks
     assert "three-plus-three-v1" in tasks
     assert "local_storage_min_free_gib_per_node" in tasks
+    assert (
+        'select(.metadata.labels["workload.n0xeid.xyz/ci-docker"] != "true")'
+        in tasks
+    )
+    assert "key: workload.n0xeid.xyz/ci-docker" in tasks
+    assert "operator: DoesNotExist" in tasks
+    assert "workload.n0xeid.xyz/ci-docker=true:NoSchedule" in tasks
+    assert (
+        "if [ ! -f /storage/.platform-static-local-pv-ready ]; then"
+        in tasks
+    )
     assert "capacity_kib >= (70 * 1024 * 1024)" in tasks
     assert "capacity_kib >= (140 * 1024 * 1024)" in tasks
     assert "kind: PriorityClass" in tasks

@@ -274,10 +274,39 @@ backup:
 Resolved defaults are in `roles/backup-restore/defaults/main.yml`. The S3
 bucket is `backups`; GitLab Toolbox archives use the chart's
 `gitlab-backups` bucket. The verification job checks only enabled components.
+MongoDB operator schedules have a 30-minute starting-deadline grace by
+default, so a brief operator or control-plane interruption does not permanently
+skip the backup window. Override it with
+`mongodb_backup_starting_deadline_seconds` only when the operational RPO and
+maintenance window require a different bound.
+
+The PSMDB 1.23 platform pin uses PBM 2.15.0. Keep
+`mongodb_backup_image` aligned with the Operator release so production backups
+and isolated restore drills use the release-tested PBM protocol and metadata
+contract.
+
+Component-only reconciliations reuse
+`.campaign-state/<project>/.platform-secrets.yml` when that operator state
+exists. Before either database backup client is changed, the database role
+compares this encrypted identity with
+`storage/seaweedfs-backup-credentials` and fails closed on drift. Rotate the
+SeaweedFS identity and all consumers as one maintenance operation; never
+replace only the PostgreSQL or MongoDB copy.
+
+External DR endpoints are DNS-bound by default. A workstation-hosted S3 target
+reached through an explicitly pinned IPv4 tunnel may opt in with
+`BACKUP_DR_ALLOW_LITERAL_IP=true`; the playbook then rejects any address that
+collides with a protected-cluster node, Pod, Service, or load balancer and
+allows egress only to that `/32` and configured port.
 
 ## Restore drills
 
 Always start in dry-run mode and use an isolated test cluster/namespace:
+
+The MongoDB drill labels its disposable namespace
+`backup-restore.io/drill=true`. The storage ingress policy recognizes only
+that explicit label, so PBM can read the backup without granting general
+cross-namespace access to SeaweedFS.
 
 ```bash
 ./scripts/pg-restore-drill.sh --dry-run

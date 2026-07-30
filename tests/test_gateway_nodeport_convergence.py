@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CLUSTER_TASKS = ROOT / "roles/k8s-cluster-management/tasks/main.yml"
@@ -9,6 +11,8 @@ HEADSCALE_COMPOSE = (
     ROOT / "roles/network-security/templates/headscale-docker-compose.yml.j2"
 )
 EVIDENCE_SCRIPT = ROOT / "scripts/collect-live-evidence.sh"
+DEFAULTS = ROOT / "defaults/main.yml"
+NORMALIZE_PROFILE = ROOT / "playbooks/tasks/normalize_profile.yml"
 
 
 def test_cilium_gateway_nodeports_are_discovered_not_mutated():
@@ -40,6 +44,8 @@ def test_hetzner_lb_tracks_live_gateway_ports_and_fails_closed():
 
     gate = tasks[health:]
     assert "all($checks[]; .status == \"healthy\")" in gate
+    assert "(dedicated_ci_worker_index | int) > 0" in gate
+    assert "(worker_count | int)" in gate
     assert "retries: 40" in gate
 
 
@@ -100,3 +106,21 @@ def test_live_evidence_captures_gateway_provider_parity_without_secrets():
     assert "HCLOUD_TOKEN" in script
     assert "load-balancer.json" in script
     assert "Secrets" in script
+
+
+def test_public_gateway_supports_additional_project_certificates():
+    cluster = CLUSTER_TASKS.read_text()
+    defaults = yaml.safe_load(DEFAULTS.read_text())
+    normalize = NORMALIZE_PROFILE.read_text()
+
+    assert defaults["gateway_extra_certificate_refs"] == []
+    assert defaults["gateway_https_hostname"] == ""
+    assert defaults["gateway_extra_https_listeners"] == []
+    assert "kubernetes.gateway" in normalize
+    assert "extra_certificate_refs" in normalize
+    assert "https_hostname" in normalize
+    assert "extra_https_listeners" in normalize
+    assert "gateway_extra_certificate_refs | default([])" in cluster
+    assert "gateway_extra_https_listeners | default([])" in cluster
+    assert "gateway_https_hostname" in cluster
+    assert "{'name': 'wildcard-tls', 'namespace': 'gateway-secrets'}" in cluster

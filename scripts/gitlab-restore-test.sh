@@ -50,6 +50,7 @@ STORAGE_SIZE="20Gi"
 DRY_RUN=false
 CLEANUP_ONLY=false
 LIST_BACKUPS=false
+RESTORE_NAMESPACE_CREATED=false
 
 # ── Counters ──────────────────────────────────────────────────
 PASS_COUNT=0
@@ -85,7 +86,7 @@ done
 # ── Cleanup handler ───────────────────────────────────────────
 cleanup_namespace() {
   section "Cleaning up restore namespace"
-  if kubectl get namespace "$RESTORE_NS" &>/dev/null; then
+  if kubectl get namespace "$RESTORE_NS" --request-timeout=10s &>/dev/null; then
     kubectl delete namespace "$RESTORE_NS" --wait --timeout=300s
     pass "Namespace $RESTORE_NS deleted"
   else
@@ -96,7 +97,7 @@ cleanup_namespace() {
 # Invoked indirectly by the EXIT trap.
 # shellcheck disable=SC2317,SC2329
 cleanup_on_exit() {
-  if [ "$DRY_RUN" = "false" ] && [ "$RESTORE" = "true" ]; then
+  if [ "$RESTORE_NAMESPACE_CREATED" = "true" ]; then
     cleanup_namespace
   fi
 }
@@ -266,6 +267,7 @@ if kubectl get namespace "$RESTORE_NS" &>/dev/null; then
 fi
 
 kubectl create namespace "$RESTORE_NS"
+RESTORE_NAMESPACE_CREATED=true
 pass "Namespace $RESTORE_NS created"
 
 # Add TTL label for auto-cleanup tracking
