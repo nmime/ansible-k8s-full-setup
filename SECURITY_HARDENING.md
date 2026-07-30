@@ -22,6 +22,13 @@
   worker. Build/helper containers remain non-privileged with RuntimeDefault
   seccomp and dropped capabilities. The CI worker has no public IP, is not a
   load-balancer target, and is excluded from local-PV discovery.
+- The protected rootless image-builder Runner is non-privileged, single-job,
+  untagged-job-disabled, and isolated in its own namespace and egress policy.
+  Only its build container uses Unconfined seccomp/AppArmor plus
+  `allowPrivilegeEscalation` and `SETUID`/`SETGID`; this is the narrow exception
+  required by BuildKit's setuid `newuidmap`/`newgidmap` helpers. Helper and
+  manager containers retain RuntimeDefault confinement, the build pod mounts
+  no service-account token, and no host socket or host path is exposed.
 - Elasticsearch uses the Basic license and verified TLS clients; no forged
   license artifact or paid-feature bypass is present.
 - External CLI/manifests changed by this audit are version pinned and verified
