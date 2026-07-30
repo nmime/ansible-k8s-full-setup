@@ -1,0 +1,44 @@
+{
+  "tagOwners": {
+    "{{ headscale_subnet_router_tag }}": ["{{ headscale_admin_user }}@"]
+  },
+  "autoApprovers": {
+    "routes": {
+      "{{ private_network_cidr }}": ["{{ headscale_subnet_router_tag }}"]
+    }
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["{{ headscale_admin_user }}@"],
+      "proto": "tcp",
+      "dst": ["{{ headscale_subnet_router_tag }}:22"]
+    }{% if headscale_admin_private_icmp_enabled | bool %},
+    {
+      "action": "accept",
+      "src": ["{{ headscale_admin_user }}@"],
+      "proto": "icmp",
+      "dst": ["{{ headscale_subnet_router_tag }}:*"]
+    }{% endif %},
+    {
+      "action": "accept",
+      "src": ["{{ headscale_admin_user }}@"],
+      "proto": "tcp",
+      "dst": [
+        "{{ private_network_cidr }}:{{ headscale_admin_private_tcp_ports | map('string') | join(',') }}"
+      ]
+    }{% if headscale_admin_private_icmp_enabled | bool %},
+    {
+      "action": "accept",
+      "src": ["{{ headscale_admin_user }}@"],
+      "proto": "icmp",
+      "dst": ["{{ private_network_cidr }}:*"]
+    }{% endif %}{% if headscale_developer_https_enabled | bool %},
+    {
+      "action": "accept",
+      "src": ["{{ headscale_developer_user }}@"],
+      "proto": "tcp",
+      "dst": ["{{ services_subnet }}:443"]
+    }{% endif %}
+  ]
+}
