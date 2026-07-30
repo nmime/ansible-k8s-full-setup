@@ -444,9 +444,9 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["toolbox_memory_limit"] == "3Gi"
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
-        assert self.profile["gitlab"]["runner"]["replicas"] == 2
-        # Two manager replicas provide HA while one job per manager bounds
-        # general CI to two concurrent builds on the application worker pool.
+        assert self.profile["gitlab"]["runner"]["replicas"] == 3
+        # One manager per general-purpose worker preserves HA while one job per
+        # manager bounds general CI to three concurrent builds.
         assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
