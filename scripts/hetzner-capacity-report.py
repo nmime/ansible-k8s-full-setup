@@ -31,6 +31,9 @@ FAMILY_ARCHITECTURE = {
     name: values["architecture"] for name, values in TARIFF_CATALOG["families"].items()
 }
 TARIFF_TYPES: dict[str, dict[str, dict[str, str]]] = TARIFF_CATALOG["profiles"]
+ADDITIONAL_WORKERS: dict[str, dict[str, list[dict[str, str]]]] = (
+    TARIFF_CATALOG.get("additional_workers", {})
+)
 
 
 def api_get(path: str, token: str, endpoint: str) -> dict[str, Any]:
@@ -171,12 +174,32 @@ def build_plans(
         volume_total = volume_price * volume_gib
         for family in FAMILY_ORDER:
             selected = TARIFF_TYPES[profile_name][family]
-            missing = [name for name in selected.values() if name not in by_name]
+            additional_workers = ADDITIONAL_WORKERS.get(profile_name, {}).get(
+                family, []
+            )
+            selected_names = list(selected.values()) + [
+                worker["type"] for worker in additional_workers
+            ]
+            missing = [name for name in selected_names if name not in by_name]
             if missing:
                 raise RuntimeError(f"catalog is missing tariff types: {', '.join(missing)}")
+            application_worker_count = worker_count - len(additional_workers)
+            if application_worker_count < 1:
+                raise RuntimeError(
+                    f"{profile_name}/{family} has no application workers after "
+                    "dedicated worker allocation"
+                )
             compute = (
                 Decimal(by_name[selected["control_plane"]]["monthly_net"]) * cp_count
-                + Decimal(by_name[selected["worker"]]["monthly_net"]) * worker_count
+                + Decimal(by_name[selected["worker"]]["monthly_net"])
+                * application_worker_count
+                + sum(
+                    (
+                        Decimal(by_name[worker["type"]]["monthly_net"])
+                        for worker in additional_workers
+                    ),
+                    Decimal("0"),
+                )
             )
             if bastion_enabled:
                 compute += Decimal(by_name[selected["bastion"]]["monthly_net"]) + ipv4_price
@@ -184,6 +207,12 @@ def build_plans(
             selected_availability = {
                 role: bool(by_name[name]["available"]) for role, name in selected.items()
             }
+            selected_availability.update(
+                {
+                    worker["role"]: bool(by_name[worker["type"]]["available"])
+                    for worker in additional_workers
+                }
+            )
             plans.append(
                 {
                     "profile": profile_name,
@@ -193,6 +222,8 @@ def build_plans(
                     "types": selected,
                     "control_plane_count": cp_count,
                     "worker_count": worker_count,
+                    "application_worker_count": application_worker_count,
+                    "additional_workers": additional_workers,
                     "availability": selected_availability,
                     "all_types_available": all(selected_availability.values()),
                     "deployment_status": (

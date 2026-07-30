@@ -53,3 +53,21 @@ profiles:
     cax: {bastion: cax11, control_plane: cax31, worker: cax31}
     cpx: {bastion: cpx22, control_plane: cpx42, worker: cpx42}
     ccx: {bastion: ccx13, control_plane: ccx23, worker: ccx23}
+
+# Workers beyond the application-worker floor that belong to an isolated
+# operational lane. They are priced separately because their disk and memory
+# floors differ from the ordinary worker mapping.
+additional_workers:
+  medium-optimized:
+    cx:
+      - {role: ci-docker, type: cx43}
+      - {role: ci-build, type: cx53}
+    cax:
+      - {role: ci-docker, type: cax31}
+      - {role: ci-build, type: cax41}
+    cpx:
+      - {role: ci-docker, type: cpx32}
+      - {role: ci-build, type: cpx42}
+    ccx:
+      - {role: ci-docker, type: ccx23}
+      - {role: ci-build, type: ccx43}

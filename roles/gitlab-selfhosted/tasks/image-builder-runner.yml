@@ -205,7 +205,12 @@
             [runners.kubernetes]
               namespace = "{{ gitlab_image_builder_runner_namespace }}"
               image = "ubuntu:22.04"
+          {% if gitlab_runner_worker_index | default(0) | int > 0 %}
+              node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
+              node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+          {% else %}
               node_selector = { "node-role.kubernetes.io/worker" = "true" }
+          {% endif %}
               privileged = false
               allow_privilege_escalation = false
               cap_drop = ["ALL"]

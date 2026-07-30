@@ -216,22 +216,45 @@
     worker_type: "{{ hetzner_worker_type | default(auto_worker_type, true) | trim }}"
     bastion_type: "{{ hetzner_bastion_type | default(auto_bastion_type, true) | trim }}"
     lb_enabled: "{{ current_tier_spec.lb_enabled | default(true) }}"
-    node_type_overrides: "{{ infrastructure.node_type_overrides | default({}) }}"
-    dedicated_ci_worker_index: >-
+    node_type_overrides: >-
+      {%- set ns = namespace(items={}) -%}
+      {%- for index, server_type in
+            (infrastructure.workers.type_overrides | default({})).items() -%}
+      {%- set ns.items = ns.items | combine({
+            project + '-worker-' + (index | string): server_type
+          }) -%}
+      {%- endfor -%}
+      {{ ns.items | combine(infrastructure.node_type_overrides | default({})) }}
+    dedicated_build_ci_worker_index: >-
+      {{ gitlab_runner_worker_index | default(0) | int }}
+    dedicated_docker_ci_worker_index: >-
       {{ gitlab_docker_host_runner_worker_index | default(0) | int }}
+    dedicated_ci_worker_indices: >-
+      {{
+        [
+          gitlab_runner_worker_index | default(0) | int,
+          gitlab_docker_host_runner_worker_index | default(0) | int
+        ] | reject('equalto', 0) | unique | list
+      }}
 
-- name: Validate the dedicated CI worker index
+- name: Validate the dedicated CI worker indices
   ansible.builtin.assert:
     that:
-      - dedicated_ci_worker_index | int >= 0
-      - dedicated_ci_worker_index | int <= worker_count | int
+      - dedicated_build_ci_worker_index | int >= 0
+      - dedicated_build_ci_worker_index | int <= worker_count | int
+      - dedicated_docker_ci_worker_index | int >= 0
+      - dedicated_docker_ci_worker_index | int <= worker_count | int
       - >-
         not (gitlab_docker_host_runner_enabled | default(false) | bool)
-        or dedicated_ci_worker_index | int > 0
+        or dedicated_docker_ci_worker_index | int > 0
+      - >-
+        dedicated_build_ci_worker_index | int == 0
+        or dedicated_build_ci_worker_index | int !=
+           dedicated_docker_ci_worker_index | int
     fail_msg: >-
-      The protected Docker-smoke Runner must use a dedicated worker index
-      between 1 and infrastructure.workers.count. Zero is allowed only while
-      that Runner is disabled.
+      Dedicated CI worker indices must be inside infrastructure.workers.count.
+      The protected Docker-smoke Runner requires a non-zero worker, while a
+      configured CI-build worker must use a different node.
 
 - name: Validate per-node server type override structure
   ansible.builtin.assert:
@@ -240,7 +263,8 @@
     fail_msg: >-
       infrastructure.node_type_overrides must be a mapping from a full
       {{ project }}-master-N or {{ project }}-worker-N server name to a server
-      type.
+      type. infrastructure.workers.type_overrides may provide the reusable
+      worker-index form; explicit full-name overrides take precedence.
 
 - name: Build the per-node worker type plan
   ansible.builtin.set_fact:
@@ -1138,8 +1162,10 @@
           '--label',
           'project=' + project
           + ',role='
-          + ('ci-worker'
-             if item == (dedicated_ci_worker_index | int)
+          + ('ci-build-worker'
+             if item == (dedicated_build_ci_worker_index | int)
+             else 'ci-docker-worker'
+             if item == (dedicated_docker_ci_worker_index | int)
              else 'worker')
           + ',index=' + (item | string)
         ]
@@ -1437,8 +1463,8 @@
       --use-private-ip
   loop: >-
     {{ range(1, (worker_count | int) + 1)
-       | reject('equalto', dedicated_ci_worker_index | int)
-       | list }}
+       | difference(dedicated_ci_worker_indices)
+       | list | sort }}
   register: lb_target
   changed_when: lb_target.rc == 0
   retries: "{{ hcloud_write_retries }}"
@@ -1450,11 +1476,12 @@
   failed_when: lb_target.rc != 0 and 'already' not in (lb_target.stderr | default('')) and 'target' not in (lb_target.stderr | default(''))
   when: lb_enabled | bool
 
-- name: Ensure the dedicated CI worker is not an LB target
+- name: Ensure dedicated CI workers are not LB targets
   ansible.builtin.command:
     cmd: >
       hcloud load-balancer remove-target {{ project }}-lb
-      --server {{ project }}-worker-{{ dedicated_ci_worker_index }}
+      --server {{ project }}-worker-{{ item }}
+  loop: "{{ dedicated_ci_worker_indices }}"
   register: ci_lb_target_removal
   changed_when: ci_lb_target_removal.rc == 0
   retries: "{{ hcloud_write_retries }}"
@@ -1469,7 +1496,7 @@
     'target' not in (ci_lb_target_removal.stderr | default('') | lower)
   when:
     - lb_enabled | bool
-    - dedicated_ci_worker_index | int > 0
+    - dedicated_ci_worker_indices | length > 0
 
 - name: Get load balancer public IP
   ansible.builtin.command:
@@ -1487,7 +1514,8 @@
     desired_lb_server_target_ids: >-
       {%- set ns = namespace(ids=[]) -%}
       {%- for server in project_servers_raw.stdout | from_json -%}
-      {%- if server.name in worker_ips.keys() | list -%}
+      {%- if server.name in worker_ips.keys() | list
+          and (server.labels.role | default('worker')) == 'worker' -%}
       {%- set _ = ns.ids.append(server.id) -%}
       {%- endif -%}
       {%- endfor -%}
