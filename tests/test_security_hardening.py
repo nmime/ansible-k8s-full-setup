@@ -1040,6 +1040,9 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
     assert pgbackrest["jobs"]["resources"] == (
         "{{ postgresql_pgbackrest_job_resources }}"
     )
+    assert pgbackrest["jobs"]["ttlSecondsAfterFinished"] == (
+        "{{ postgresql_pgbackrest_job_ttl_seconds | int }}"
+    )
     assert pgbackrest["repoHost"]["resources"] == (
         "{{ postgresql_pgbackrest_repo_host_resources }}"
     )

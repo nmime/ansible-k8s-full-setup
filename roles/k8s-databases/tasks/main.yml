@@ -614,6 +614,7 @@
               resources: '{{ postgresql_pgbackrest_init_resources }}'
             jobs:
               resources: '{{ postgresql_pgbackrest_job_resources }}'
+              ttlSecondsAfterFinished: '{{ postgresql_pgbackrest_job_ttl_seconds | int }}'
             repoHost:
               resources: '{{ postgresql_pgbackrest_repo_host_resources }}'
             configuration:

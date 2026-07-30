@@ -216,6 +216,7 @@ postgresql_pgbackrest_job_resources:
   limits:
     cpu: "{{ '1' if resource_tier in ['minimal', 'small'] else '2' }}"
     memory: "{{ '1Gi' if resource_tier in ['minimal', 'small'] else '2Gi' }}"
+postgresql_pgbackrest_job_ttl_seconds: 86400
 mongodb_backup_resources:
   requests:
     cpu: "{{ '50m' if resource_tier in ['minimal', 'small'] else '100m' }}"
