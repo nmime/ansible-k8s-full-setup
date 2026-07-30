@@ -162,7 +162,20 @@ VERSION_REGISTRY = {
         "value": "2.11.4-alpine",
         "files": [
             ("defaults/main.yml", 'caddy_image_tag: "2.11.4-alpine"'),
-            ("roles/network-security/tasks/main.yml", "image: caddy:{{ caddy_image_tag }}"),
+            (
+                "roles/network-security/templates/headscale-docker-compose.yml.j2",
+                "image: caddy:{{ caddy_image_tag }}",
+            ),
+        ],
+    },
+    "tailscale_version": {
+        "value": "1.98.10",
+        "files": [
+            ("defaults/main.yml", 'tailscale_version: "1.98.10"'),
+            (
+                "roles/network-security/tasks/main.yml",
+                "tailscale={{ tailscale_version }}",
+            ),
         ],
     },
     "coroot_versions": {

@@ -103,7 +103,20 @@ promtail_linux_amd64_sha256: 3a5120422a2a8aa26659a188d63f1425707ed42a1af274acc0a
 
 # Bastion service images
 headscale_version: "0.28.0"
+tailscale_version: "1.98.10"
 caddy_image_tag: "2.11.4-alpine"
+headscale_admin_user: admin
+headscale_developer_user: dev
+headscale_subnet_router_tag: "tag:subnet-router"
+headscale_dns_base_domain: "{{ 'tail.' + domain }}"
+headscale_preauth_key_expiration: 1h
+headscale_admin_private_tcp_ports:
+  - 22
+  - 80
+  - 443
+  - 6443
+headscale_admin_private_icmp_enabled: true
+headscale_developer_https_enabled: false
 
 # Network
 private_network_cidr: 10.0.0.0/16

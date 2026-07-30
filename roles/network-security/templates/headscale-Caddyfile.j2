@@ -1,0 +1,8 @@
+{
+  admin off
+}
+
+{{ vpn_domain }} {
+  header -Server
+  reverse_proxy headscale:8080
+}

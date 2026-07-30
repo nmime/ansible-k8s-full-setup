@@ -5,6 +5,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CLUSTER_TASKS = ROOT / "roles/k8s-cluster-management/tasks/main.yml"
 INFRA_TASKS = ROOT / "roles/hetzner-infra/tasks/main.yml"
 NETWORK_TASKS = ROOT / "roles/network-security/tasks/main.yml"
+HEADSCALE_COMPOSE = (
+    ROOT / "roles/network-security/templates/headscale-docker-compose.yml.j2"
+)
 EVIDENCE_SCRIPT = ROOT / "scripts/collect-live-evidence.sh"
 
 
@@ -52,6 +55,7 @@ def test_infrastructure_bootstrap_does_not_overwrite_converged_ports():
 def test_minimal_tier_reuses_bastion_as_an_sni_aware_edge():
     cluster = CLUSTER_TASKS.read_text()
     network = NETWORK_TASKS.read_text()
+    compose = HEADSCALE_COMPOSE.read_text()
     infra = INFRA_TASKS.read_text()
 
     assert "Converge the minimal-tier bastion edge to live Gateway NodePorts" in cluster
@@ -76,8 +80,8 @@ def test_minimal_tier_reuses_bastion_as_an_sni_aware_edge():
     assert "regex_replace('(?i)^sha256 fingerprint=', '')" in cluster[served:strict_tls]
     assert "not (lb_enabled | default(false) | bool)" not in cluster[strict_tls:]
 
-    assert "127.0.0.1:8443:443" in network
-    assert "127.0.0.1:8080:80" in network
+    assert "127.0.0.1:8443:443" in compose
+    assert "127.0.0.1:8080:80" in compose
     assert "Install HAProxy edge multiplexer on bastion" in network
     assert "Require the public Headscale edge to answer through HAProxy" in network
 
