@@ -58,7 +58,17 @@ def test_kubespray_execution_is_bounded_and_secret_safe():
     assert run["no_log"] is True
     assert "umask 077" in run["ansible.builtin.shell"]
     assert "chmod 0600" in run["ansible.builtin.shell"]
-    assert "> {{ kubespray_secure_log | quote }} 2>&1" in run[
+    assert "playbooks/facts.yml" in run["ansible.builtin.shell"]
+    assert "selected_kubespray_playbook | quote }} == scale.yml" in run[
+        "ansible.builtin.shell"
+    ]
+    assert "ansible_ssh_private_key_file:" in read(
+        "roles/k8s-cluster-management/tasks/main.yml"
+    )
+    assert "-o BatchMode=yes" in read(
+        "roles/k8s-cluster-management/tasks/main.yml"
+    )
+    assert ">> {{ kubespray_secure_log | quote }} 2>&1" in run[
         "ansible.builtin.shell"
     ]
     assert "details redacted; inspect protected log" in summary[

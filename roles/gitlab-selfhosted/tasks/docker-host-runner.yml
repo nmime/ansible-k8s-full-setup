@@ -196,7 +196,12 @@
       serviceAccount:
         create: true
       nodeSelector:
-        node-role.kubernetes.io/worker: 'true'
+        workload.n0xeid.xyz/ci-docker: 'true'
+      tolerations:
+        - key: workload.n0xeid.xyz/ci-docker
+          operator: Equal
+          value: 'true'
+          effect: NoSchedule
       podSecurityContext:
         runAsNonRoot: true
         runAsUser: 100

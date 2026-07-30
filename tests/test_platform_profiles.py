@@ -798,6 +798,7 @@ class TestResourceTierConsumers:
         assert "fact_caching_connection = ~/.ansible/facts" in ansible_cfg
         assert "control_path_dir = ~/.ansible/cp" in ansible_cfg
         assert "known_hosts-{{ project_name | default('k8s') }}" in cluster
+        assert "lookup('env', 'K8S_AUTH_KUBECONFIG').split(':') | first" in cluster
         assert "lookup('env', 'KUBECONFIG').split(':') | first" in cluster
         assert "/tmp/ansible-k8s-cp/" in cluster
         assert "hash('sha256')" in cluster

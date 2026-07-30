@@ -18,19 +18,26 @@
     certmanager_replicas: "{{ kubernetes.cert_manager_replicas | default(1 if resource_tier in ['minimal', 'small'] else 3) }}"
     controller_known_hosts_file: >-
       {{ lookup('env', 'HOME') }}/.ssh/known_hosts-{{ project_name | default('k8s') }}
+    controller_ssh_private_key_file: >-
+      {{ (ssh_key_path | default('~/.ssh/id_ed25519')) |
+         regex_replace('^~', lookup('env', 'HOME')) }}
     kubespray_control_path_dir: >-
       /tmp/ansible-k8s-cp/{{ (project_name | default('k8s') | hash('sha256'))[:16] }}
     cluster_manifest_dir: >-
       {{ lookup('env', 'HOME') }}/.cache/ansible-k8s/{{ project_name | default('k8s') }}/manifests
     local_api_port: "{{ k8s_api_local_port | default(16443) | int }}"
     controller_kubeconfig_file: >-
-      {{ (lookup('env', 'KUBECONFIG').split(':') | first)
-         if lookup('env', 'KUBECONFIG') | length > 0
-         else lookup('env', 'HOME') + '/.kube/config' }}
+      {{ (lookup('env', 'K8S_AUTH_KUBECONFIG').split(':') | first)
+         if lookup('env', 'K8S_AUTH_KUBECONFIG') | length > 0
+         else ((lookup('env', 'KUBECONFIG').split(':') | first)
+               if lookup('env', 'KUBECONFIG') | length > 0
+               else lookup('env', 'HOME') + '/.kube/config') }}
     controller_tunnel_pid_file: >-
-      {{ ((lookup('env', 'KUBECONFIG').split(':') | first | dirname)
-          if lookup('env', 'KUBECONFIG') | length > 0
-          else lookup('env', 'HOME') + '/.kube')
+      {{ ((lookup('env', 'K8S_AUTH_KUBECONFIG').split(':') | first | dirname)
+          if lookup('env', 'K8S_AUTH_KUBECONFIG') | length > 0
+          else ((lookup('env', 'KUBECONFIG').split(':') | first | dirname)
+                if lookup('env', 'KUBECONFIG') | length > 0
+                else lookup('env', 'HOME') + '/.kube'))
          + '/' + (project_name | default('k8s')) + '-api-tunnel.pid' }}
     dedicated_build_ci_worker_index: >-
       {{ gitlab_runner_worker_index | default(0) | int }}
@@ -269,7 +276,8 @@
         - NodeRestriction
         - PodSecurity
       # SSH
-      ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -o ProxyCommand="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip | default("") }}"'
+      ansible_ssh_private_key_file: {{ controller_ssh_private_key_file }}
+      ansible_ssh_common_args: '-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -o ProxyCommand="ssh -i {{ controller_ssh_private_key_file }} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip | default("") }}"'
       ansible_user: root
       # etcd
       etcd_deployment_type: host
@@ -347,10 +355,12 @@
 
 - name: Verify SSH connectivity to k8s nodes via bastion before Kubespray
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new \
+    ssh -i {{ controller_ssh_private_key_file | quote }} \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
       -o ConnectTimeout=15 \
-      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
+      -o ProxyCommand='ssh -i {{ controller_ssh_private_key_file }} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
       root@{{ item }} 'echo CONNECTIVITY_OK'
   delegate_to: localhost
   become: false
@@ -409,7 +419,9 @@
 
 - name: Adopt GatewayClass cilium for Helm (idempotent)
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new \
+    ssh -i {{ controller_ssh_private_key_file | quote }} \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
       root@{{ bastion_public_ip }} '
       if kubectl get gatewayclass cilium >/dev/null 2>&1; then
@@ -433,6 +445,22 @@
     unset ANSIBLE_CONFIG ANSIBLE_SSH_ARGS ANSIBLE_SSH_COMMON_ARGS
     export ANSIBLE_CONFIG={{ playbook_dir }}/kubespray/ansible.cfg
     cd {{ playbook_dir }}/kubespray
+    : > {{ kubespray_secure_log | quote }}
+    if [[ {{ selected_kubespray_playbook | quote }} == scale.yml ]]; then
+      # Kubespray refuses a limited scale run unless facts for every excluded
+      # cluster member are already cached. Populate that cache without a limit
+      # immediately before joining the single selected worker.
+      {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook \
+        -i inventory/{{ project }}/hosts.yml \
+        --become --become-user=root \
+        playbooks/facts.yml \
+        >> {{ kubespray_secure_log | quote }} 2>&1
+      facts_result=$?
+      if [[ "$facts_result" -ne 0 ]]; then
+        chmod 0600 {{ kubespray_secure_log | quote }}
+        exit "$facts_result"
+      fi
+    fi
     {{ playbook_dir }}/kubespray/.venv/bin/ansible-playbook \
       -i inventory/{{ project }}/hosts.yml \
       --become --become-user=root \
@@ -440,7 +468,7 @@
       --limit {{ selected_kubespray_limit | quote }} \
       {% endif -%}
       {{ selected_kubespray_playbook | quote }} \
-      > {{ kubespray_secure_log | quote }} 2>&1
+      >> {{ kubespray_secure_log | quote }} 2>&1
     result=$?
     chmod 0600 {{ kubespray_secure_log | quote }}
     exit "$result"
@@ -502,9 +530,11 @@
 # Fix CNI binary directory permissions (Kubespray creates it owned by kube user)
 - name: Fix /opt/cni/bin ownership for Cilium
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new \
+    ssh -i {{ controller_ssh_private_key_file | quote }} \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
-      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
+      -o ProxyCommand='ssh -i {{ controller_ssh_private_key_file }} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
       root@{{ item }} 'bash -s' << 'REMOTECMD'
     chown -R root:root /opt/cni
     chmod 755 /opt/cni /opt/cni/bin
@@ -525,9 +555,11 @@
 - name: Copy kubeconfig from master via ProxyCommand
   ansible.builtin.shell: |
     mkdir -p {{ (controller_kubeconfig_file | dirname) | quote }}
-    ssh -o StrictHostKeyChecking=accept-new \
+    ssh -i {{ controller_ssh_private_key_file | quote }} \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
-      -o ProxyCommand='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
+      -o ProxyCommand='ssh -i {{ controller_ssh_private_key_file }} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file }} -W %h:%p root@{{ bastion_public_ip }}' \
       root@{{ first_master_ip | default('10.0.1.1') }} 'cat /etc/kubernetes/admin.conf' \
       > {{ controller_kubeconfig_file | quote }}
     chmod 600 {{ controller_kubeconfig_file | quote }}
@@ -1958,7 +1990,9 @@
 
 - name: Converge the minimal-tier bastion edge to live Gateway NodePorts
   ansible.builtin.shell: |
-    ssh -o StrictHostKeyChecking=accept-new \
+    ssh -i {{ controller_ssh_private_key_file | quote }} \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
       root@{{ bastion_public_ip }} 'bash -s' <<'REMOTECMD'
     set -euo pipefail
@@ -2434,7 +2468,6 @@
 - name: Wait for the public Gateway to serve the current certificate
   ansible.builtin.shell:
     cmd: >-
-      set -o pipefail &&
       openssl s_client
       -connect {{ domain | quote }}:443
       -servername {{ domain | quote }}
