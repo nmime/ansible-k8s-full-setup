@@ -38,6 +38,7 @@ infrastructure:
 # Network
 # ---------------------------------------------
 network:
+  ssh_source_ips: []
   bastion:
     enabled: true
     server_type: cpx22
@@ -100,6 +101,15 @@ gitlab:
   runner:
     enabled: true
     concurrent_jobs: 5
+    image_builder:
+      enabled: false
+      replicas: 1
+      concurrent_jobs: 1
+    docker_host:
+      enabled: false
+      replicas: 1
+      concurrent_jobs: 1
+      dedicated_worker_index: 0
 
 # ---------------------------------------------
 # GitOps

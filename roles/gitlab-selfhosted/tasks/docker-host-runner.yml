@@ -1,0 +1,334 @@
+---
+# Compatibility runner for jobs tagged "docker-host". It does not mount a
+# worker or bastion Docker socket. The only privileged container is the exact
+# digest-pinned Docker-in-Docker service, in a separate protected namespace.
+
+- name: Docker smoke | Create the isolated namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ gitlab_docker_host_runner_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          workload.n0xeid.xyz/trust-boundary: protected-docker-smoke
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+
+- name: Docker smoke | Resolve the dedicated CI worker
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+    label_selectors:
+      - workload.n0xeid.xyz/ci-docker=true
+  register: _gitlab_docker_host_worker
+
+- name: Docker smoke | Enforce the dedicated CI worker boundary
+  ansible.builtin.assert:
+    that:
+      - _gitlab_docker_host_worker.resources | length == 1
+      - >-
+        (_gitlab_docker_host_worker.resources | first).metadata.name ==
+        project_name ~ '-worker-' ~
+        (gitlab_docker_host_runner_worker_index | string)
+      - >-
+        ((_gitlab_docker_host_worker.resources | first).spec.taints |
+         default([]) |
+         selectattr('key', 'equalto', 'workload.n0xeid.xyz/ci-docker') |
+         selectattr('value', 'equalto', 'true') |
+         selectattr('effect', 'equalto', 'NoSchedule') |
+         list | length) == 1
+    fail_msg: >-
+      The protected Docker-smoke Runner requires exactly one dedicated,
+      NoSchedule-tainted CI node matching its configured worker index.
+
+- name: Docker smoke | Establish the fail-closed network boundary
+  ansible.builtin.include_tasks: docker-host-network.yml
+
+- name: Docker smoke | Read the persisted Runner authentication token
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: platform-gitlab-docker-host-runner-auth
+  register: _gitlab_docker_host_auth_secret
+
+- name: Docker smoke | Resolve the persisted Runner token candidate
+  no_log: true
+  ansible.builtin.set_fact:
+    _gitlab_docker_host_auth_candidate: >-
+      {{
+        ((_gitlab_docker_host_auth_secret.resources | first).
+         data['runner-token'] | b64decode)
+        if (_gitlab_docker_host_auth_secret.resources |
+            default([]) | length) == 1
+        else ''
+      }}
+
+- name: Docker smoke | Verify the persisted Runner identity
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
+      kubectl exec -i --namespace "{{ gitlab_namespace }}" \
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
+          token=$(cat)
+          payload=$(printf \
+            "{\"token\":\"%s\",\"system_id\":\"s_ansible_docker_smoke\"}" \
+            "$token")
+          printf "%s" "$payload" |
+            curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners/verify
+        ')
+    test "$status" = 200
+  args:
+    executable: /bin/bash
+  environment:
+    GITLAB_RUNNER_TOKEN: '{{ _gitlab_docker_host_auth_candidate }}'
+  register: _gitlab_docker_host_auth_verification
+  changed_when: false
+  failed_when: false
+  when: _gitlab_docker_host_auth_candidate | length > 0
+
+- name: Docker smoke | Verify the declared Runner identity after drift
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
+      kubectl exec -i --namespace "{{ gitlab_namespace }}" \
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
+          token=$(cat)
+          payload=$(printf \
+            "{\"token\":\"%s\",\"system_id\":\"s_ansible_docker_smoke\"}" \
+            "$token")
+          printf "%s" "$payload" |
+            curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Content-Type: application/json" --data-binary @- \
+              http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181/api/v4/runners/verify
+        ')
+    test "$status" = 200
+  args:
+    executable: /bin/bash
+  environment:
+    GITLAB_RUNNER_TOKEN: >-
+      {{ gitlab_docker_host_runner_token | string | trim }}
+  register: _gitlab_docker_host_declared_verification
+  changed_when: false
+  failed_when: false
+  when:
+    - (_gitlab_docker_host_auth_verification.rc |
+       default(1) | int) != 0
+
+- name: Docker smoke | Reject an invalid declared Runner identity
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - (_gitlab_docker_host_declared_verification.rc |
+         default(1) | int) == 0
+    fail_msg: >-
+      The persisted Docker-smoke Runner identity is stale and the declared
+      GITLAB_DOCKER_HOST_RUNNER_TOKEN is invalid.
+  when:
+    - (_gitlab_docker_host_auth_verification.rc |
+       default(1) | int) != 0
+
+- name: Docker smoke | Resolve the reconciled Runner token
+  no_log: true
+  ansible.builtin.set_fact:
+    _gitlab_docker_host_auth_token: >-
+      {{
+        _gitlab_docker_host_auth_candidate
+        if (_gitlab_docker_host_auth_verification.rc |
+            default(1) | int) == 0
+        else (gitlab_docker_host_runner_token | string | trim)
+      }}
+
+- name: Docker smoke | Persist the reconciled Runner token
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: platform-gitlab-docker-host-runner-auth
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      type: Opaque
+      stringData:
+        runner-token: '{{ _gitlab_docker_host_auth_token }}'
+
+- name: Docker smoke | Install the dedicated Runner release
+  no_log: true
+  kubernetes.core.helm:
+    name: gitlab-docker-host-runner
+    chart_ref: gitlab/gitlab-runner
+    chart_version: 0.91.0
+    release_namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    create_namespace: false
+    release_state: present
+    force_conflicts: true
+    wait: true
+    values:
+      gitlabUrl: >-
+        http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
+      runnerToken: '{{ _gitlab_docker_host_auth_token }}'
+      replicas: '{{ gitlab_docker_host_runner_replicas | int }}'
+      concurrent: '{{ gitlab_docker_host_runner_concurrent | int }}'
+      checkInterval: 3
+      strategy:
+        rollingUpdate:
+          maxSurge: 1
+          maxUnavailable: 0
+      podDisruptionBudget:
+        maxUnavailable: 0
+      metrics:
+        enabled: true
+      rbac:
+        create: true
+        clusterWideAccess: false
+      serviceAccount:
+        create: true
+      nodeSelector:
+        node-role.kubernetes.io/worker: 'true'
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        fsGroup: 65533
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      runners:
+        config: |
+          [[runners]]
+            clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
+            request_concurrency = 1
+            environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
+            [runners.kubernetes]
+              namespace = "{{ gitlab_docker_host_runner_namespace }}"
+              image = "docker.io/library/node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd"
+              allowed_images = ["docker.io/library/node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd"]
+              allowed_services = ["docker.io/library/docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"]
+              privileged = false
+              automount_service_account_token = false
+              node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }
+              node_tolerations = { "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
+              cpu_request = "500m"
+              cpu_limit = "2000m"
+              memory_request = "1Gi"
+              memory_limit = "2Gi"
+              service_cpu_request = "1000m"
+              service_cpu_limit = "4000m"
+              service_memory_request = "2Gi"
+              service_memory_limit = "4Gi"
+              helper_cpu_request = "100m"
+              helper_cpu_limit = "500m"
+              helper_memory_request = "256Mi"
+              helper_memory_limit = "512Mi"
+              [runners.kubernetes.pod_security_context]
+                [runners.kubernetes.pod_security_context.seccomp_profile]
+                  type = "RuntimeDefault"
+              [runners.kubernetes.pod_labels]
+                "workload.n0xeid.xyz/class" = "protected-docker-smoke-job"
+              [[runners.kubernetes.pod_spec]]
+                name = "restrict-docker-smoke-build-and-helper"
+                patch = '''
+                  containers:
+                    - name: build
+                      securityContext:
+                        allowPrivilegeEscalation: false
+                        capabilities:
+                          drop: [ALL]
+                        seccompProfile:
+                          type: RuntimeDefault
+                    - name: helper
+                      securityContext:
+                        allowPrivilegeEscalation: false
+                        capabilities:
+                          drop: [ALL]
+                        seccompProfile:
+                          type: RuntimeDefault
+                '''
+                patch_type = "strategic"
+              [[runners.kubernetes.pod_spec]]
+                name = "privilege-only-the-pinned-dind-service"
+                patch = '''
+                  containers:
+                    - name: docker
+                      securityContext:
+                        privileged: true
+                        allowPrivilegeEscalation: true
+                        capabilities:
+                          drop: [NET_RAW]
+                        seccompProfile:
+                          type: Unconfined
+                '''
+                patch_type = "strategic"
+        tags: docker-host
+        runUntagged: false
+      podLabels:
+        workload.n0xeid.xyz/class: protected-docker-smoke-manager
+      podAnnotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: '9252'
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: 500m, memory: 256Mi}
+  register: _r_install_gitlab_docker_host_runner
+  retries: 3
+  delay: 10
+  until: _r_install_gitlab_docker_host_runner is not failed
+
+- name: Docker smoke | Wait for the Runner deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: gitlab-docker-host-runner-gitlab-runner
+  register: _gitlab_docker_host_deployment
+  until: >-
+    ((_gitlab_docker_host_deployment.resources |
+      default([]) | length) == 1) and
+    (((_gitlab_docker_host_deployment.resources | first).
+      status.readyReplicas | default(0) | int) ==
+     ((_gitlab_docker_host_deployment.resources | first).
+      spec.replicas | int)) and
+    (((_gitlab_docker_host_deployment.resources | first).
+      status.updatedReplicas | default(0) | int) ==
+     ((_gitlab_docker_host_deployment.resources | first).
+      spec.replicas | int))
+  retries: 60
+  delay: 10
+
+- name: Docker smoke | Create manager metrics scrape
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMPodScrape
+      metadata:
+        name: gitlab-docker-host-runner
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+        labels:
+          release: prometheus
+      spec:
+        selector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+        podMetricsEndpoints:
+          - port: metrics
+            interval: 30s
+            path: /metrics
+  when: platform_observability_enabled | default(false) | bool

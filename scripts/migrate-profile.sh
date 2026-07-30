@@ -631,6 +631,10 @@ enforce_target_dependency_closure() {
   if ! component_enabled "$TARGET_CONFIG" gitlab; then
     yq -i '.gitlab.runner.enabled = false' "$TARGET_CONFIG"
   fi
+  if ! component_enabled "$TARGET_CONFIG" gitlab-runner; then
+    yq -i '.gitlab.runner.image_builder.enabled = false |
+      .gitlab.runner.docker_host.enabled = false' "$TARGET_CONFIG"
+  fi
   if ! component_enabled "$TARGET_CONFIG" observability; then
     yq -i '.observability.pmm.enabled = false | .coroot.enabled = false |
       .tracing.enabled = false | .tracing.tempo.enabled = false | .blackbox.enabled = false |

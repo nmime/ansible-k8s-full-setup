@@ -69,6 +69,9 @@ backup_s3cli_image: amazon/aws-cli:2.34.48
 backup_dr_enabled: false
 backup_dr_namespace: velero
 backup_dr_storage_endpoint: "{{ lookup('env', 'BACKUP_DR_ENDPOINT') | default('', true) }}"
+backup_dr_allow_literal_ip_endpoint: >-
+  {{ lookup('env', 'BACKUP_DR_ALLOW_LITERAL_IP') |
+     default('false', true) | bool }}
 backup_dr_storage_region: "{{ lookup('env', 'BACKUP_DR_REGION') | default('us-east-1', true) }}"
 backup_dr_storage_bucket: "{{ lookup('env', 'BACKUP_DR_BUCKET') | default('', true) }}"
 backup_dr_storage_prefix: >-

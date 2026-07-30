@@ -105,6 +105,17 @@ def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
     assert "backup_dr_velero_helm is succeeded" in content
     assert "force_conflicts: true" in content
     assert "retries: 3" in content
+    assert "Classify the external disaster-recovery endpoint" in content
+    assert "backup_dr_allow_literal_ip_endpoint" in content
+    assert "Detect a literal endpoint collision with protected-cluster addresses" in content
+    assert "kubectl get nodes,pods,services --all-namespaces -o json" in content
+    assert "Allow external storage through its validated DNS name" in content
+    assert "Allow an explicitly approved external storage IPv4 endpoint" in content
+    assert '"{{ backup_dr_storage_hostname }}/32"' in content
+    defaults = load_yaml(ROLE_DIR / "defaults" / "main.yml")
+    assert "BACKUP_DR_ALLOW_LITERAL_IP" in str(
+        defaults["backup_dr_allow_literal_ip_endpoint"]
+    )
 
 
 def test_velero_dynamic_include_propagates_tags_to_every_child_task():
@@ -226,6 +237,22 @@ def test_database_native_schedules_follow_the_backup_selector_and_are_removable(
     ).read_text()
 
     assert databases.count("platform_backup_enabled | default(backup_enabled) | bool") >= 6
+    assert "startingDeadlineSeconds: '{{ mongodb_backup_starting_deadline_seconds | int }}'" in databases
+    defaults = yaml.safe_load((REPO_ROOT / "defaults" / "main.yml").read_text())
+    assert defaults["mongodb_backup_starting_deadline_seconds"] == 1800
+    assert defaults["mongodb_backup_image"] == "percona/percona-backup-mongodb:2.15.0"
+    assert "image: '{{ mongodb_backup_image }}'" in databases
+    assert "Read the active SeaweedFS backup identity" in databases
+    assert "Reject unilateral database backup credential rotation" in databases
+    assert "seaweedfs-backup-credentials" in databases
+    assert (
+        "_active_seaweedfs_backup_identity.resources[0].data.AWS_ACCESS_KEY_ID"
+        in databases
+    )
+    assert (
+        "_active_seaweedfs_backup_identity.resources[0].data.AWS_SECRET_ACCESS_KEY"
+        in databases
+    )
     assert "Remove PostgreSQL operator backup schedules" in removal
     assert 'path: "/spec/backups/pgbackrest/repos/{{ item }}/schedules"' in removal
     assert "Disable MongoDB operator backup and point-in-time recovery" in removal
@@ -437,6 +464,37 @@ class TestRestoreScript:
         c = RESTORE_SCRIPT.read_text()
         assert "mongodb-restore-drill.sh" in c
         assert MONGODB_RESTORE_SCRIPT.is_file()
+        # The cluster-wide CRDs are reconciled by the platform role. A
+        # namespace-scoped drill operator must reuse them instead of trying to
+        # take field ownership from Ansible.
+        mongodb = MONGODB_RESTORE_SCRIPT.read_text()
+        assert "--skip-crds" in mongodb
+        assert 'OPERATOR_VERSION="1.23.0"' in mongodb
+        assert 'PBM_IMAGE="percona/percona-backup-mongodb:2.15.0"' in mongodb
+        assert "--pbm-image" in mongodb
+        assert ".spec.backup.image = $pbm_image" in mongodb
+        assert 'PBM_MEMORY_LIMIT="2Gi"' in mongodb
+        assert "--pbm-memory-limit" in mongodb
+        assert ".spec.backup.resources.requests.memory = \"256Mi\"" in mongodb
+        assert ".spec.backup.resources.limits.memory = $pbm_memory_limit" in mongodb
+        assert 'STORAGE_CLASS="hcloud-volumes"' in mongodb
+        assert "--storage-class" in mongodb
+        assert ".volumeSpec.persistentVolumeClaim.storageClassName = $storage_class" in mongodb
+        assert "s3: ($storage.s3 + {credentialsSecret: $credential})" in mongodb
+        assert "storageName: $storage_name" not in mongodb
+        assert "backupSource: $source" in mongodb
+        assert 'TARGET_USERS_SECRET="restore-${TARGET_CLUSTER}-users"' in mongodb
+        assert 'TARGET_USERS_SECRET="internal-${TARGET_CLUSTER}-users"' not in mongodb
+        assert "copy_users_secret" in mongodb
+        assert "source users secret does not contain the canonical PSMDB system-user keys" in mongodb
+        assert 'MONGODB_DATABASE_ADMIN_PASSWORD",' in mongodb
+        assert "wait_for_backup_agent_stability" in mongodb
+        assert "pbm status" in mongodb
+        assert "restartCount" in mongodb
+        assert "PBM backup-agent did not become stable" in mongodb
+        assert "wait_for_restore_completion" in mongodb
+        assert "backup-agent restarted or became unready during restore" in mongodb
+        assert "lastState.terminated.reason" in mongodb
     def test_postgresql_dispatch(self):
         c = RESTORE_SCRIPT.read_text()
         assert "pg-restore-drill.sh" in c

@@ -2028,7 +2028,7 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     assert expansion["platform_profile"] == "custom"
     assert expansion["tier"] == "minimal"
     assert expansion["infrastructure"]["control_plane"]["count"] == 3
-    assert expansion["infrastructure"]["workers"]["count"] == 3
+    assert expansion["infrastructure"]["workers"]["count"] == 4
     for generated_name in (
         "source-platform.yaml",
         "target-platform.yaml",
@@ -2462,6 +2462,8 @@ def test_disabled_source_dependency_disables_new_target_dependants(tmp_path):
     assert target["dragonfly"]["enabled"] is False
     assert target["gitlab"]["enabled"] is False
     assert target["gitlab"]["runner"]["enabled"] is False
+    assert target["gitlab"]["runner"]["image_builder"]["enabled"] is False
+    assert target["gitlab"]["runner"]["docker_host"]["enabled"] is False
     assert target["postal"]["enabled"] is False
     assert target["glitchtip"]["enabled"] is False
 
@@ -3135,7 +3137,7 @@ def test_completed_migration_has_an_explicit_dry_run_finalization(tmp_path):
     assert "finalize stage: retire-services" in result.stdout
     assert "finalize stage: scale-in" in result.stdout
     assert "finalize stage: final-backup" in result.stdout
-    assert "remove excess workers 3->3 and control planes 3->3" in result.stdout
+    assert "remove excess workers 4->4 and control planes 3->3" in result.stdout
 
 
 def test_velero_role_uses_external_storage_and_filesystem_backups():

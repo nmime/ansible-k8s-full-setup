@@ -120,15 +120,35 @@ The optimized CX mapping uses three `cx33` schedulable control planes, three
 | 300 GiB active claims in a 360 GiB server-SSD pool | | included | **€0.00** |
 | **Total** | | | **€100.65** |
 
-The Kubernetes nodes provide 36 vCPU, 72 GiB RAM, and 720 GiB aggregate
-node-local SSD. The worker pool alone is 24 vCPU, 48 GiB RAM, and 480 GiB
-local SSD. Including the bastion, the account receives 38 vCPU, 76 GiB RAM,
-and 760 GiB local SSD. The direct infrastructure rate is €0.1392/hour; the
-complete monthly-capped planning equivalent is €0.13787/hour.
+The production deployment also needs one tainted worker when the protected
+Docker-in-Docker compatibility runner is enabled. It is not an ingress target,
+does not receive local PVs, has no public IP, and runs at most one protected
+job. On 2026-07-29 all CX33/CX43 placements were unavailable in every EU
+location, so the immediately deployable isolated worker is a `cpx32`:
 
-This mapping is retained as an opportunistic purchase option and
-migration/rollback target. CX capacity appears intermittently; at audit time,
-`hel1` marked the required types temporarily unavailable for new placement.
+| Additional resource | Quantity | Monthly each | Monthly total |
+|---|---:|---:|---:|
+| Isolated `cpx32` CI worker | 1 | €35.49 | **€35.49** |
+| **Infrastructure subtotal with CI** | | | **€122.41** |
+| 240 GiB durable CSI volumes | | €0.0572/GiB | **€13.73** |
+| **Production total with CI** | | | **€136.14** |
+
+The Kubernetes nodes then provide 40 vCPU, 80 GiB RAM, and 880 GiB aggregate
+node-local SSD. Only the original three `cx43` workers contribute to the
+replication-qualified local-PV pool. Including the bastion, the account
+receives 42 vCPU, 84 GiB RAM, and 920 GiB local SSD. The direct infrastructure
+rate is €0.1961/hour; the complete monthly-capped planning equivalent is
+€0.18649/hour.
+
+When CX capacity returns, migrate only the CI worker from `cpx32` to `cx33` or
+`cx43` through the one-node-at-a-time migration gate. A `cx33` would reduce the
+complete total to €109.14/month; a `cx43` would make it €116.64/month. Do not
+resize the application workers or count the CI disk as durable storage.
+
+The original 3+3 mapping is retained as an opportunistic purchase option and
+migration/rollback target. CX capacity appears intermittently; at the latest
+placement check, every EU location marked `cx33` and `cx43` unavailable for
+new placement.
 
 The default named profile uses the predictably available CPX mapping. Existing CX
 clusters are not resized by an ordinary reconcile: the infrastructure role

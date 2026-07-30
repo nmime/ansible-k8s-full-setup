@@ -48,6 +48,12 @@
     platform_mongodb_enabled: '{{ (databases.mongodb.enabled | default(deploy_mongodb)) | bool }}'
     platform_gitlab_enabled: '{{ (gitlab.enabled | default(deploy_gitlab)) | bool }}'
     platform_gitlab_runner_enabled: '{{ (gitlab.runner.enabled | default(false)) | bool }}'
+    platform_gitlab_image_builder_runner_enabled: >-
+      {{ ((gitlab.runner.image_builder | default({})).enabled |
+          default(false)) | bool }}
+    platform_gitlab_docker_host_runner_enabled: >-
+      {{ ((gitlab.runner.docker_host | default({})).enabled |
+          default(false)) | bool }}
     platform_gitops_enabled: '{{ (gitops.enabled | default(deploy_gitops)) | bool }}'
     platform_autoscaling_enabled: '{{ (autoscaling.enabled | default(deploy_autoscaling)) | bool }}'
     platform_dragonfly_enabled: '{{ (dragonfly.enabled | default(deploy_dragonfly)) | bool }}'
@@ -75,6 +81,15 @@
     gateway_api_version: '{{ kubernetes.gateway_api_version | default(gateway_api_version) }}'
     k8s_pod_cidr: '{{ kubernetes.pod_cidr | default(k8s_pod_cidr) }}'
     k8s_service_cidr: '{{ kubernetes.service_cidr | default(k8s_service_cidr) }}'
+    gateway_extra_certificate_refs: >-
+      {{ (kubernetes.gateway | default({})).extra_certificate_refs |
+         default(gateway_extra_certificate_refs) }}
+    gateway_https_hostname: >-
+      {{ (kubernetes.gateway | default({})).https_hostname |
+         default(gateway_https_hostname) }}
+    gateway_extra_https_listeners: >-
+      {{ (kubernetes.gateway | default({})).extra_https_listeners |
+         default(gateway_extra_https_listeners) }}
     storage_class: '{{ storage.storage_class | default(storage_class) }}'
     local_storage_enabled: '{{ local_storage.enabled | default(local_storage_enabled) | bool }}'
     local_storage_class: '{{ local_storage.storage_class | default(local_storage_class) }}'
@@ -197,6 +212,25 @@
     gitlab_runner_concurrent_jobs: >-
       {{ gitlab.runner.concurrent_jobs | default(gitlab_runner_concurrent_jobs) }}
     gitlab_runner_enabled: '{{ platform_gitlab_runner_enabled }}'
+    gitlab_image_builder_runner_enabled: >-
+      {{ platform_gitlab_image_builder_runner_enabled }}
+    gitlab_image_builder_runner_replicas: >-
+      {{ (gitlab.runner.image_builder | default({})).replicas |
+         default(gitlab_image_builder_runner_replicas) }}
+    gitlab_image_builder_runner_concurrent_jobs: >-
+      {{ (gitlab.runner.image_builder | default({})).concurrent_jobs |
+         default(gitlab_image_builder_runner_concurrent_jobs) }}
+    gitlab_docker_host_runner_enabled: >-
+      {{ platform_gitlab_docker_host_runner_enabled }}
+    gitlab_docker_host_runner_replicas: >-
+      {{ (gitlab.runner.docker_host | default({})).replicas |
+         default(gitlab_docker_host_runner_replicas) }}
+    gitlab_docker_host_runner_concurrent_jobs: >-
+      {{ (gitlab.runner.docker_host | default({})).concurrent_jobs |
+         default(gitlab_docker_host_runner_concurrent_jobs) }}
+    gitlab_docker_host_runner_worker_index: >-
+      {{ (gitlab.runner.docker_host | default({})).dedicated_worker_index |
+         default(gitlab_docker_host_runner_worker_index) }}
     argocd_ha_enabled: '{{ gitops.ha_enabled | default(tier in ["medium", "production"]) }}'
     metrics_retention: '{{ observability.metrics.retention | default(metrics_retention) }}'
     metrics_storage: '{{ observability.metrics.storage_size | default(metrics_storage) }}'
@@ -290,6 +324,20 @@
     log_redaction_enabled: >-
       {{ compliance.hipaa.log_redaction_enabled | default(platform_hipaa_enabled) | bool }}
 
+- name: Validate the dedicated Docker-smoke worker boundary
+  ansible.builtin.assert:
+    that:
+      - gitlab_docker_host_runner_worker_index | int > 0
+      - gitlab_docker_host_runner_worker_index | int <= worker_count | int
+      - worker_count | int >= 2
+    fail_msg: >-
+      gitlab.runner.docker_host.enabled=true requires
+      dedicated_worker_index to identify one worker inside
+      infrastructure.workers.count. That node is tainted, excluded from the
+      public load balancer and local-PV pool, and reserved for the protected
+      digest-pinned DinD service.
+  when: platform_gitlab_docker_host_runner_enabled | bool
+
 - name: Validate local SSD storage policy
   ansible.builtin.assert:
     that:
@@ -378,6 +426,10 @@
       - not platform_postgresql_enabled | bool or platform_databases_enabled | bool
       - not platform_mongodb_enabled | bool or platform_databases_enabled | bool
       - not platform_gitlab_runner_enabled | bool or platform_gitlab_enabled | bool
+      - not platform_gitlab_image_builder_runner_enabled | bool or
+        platform_gitlab_runner_enabled | bool
+      - not platform_gitlab_docker_host_runner_enabled | bool or
+        platform_gitlab_runner_enabled | bool
       - not platform_pmm_enabled | bool or platform_observability_enabled | bool
       - not platform_tracing_enabled | bool or platform_observability_enabled | bool
       - not platform_tempo_enabled | bool or platform_tracing_enabled | bool
@@ -389,7 +441,9 @@
     fail_msg: >-
       Invalid parent/child selection. ESO requires secrets; the example
       ExternalSecret demo fixture requires ESO; PostgreSQL and
-      MongoDB require databases; the GitLab Runner requires GitLab; PMM,
+      MongoDB require databases; the GitLab Runner requires GitLab; the
+      isolated image-builder and Docker-smoke Runners require the standard
+      Runner; PMM,
       tracing, Blackbox, and Coroot require observability; Tempo requires the
       tracing collector. The core observability role is one
       production bundle, so metrics, logging, and Grafana must stay enabled

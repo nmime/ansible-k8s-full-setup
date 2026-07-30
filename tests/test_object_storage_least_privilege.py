@@ -68,6 +68,9 @@ def test_component_storage_reconcile_rotates_selected_database_consumers():
 
 def test_scoped_credentials_are_encrypted_and_persisted():
     tasks = read("roles/generate-secrets/tasks/main.yml")
+    summary = tasks.split("- name: Display generated credentials summary", 1)[1]
+    assert "Object storage credentials: configured" in summary
+    assert "{{ object_storage_access_key }}" not in summary
     for group in (
         "bootstrap",
         "gitlab",

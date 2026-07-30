@@ -1,0 +1,180 @@
+---
+- name: Docker smoke | Create default-deny policy
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Ingress, Egress]
+        ingress: []
+        egress: []
+
+- name: Docker smoke | Allow namespace-local DNS
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-dns
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - {port: 53, protocol: UDP}
+              - {port: 53, protocol: TCP}
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - {port: 53, protocol: UDP}
+              - {port: 53, protocol: TCP}
+
+- name: Docker smoke | Allow NodeLocal DNS in the Cilium policy plane
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-nodelocal-dns
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: kube-system
+                  k8s:k8s-app: kube-dns
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+          - toCIDR:
+              - 169.254.25.10/32
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+          - toEntities: [host]
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+
+- name: Docker smoke | Allow only internal GitLab control-plane traffic
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-gitlab
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_namespace }}'
+            ports:
+              - {port: 8181, protocol: TCP}
+              - {port: 5000, protocol: TCP}
+
+- name: Docker smoke | Allow manager access to Kubernetes API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-manager-kube-api
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+        egress:
+          - toEntities: [kube-apiserver]
+
+- name: Docker smoke | Allow audited HTTPS build dependencies
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-build-dependencies
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-docker-smoke-job
+        egress:
+          - toFQDNs:
+              - {matchName: registry.n0xeid.xyz}
+              - {matchName: registry-1.docker.io}
+              - {matchName: auth.docker.io}
+              - {matchName: production.cloudflare.docker.com}
+              - {matchPattern: '*.docker.com'}
+              - {matchPattern: '*.docker.io'}
+              - {matchPattern: '*.cloudflarestorage.com'}
+              - {matchName: registry.npmjs.org}
+              - {matchName: dl-cdn.alpinelinux.org}
+              - {matchName: deb.debian.org}
+              - {matchName: security.debian.org}
+              - {matchName: github.com}
+              - {matchName: api.github.com}
+              - {matchName: objects.githubusercontent.com}
+              - {matchName: pkg-containers.githubusercontent.com}
+              - {matchName: ghcr.io}
+            toPorts:
+              - ports:
+                  - {port: '443', protocol: TCP}
+
+- name: Docker smoke | Allow VictoriaMetrics to scrape manager metrics
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-runner-metrics
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: monitoring
+            toPorts:
+              - ports:
+                  - {port: '9252', protocol: TCP}
+  when: platform_observability_enabled | default(false) | bool

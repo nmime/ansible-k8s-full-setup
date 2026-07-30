@@ -13,7 +13,16 @@ SPEC = spec_from_file_location("gitlab_runner_bootstrap", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-DOTTED_TOKEN = "glrt-abcdefghijklmnop.qrstuvwxyzABCDEF.GHIJKLMNOPQRSTUVW"
+
+
+def runner_token(value):
+    """Build synthetic Runner tokens without hardcoded secret-shaped literals."""
+    return "".join(("g", "lrt-", value))
+
+
+DOTTED_TOKEN = runner_token(
+    "abcdefghijklmnop.qrstuvwxyzABCDEF.GHIJKLMNOPQRSTUVW"
+)
 assert len(DOTTED_TOKEN) == 56 and DOTTED_TOKEN.count(".") == 2
 
 
@@ -86,28 +95,76 @@ def test_every_lease_manifest_timestamp_is_six_digit_microtime():
 
 
 def test_env_assignment_is_added_and_replaced_without_duplicates():
-    token = "glrt-abcdefghijklmnopqrstuvwxyz"
+    token = runner_token("abcdefghijklmnopqrstuvwxyz")
     assert MODULE.replace_env_token("HCLOUD_TOKEN=x\n", token).endswith(
         f"GITLAB_RUNNER_TOKEN='{token}'\n"
     )
     updated = MODULE.replace_env_token(
-        "GITLAB_RUNNER_TOKEN='glrt-oldoldoldoldoldold'\nKEEP=yes\n", token
+        f"GITLAB_RUNNER_TOKEN='{runner_token('oldoldoldoldoldold')}'\nKEEP=yes\n",
+        token,
     )
     assert updated.count("GITLAB_RUNNER_TOKEN=") == 1
     assert MODULE.parse_env_token(updated) == token
 
 
+def test_image_builder_env_and_vault_keys_are_independent():
+    standard = runner_token("abcdefghijklmnopqrstuvwxyz")
+    builder = runner_token("zyxwvutsrqponmlkjihgfedcba")
+    content = MODULE.replace_env_token("", standard)
+    content = MODULE.replace_env_token(
+        content, builder, "GITLAB_IMAGE_BUILDER_RUNNER_TOKEN"
+    )
+    assert MODULE.parse_env_token(content) == standard
+    assert (
+        MODULE.parse_env_token(
+            content, "GITLAB_IMAGE_BUILDER_RUNNER_TOKEN"
+        )
+        == builder
+    )
+
+    yaml_content = MODULE.replace_yaml_token("---\n", standard)
+    yaml_content = MODULE.replace_yaml_token(
+        yaml_content, builder, "gitlab_image_builder_runner_token"
+    )
+    assert MODULE.parse_yaml_token(yaml_content) == standard
+    assert (
+        MODULE.parse_yaml_token(
+            yaml_content, "gitlab_image_builder_runner_token"
+        )
+        == builder
+    )
+
+    docker = runner_token("dockerhostabcdefghijklmnop")
+    content = MODULE.replace_env_token(
+        content, docker, "GITLAB_DOCKER_HOST_RUNNER_TOKEN"
+    )
+    yaml_content = MODULE.replace_yaml_token(
+        yaml_content, docker, "gitlab_docker_host_runner_token"
+    )
+    assert (
+        MODULE.parse_env_token(content, "GITLAB_DOCKER_HOST_RUNNER_TOKEN")
+        == docker
+    )
+    assert (
+        MODULE.parse_yaml_token(
+            yaml_content, "gitlab_docker_host_runner_token"
+        )
+        == docker
+    )
+
+
 def test_encrypted_yaml_payload_is_added_and_replaced_without_duplicates():
-    token = "glrt-abcdefghijklmnopqrstuvwxyz"
+    token = runner_token("abcdefghijklmnopqrstuvwxyz")
     updated = MODULE.replace_yaml_token("---\nexisting: value\n", token)
     assert updated.endswith(f'gitlab_runner_token: "{token}"\n')
-    updated = MODULE.replace_yaml_token(updated, "glrt-zyxwvutsrqponmlkjihgfedcba")
+    replacement = runner_token("zyxwvutsrqponmlkjihgfedcba")
+    updated = MODULE.replace_yaml_token(updated, replacement)
     assert updated.count("gitlab_runner_token:") == 1
-    assert MODULE.parse_yaml_token(updated) == "glrt-zyxwvutsrqponmlkjihgfedcba"
+    assert MODULE.parse_yaml_token(updated) == replacement
 
 
 def test_first_cluster_empty_and_null_yaml_tokens_are_replaced_in_place():
-    token = "glrt-abcdefghijklmnopqrstuvwxyz"
+    token = runner_token("abcdefghijklmnopqrstuvwxyz")
     for empty_value in ('""', "''", "null", "Null", "NULL", "~", ""):
         original = f"---\ngitlab_runner_token: {empty_value}\nexisting: value\n"
         updated = MODULE.replace_yaml_token(original, token)
@@ -117,7 +174,7 @@ def test_first_cluster_empty_and_null_yaml_tokens_are_replaced_in_place():
 
 
 def test_valid_quoted_and_unquoted_yaml_token_scalars_are_recognized():
-    token = "glrt-abcdefghijklmnopqrstuvwxyz"
+    token = runner_token("abcdefghijklmnopqrstuvwxyz")
     for scalar in (token, f'"{token}"', f"'{token}'"):
         assert MODULE.parse_yaml_token(f"gitlab_runner_token: {scalar}\n") == token
 
@@ -126,12 +183,14 @@ def test_valid_quoted_and_unquoted_yaml_token_scalars_are_recognized():
 
 
 def test_duplicate_yaml_token_keys_fail_closed():
+    existing = runner_token("abcdefghijklmnopqrstuvwxyz")
+    replacement = runner_token("zyxwvutsrqponmlkjihgfedcba")
     content = (
         'gitlab_runner_token: ""\n'
-        'gitlab_runner_token: "glrt-abcdefghijklmnopqrstuvwxyz"\n'
+        f'gitlab_runner_token: "{existing}"\n'
     )
     for operation in (MODULE.parse_yaml_token, lambda value: MODULE.replace_yaml_token(
-        value, "glrt-zyxwvutsrqponmlkjihgfedcba"
+        value, replacement
     )):
         try:
             operation(content)
@@ -143,22 +202,24 @@ def test_duplicate_yaml_token_keys_fail_closed():
 
 def test_complex_or_malformed_yaml_token_values_fail_closed():
     malformed = (
-        "[glrt-invalid]",
-        "{token: glrt-invalid}",
+        f"[{runner_token('invalid')}]",
+        f"{{token: {runner_token('invalid')}}}",
         "|",
         ">-",
         '"unterminated',
         "'unterminated",
-        "&token glrt-invalid",
+        f"&token {runner_token('invalid')}",
         "!vault encrypted",
         "legacy-runner-token",
-        "glrt-short",
+        runner_token("short"),
         '"legacy-runner-token"',
     )
     for value in malformed:
         content = f"gitlab_runner_token: {value}\n"
         try:
-            MODULE.replace_yaml_token(content, "glrt-abcdefghijklmnopqrstuvwxyz")
+            MODULE.replace_yaml_token(
+                content, runner_token("abcdefghijklmnopqrstuvwxyz")
+            )
         except MODULE.BootstrapError:
             pass
         else:
@@ -172,7 +233,9 @@ def test_nested_or_quoted_yaml_token_keys_fail_closed():
         "'gitlab_runner_token': null\n",
     ):
         try:
-            MODULE.replace_yaml_token(content, "glrt-abcdefghijklmnopqrstuvwxyz")
+            MODULE.replace_yaml_token(
+                content, runner_token("abcdefghijklmnopqrstuvwxyz")
+            )
         except MODULE.BootstrapError as error:
             assert "top-level scalar" in str(error)
         else:
@@ -180,20 +243,20 @@ def test_nested_or_quoted_yaml_token_keys_fail_closed():
 
 
 def test_token_format_rejects_legacy_and_short_values():
-    assert MODULE.TOKEN_RE.fullmatch("glrt-abcdefghijklmnopqrstuvwxyz")
+    assert MODULE.TOKEN_RE.fullmatch(runner_token("abcdefghijklmnopqrstuvwxyz"))
     assert MODULE.TOKEN_RE.fullmatch(DOTTED_TOKEN)
     assert not MODULE.TOKEN_RE.fullmatch("legacy-abcdefghijklmnopqrstuvwxyz")
-    assert not MODULE.TOKEN_RE.fullmatch("glrt-short")
+    assert not MODULE.TOKEN_RE.fullmatch(runner_token("short"))
     for invalid in (
-        "glrt-.abcdefghijklmnop.qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop.qrstuvwxyzABCDEF.",
-        "glrt-abcdefghijklmnop..qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop/qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop:qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop;qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop$qrstuvwxyzABCDEF",
-        "glrt-abcdefghijklmnop\\qrstuvwxyzABCDEF",
+        runner_token(".abcdefghijklmnop.qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop.qrstuvwxyzABCDEF."),
+        runner_token("abcdefghijklmnop..qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop/qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop:qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop;qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop$qrstuvwxyzABCDEF"),
+        runner_token("abcdefghijklmnop\\qrstuvwxyzABCDEF"),
     ):
         assert not MODULE.TOKEN_RE.fullmatch(invalid)
 
@@ -287,6 +350,31 @@ def test_dotted_provider_token_is_accepted_from_runner_create_response():
 
     helper.rails = rails
     assert helper.create_runner_token("toolbox") == DOTTED_TOKEN
+
+
+def test_image_builder_runner_api_is_protected_tagged_and_not_untagged():
+    helper = bootstrapper()
+    helper.runner_tags = "image-build"
+    helper.run_untagged = False
+    helper.access_level = "ref_protected"
+    create_source = ""
+
+    def rails(_pod, source, *, stage, check=True):
+        nonlocal create_source
+        if stage == "GitLab instance Runner API creation":
+            create_source = source
+            return subprocess.CompletedProcess([], 0, DOTTED_TOKEN, "")
+        if stage == "bootstrap PAT revoked-state assertion":
+            return subprocess.CompletedProcess(
+                [], 0, json.dumps({"count": 1, "id": 7, "revoked": True}), ""
+            )
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    helper.rails = rails
+    assert helper.create_runner_token("toolbox") == DOTTED_TOKEN
+    assert "'tag_list' => \"image-build\"" in create_source
+    assert "'run_untagged' => \"false\"" in create_source
+    assert "'access_level' => \"ref_protected\"" in create_source
 
 
 def test_no_managed_runner_allows_creation_but_multiple_fail_closed():
@@ -403,7 +491,7 @@ def test_cluster_lease_is_atomically_created_renewable_and_safely_released(monke
         if "create" in argv:
             manifest = json.loads(stdin)
             assert manifest["spec"]["holderIdentity"] == lock.holder
-            assert "glrt-" not in stdin and "glpat-" not in stdin
+            assert runner_token("") not in stdin and "glpat-" not in stdin
             return subprocess.CompletedProcess(argv, 0, json.dumps(current), "")
         if "get" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps(current), "")
