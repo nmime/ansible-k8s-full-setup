@@ -15,9 +15,9 @@ resource_tier: small
 cost_estimate: >-
   Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
   workers, one isolated cpx32 CI worker, cpx22 bastion, lb11, one bastion IPv4,
-  300 GiB active replication-qualified local claims, and 240 GiB
-  provider-billable persistent volumes including GitLab staging. See
-  docs/COST_MODEL.md.
+  300 GiB active replication-qualified local claims, and 220 GiB
+  provider-billable persistent volumes. GitLab backup staging is transient
+  node-local scratch. See docs/COST_MODEL.md.
 
 global:
   project: k8s
@@ -213,7 +213,11 @@ gitlab:
   sidekiq_max_replicas: 2
   registry_max_replicas: 2
   gitaly_storage_size: 30Gi
-  backup_persistence_size: 20Gi
+  # Registry compression and the final GitLab archive coexist temporarily.
+  # Keep this off provider CSI: every backup is uploaded to object storage,
+  # while the 40 GiB/node free-space gate protects local scratch headroom.
+  backup_persistence_enabled: false
+  backup_persistence_size: 30Gi
   runner:
     enabled: true
     replicas: 2

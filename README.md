@@ -33,11 +33,14 @@ The runtime has four capability tiers and five named profiles:
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 The current deployable `medium-optimized` balanced tariff is approximately
-**€254.15/month net** at the authenticated 2026-07-24 prices: six `cpx32`
-nodes, one `cpx22` bastion, `lb11`, one bastion IPv4, 300 GiB of active
-server-local application-replicated claims in a 450 GiB expandable pool, and 240 GiB of
-provider-billable CSI volumes. The intermittent CX cost-optimized mapping is
-**€100.65/month net**
+**€288.49/month net** at the authenticated 2026-07-24 prices: six `cpx32`
+platform nodes, one isolated `cpx32` CI worker, one `cpx22` bastion, `lb11`,
+one bastion IPv4, 300 GiB of active
+server-local application-replicated claims in a 420 GiB expandable pool, and 220 GiB of
+provider-billable CSI volumes. The six-node platform base without the isolated
+CI worker is **€253.00/month net**. GitLab backup staging uses transient node
+SSD and is uploaded to object storage. The intermittent CX cost-optimized
+platform base is **€99.50/month net**
 whenever its required server types are placeable. It keeps three economical
 `cx33` control planes and three `cx43` workers, providing 36 vCPU, 72 GiB RAM,
 and 720 GiB aggregate Kubernetes node-local SSD. The
@@ -48,6 +51,12 @@ free-space gate, and external recovery backups. See the exact
 arithmetic in [the cost model](docs/COST_MODEL.md) and the complete live CX,
 CAX, CPX, and CCX matrix in
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md).
+
+The live production cluster uses the CX platform base plus one isolated
+`cpx32` CI worker because replacement CX placement is currently exhausted.
+With that worker and the actual 220 GiB of provider volumes, its footprint is
+**€134.99/month net**. The base workload cluster remains €99.50/month when the
+CI worker is omitted.
 
 `tier` controls which capabilities are installed. `resource_tier` controls
 default pod requests, limits, and stateless replica counts. This separation is
