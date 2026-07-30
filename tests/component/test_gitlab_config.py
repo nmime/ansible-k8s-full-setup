@@ -264,9 +264,8 @@ class TestChart10ValuesStructure:
         assert spread == [
             {
                 "maxSkew": 1,
-                "minDomains": 3,
                 "topologyKey": "kubernetes.io/hostname",
-                "whenUnsatisfiable": "DoNotSchedule",
+                "whenUnsatisfiable": "ScheduleAnyway",
                 "nodeAffinityPolicy": "Honor",
                 "nodeTaintsPolicy": "Honor",
                 "labelSelector": {
@@ -377,7 +376,8 @@ class TestChart10ValuesStructure:
         assert "[runners.kubernetes.helper_container_resources]" not in install
         assert '"workload.n0xeid.xyz/class" = "ci-job"' in install
         assert 'name = "spread-ci-jobs-across-workers"' in install
-        assert "minDomains: 3" in install
+        assert "minDomains: 3" not in install
+        assert "whenUnsatisfiable: ScheduleAnyway" in install
         assert "workload.n0xeid.xyz/class: ci-job" in install
         assert 'patch_type = "strategic"' in install
         assert "gitlab_runner_token is defined" not in install

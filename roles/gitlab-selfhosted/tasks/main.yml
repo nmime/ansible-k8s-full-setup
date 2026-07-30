@@ -1902,9 +1902,12 @@
                 patch = '''
                   topologySpreadConstraints:
                     - maxSkew: 1
-                      minDomains: 3
                       topologyKey: kubernetes.io/hostname
-                      whenUnsatisfiable: DoNotSchedule
+                      # CI must keep making progress when a worker is tainted,
+                      # under disk pressure, or reserved for protected builds.
+                      # The scheduler still prefers an even spread, but an
+                      # unavailable domain must not deadlock the whole queue.
+                      whenUnsatisfiable: ScheduleAnyway
                       nodeAffinityPolicy: Honor
                       nodeTaintsPolicy: Honor
                       labelSelector:
