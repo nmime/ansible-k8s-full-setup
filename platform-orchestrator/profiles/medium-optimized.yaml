@@ -3,7 +3,7 @@
 # ============================================
 # Best for: Medium base platform on a constrained current-generation x86 shape
 # Nodes: 3 x cpx32 control plane + 3 x cpx32 application workers
-#        + 1 x cpx32 isolated CI worker + 1 x cpx22 bastion + lb11
+#        + 2 isolated CI workers + 1 x cpx22 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -14,10 +14,11 @@ tier: medium
 resource_tier: small
 cost_estimate: >-
   Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
-  workers, one isolated cpx32 CI worker, cpx22 bastion, lb11, one bastion IPv4,
-  300 GiB active replication-qualified local claims, and 220 GiB
-  provider-billable persistent volumes. GitLab backup staging is transient
-  node-local scratch. See docs/COST_MODEL.md.
+  workers, one isolated cpx32 Docker worker, one isolated cpx42 general/image
+  worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
+  replication-qualified local claims, and 220 GiB provider-billable persistent
+  volumes. GitLab backup staging is transient node-local scratch. See
+  docs/COST_MODEL.md.
 
 global:
   project: k8s
@@ -34,7 +35,7 @@ hetzner_tier_specs:
     cp_min_cores: 4
     cp_min_memory: 8
     cp_schedulable: true
-    worker_count: 4
+    worker_count: 5
     worker_min_cores: 4
     worker_min_memory: 8
     lb_enabled: true
@@ -48,8 +49,10 @@ infrastructure:
     type: cpx32
     schedulable: true
   workers:
-    count: 4
+    count: 5
     type: cpx32
+    type_overrides:
+      5: cpx42
 
 # ---------------------------------------------
 # Network
@@ -220,12 +223,14 @@ gitlab:
   backup_persistence_size: 30Gi
   runner:
     enabled: true
-    replicas: 3
-    # Match the three general-purpose workers with one manager each, but allow
-    # only one build per manager. This removes the observed two-runner queue
-    # without allowing multiple general jobs to contend on the same compact
-    # worker; protected image and Docker builds stay on their isolated runners.
+    replicas: 1
+    # General and rootless image-build jobs share a private, tainted CI-build
+    # worker. Keeping one general job plus one protected image job bounds peak
+    # memory and disk pressure without consuming production-node ephemeral
+    # storage. Override worker 5 to cpx42 (8 vCPU, 16 GiB, 320 GB) or larger
+    # for sustained production pipelines.
     concurrent_jobs: 1
+    dedicated_worker_index: 5
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.

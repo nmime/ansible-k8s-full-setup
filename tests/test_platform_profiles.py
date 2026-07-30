@@ -391,8 +391,9 @@ class TestMediumOptimizedContract:
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
         assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
-        assert self.profile["infrastructure"]["workers"]["count"] == 4
+        assert self.profile["infrastructure"]["workers"]["count"] == 5
         assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
+        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][
                 "dedicated_worker_index"
@@ -444,9 +445,10 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["toolbox_memory_limit"] == "3Gi"
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
-        assert self.profile["gitlab"]["runner"]["replicas"] == 3
-        # One manager per general-purpose worker preserves HA while one job per
-        # manager bounds general CI to three concurrent builds.
+        assert self.profile["gitlab"]["runner"]["replicas"] == 1
+        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
+        # One bounded general job and one protected image job may share only
+        # the isolated CI-build worker, never an application node.
         assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
@@ -645,10 +647,11 @@ class TestResourceTierConsumers:
         content = (
             REPO_ROOT / "roles" / "hetzner-infra" / "tasks" / "main.yml"
         ).read_text(encoding="utf-8")
-        assert "Validate the dedicated CI worker index" in content
-        assert "'ci-worker'" in content
-        assert "reject('equalto', dedicated_ci_worker_index | int)" in content
-        assert "Ensure the dedicated CI worker is not an LB target" in content
+        assert "Validate the dedicated CI worker indices" in content
+        assert "'ci-build-worker'" in content
+        assert "'ci-docker-worker'" in content
+        assert "difference(dedicated_ci_worker_indices)" in content
+        assert "Ensure dedicated CI workers are not LB targets" in content
         assert "--without-ipv4', '--without-ipv6" in content
 
     def test_minimal_nodes_retain_live_test_headroom(self):
@@ -1174,7 +1177,11 @@ class TestComponentLifecycle:
     def test_orchestrator_exposes_every_selectable_component(self, tmp_path):
         orchestrator = tmp_path / "platform-orchestrator"
         shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
-        shutil.copytree(REPO_ROOT / "playbooks", tmp_path / "playbooks")
+        shutil.copytree(
+            REPO_ROOT / "playbooks",
+            tmp_path / "playbooks",
+            ignore=shutil.ignore_patterns(".venv", ".git", "__pycache__"),
+        )
         shutil.copytree(REPO_ROOT / "defaults", tmp_path / "defaults")
         shutil.copy(
             orchestrator / "platform.example.yaml", orchestrator / "platform.yaml"
@@ -1270,7 +1277,11 @@ class TestComponentLifecycle:
     ):
         orchestrator = tmp_path / "platform-orchestrator"
         shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
-        shutil.copytree(REPO_ROOT / "playbooks", tmp_path / "playbooks")
+        shutil.copytree(
+            REPO_ROOT / "playbooks",
+            tmp_path / "playbooks",
+            ignore=shutil.ignore_patterns(".venv", ".git", "__pycache__"),
+        )
         shutil.copytree(REPO_ROOT / "defaults", tmp_path / "defaults")
         shutil.copy(
             orchestrator / "platform.example.yaml", orchestrator / "platform.yaml"
@@ -1309,7 +1320,11 @@ class TestComponentLifecycle:
     def test_disabling_tempo_keeps_tracing_and_routes_it_to_coroot(self, tmp_path):
         orchestrator = tmp_path / "platform-orchestrator"
         shutil.copytree(REPO_ROOT / "platform-orchestrator", orchestrator)
-        shutil.copytree(REPO_ROOT / "playbooks", tmp_path / "playbooks")
+        shutil.copytree(
+            REPO_ROOT / "playbooks",
+            tmp_path / "playbooks",
+            ignore=shutil.ignore_patterns(".venv", ".git", "__pycache__"),
+        )
         shutil.copytree(REPO_ROOT / "defaults", tmp_path / "defaults")
         profile = load_profile("medium")
         with (orchestrator / "platform.yaml").open("w", encoding="utf-8") as stream:

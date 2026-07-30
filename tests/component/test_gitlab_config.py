@@ -366,6 +366,7 @@ class TestChart10ValuesStructure:
         assert "vault_encrypt_secrets | default(true) | bool" in gate
         assert "gitlab_runner_concurrent | int > 0" in gate
         assert "gitlab_runner_replicas | int > 0" in gate
+        assert "gitlab_runner_worker_index | int <= worker_count | int" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
@@ -383,6 +384,15 @@ class TestChart10ValuesStructure:
         assert "allow_privilege_escalation = false" in install
         assert 'cap_drop = ["ALL"]' in install
         assert "automount_service_account_token = false" in install
+        assert (
+            'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
+            in install
+        )
+        assert (
+            'node_tolerations = { '
+            '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }'
+            in install
+        )
         assert 'environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]' in install
         for resource_setting in (
             'cpu_request = "500m"',
@@ -481,6 +491,15 @@ class TestChart10ValuesStructure:
         assert "no_log: true" in gate
 
         builder = read(IMAGE_BUILDER_TASKS_PATH)
+        assert (
+            'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
+            in builder
+        )
+        assert (
+            'node_tolerations = { '
+            '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }'
+            in builder
+        )
         tasks = yaml.safe_load(builder)
         install = next(
             task

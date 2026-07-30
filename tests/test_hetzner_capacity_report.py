@@ -20,14 +20,17 @@ MONTHLY = {
     "cx23": "5.49",
     "cx33": "8.49",
     "cx43": "15.99",
+    "cx53": "29.49",
     "cax11": "5.99",
     "cax21": "10.49",
     "cax31": "20.99",
+    "cax41": "40.99",
     "cpx22": "19.49",
     "cpx32": "35.49",
     "cpx42": "69.49",
     "ccx13": "42.99",
     "ccx23": "85.99",
+    "ccx43": "275.99",
 }
 
 
@@ -38,6 +41,12 @@ def synthetic_catalog() -> list[dict]:
             for profile in report.TARIFF_TYPES.values()
             for family in profile.values()
             for server_type in family.values()
+        }
+        | {
+            worker["type"]
+            for profile in report.ADDITIONAL_WORKERS.values()
+            for family in profile.values()
+            for worker in family
         }
     )
     return [
@@ -103,19 +112,19 @@ def test_current_medium_optimized_totals_and_safety_statuses():
         "control_plane": "cx33",
         "worker": "cx43",
     }
-    assert selected["cx"]["infrastructure_monthly_net"] == "102.91"
+    assert selected["cx"]["infrastructure_monthly_net"] == "132.40"
     assert selected["cx"]["volume_gib"] == 220
     assert selected["cx"]["local_reserved_gib"] == 300
     assert selected["cx"]["total_claim_capacity_gib"] == 520
-    assert selected["cx"]["total_monthly_net"] == "115.49"
+    assert selected["cx"]["total_monthly_net"] == "144.98"
     assert selected["cx"]["deployment_status"] == "temporarily-unavailable"
-    assert selected["cax"]["total_monthly_net"] == "99.99"
+    assert selected["cax"]["total_monthly_net"] == "151.48"
     assert selected["cax"]["deployment_status"] == "planning-only-arm64-unattested"
-    assert selected["cpx"]["infrastructure_monthly_net"] == "275.91"
+    assert selected["cpx"]["infrastructure_monthly_net"] == "345.40"
     assert selected["cpx"]["volume_gib"] == 220
-    assert selected["cpx"]["total_monthly_net"] == "288.49"
+    assert selected["cpx"]["total_monthly_net"] == "357.98"
     assert selected["cpx"]["deployment_status"] == "deployable"
-    assert selected["ccx"]["total_monthly_net"] == "665.49"
+    assert selected["ccx"]["total_monthly_net"] == "941.48"
 
 
 def test_named_profile_defaults_are_the_balanced_cpx_mapping():
