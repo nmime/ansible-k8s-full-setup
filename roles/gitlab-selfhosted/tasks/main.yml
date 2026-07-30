@@ -1924,9 +1924,8 @@
           maxUnavailable: 0
       topologySpreadConstraints:
         - maxSkew: 1
-          minDomains: 2
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: DoNotSchedule
+          whenUnsatisfiable: ScheduleAnyway
           nodeAffinityPolicy: Honor
           nodeTaintsPolicy: Honor
           labelSelector:
@@ -1941,8 +1940,25 @@
         clusterWideAccess: false
       serviceAccount:
         create: true
-      nodeSelector:
-        node-role.kubernetes.io/worker: 'true'
+      nodeSelector: >-
+        {{
+          {'workload.n0xeid.xyz/ci-build': 'true'}
+          if gitlab_runner_worker_index | default(0) | int > 0
+          else {'node-role.kubernetes.io/worker': 'true'}
+        }}
+      tolerations: >-
+        {{
+          [
+            {
+              'key': 'workload.n0xeid.xyz/ci-build',
+              'operator': 'Equal',
+              'value': 'true',
+              'effect': 'NoSchedule'
+            }
+          ]
+          if gitlab_runner_worker_index | default(0) | int > 0
+          else []
+        }}
       podSecurityContext:
         runAsUser: 100
         fsGroup: 65533

@@ -218,9 +218,9 @@ class TestChart10ValuesStructure:
         assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
         assert values["metrics"] == {"enabled": True}
         assert values["serviceAccount"] == {"create": True}
-        assert values["nodeSelector"] == {
-            "node-role.kubernetes.io/worker": "true"
-        }
+        assert "workload.n0xeid.xyz/ci-build" in values["nodeSelector"]
+        assert "gitlab_runner_worker_index" in values["nodeSelector"]
+        assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
         assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
             "request_concurrency = {{ gitlab_runner_concurrent | int }}"
@@ -377,7 +377,7 @@ class TestChart10ValuesStructure:
         assert "maxUnavailable: 0" in install
         assert "topologySpreadConstraints:" in install
         assert "topologyKey: kubernetes.io/hostname" in install
-        assert "whenUnsatisfiable: DoNotSchedule" in install
+        assert "whenUnsatisfiable: ScheduleAnyway" in install
         assert "nodeAffinityPolicy: Honor" in install
         assert "nodeTaintsPolicy: Honor" in install
         assert "podDisruptionBudget:" in install
@@ -509,6 +509,8 @@ class TestChart10ValuesStructure:
         )
         values = install["kubernetes.core.helm"]["values"]
         config = values["runners"]["config"]
+        assert "workload.n0xeid.xyz/ci-build" in values["nodeSelector"]
+        assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
         assert values["concurrent"] == (
             "{{ gitlab_image_builder_runner_concurrent | int }}"
         )
@@ -645,6 +647,17 @@ class TestChart10ValuesStructure:
         )
         values = install["kubernetes.core.helm"]["values"]
         config = values["runners"]["config"]
+        assert values["nodeSelector"] == {
+            "workload.n0xeid.xyz/ci-docker": "true"
+        }
+        assert values["tolerations"] == [
+            {
+                "key": "workload.n0xeid.xyz/ci-docker",
+                "operator": "Equal",
+                "value": "true",
+                "effect": "NoSchedule",
+            }
+        ]
         dind = (
             "docker.io/library/docker:27.5.1-dind@sha256:"
             "aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
