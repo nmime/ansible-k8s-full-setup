@@ -28,6 +28,8 @@
     gitlab_runner_worker_index: >-
       {{ gitlab.runner.dedicated_worker_index |
          default(gitlab_runner_worker_index | default(0)) }}
+    gitlab_runner_job_resources: >-
+      {{ gitlab.runner.job_resources | default({}) }}
     gitlab_runner_enabled: '{{ gitlab.runner.enabled | default(gitlab_runner_enabled | default(false)) | bool }}'
     gitlab_image_builder_runner_enabled: >-
       {{ ((gitlab.runner.image_builder | default({})).enabled |
@@ -1986,18 +1988,18 @@
               allow_privilege_escalation = false
               cap_drop = ["ALL"]
               automount_service_account_token = false
-              cpu_request = "500m"
-              cpu_limit = "2000m"
-              memory_request = "1Gi"
-              memory_limit = "4Gi"
-              service_cpu_request = "200m"
-              service_cpu_limit = "1000m"
-              service_memory_request = "512Mi"
-              service_memory_limit = "2Gi"
-              helper_cpu_request = "100m"
-              helper_cpu_limit = "500m"
-              helper_memory_request = "256Mi"
-              helper_memory_limit = "512Mi"
+              cpu_request = "{{ gitlab_runner_job_resources.cpu_request | default(gitlab_runner_cpu_request) }}"
+              cpu_limit = "{{ gitlab_runner_job_resources.cpu_limit | default(gitlab_runner_cpu_limit) }}"
+              memory_request = "{{ gitlab_runner_job_resources.memory_request | default(gitlab_runner_memory_request) }}"
+              memory_limit = "{{ gitlab_runner_job_resources.memory_limit | default(gitlab_runner_memory_limit) }}"
+              service_cpu_request = "{{ gitlab_runner_job_resources.service_cpu_request | default(gitlab_runner_service_cpu_request) }}"
+              service_cpu_limit = "{{ gitlab_runner_job_resources.service_cpu_limit | default(gitlab_runner_service_cpu_limit) }}"
+              service_memory_request = "{{ gitlab_runner_job_resources.service_memory_request | default(gitlab_runner_service_memory_request) }}"
+              service_memory_limit = "{{ gitlab_runner_job_resources.service_memory_limit | default(gitlab_runner_service_memory_limit) }}"
+              helper_cpu_request = "{{ gitlab_runner_job_resources.helper_cpu_request | default(gitlab_runner_helper_cpu_request) }}"
+              helper_cpu_limit = "{{ gitlab_runner_job_resources.helper_cpu_limit | default(gitlab_runner_helper_cpu_limit) }}"
+              helper_memory_request = "{{ gitlab_runner_job_resources.helper_memory_request | default(gitlab_runner_helper_memory_request) }}"
+              helper_memory_limit = "{{ gitlab_runner_job_resources.helper_memory_limit | default(gitlab_runner_helper_memory_limit) }}"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
