@@ -166,7 +166,7 @@ savings.
 `medium-optimized` is a resource-envelope variant of the base medium toolset,
 not a linear tier between `medium` and `production`. GitLab/Runner and
 PostgreSQL are mandatory from `small` upward. MongoDB, Temporal, Postal, and
-GlitchTip are opt-in. Medium-optimized
+GlitchTip and Umami are opt-in. Medium-optimized
 uses more small nodes than production, so CCX can make it more expensive than
 the six-node production topology.
 

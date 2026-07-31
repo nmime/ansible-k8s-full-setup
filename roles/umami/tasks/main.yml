@@ -1,0 +1,200 @@
+---
+- name: Set Umami deployment facts
+  ansible.builtin.set_fact:
+    umami_ns: "{{ umami_namespace }}"
+    umami_pg_secret_name: "{{ umami_database_cluster }}-pguser-{{ umami_database_user }}"
+    umami_pg_host: >-
+      {{
+        (umami_database_service_alias ~ '.' ~ umami_database_namespace ~
+         '.svc.cluster.local')
+        if (umami_database_service_alias | length > 0)
+        else
+        (umami_database_cluster ~ '-primary.' ~ umami_database_namespace ~
+         '.svc.cluster.local')
+      }}
+    umami_pg_ca_secret_name: >-
+      {{
+        'database-client-ca'
+        if (umami_database_service_alias | length > 0)
+        else (umami_database_cluster ~ '-cluster-ca-cert')
+      }}
+
+- name: Create Umami namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ umami_ns }}"
+        labels:
+          app.kubernetes.io/part-of: umami
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+
+- name: Retrieve the operator-managed Umami PostgreSQL credential
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ umami_database_namespace }}"
+    name: "{{ umami_pg_secret_name }}"
+  register: umami_pg_secret
+  until: (umami_pg_secret.resources | default([]) | length) == 1
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Require the dedicated Umami PostgreSQL principal
+  ansible.builtin.assert:
+    that:
+      - (umami_pg_secret.resources | default([]) | length) == 1
+      - umami_pg_secret.resources[0].data.password is defined
+    fail_msg: >-
+      The dedicated Umami PostgreSQL user secret is missing. Enable Umami
+      through the platform profile before reconciling the database cluster.
+
+- name: Retrieve the PostgreSQL client CA
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ umami_database_namespace }}"
+    name: "{{ umami_pg_ca_secret_name }}"
+  register: umami_pg_ca_secret
+  until: (umami_pg_ca_secret.resources | default([]) | length) == 1
+  retries: 60
+  delay: 10
+  failed_when: false
+
+- name: Require a hostname-verifying PostgreSQL client CA
+  ansible.builtin.assert:
+    that:
+      - (umami_pg_ca_secret.resources | default([]) | length) == 1
+      - umami_pg_ca_secret.resources[0].data["ca.crt"] is defined
+    fail_msg: >-
+      The PostgreSQL client CA is missing. Reconcile the database role before
+      Umami so DATABASE_URL can enforce verify-full TLS.
+
+- name: Inspect the existing Umami runtime secret
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ umami_ns }}"
+    name: "{{ umami_runtime_secret_name }}"
+  register: umami_existing_runtime_secret
+
+- name: Generate or retain Umami application credentials
+  no_log: true
+  ansible.builtin.set_fact:
+    umami_app_secret: >-
+      {{
+        (umami_existing_runtime_secret.resources[0].data.APP_SECRET | b64decode)
+        if (umami_existing_runtime_secret.resources | length) == 1
+        else lookup('password', '/dev/null chars=ascii_letters,digits length=64')
+      }}
+    umami_admin_password: >-
+      {{
+        (umami_existing_runtime_secret.resources[0].data.ADMIN_PASSWORD | b64decode)
+        if (
+          (umami_existing_runtime_secret.resources | length) == 1 and
+          umami_existing_runtime_secret.resources[0].data.ADMIN_PASSWORD is defined
+        )
+        else lookup('password', '/dev/null chars=ascii_letters,digits length=40')
+      }}
+    umami_pg_password: "{{ umami_pg_secret.resources[0].data.password | b64decode }}"
+  when: umami_manage_runtime_secret | bool
+
+- name: Reconcile the Umami runtime secret
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ umami_runtime_secret_name }}"
+        namespace: "{{ umami_ns }}"
+        labels:
+          app.kubernetes.io/name: umami
+          app.kubernetes.io/component: runtime
+      type: Opaque
+      stringData:
+        APP_SECRET: "{{ umami_app_secret }}"
+        ADMIN_PASSWORD: "{{ umami_admin_password }}"
+        DISABLE_TELEMETRY: "{{ '1' if umami_disable_telemetry | bool else '0' }}"
+        ca.crt: "{{ umami_pg_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
+        DATABASE_URL: >-
+          {{
+            'postgresql://' ~ (umami_database_user | urlencode) ~ ':' ~
+            (umami_pg_password | urlencode) ~ '@' ~ umami_pg_host ~ ':5432/' ~
+            (umami_database_name | urlencode) ~ '?sslmode=' ~
+            (umami_database_sslmode | urlencode)
+          }}
+  when: umami_manage_runtime_secret | bool
+
+- name: Require an externally managed Umami runtime secret
+  ansible.builtin.assert:
+    that:
+      - (umami_existing_runtime_secret.resources | length) == 1
+      - umami_existing_runtime_secret.resources[0].data.APP_SECRET is defined
+      - umami_existing_runtime_secret.resources[0].data.ADMIN_PASSWORD is defined
+      - umami_existing_runtime_secret.resources[0].data.DATABASE_URL is defined
+      - umami_existing_runtime_secret.resources[0].data.DISABLE_TELEMETRY is defined
+      - umami_existing_runtime_secret.resources[0].data["ca.crt"] is defined
+    fail_msg: >-
+      umami_manage_runtime_secret=false requires an existing secret containing
+      APP_SECRET, ADMIN_PASSWORD, DATABASE_URL, and DISABLE_TELEMETRY.
+  when: not (umami_manage_runtime_secret | bool)
+
+- name: Compute the credential-bound Umami bootstrap job name
+  no_log: true
+  ansible.builtin.set_fact:
+    umami_bootstrap_job_name: >-
+      umami-bootstrap-{{
+        (
+          (
+            umami_admin_password
+            if umami_manage_runtime_secret | bool
+            else (umami_existing_runtime_secret.resources[0].data.ADMIN_PASSWORD | b64decode)
+          ) | hash('sha256')
+        )[0:12]
+      }}
+
+- name: Reconcile Umami runtime resources
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop: "{{ lookup('template', 'resources.yml.j2') | from_yaml_all | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+- name: Wait for the Umami deployment
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ umami_ns }}"
+    name: umami
+  register: umami_deployment
+  until:
+    - (umami_deployment.resources | length) == 1
+    - >-
+      (umami_deployment.resources[0].status.availableReplicas | default(0) | int)
+      >= (umami_replicas | int)
+  retries: 60
+  delay: 10
+
+- name: Wait for secure Umami bootstrap completion
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ umami_ns }}"
+    name: "{{ umami_bootstrap_job_name }}"
+  register: umami_bootstrap_job
+  until:
+    - (umami_bootstrap_job.resources | length) == 1
+    - (umami_bootstrap_job.resources[0].status.succeeded | default(0) | int) == 1
+  retries: 60
+  delay: 10

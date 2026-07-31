@@ -342,6 +342,13 @@ glitchtip:
   worker_memory_limit: 768Mi
   worker_cpu_request: 100m
 
+# Privacy-focused web analytics (opt-in)
+umami:
+  enabled: false
+  replicas: 2
+  hpa_min_replicas: 2
+  hpa_max_replicas: 6
+
 # ---------------------------------------------
 # APM Server (distributed tracing via Elasticsearch)
 # ---------------------------------------------

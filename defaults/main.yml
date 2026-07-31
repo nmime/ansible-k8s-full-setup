@@ -501,4 +501,5 @@ deploy_dragonfly: "{{ tier in ['medium', 'production'] }}"
 deploy_temporal: false
 deploy_postal: false
 deploy_glitchtip: false
+deploy_umami: false
 edge_cdn_confirm: false

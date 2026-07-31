@@ -3044,7 +3044,7 @@ def test_migration_rollback_removes_target_only_components_fail_closed():
         "restore_helm_baseline_without_vault()", 1
     )[0]
     expected_order = (
-        "daytona blackbox apm glitchtip temporal postal tempo tracing coroot "
+        "daytona blackbox apm umami glitchtip temporal postal tempo tracing coroot "
         "gitlab-runner gitlab mongodb eso elasticsearch dragonfly "
         "disaster-recovery backup autoscaling gitops observability "
         "postgresql databases secrets object-storage"

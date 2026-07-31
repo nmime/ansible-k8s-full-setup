@@ -619,7 +619,7 @@ enforce_target_dependency_closure() {
   fi
   if ! component_enabled "$TARGET_CONFIG" postgresql; then
     yq -i '.gitlab.enabled = false | .gitlab.runner.enabled = false |
-      .temporal.enabled = false | .glitchtip.enabled = false' "$TARGET_CONFIG"
+      .temporal.enabled = false | .glitchtip.enabled = false | .umami.enabled = false' "$TARGET_CONFIG"
   fi
   if ! component_enabled "$TARGET_CONFIG" elasticsearch; then
     yq -i '.apm.enabled = false' "$TARGET_CONFIG"
@@ -671,7 +671,7 @@ enforce_target_dependency_closure() {
 
 components_to_remove() {
   local component
-  for component in daytona blackbox apm glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm umami glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     if component_enabled "$SOURCE_CONFIG" "$component" && ! component_enabled "$TARGET_CONFIG" "$component"; then printf '%s\n' "$component"; fi
   done
 }
@@ -2816,7 +2816,7 @@ rollback_components_to_remove() {
   # Remove dependants before their shared services. Backup/DR are included
   # when the migration installed their temporary control plane for its backup
   # gates, even if the named target does not normally select them.
-  for component in daytona blackbox apm glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm umami glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     component_enabled "$SOURCE_CONFIG" "$component" && continue
     if component_enabled "$TARGET_CONFIG" "$component" \
       || { [[ "$component" == backup || "$component" == disaster-recovery ]] \

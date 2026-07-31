@@ -428,6 +428,12 @@ glitchtip:
   worker_replicas: 1
   events_retention_days: 30
 
+umami:
+  enabled: false
+  replicas: 2
+  hpa_min_replicas: 2
+  hpa_max_replicas: 4
+
 apm:
   enabled: false
   replicas: 1

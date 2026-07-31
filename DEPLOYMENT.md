@@ -52,7 +52,7 @@ profile rather than a fifth tier: it sets `tier: medium` for the medium
 foundation and `resource_tier: small` for the compact resource envelope, then
 explicitly removes overlapping optional observability backends.
 GitLab/Runner and PostgreSQL are mandatory from `small` upward;
-MongoDB, Temporal, Postal, and GlitchTip remain explicit opt-ins.
+MongoDB, Temporal, Postal, GlitchTip, and Umami remain explicit opt-ins.
 Do not rename it to `medium_optimized` or change its tier to `small`; both would
 break the explicit profile contract and are rejected before provisioning.
 
@@ -118,6 +118,7 @@ Inspect and change the selected technologies through the orchestrator:
 ./platform.sh enable temporal     # optional; enables PostgreSQL
 ./platform.sh enable postal       # optional; enables Dragonfly
 ./platform.sh enable glitchtip    # optional; enables PostgreSQL + Dragonfly
+./platform.sh enable umami        # optional; enables PostgreSQL
 ./platform.sh disable daytona
 ./platform.sh validate
 ```
@@ -125,9 +126,9 @@ Inspect and change the selected technologies through the orchestrator:
 `enable` adds required dependencies. `disable` refuses when another enabled
 technology still depends on the target. The validated dependency graph also
 covers ESO -> secrets, database engines -> databases, Runner -> GitLab,
-GlitchTip -> PostgreSQL + Dragonfly, APM -> Elasticsearch, Temporal ->
-PostgreSQL, Postal -> Dragonfly, tracing -> observability + storage, Blackbox ->
-observability, and backup -> storage. Metrics, logging, and Grafana are
+GlitchTip -> PostgreSQL + Dragonfly, Umami -> PostgreSQL, APM -> Elasticsearch,
+Temporal -> PostgreSQL, Postal -> Dragonfly, tracing -> observability + storage,
+Blackbox -> observability, and backup -> storage. Metrics, logging, and Grafana are
 intentionally deployed as one observability core bundle. PMM is an independently
 selectable dependant of that bundle.
 Coroot -> observability is also enforced; HIPAA-oriented hardening requires
@@ -146,6 +147,16 @@ an existing database runs `postal update`, and web/worker/SMTP processes are
 not reconciled until that Job completes. This path runs only after Postal is
 explicitly enabled. SMTP stays public on ports 25/587 but uses unprivileged
 container port 2525.
+
+Umami is also entirely opt-in. Set `umami.enabled: true`, choose separate
+`dashboard_domain` and `ingest_domain` names, and declare stable UUIDs under
+`umami.websites`. The dashboard is attached only to the admin/VPN Gateway.
+The public Gateway accepts exactly `/script.js` and `/api/send`; it does not
+expose login, reporting, user, or website-management APIs. Umami receives a
+dedicated PostgreSQL database principal and connects through the stable short
+PgBouncer alias using `verify-full` TLS and the private database CA. The
+deployment rotates the upstream default admin password before it is considered
+ready and keeps that password only in `Secret/umami-runtime`.
 
 Validate the selected profile without contacting Hetzner or Kubernetes:
 
@@ -196,6 +207,7 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy backup
 ./platform.sh deploy disaster-recovery
 ./platform.sh deploy glitchtip
+./platform.sh deploy umami
 ./platform.sh deploy apm
 ./platform.sh deploy blackbox
 ./platform.sh deploy daytona

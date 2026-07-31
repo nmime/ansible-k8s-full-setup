@@ -255,6 +255,20 @@ applications:
 glitchtip:
   enabled: false
 
+umami:
+  enabled: false
+  # Dashboard is attached to the VPN/admin gateway. The ingest hostname is
+  # public, but only exact /script.js and /api/send paths are routed.
+  dashboard_domain: umami.example.com
+  ingest_domain: analytics.example.com
+  replicas: 2
+  hpa_min_replicas: 2
+  hpa_max_replicas: 4
+  websites: []
+  # - id: 00000000-0000-4000-8000-000000000001
+  #   name: Example
+  #   domain: app.example.com
+
 apm:
   enabled: false
 
