@@ -544,6 +544,18 @@ class TestDragonflyPodSecurity:
         assert "kubernetes.io/metadata.name: \"{{ df_ns }}\"" in content
         assert "port: 6379" in content
 
+    def test_replicated_cache_is_ready_spread_and_disruption_safe(self):
+        content = read("roles/dragonfly/tasks/main.yml")
+        defaults = read("roles/dragonfly/defaults/main.yml")
+        assert "enableReplicationReadinessGate:" in content
+        assert "requiredDuringSchedulingIgnoredDuringExecution:" in content
+        assert "topologySpreadConstraints:" in content
+        assert "topologyKey: kubernetes.io/hostname" in content
+        assert "nodeSelector: \"{{ dragonfly_node_selector }}\"" in content
+        assert "node-role.kubernetes.io/worker" in defaults
+        assert "2 if (df_replicas | int) >= 3 else 1" in content
+        assert "Verify Dragonfly replicas occupy distinct nodes" in content
+
 
 # ─── 5. k8s-gitops: ArgoCD ──────────────────────────────
 

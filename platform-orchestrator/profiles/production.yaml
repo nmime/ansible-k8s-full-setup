@@ -230,7 +230,7 @@ elasticsearch:
 
 dragonfly:
   enabled: true
-  replicas: 2
+  replicas: 3
   snapshot_storage: 20Gi
   memory_request: 256Mi
   memory_limit: 768Mi
