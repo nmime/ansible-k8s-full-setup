@@ -580,6 +580,25 @@ class TestArgoCD:
         assert "argocd_insecure_mode" in self.content, \
             "server.insecure should use argocd_insecure_mode variable"
 
+    def test_ha_mode_replaces_single_redis_with_three_node_redis_ha(self):
+        tasks = yaml.safe_load(self.content)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name") == "Install ArgoCD with Helm"
+        )
+        values = install["kubernetes.core.helm"]["values"]
+
+        assert values["redis"]["enabled"] == "{{ not (argocd_ha | bool) }}"
+        redis_ha = values["redis-ha"]
+        assert redis_ha["enabled"] == "{{ argocd_ha | bool }}"
+        assert redis_ha["replicas"] == 3
+        assert redis_ha["hardAntiAffinity"] is True
+        assert redis_ha["podDisruptionBudget"]["maxUnavailable"] == 1
+        assert redis_ha["haproxy"]["replicas"] == 3
+        assert redis_ha["haproxy"]["hardAntiAffinity"] is True
+        assert redis_ha["haproxy"]["podDisruptionBudget"]["maxUnavailable"] == 1
+
     def test_appproject_has_allowlists(self):
         assert "argocd_allowed_source_repos" in self.content, \
             "AppProject should use argocd_allowed_source_repos variable"
