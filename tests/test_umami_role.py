@@ -77,6 +77,34 @@ def render_postgresql_users(*, umami_enabled: bool) -> list[dict]:
     return yaml.safe_load(rendered)
 
 
+def render_postgresql_role_search_paths(*, umami_enabled: bool) -> list[dict]:
+    database_tasks = yaml.safe_load(DATABASES)
+    build_settings = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Build PostgreSQL role search path settings"
+    )
+    environment = Environment()
+    environment.filters["bool"] = bool
+    rendered = environment.from_string(
+        build_settings["ansible.builtin.set_fact"]["_pg_role_search_paths"]
+    ).render(
+        platform_umami_enabled=umami_enabled,
+        databases={
+            "postgresql": {
+                "extra_users": [
+                    {
+                        "operator": {"name": "metabase"},
+                        "search_path": "public",
+                    },
+                    {"operator": {"name": "without-override"}},
+                ]
+            }
+        },
+    )
+    return yaml.safe_load(rendered)
+
+
 def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
     environment = Environment(
         loader=FileSystemLoader(ROOT / "roles/umami/templates"),
@@ -160,6 +188,26 @@ def test_postgresql_users_template_renders_with_and_without_umami():
     assert {"name": "metabase", "databases": ["metabase"]} in enabled_users
     assert {"name": "metabase", "databases": ["metabase"]} in disabled_users
     assert len(enabled_users) == len(disabled_users) + 1
+
+
+def test_umami_postgresql_role_always_uses_the_public_schema():
+    enabled_settings = render_postgresql_role_search_paths(umami_enabled=True)
+    disabled_settings = render_postgresql_role_search_paths(umami_enabled=False)
+    umami_setting = {
+        "operator": {"name": "umami"},
+        "search_path": "public",
+    }
+    metabase_setting = {
+        "operator": {"name": "metabase"},
+        "search_path": "public",
+    }
+
+    assert umami_setting in enabled_settings
+    assert umami_setting not in disabled_settings
+    assert metabase_setting in enabled_settings
+    assert metabase_setting in disabled_settings
+    assert all(item["operator"]["name"] != "without-override" for item in enabled_settings)
+    assert "_pg_role_search_paths | default([])" in DATABASES
 
 
 def test_umami_secret_rotation_is_idempotent_and_never_uses_default_in_runtime():
