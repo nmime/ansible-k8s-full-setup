@@ -1,0 +1,158 @@
+---
+- name: Stage validated Kubernetes certificates for the Fun Games edge
+  hosts: fun_games_edge
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    _fun_games_edge_kubeconfig: >-
+      {{ lookup('env', 'K8S_AUTH_KUBECONFIG')
+         | default(lookup('env', 'KUBECONFIG'), true) }}
+    _fun_games_edge_bootstrap_root: >-
+      {{ fun_games_edge_bootstrap_root
+         | default('/var/lib/fun-games-edge/bootstrap') }}
+  pre_tasks:
+    - name: Require an explicit controller kubeconfig and certificate inventory
+      ansible.builtin.assert:
+        that:
+          - _fun_games_edge_kubeconfig | length > 0
+          - fun_games_edge_bootstrap_certificates | default([]) | length > 0
+        fail_msg: >-
+          Set K8S_AUTH_KUBECONFIG and define
+          fun_games_edge_bootstrap_certificates before staging TLS material.
+
+    - name: Validate bootstrap certificate definitions
+      ansible.builtin.assert:
+        that:
+          - item.name is match('^[a-z0-9][a-z0-9.-]*$')
+          - item.namespace is match('^[a-z0-9][a-z0-9.-]*$')
+          - item.secret_name is match('^[a-z0-9][a-z0-9.-]*$')
+          - item.domains | length > 0
+          - item.domains | unique | length == item.domains | length
+        fail_msg: "Invalid edge bootstrap certificate definition"
+      loop: "{{ fun_games_edge_bootstrap_certificates }}"
+      loop_control:
+        label: "{{ item.name | default('unknown') }}"
+
+    - name: Create the root-only bootstrap certificate directory
+      ansible.builtin.file:
+        path: "{{ _fun_games_edge_bootstrap_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Read source TLS Secrets without writing them to the controller
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ _fun_games_edge_kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        namespace: "{{ item.namespace }}"
+        name: "{{ item.secret_name }}"
+      loop: "{{ fun_games_edge_bootstrap_certificates }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.secret_name }}"
+      register: _fun_games_edge_source_tls_secrets
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Require complete Kubernetes TLS Secrets
+      ansible.builtin.assert:
+        that:
+          - item.resources | length == 1
+          - item.resources[0].type == 'kubernetes.io/tls'
+          - item.resources[0].data['tls.crt'] | length > 0
+          - item.resources[0].data['tls.key'] | length > 0
+        fail_msg: "A required Kubernetes TLS Secret is incomplete"
+      loop: "{{ _fun_games_edge_source_tls_secrets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      no_log: true
+
+    - name: Require every source certificate to remain valid for seven days
+      ansible.builtin.command:
+        argv: [openssl, x509, -noout, -checkend, "604800"]
+        stdin: "{{ item.resources[0].data['tls.crt'] | b64decode }}"
+      loop: "{{ _fun_games_edge_source_tls_secrets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      changed_when: false
+      no_log: true
+
+    - name: Require every configured hostname in its source certificate
+      ansible.builtin.command:
+        argv: [openssl, x509, -noout, -checkhost, "{{ item.1 }}"]
+        stdin: "{{ item.0.resources[0].data['tls.crt'] | b64decode }}"
+      loop: >-
+        {{ query(
+             'subelements',
+             _fun_games_edge_source_tls_secrets.results,
+             'item.domains'
+           ) }}
+      loop_control:
+        label: "{{ item.0.item.name }}:{{ item.1 }}"
+      changed_when: false
+      no_log: true
+
+    - name: Read source certificate public keys
+      ansible.builtin.command:
+        argv: [openssl, x509, -pubkey, -noout]
+        stdin: "{{ item.resources[0].data['tls.crt'] | b64decode }}"
+      loop: "{{ _fun_games_edge_source_tls_secrets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      register: _fun_games_edge_certificate_public_keys
+      changed_when: false
+      no_log: true
+
+    - name: Derive source private-key public keys
+      ansible.builtin.command:
+        argv: [openssl, pkey, -pubout]
+        stdin: "{{ item.resources[0].data['tls.key'] | b64decode }}"
+      loop: "{{ _fun_games_edge_source_tls_secrets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      register: _fun_games_edge_private_key_public_keys
+      changed_when: false
+      no_log: true
+
+    - name: Require every certificate and private key to match
+      ansible.builtin.assert:
+        that:
+          - >-
+            item.stdout
+            == _fun_games_edge_private_key_public_keys.results[
+                 _fun_games_edge_key_index
+               ].stdout
+        fail_msg: "A source TLS certificate and private key do not match"
+      loop: "{{ _fun_games_edge_certificate_public_keys.results }}"
+      loop_control:
+        index_var: _fun_games_edge_key_index
+        label: "{{ item.item.item.name }}"
+      no_log: true
+
+    - name: Stage validated public certificates on the edge
+      ansible.builtin.copy:
+        content: "{{ item.resources[0].data['tls.crt'] | b64decode }}"
+        dest: "{{ _fun_games_edge_bootstrap_root }}/{{ item.item.name }}.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ _fun_games_edge_source_tls_secrets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      no_log: true
+
+    - name: Stage validated private keys on the edge
+      ansible.builtin.copy:
+        content: "{{ item.resources[0].data['tls.key'] | b64decode }}"
+        dest: "{{ _fun_games_edge_bootstrap_root }}/{{ item.item.name }}.key"
+        owner: root
+        group: root
+        mode: "0600"
+      loop: "{{ _fun_games_edge_source_tls_secrets.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      no_log: true
