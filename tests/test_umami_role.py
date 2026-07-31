@@ -77,6 +77,34 @@ def render_postgresql_users(*, umami_enabled: bool) -> list[dict]:
     return yaml.safe_load(rendered)
 
 
+def render_postgresql_role_search_paths(*, umami_enabled: bool) -> list[dict]:
+    database_tasks = yaml.safe_load(DATABASES)
+    build_settings = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Build PostgreSQL role search path settings"
+    )
+    environment = Environment()
+    environment.filters["bool"] = bool
+    rendered = environment.from_string(
+        build_settings["ansible.builtin.set_fact"]["_pg_role_search_paths"]
+    ).render(
+        platform_umami_enabled=umami_enabled,
+        databases={
+            "postgresql": {
+                "extra_users": [
+                    {
+                        "operator": {"name": "metabase"},
+                        "search_path": "public",
+                    },
+                    {"operator": {"name": "without-override"}},
+                ]
+            }
+        },
+    )
+    return yaml.safe_load(rendered)
+
+
 def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
     environment = Environment(
         loader=FileSystemLoader(ROOT / "roles/umami/templates"),
@@ -139,7 +167,8 @@ def test_umami_uses_an_immutable_upstream_release():
 def test_umami_reuses_postgresql_with_a_dedicated_principal():
     assert "platform_umami_enabled" in NORMALIZE
     assert "platform_postgresql_enabled | bool" in NORMALIZE
-    assert "{'name': 'umami', 'databases': ['umami']}" in DATABASES
+    assert "'name': 'umami'" in DATABASES
+    assert "'grantPublicSchemaAccess': true" in DATABASES
     assert "if platform_umami_enabled | default(false) | bool" in DATABASES
     assert "pguser-{{ umami_database_user }}" in TASKS
     assert "postgresql://" in TASKS
@@ -155,11 +184,36 @@ def test_postgresql_users_template_renders_with_and_without_umami():
     enabled_users = render_postgresql_users(umami_enabled=True)
     disabled_users = render_postgresql_users(umami_enabled=False)
 
-    assert {"name": "umami", "databases": ["umami"]} in enabled_users
-    assert {"name": "umami", "databases": ["umami"]} not in disabled_users
+    umami_user = {
+        "name": "umami",
+        "databases": ["umami"],
+        "grantPublicSchemaAccess": True,
+    }
+    assert umami_user in enabled_users
+    assert umami_user not in disabled_users
     assert {"name": "metabase", "databases": ["metabase"]} in enabled_users
     assert {"name": "metabase", "databases": ["metabase"]} in disabled_users
     assert len(enabled_users) == len(disabled_users) + 1
+
+
+def test_umami_postgresql_role_always_uses_the_public_schema():
+    enabled_settings = render_postgresql_role_search_paths(umami_enabled=True)
+    disabled_settings = render_postgresql_role_search_paths(umami_enabled=False)
+    umami_setting = {
+        "operator": {"name": "umami"},
+        "search_path": "public",
+    }
+    metabase_setting = {
+        "operator": {"name": "metabase"},
+        "search_path": "public",
+    }
+
+    assert umami_setting in enabled_settings
+    assert umami_setting not in disabled_settings
+    assert metabase_setting in enabled_settings
+    assert metabase_setting in disabled_settings
+    assert all(item["operator"]["name"] != "without-override" for item in enabled_settings)
+    assert "_pg_role_search_paths | default([])" in DATABASES
 
 
 def test_umami_secret_rotation_is_idempotent_and_never_uses_default_in_runtime():
@@ -254,6 +308,7 @@ def test_umami_template_renders_valid_ha_and_singleton_resource_sets():
 
 
 def test_umami_dashboard_is_private_and_public_surface_is_minimal():
+    assert 'gateway.n0xeid.xyz/n0xeid-route: "true"' in TASKS
     assert "name: umami-dashboard" in RESOURCES
     assert "name: {{ umami_admin_gateway_name }}" in RESOURCES
     assert "name: umami-ingest" in RESOURCES
