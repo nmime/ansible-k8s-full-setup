@@ -2,9 +2,23 @@
 - name: Validate requested edge-proxy mode
   ansible.builtin.assert:
     that:
-      - fun_games_edge_mode in ["audit", "canary", "cutover", "rollback"]
+      - >-
+        fun_games_edge_mode in
+        ["audit", "canary", "cutover", "certificates", "rollback"]
     fail_msg: >-
-      fun_games_edge_mode must be audit, canary, cutover, or rollback
+      fun_games_edge_mode must be audit, canary, cutover, certificates, or
+      rollback
+
+- name: Derive edge hostname and ACME inventories
+  ansible.builtin.set_fact:
+    _fun_games_edge_hostnames: >-
+      {{ fun_games_edge_hosts | map(attribute='hostname') | list }}
+    _fun_games_edge_acme_names: >-
+      {{ fun_games_edge_acme_certificates | map(attribute='name') | list }}
+    _fun_games_edge_acme_domains: >-
+      {{ fun_games_edge_acme_certificates
+         | map(attribute='domains')
+         | flatten }}
 
 - name: Validate edge host contracts
   ansible.builtin.assert:
@@ -20,6 +34,44 @@
   loop: "{{ fun_games_edge_hosts }}"
   loop_control:
     label: "{{ item.hostname | default('unknown') }}"
+
+- name: Validate edge ACME certificate contracts
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z0-9][a-z0-9.-]*$')
+      - item.domains | length > 0
+      - item.domains | unique | length == item.domains | length
+      - >-
+        item.domains
+        | select('match', '^[a-z0-9][a-z0-9.-]*$')
+        | list
+        | length == item.domains | length
+    fail_msg: "Invalid edge ACME certificate definition"
+  loop: "{{ fun_games_edge_acme_certificates }}"
+  loop_control:
+    label: "{{ item.name | default('unknown') }}"
+  when: fun_games_edge_acme_enabled | bool
+
+- name: Require exact and unique ACME coverage for managed modes
+  ansible.builtin.assert:
+    that:
+      - fun_games_edge_acme_enabled | bool
+      - fun_games_edge_acme_email | length > 3
+      - "'@' in fun_games_edge_acme_email"
+      - >-
+        _fun_games_edge_acme_names | unique | length
+        == _fun_games_edge_acme_names | length
+      - >-
+        _fun_games_edge_acme_domains | unique | length
+        == _fun_games_edge_acme_domains | length
+      - >-
+        _fun_games_edge_hostnames
+        | symmetric_difference(_fun_games_edge_acme_domains)
+        | length == 0
+    fail_msg: >-
+      Managed edge modes require an ACME email and exact one-time certificate
+      coverage for every configured hostname.
+  when: fun_games_edge_mode in ["cutover", "certificates"]
 
 - name: Check Docker Compose availability
   ansible.builtin.command:
@@ -38,6 +90,8 @@
       safeline_present: "{{ _fun_games_edge_safeline_compose.stat.exists }}"
       configured_hosts: "{{ fun_games_edge_hosts | map(attribute='hostname') | list }}"
       required_cutover_hosts: "{{ fun_games_edge_required_hosts }}"
+      acme_certificate_names: "{{ _fun_games_edge_acme_names }}"
+      acme_domains: "{{ _fun_games_edge_acme_domains }}"
   when: fun_games_edge_mode == "audit"
 
 - name: Prepare the isolated edge proxy
@@ -48,16 +102,42 @@
         that:
           - fun_games_edge_hosts | length > 0
 
+    - name: Install Certbot for independent edge renewals
+      ansible.builtin.package:
+        name: certbot
+        state: present
+      when: fun_games_edge_acme_enabled | bool
+
+    - name: Create the edge TLS reader group
+      ansible.builtin.group:
+        name: "{{ fun_games_edge_tls_group_name }}"
+        gid: "{{ fun_games_edge_tls_group_gid }}"
+        system: true
+        state: present
+
     - name: Create edge proxy directories
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: directory
         owner: root
-        group: root
+        group: "{{ item.group }}"
         mode: "{{ item.mode }}"
       loop:
-        - {path: "{{ fun_games_edge_install_root }}", mode: "0750"}
-        - {path: "{{ fun_games_edge_install_root }}/certs", mode: "0750"}
+        - path: "{{ fun_games_edge_install_root }}"
+          group: root
+          mode: "0750"
+        - path: "{{ fun_games_edge_install_root }}/certs"
+          group: "{{ fun_games_edge_tls_group_name }}"
+          mode: "0750"
+        - path: "{{ fun_games_edge_acme_webroot }}"
+          group: root
+          mode: "0755"
+        - path: "{{ fun_games_edge_acme_webroot }}/.well-known"
+          group: root
+          mode: "0755"
+        - path: "{{ fun_games_edge_acme_webroot }}/.well-known/acme-challenge"
+          group: root
+          mode: "0755"
 
     - name: Verify source public certificates
       ansible.builtin.stat:
@@ -115,12 +195,39 @@
         dest: "{{ fun_games_edge_install_root }}/certs/{{ item.hostname }}.key"
         remote_src: true
         owner: root
-        group: root
-        mode: "0600"
+        group: "{{ fun_games_edge_tls_group_name }}"
+        mode: "0640"
       loop: "{{ fun_games_edge_hosts }}"
       loop_control:
         label: "{{ item.hostname }}"
       no_log: true
+
+    - name: Render edge certificate deployment helper
+      ansible.builtin.template:
+        src: deploy-certificate.sh.j2
+        dest: "{{ fun_games_edge_install_root }}/deploy-certificate"
+        owner: root
+        group: root
+        mode: "0750"
+      when: fun_games_edge_acme_enabled | bool
+
+    - name: Create the Certbot deploy-hook directory
+      ansible.builtin.file:
+        path: /etc/letsencrypt/renewal-hooks/deploy
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: fun_games_edge_acme_enabled | bool
+
+    - name: Render the Certbot deploy hook
+      ansible.builtin.template:
+        src: certbot-deploy-hook.sh.j2
+        dest: /etc/letsencrypt/renewal-hooks/deploy/fun-games-edge
+        owner: root
+        group: root
+        mode: "0755"
+      when: fun_games_edge_acme_enabled | bool
 
     - name: Render Nginx edge configuration
       ansible.builtin.template:
@@ -519,6 +626,116 @@
             msg: >-
               Edge verification failed. SafeLine was restored automatically;
               DNS must not be changed.
+
+- name: Enroll and verify independently renewed edge certificates
+  when: fun_games_edge_mode == "certificates"
+  block:
+    - name: Inspect the prepared edge certificate runtime
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ fun_games_edge_install_root }}/compose.yaml"
+        - "{{ fun_games_edge_install_root }}/deploy-certificate"
+        - "{{ fun_games_edge_acme_webroot }}/.well-known/acme-challenge"
+      register: _fun_games_edge_certificate_runtime
+
+    - name: Require a prepared certificate runtime
+      ansible.builtin.assert:
+        that:
+          - >-
+            _fun_games_edge_certificate_runtime.results
+            | map(attribute='stat.exists')
+            | select('equalto', false)
+            | list
+            | length == 0
+        fail_msg: >-
+          Run a successful canary and cutover before enrolling edge
+          certificates.
+
+    - name: Require the production edge proxy to be running
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --project-name
+          - "{{ fun_games_edge_compose_project }}"
+          - --file
+          - "{{ fun_games_edge_install_root }}/compose.yaml"
+          - ps
+          - --status
+          - running
+          - --services
+      register: _fun_games_edge_running_services
+      changed_when: false
+      failed_when: >-
+        'proxy' not in _fun_games_edge_running_services.stdout_lines
+
+    - name: Obtain or reuse every edge ACME certificate
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'certbot', 'certonly', '--non-interactive', '--agree-tos',
+              '--no-eff-email', '--webroot', '--webroot-path',
+              fun_games_edge_acme_webroot, '--email',
+              fun_games_edge_acme_email, '--cert-name', item.name,
+              '--keep-until-expiring'
+            ]
+            + (
+                ['--server', fun_games_edge_acme_server]
+                if fun_games_edge_acme_server | length > 0
+                else []
+              )
+            + (
+                item.domains
+                | map('regex_replace', '^', '--domain=')
+                | list
+              )
+          }}
+      loop: "{{ fun_games_edge_acme_certificates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+
+    - name: Deploy every enrolled certificate atomically
+      ansible.builtin.command:
+        argv:
+          - "{{ fun_games_edge_install_root }}/deploy-certificate"
+          - "{{ item.name }}"
+      loop: "{{ fun_games_edge_acme_certificates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+
+    - name: Prove all edge certificates can renew through HTTP-01
+      ansible.builtin.command:
+        argv:
+          - certbot
+          - renew
+          - --dry-run
+          - --no-random-sleep-on-renew
+      changed_when: false
+
+    - name: Enable automatic edge certificate renewal
+      ansible.builtin.systemd_service:
+        name: certbot.timer
+        enabled: true
+        state: started
+
+    - name: Verify every hostname after certificate enrollment
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail-with-body
+          - --silent
+          - --show-error
+          - --resolve
+          - "{{ item.hostname }}:{{ fun_games_edge_https_port }}:127.0.0.1"
+          - "https://{{ item.hostname }}/_edge/health"
+      loop: "{{ fun_games_edge_hosts }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      changed_when: false
 
 - name: Roll back explicitly to SafeLine
   when: fun_games_edge_mode == "rollback"
