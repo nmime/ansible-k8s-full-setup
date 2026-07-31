@@ -1,5 +1,6 @@
 """Security and lifecycle contracts for optional Umami analytics."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,6 +17,32 @@ DEPLOY = (ROOT / "playbooks/deploy_platform.yml").read_text()
 REMOVE = (ROOT / "playbooks/remove_component.yml").read_text()
 DATABASES = (ROOT / "roles/k8s-databases/tasks/main.yml").read_text()
 ORCHESTRATOR = (ROOT / "platform-orchestrator/platform.sh").read_text()
+
+
+def render_bootstrap_job_name(
+    *, password: str = "secret", image: str = "umami@sha256:one", revision: str = "2"
+) -> str:
+    tasks = yaml.safe_load(TASKS)
+    name_task = next(
+        task
+        for task in tasks
+        if task.get("name")
+        == "Compute the credential- and template-bound Umami bootstrap job name"
+    )
+    environment = Environment()
+    environment.filters["hash"] = lambda value, algorithm: hashlib.new(
+        algorithm, str(value).encode()
+    ).hexdigest()
+    environment.filters["bool"] = bool
+    return environment.from_string(
+        name_task["ansible.builtin.set_fact"]["umami_bootstrap_job_name"]
+    ).render(
+        umami_admin_password=password,
+        umami_manage_runtime_secret=True,
+        umami_existing_runtime_secret={"resources": []},
+        umami_image=image,
+        umami_bootstrap_revision=revision,
+    ).strip()
 
 
 def render_postgresql_users(*, umami_enabled: bool) -> list[dict]:
@@ -143,6 +170,17 @@ def test_umami_secret_rotation_is_idempotent_and_never_uses_default_in_runtime()
     assert "session = await login('umami')" in RESOURCES
     assert "body: JSON.stringify({password: desired})" in RESOURCES
     assert "value: umami" not in RESOURCES
+
+
+def test_umami_bootstrap_job_is_resumable_across_credentials_and_templates():
+    baseline = render_bootstrap_job_name()
+    assert baseline.startswith("umami-bootstrap-")
+    assert baseline != render_bootstrap_job_name(password="rotated")
+    assert baseline != render_bootstrap_job_name(image="umami@sha256:two")
+    assert baseline != render_bootstrap_job_name(revision="3")
+    assert "Discover stale Umami bootstrap jobs" in TASKS
+    assert "Remove stale Umami bootstrap jobs after successful replacement" in TASKS
+    assert "item.metadata.name != umami_bootstrap_job_name" in TASKS
 
 
 def test_umami_rollout_is_highly_available_and_resource_bounded():
