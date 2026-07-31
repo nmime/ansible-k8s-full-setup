@@ -164,11 +164,15 @@
         )[0:12]
       }}
 
-- name: Reconcile Umami runtime resources
+- name: Render Umami runtime resources
+  ansible.builtin.set_fact:
+    umami_resources: "{{ lookup('template', 'resources.yml.j2') | from_yaml_all | list }}"
+
+- name: Reconcile Umami runtime resources before bootstrap
   kubernetes.core.k8s:
     state: present
     definition: "{{ item }}"
-  loop: "{{ lookup('template', 'resources.yml.j2') | from_yaml_all | list }}"
+  loop: "{{ umami_resources | rejectattr('kind', 'equalto', 'Job') | list }}"
   loop_control:
     label: "{{ item.kind }}/{{ item.metadata.name }}"
 
@@ -186,6 +190,16 @@
       >= (umami_replicas | int)
   retries: 60
   delay: 10
+
+- name: Reconcile secure Umami bootstrap job after deployment readiness
+  kubernetes.core.k8s:
+    state: present
+    definition: >-
+      {{
+        umami_resources
+        | selectattr('kind', 'equalto', 'Job')
+        | first
+      }}
 
 - name: Wait for secure Umami bootstrap completion
   kubernetes.core.k8s_info:
