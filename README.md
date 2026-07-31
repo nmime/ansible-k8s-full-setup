@@ -84,6 +84,12 @@ alerting, tracing, and selected
 stateless services have explicit redundant topology. The compact
 footprint retains these intentional singleton recovery boundaries:
 
+When `gitops.ha_enabled` is true, Argo CD uses redundant server, repository,
+application-controller, and ApplicationSet pods together with three
+Redis/Sentinel members and three HAProxy endpoints. The single bundled Redis
+is retained only when HA is explicitly disabled; scaling the Argo CD API alone
+is not treated as high availability.
+
 - GitLab Gitaly uses one RWO data claim. Recover it from the verified GitLab
   application backup and cluster/PVC backup before reopening repository writes.
 - Elasticsearch has three masters and two data nodes. Its default shard replica
