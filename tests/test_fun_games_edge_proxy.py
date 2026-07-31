@@ -124,3 +124,17 @@ def test_bootstrap_certificates_are_validated_without_controller_files():
     assert "[openssl, pkey, -pubout]" in playbook
     assert 'mode: "0600"' in playbook
     assert playbook.count("no_log: true") >= 7
+
+
+def test_edge_access_uses_a_dedicated_key_and_guarded_root_lockout():
+    playbook = (
+        ROOT / "playbooks/fun-games-edge-bootstrap-access.yml"
+    ).read_text()
+
+    assert "FUN_GAMES_EDGE_ADMIN_PUBLIC_KEY" in playbook
+    assert "password_lock: true" in playbook
+    assert 'mode: "0600"' in playbook
+    assert "validate: /usr/sbin/visudo -cf %s" in playbook
+    assert "fun_games_edge_disable_root_ssh: false" in playbook
+    assert "Require verified dedicated access before disabling root SSH" in playbook
+    assert "validate: /usr/sbin/sshd -t -f %s" in playbook

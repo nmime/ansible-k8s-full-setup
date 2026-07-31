@@ -25,6 +25,25 @@ fun_games_edge:
       ansible_user: root
 ```
 
+Bootstrap a dedicated key before routine runs. The first invocation uses the
+existing break-glass root access; all subsequent inventory uses
+`fun-edge-admin` plus `become`. Root SSH can be disabled only on a second run
+that is already connected through the verified dedicated identity:
+
+```bash
+FUN_GAMES_EDGE_ADMIN_PUBLIC_KEY="$(ssh-keygen -y -f /secure/key)" \
+ansible-playbook -i inventory.yml playbooks/fun-games-edge-bootstrap-access.yml
+
+FUN_GAMES_EDGE_ADMIN_PUBLIC_KEY="$(ssh-keygen -y -f /secure/key)" \
+ansible-playbook -i inventory.yml playbooks/fun-games-edge-bootstrap-access.yml \
+  -e fun_games_edge_disable_root_ssh=true
+```
+
+The automation account has no password and its dedicated public key is the
+only authorized key in that account. Its sudo elevation is explicit and
+auditable; keep the private key in Vault/CI protected file variables, never in
+Git.
+
 Define each hostname and its certificate paths on the edge host:
 
 ```yaml
