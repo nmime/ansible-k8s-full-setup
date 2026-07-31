@@ -1220,6 +1220,22 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
         mongo_certificate["dnsNames"]
     )
     assert mongo_certificate["secretName"] == "{{ mongo_alias_tls_secret }}"
+    assert mongo_certificate["issuerRef"]["name"] == (
+        "{{ project_name | default('k8s') }}-mongo-psmdb-issuer"
+    )
+    task_names = [task.get("name") for task in tasks]
+    assert task_names.index("Wait for MongoDB cluster to be ready") < task_names.index(
+        "Issue hostname-verified MongoDB alias certificate"
+    )
+    alias_ca_wait = by_name[
+        "Wait for the MongoDB alias certificate to use the active operator CA"
+    ]
+    assert '_mongo_alias_tls_secret.resources[0].data["ca.crt"]' in (
+        alias_ca_wait["until"]
+    )
+    assert '_mongo_cluster_ca_secret.resources[0].data["ca.crt"]' in (
+        alias_ca_wait["until"]
+    )
 
     pg_cluster = by_name[
         "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
@@ -1271,11 +1287,24 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
         mongo_cluster["spec"]["secrets"]["sslInternal"]
     )
     assert "mongo_alias_tls_cutover_enabled | bool" in mongo_cluster["spec"]["tls"]
+    same_ca_gate = by_name[
+        "Reject a MongoDB alias certificate signed by a different CA"
+    ]["ansible.builtin.assert"]
+    assert any(
+        '_mongo_cutover_alias_tls_secret.resources[0].data["ca.crt"]'
+        in condition
+        and '_mongo_cutover_operator_ca_secret.resources[0].data["ca.crt"]'
+        in condition
+        for condition in same_ca_gate["that"]
+    )
+    assert task_names.index(
+        "Reject a MongoDB alias certificate signed by a different CA"
+    ) < task_names.index("Create MongoDB cluster")
     published_ca = by_name["Publish the hostname-verifying MongoDB client CA"][
         "kubernetes.core.k8s"
     ]["definition"]
     assert "type" not in published_ca
-    assert published_ca["stringData"]["ca.crt"]
+    assert "_mongo_cluster_ca_secret" in published_ca["stringData"]["ca.crt"]
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():
