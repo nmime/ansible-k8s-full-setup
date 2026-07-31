@@ -16,7 +16,7 @@ cost_estimate: >-
   Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
   workers, one isolated cpx32 Docker worker, one isolated cpx42 general/image
   worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
-  replication-qualified local claims, and 220 GiB provider-billable persistent
+  replication-qualified local claims, and 240 GiB provider-billable persistent
   volumes. GitLab backup staging is transient node-local scratch. See
   docs/COST_MODEL.md.
 
@@ -352,7 +352,10 @@ backup:
 # ---------------------------------------------
 dragonfly:
   enabled: true
-  replicas: 1
+  # GitLab and the games share this Redis-compatible control plane. Keep one
+  # replica on each application worker so any single node can fail without
+  # taking cache-backed sessions, queues, and CI orchestration down together.
+  replicas: 3
   cpu_request: 100m
   cpu_limit: 500m
   memory_request: 256Mi

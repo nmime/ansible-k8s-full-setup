@@ -127,6 +127,22 @@
       spec:
         image: "docker.dragonflydb.io/dragonflydb/dragonfly:{{ df_image_ver }}"
         replicas: "{{ df_replicas | int }}"
+        enableReplicationReadinessGate: "{{ (df_replicas | int) > 1 }}"
+        nodeSelector: "{{ dragonfly_node_selector }}"
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    app: dragonfly
+                topologyKey: kubernetes.io/hostname
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app: dragonfly
         authentication:
           passwordFromSecret:
             name: dragonfly-auth
@@ -166,7 +182,7 @@
         serviceSpec:
           type: ClusterIP
         pdb:
-          minAvailable: 1
+          minAvailable: "{{ 2 if (df_replicas | int) >= 3 else 1 }}"
   register: _r_create_dragonfly_instance
   retries: 3
   delay: 15
@@ -328,13 +344,31 @@
     namespace: "{{ df_ns }}"
     label_selectors:
       - app=dragonfly
-      - role=master
   register: df_pods
   until: >
-    (df_pods.resources | default([])) | length > 0 and
-    (df_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
-  retries: 30
+    (df_pods.resources | default([])) | length == (df_replicas | int) and
+    (df_pods.resources |
+      selectattr('status.containerStatuses', 'defined') |
+      map(attribute='status.containerStatuses') |
+      flatten |
+      selectattr('ready', 'equalto', true) |
+      list | length) >= (df_replicas | int)
+  retries: 60
   delay: 10
+
+- name: Verify Dragonfly replicas occupy distinct nodes
+  ansible.builtin.assert:
+    that:
+      - >-
+        (df_pods.resources |
+          map(attribute='spec.nodeName') |
+          unique |
+          list |
+          length) == (df_replicas | int)
+    fail_msg: >-
+      Dragonfly replicas are not distributed one-per-node; refusing to accept
+      a cache topology with a correlated node-failure boundary.
+  when: df_replicas | int > 1
 
 - name: Remove verified Dragonfly Operator manifest
   ansible.builtin.file:

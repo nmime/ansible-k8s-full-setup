@@ -405,6 +405,7 @@ class TestMediumOptimizedContract:
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
         assert self.profile["storage"]["master_replicas"] == 3
         assert self.profile["storage"]["volume_replicas"] == 3
+        assert self.profile["dragonfly"]["replicas"] == 3
 
     def test_uses_compact_stateless_baselines(self):
         replica_paths = (
@@ -416,7 +417,6 @@ class TestMediumOptimizedContract:
             "observability.metrics.replicas",
             "observability.grafana.replicas",
             "autoscaling.replicas",
-            "dragonfly.replicas",
             "temporal.frontend_replicas",
             "temporal.history_replicas",
             "temporal.matching_replicas",
