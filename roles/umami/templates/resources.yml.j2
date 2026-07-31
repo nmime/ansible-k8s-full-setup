@@ -191,14 +191,20 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-umami-runtime
+  name: allow-umami-app
   namespace: {{ umami_ns }}
 spec:
-  podSelector: {}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+      app.kubernetes.io/component: analytics
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: umami
+              app.kubernetes.io/component: bootstrap
       ports:
         - port: 3000
           protocol: TCP
@@ -221,16 +227,53 @@ spec:
         - port: 53
           protocol: TCP
     - to:
-        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ umami_database_namespace }}
+          podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/cluster: {{ umami_database_cluster }}
+              postgres-operator.crunchydata.com/role: pgbouncer
       ports:
-        - port: 3000
+        - port: 5432
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-umami-bootstrap
+  namespace: {{ umami_ns }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+      app.kubernetes.io/component: bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.25.10/32
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
           protocol: TCP
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ umami_database_namespace }}
+              kubernetes.io/metadata.name: kube-system
       ports:
-        - port: 5432
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: umami
+              app.kubernetes.io/component: analytics
+      ports:
+        - port: 3000
           protocol: TCP
 ---
 apiVersion: cilium.io/v2
@@ -242,6 +285,7 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: umami
+      app.kubernetes.io/component: analytics
   egress:
     - toEntities: [host, remote-node]
       toPorts:
