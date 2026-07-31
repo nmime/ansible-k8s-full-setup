@@ -99,7 +99,7 @@ def test_postgresql_extra_users_publish_tls_connection_secrets():
     assert "sslmode: verify-full" in databases
     assert "Create stable short PostgreSQL service alias" in databases
     assert "Issue hostname-verified PostgreSQL alias certificate" in databases
-    assert "Configure extra PostgreSQL role search paths" in databases
+    assert "Configure PostgreSQL role search paths" in databases
     assert "ALTER ROLE" in databases
     assert "item.search_path" in databases
     assert "argocd.argoproj.io/compare-options: IgnoreExtraneous" in databases
