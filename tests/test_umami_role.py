@@ -308,6 +308,7 @@ def test_umami_template_renders_valid_ha_and_singleton_resource_sets():
 
 
 def test_umami_dashboard_is_private_and_public_surface_is_minimal():
+    assert 'gateway.n0xeid.xyz/n0xeid-route: "true"' in TASKS
     assert "name: umami-dashboard" in RESOURCES
     assert "name: {{ umami_admin_gateway_name }}" in RESOURCES
     assert "name: umami-ingest" in RESOURCES
