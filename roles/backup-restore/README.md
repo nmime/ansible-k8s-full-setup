@@ -51,6 +51,10 @@ cluster is backed up separately with its version-matched native tooling in the
 same `backup-all.sh` gate. Rails encryption secrets are stored separately. A
 GitLab recovery therefore requires the matching PostgreSQL backup, Toolbox
 archive, Rails secrets, and object-storage data.
+The daily verifier performs bounded, recursive S3 object checks for every
+enabled component and fails closed when the S3 API cannot be reached or returns
+an invalid response. Its namespace is allowed to reach only the SeaweedFS filer
+S3 port (`8333`); master, volume, filer-internal, and admin ports stay denied.
 On-demand gates use `repo2` by default so the PostgreSQL restore set is in
 S3-compatible object storage; set `BACKUP_POSTGRESQL_REPO=repo1` only for an
 explicit local-repository recovery exercise. The gate checks both the

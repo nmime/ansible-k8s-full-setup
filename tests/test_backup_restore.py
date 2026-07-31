@@ -274,6 +274,14 @@ def test_postgresql_uses_operator_backup_contract():
     assert "PerconaPGCluster" in content
     assert "pgbackrest" in content and "repo1" in content and "repo2" in content
 
+def test_verification_uses_bounded_recursive_object_checks_and_fails_closed():
+    content = (TASKS_DIR / "verification.yml").read_text()
+    assert "s3api list-objects-v2" in content
+    assert "--max-items 1" in content
+    assert "FAIL: unable to verify ${comp} artifacts" in content
+    assert "FAIL: invalid ${comp} verification response" in content
+    assert "wc -l || echo 0" not in content
+
 class TestCronJob:
     @pytest.mark.parametrize("f,n", CJ)
     def test_kind(self, f, n): assert "kind: CronJob" in (TASKS_DIR / f).read_text()
