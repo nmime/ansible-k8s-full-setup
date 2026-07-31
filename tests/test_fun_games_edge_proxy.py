@@ -109,3 +109,18 @@ def test_edge_certificates_are_least_privilege_and_automatically_renewed():
     assert "exec -T proxy nginx -s reload" in deploy
     assert "Refusing unknown edge certificate" in deploy
     assert "RENEWED_LINEAGE" in hook
+
+
+def test_bootstrap_certificates_are_validated_without_controller_files():
+    playbook = (
+        ROOT / "playbooks/fun-games-edge-stage-certificates.yml"
+    ).read_text()
+
+    assert "kubernetes.core.k8s_info" in playbook
+    assert "delegate_to: localhost" in playbook
+    assert "-checkend" in playbook
+    assert "-checkhost" in playbook
+    assert "[openssl, x509, -pubkey, -noout]" in playbook
+    assert "[openssl, pkey, -pubout]" in playbook
+    assert 'mode: "0600"' in playbook
+    assert playbook.count("no_log: true") >= 7

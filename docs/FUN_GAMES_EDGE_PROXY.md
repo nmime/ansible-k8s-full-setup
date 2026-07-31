@@ -67,6 +67,22 @@ The canary and production gates test both the local proxy liveness endpoint and
 a real request through the configured upstream; a healthy Nginx process with a
 dead origin cannot pass.
 
+Stage bootstrap certificates directly from ready Kubernetes TLS Secrets. The
+staging playbook keeps the key material out of controller files and checks the
+remaining lifetime, every SAN, and the certificate/private-key public-key
+match before writing root-only files on the edge:
+
+```bash
+K8S_AUTH_KUBECONFIG=/absolute/path/to/kubeconfig \
+ansible-playbook -i inventory.yml \
+  playbooks/fun-games-edge-stage-certificates.yml
+```
+
+`fun_games_edge_bootstrap_certificates` maps each source namespace/Secret and
+its exact domain set to the `certificate_path` and `certificate_key_path`
+consumed by `fun_games_edge_hosts`. No TLS key belongs in Git or a local export
+directory.
+
 The outer edge discards any client-supplied forwarding chain, rejects unknown
 authorities, and enforces container CPU/memory/PID limits. TLS keys are
 group-readable only by the unprivileged Nginx container. Local Certbot HTTP-01
