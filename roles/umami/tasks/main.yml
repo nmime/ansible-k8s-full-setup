@@ -149,17 +149,18 @@
       APP_SECRET, ADMIN_PASSWORD, DATABASE_URL, and DISABLE_TELEMETRY.
   when: not (umami_manage_runtime_secret | bool)
 
-- name: Compute the credential-bound Umami bootstrap job name
+- name: Compute the credential- and template-bound Umami bootstrap job name
   no_log: true
   ansible.builtin.set_fact:
     umami_bootstrap_job_name: >-
       umami-bootstrap-{{
         (
-          (
+          ((
             umami_admin_password
             if umami_manage_runtime_secret | bool
             else (umami_existing_runtime_secret.resources[0].data.ADMIN_PASSWORD | b64decode)
-          ) | hash('sha256')
+          ) ~ ':' ~ umami_image ~ ':' ~ umami_bootstrap_revision)
+          | hash('sha256')
         )[0:12]
       }}
 
@@ -198,3 +199,25 @@
     - (umami_bootstrap_job.resources[0].status.succeeded | default(0) | int) == 1
   retries: 60
   delay: 10
+
+- name: Discover stale Umami bootstrap jobs
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ umami_ns }}"
+    label_selectors:
+      - app.kubernetes.io/name=umami
+      - app.kubernetes.io/component=bootstrap
+  register: umami_bootstrap_jobs
+
+- name: Remove stale Umami bootstrap jobs after successful replacement
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ umami_ns }}"
+    name: "{{ item.metadata.name }}"
+  loop: "{{ umami_bootstrap_jobs.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: item.metadata.name != umami_bootstrap_job_name
