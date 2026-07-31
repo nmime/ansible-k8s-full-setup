@@ -37,7 +37,7 @@ overlapping observability backends: Coroot, VictoriaMetrics/Grafana,
 single-binary Loki, one OpenTelemetry Collector, and Blackbox are on;
 Elasticsearch/Kibana/APM, PMM, Tempo, and GlitchTip are off. PostgreSQL and
 GitLab/Runner are part of the `small`-or-larger base platform. MongoDB,
-Temporal, Postal, and GlitchTip are data/application opt-ins.
+Temporal, Postal, GlitchTip, and Umami are data/application opt-ins.
 The `production` profile also uses the conservative request envelope, while
 explicitly retaining selective critical HA sizing for Vault, optional
 databases/GitLab, storage, Argo CD, metrics, autoscaling, alerting, and tracing.
@@ -65,7 +65,7 @@ retains 240 GiB on provider CSI including GitLab backup staging.
 Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 `postgresql`, `mongodb`, `elasticsearch`, `dragonfly`, `gitlab`,
 `gitlab-runner`, `gitops`, `observability`, `pmm`, `coroot`, `tracing`, `tempo`, `autoscaling`,
-`temporal`, `postal`, `backup`, `disaster-recovery`, `glitchtip`, `apm`,
+`temporal`, `postal`, `backup`, `disaster-recovery`, `glitchtip`, `umami`, `apm`,
 `blackbox`, `daytona`, and `hipaa`.
 
 | Component | YAML selector | Main technologies | Required selections | minimal | small | medium | medium-optimized | production |
@@ -93,10 +93,42 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Native backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, and SeaweedFS backup jobs plus application-aware restore drills | Object storage | off | off | on | on | on |
 | External disaster recovery | `backup.disaster_recovery.enabled` | Velero/Kopia resource and mounted-PVC protection; complete encrypted etcd/PKI/config/cloud-state bundles; replacement-cluster restore | Native backup automation, object storage, and an independent external S3 endpoint | off | off | on | on | on |
 | GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | off | off | off |
+| Umami | `umami.enabled` | Umami web analytics with private dashboard, public tracker/ingest-only route, automatic admin rotation, and deterministic website IDs | PostgreSQL | off | off | off | off | off |
 | APM | `apm.enabled` | Elastic APM Server and ILM bootstrap | Elasticsearch | off | off | on | off | on |
 | Blackbox | `blackbox.enabled` | Prometheus Blackbox Exporter and VMProbe resources | Observability | off | off | on | on | on |
 | Daytona | `applications.daytona.enabled` | Daytona workspace platform | none | off | off | off | off | off |
 | HIPAA-oriented hardening | `compliance.hipaa.enabled` | Host audit rules, Vault TLS assertions, Cilium encryption assertion, and active log redaction | Secrets, observability | off | off | off | off | off |
+
+### Umami analytics boundary
+
+Umami is not part of any base tier. Select it only for applications that need
+first-party web analytics:
+
+```yaml
+umami:
+  enabled: true
+  dashboard_domain: umami.example.com
+  ingest_domain: analytics.example.com
+  replicas: 2
+  hpa_min_replicas: 2
+  hpa_max_replicas: 4
+  websites:
+    - id: 00000000-0000-4000-8000-000000000001
+      name: Example
+      domain: app.example.com
+```
+
+`dashboard_domain` terminates on the private admin/VPN Gateway. The public
+`ingest_domain` has only exact routes for `/script.js` and `/api/send`, so the
+dashboard and management API are not exposed. The role uses a dedicated
+`umami` PostgreSQL principal, short PgBouncer DNS when configured, private-CA
+`verify-full` TLS, an immutable upstream image digest, restricted pod security,
+default-deny networking, two-replica rolling updates, PDB, topology spreading,
+and HPA on medium-class deployments. The bootstrap Job rotates the upstream
+default admin password and reconciles deterministic website IDs idempotently.
+Disabling the selector retains the workload and data for a later return;
+destructive removal requires the standard exact-name plus `--delete-data`
+confirmation gate.
 
 Storage profiles with more than one SeaweedFS volume server select placement
 `001`, migrate pre-existing single-copy volumes, fail if any volume remains
@@ -164,7 +196,7 @@ not inferred from live cluster state.
 
 | Removal class | Components | Boundary |
 |---|---|---|
-| Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, PMM, Coroot, Tempo, Temporal, Postal, GlitchTip, Daytona | exact confirmation plus `--delete-data` |
+| Data-bearing | object-storage, secrets, databases, PostgreSQL, MongoDB, Elasticsearch, Dragonfly, GitLab, GitOps, observability, PMM, Coroot, Tempo, Temporal, Postal, GlitchTip, Umami, Daytona | exact confirmation plus `--delete-data` |
 | Stateless/shared | ESO, GitLab Runner, tracing collector, KEDA, native backup jobs, external disaster-recovery controllers, APM, Blackbox | exact confirmation; remote trace/backup objects are retained |
 | No generic rollback | HIPAA-oriented hardening | disable only; manual reviewed reversal |
 
@@ -255,6 +287,7 @@ table is a review aid and must be updated with those values.
 | Dragonfly operator / image | `v1.6.1` / `v1.39.0` |
 | KEDA / Temporal charts | `2.20.1` / `1.2.0` |
 | Postal / GlitchTip chart+app / Blackbox chart / Daytona chart | `3.3.7` / `8.2.0`+`v6.1.4` / `11.15.1` / `0.0.23` |
+| Umami image | `3.2.0` pinned by multi-architecture OCI digest |
 
 Coroot uses its official operator architecture. The node agent needs privileged
 Pod Security admission for eBPF and host inspection; that exception is scoped

@@ -16,8 +16,8 @@ ship or deploy an application repository by default.
   Coroot, Tempo/OpenTelemetry, and Blackbox Exporter; KEDA; Elastic APM;
   backup automation; and HIPAA-oriented technical hardening. GitLab/Runner and
   PostgreSQL are part of every `small`-or-larger base profile. MongoDB,
-  Temporal, Postal, GlitchTip, and Daytona remain explicit opt-ins. See the exhaustive
-  [technology catalog](docs/TECHNOLOGY_CATALOG.md).
+  Temporal, Postal, GlitchTip, Umami, and Daytona remain explicit opt-ins. See
+  the exhaustive [technology catalog](docs/TECHNOLOGY_CATALOG.md).
 - Native application backups, external Velero/Kopia resource and PVC backups,
   encrypted etcd/PKI/config bundles, restore drills, staged upgrades, exact
   Helm rollback baselines, and verified teardown.
@@ -75,7 +75,7 @@ does not exhaust the remaining workers or their volume-attachment capacity.
 GitLab chart 10 requires PostgreSQL,
 Dragonfly, and object storage; profile validation rejects an invalid
 combination. The same fail-closed validation covers GlitchTip, APM, Temporal,
-Postal, Coroot, tracing, backup, HIPAA-oriented hardening, ESO, the GitLab
+Postal, Umami, Coroot, tracing, backup, HIPAA-oriented hardening, ESO, the GitLab
 Runner, and parent bundles.
 
 Production is deliberately selective HA, not universal active-active HA. Its
@@ -113,7 +113,7 @@ The optimized profile keeps three-way control-plane, Vault, SeaweedFS, and
 Elasticsearch-master topology. PostgreSQL runs with three replicas; MongoDB
 retains three-replica sizing for explicit opt-in.
 Recoverable stateless services run one replica by default and autoscaling is
-capped at four. MongoDB, Temporal, Postal, and GlitchTip remain off unless
+capped at four. MongoDB, Temporal, Postal, GlitchTip, and Umami remain off unless
 explicitly selected; GitLab/Runner and PostgreSQL are mandatory. It is a
 production-oriented budget profile, but it does not provide the same workload
 availability during maintenance as the `production` profile. Store production

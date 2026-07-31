@@ -61,6 +61,7 @@
     platform_postal_enabled: '{{ (postal.enabled | default(deploy_postal)) | bool }}'
     platform_backup_enabled: '{{ (backup.enabled | default(backup_enabled)) | bool }}'
     platform_glitchtip_enabled: '{{ (glitchtip.enabled | default(deploy_glitchtip | default(false))) | bool }}'
+    platform_umami_enabled: '{{ (umami.enabled | default(deploy_umami | default(false))) | bool }}'
     platform_apm_enabled: '{{ (apm.enabled | default(deploy_apm | default(false))) | bool }}'
     platform_blackbox_enabled: '{{ (blackbox.enabled | default(deploy_blackbox | default(false))) | bool }}'
     platform_daytona_enabled: '{{ (applications.daytona.enabled | default(deploy_daytona)) | bool }}'
@@ -317,6 +318,7 @@
     deploy_apm: '{{ platform_apm_enabled }}'
     deploy_blackbox: '{{ platform_blackbox_enabled }}'
     deploy_glitchtip: '{{ platform_glitchtip_enabled }}'
+    deploy_umami: '{{ platform_umami_enabled }}'
     deploy_daytona: '{{ platform_daytona_enabled }}'
     deploy_observability: '{{ platform_observability_enabled }}'
     daytona_namespace: '{{ applications.daytona.namespace | default(daytona_namespace) }}'
@@ -500,6 +502,15 @@
       GlitchTip requires PostgreSQL and Dragonfly. Enable
       databases.postgresql and dragonfly in the selected platform profile.
   when: platform_glitchtip_enabled | bool
+
+- name: Validate Umami external service dependency
+  ansible.builtin.assert:
+    that:
+      - platform_postgresql_enabled | bool
+    fail_msg: >-
+      Umami requires PostgreSQL. Enable databases.postgresql in the selected
+      platform profile.
+  when: platform_umami_enabled | bool
 
 - name: Validate APM external service dependency
   ansible.builtin.assert:

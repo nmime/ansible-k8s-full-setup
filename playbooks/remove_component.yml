@@ -133,6 +133,9 @@
       glitchtip:
         namespaces: [glitchtip]
         requires_data_confirmation: true
+      umami:
+        namespaces: [umami]
+        requires_data_confirmation: true
       apm:
         namespaces: []
         requires_data_confirmation: false
@@ -196,6 +199,7 @@
           backup: "{{ platform_backup_enabled }}"
           disaster-recovery: "{{ backup_dr_enabled }}"
           glitchtip: "{{ platform_glitchtip_enabled }}"
+          umami: "{{ platform_umami_enabled }}"
           apm: "{{ platform_apm_enabled }}"
           blackbox: "{{ platform_blackbox_enabled }}"
           daytona: "{{ platform_daytona_enabled }}"

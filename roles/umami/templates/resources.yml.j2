@@ -1,0 +1,403 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: umami
+  namespace: {{ umami_ns }}
+  labels: &labels
+    app.kubernetes.io/name: umami
+    app.kubernetes.io/component: analytics
+spec:
+  replicas: {{ umami_replicas | int }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: *labels
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: *labels
+      containers:
+        - name: umami
+          image: {{ umami_image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ umami_runtime_secret_name }}
+                  key: APP_SECRET
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ umami_runtime_secret_name }}
+                  key: DATABASE_URL
+            - name: DISABLE_TELEMETRY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ umami_runtime_secret_name }}
+                  key: DISABLE_TELEMETRY
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/umami-tls/ca.crt
+          readinessProbe:
+            httpGet:
+              path: /api/heartbeat
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/heartbeat
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /api/heartbeat
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: {{ umami_cpu_request }}
+              memory: {{ umami_memory_request }}
+            limits:
+              cpu: {{ umami_cpu_limit }}
+              memory: {{ umami_memory_limit }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/.next/cache
+            - name: database-ca
+              mountPath: /etc/umami-tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: next-cache
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: database-ca
+          secret:
+            secretName: {{ umami_runtime_secret_name }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: umami
+  namespace: {{ umami_ns }}
+  labels:
+    app.kubernetes.io/name: umami
+    app.kubernetes.io/component: analytics
+spec:
+  selector:
+    app.kubernetes.io/name: umami
+    app.kubernetes.io/component: analytics
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+{% if (umami_replicas | int) > 1 %}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: umami
+  namespace: {{ umami_ns }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+      app.kubernetes.io/component: analytics
+{% endif %}
+{% if umami_hpa_enabled | bool %}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: umami
+  namespace: {{ umami_ns }}
+spec:
+  minReplicas: {{ umami_hpa_min_replicas | int }}
+  maxReplicas: {{ umami_hpa_max_replicas | int }}
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: umami
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ umami_hpa_cpu_target | int }}
+{% endif %}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ umami_ns }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-umami-runtime
+  namespace: {{ umami_ns }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 3000
+          protocol: TCP
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.25.10/32
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector: {}
+      ports:
+        - port: 3000
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ umami_database_namespace }}
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-gateway-ingress
+  namespace: {{ umami_ns }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+  egress:
+    - toEntities: [host, remote-node]
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+  ingress:
+    - fromEntities: [ingress]
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: umami-dashboard
+  namespace: {{ umami_ns }}
+spec:
+  parentRefs:
+    - name: {{ umami_admin_gateway_name }}
+      namespace: {{ umami_gateway_namespace }}
+      sectionName: https
+  hostnames:
+    - {{ umami_dashboard_domain }}
+  rules:
+    - backendRefs:
+        - name: umami
+          port: 3000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: umami-ingest
+  namespace: {{ umami_ns }}
+spec:
+  parentRefs:
+    - name: {{ umami_main_gateway_name }}
+      namespace: {{ umami_gateway_namespace }}
+      sectionName: https
+  hostnames:
+    - {{ umami_ingest_domain }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /script.js
+        - path:
+            type: Exact
+            value: /api/send
+      backendRefs:
+        - name: umami
+          port: 3000
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ umami_bootstrap_job_name }}
+  namespace: {{ umami_ns }}
+  labels:
+    app.kubernetes.io/name: umami
+    app.kubernetes.io/component: bootstrap
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: umami
+        app.kubernetes.io/component: bootstrap
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ umami_image }}
+          imagePullPolicy: IfNotPresent
+          command: [node, -e]
+          args:
+            - |
+              const base = 'http://umami.{{ umami_ns }}.svc.cluster.local:3000';
+              const desired = process.env.UMAMI_ADMIN_PASSWORD;
+              const websites = JSON.parse(process.env.UMAMI_WEBSITES);
+              const login = async password => {
+                const response = await fetch(`${base}/api/auth/login`, {
+                  method: 'POST',
+                  headers: {'content-type': 'application/json'},
+                  body: JSON.stringify({username: 'admin', password}),
+                });
+                return response.ok ? response.json() : null;
+              };
+              (async () => {
+                let session = await login(desired);
+                if (!session) {
+                  session = await login('umami');
+                  if (!session) throw new Error('Umami admin authentication failed');
+                  const changed = await fetch(`${base}/api/users/${session.user.id}`, {
+                    method: 'POST',
+                    headers: {
+                      authorization: `Bearer ${session.token}`,
+                      'content-type': 'application/json',
+                    },
+                    body: JSON.stringify({password: desired}),
+                  });
+                  if (!changed.ok) throw new Error(`Password rotation failed: ${changed.status}`);
+                  session = await login(desired);
+                  if (!session) throw new Error('Rotated Umami credential was not accepted');
+                }
+                const response = await fetch(`${base}/api/websites`, {
+                  headers: {authorization: `Bearer ${session.token}`},
+                });
+                if (!response.ok) throw new Error(`Website inventory failed: ${response.status}`);
+                const body = await response.json();
+                const existing = Array.isArray(body) ? body : body.data || [];
+                for (const website of websites) {
+                  if (existing.some(item => item.id === website.id)) continue;
+                  const created = await fetch(`${base}/api/websites`, {
+                    method: 'POST',
+                    headers: {
+                      authorization: `Bearer ${session.token}`,
+                      'content-type': 'application/json',
+                    },
+                    body: JSON.stringify(website),
+                  });
+                  if (!created.ok) {
+                    throw new Error(`Website ${website.id} failed: ${created.status}`);
+                  }
+                }
+              })().catch(error => {
+                console.error(error.message);
+                process.exit(1);
+              });
+          env:
+            - name: UMAMI_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ umami_runtime_secret_name }}
+                  key: ADMIN_PASSWORD
+            - name: UMAMI_WEBSITES
+              value: >-
+                {{ umami_websites | to_json }}
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
