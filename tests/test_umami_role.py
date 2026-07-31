@@ -174,6 +174,14 @@ def test_umami_template_renders_valid_ha_and_singleton_resource_sets():
         "HTTPRoute",
         "Job",
     ]
+    for workload_kind in ("Deployment", "Job"):
+        workload = next(
+            item for item in ha_documents if item["kind"] == workload_kind
+        )
+        pod_security = workload["spec"]["template"]["spec"]["securityContext"]
+        assert pod_security["runAsNonRoot"] is True
+        assert pod_security["runAsUser"] == 1001
+        assert pod_security["runAsGroup"] == 65533
     singleton_documents = render_resources(replicas=1, hpa_enabled=False)
     assert "PodDisruptionBudget" not in {
         item["kind"] for item in singleton_documents

@@ -23,6 +23,8 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 65533
         seccompProfile:
           type: RuntimeDefault
       topologySpreadConstraints:
@@ -363,6 +365,8 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 65533
         seccompProfile:
           type: RuntimeDefault
       containers:
