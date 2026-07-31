@@ -7,6 +7,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    group_add:
+      - "{{ fun_games_edge_tls_group_gid }}"
     cpus: "{{ fun_games_edge_container_cpus }}"
     mem_limit: "{{ fun_games_edge_container_memory }}"
     pids_limit: {{ fun_games_edge_container_pids_limit }}
@@ -21,6 +23,7 @@ services:
     volumes:
       - "{{ fun_games_edge_install_root }}/nginx.conf:/etc/nginx/nginx.conf:ro"
       - "{{ fun_games_edge_install_root }}/certs:/etc/nginx/edge-certs:ro"
+      - "{{ fun_games_edge_acme_webroot }}:/var/www/acme:ro"
     tmpfs:
       - /tmp
       - /var/cache/nginx

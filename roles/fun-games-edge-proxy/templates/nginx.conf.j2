@@ -35,9 +35,15 @@ http {
     listen 8080;
     server_name {{ edge_host.hostname }};
 
-    # Keep HTTP-01 renewals working while every other plaintext request is
-    # redirected. The origin Gateway owns the actual solver route.
+    # Edge Certbot challenges are served from the local webroot. A token that
+    # is not local belongs to the origin cert-manager solver and is proxied,
+    # so both independently managed certificate sets keep renewing.
     location ^~ /.well-known/acme-challenge/ {
+      root /var/www/acme;
+      try_files $uri @origin_acme;
+    }
+
+    location @origin_acme {
       set $edge_upstream "{{ edge_host.upstream_host }}";
       proxy_pass https://$edge_upstream{% if edge_host.upstream_port | default(443) | int != 443 %}:{{ edge_host.upstream_port }}{% endif %};
       proxy_ssl_server_name on;
