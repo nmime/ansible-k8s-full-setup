@@ -160,6 +160,7 @@ component_path() {
     backup) echo '.backup.enabled' ;;
     disaster-recovery) echo '.backup.disaster_recovery.enabled' ;;
     glitchtip) echo '.glitchtip.enabled' ;;
+    umami) echo '.umami.enabled' ;;
     apm) echo '.apm.enabled' ;;
     blackbox) echo '.blackbox.enabled' ;;
     daytona) echo '.applications.daytona.enabled' ;;
@@ -206,6 +207,7 @@ enable_paths() {
     backup) echo '.storage.enabled .backup.enabled' ;;
     disaster-recovery) echo '.storage.enabled .backup.enabled .backup.disaster_recovery.enabled' ;;
     glitchtip) echo '.databases.enabled .databases.postgresql.enabled .dragonfly.enabled .glitchtip.enabled' ;;
+    umami) echo '.databases.enabled .databases.postgresql.enabled .umami.enabled' ;;
     apm) echo '.elasticsearch.enabled .apm.enabled' ;;
     blackbox) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .blackbox.enabled' ;;
     daytona) echo '.applications.daytona.enabled' ;;
@@ -238,7 +240,7 @@ show_components() {
   printf '%-18s %s\n' COMPONENT ENABLED
   printf '%-18s %s\n' '------------------' '-------'
   local component path value
-  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing tempo autoscaling temporal postal backup disaster-recovery glitchtip apm blackbox daytona hipaa; do
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing tempo autoscaling temporal postal backup disaster-recovery glitchtip umami apm blackbox daytona hipaa; do
     path=$(component_path "$component")
     if component_selected "$component"; then value=true; else value=false; fi
     printf '%-18s %s\n' "$component" "$value"
@@ -272,7 +274,7 @@ enabled_blockers() {
   local component="$1" blockers='' path label
   case "$component" in
     object-storage) blockers='.gitlab.enabled:gitlab .backup.enabled:backup' ;;
-    databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip' ;;
+    databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip .umami.enabled:umami' ;;
     elasticsearch) blockers='.apm.enabled:apm' ;;
     dragonfly) blockers='.gitlab.enabled:gitlab .postal.enabled:postal .glitchtip.enabled:glitchtip' ;;
     gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
@@ -280,7 +282,7 @@ enabled_blockers() {
     tracing) ;;
     secrets) blockers='.secrets.eso.enabled:eso .compliance.hipaa.enabled:hipaa' ;;
     backup) blockers='.backup.disaster_recovery.enabled:disaster-recovery' ;;
-    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tempo|autoscaling|temporal|postal|disaster-recovery|glitchtip|apm|blackbox|daytona|hipaa) ;;
+    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tempo|autoscaling|temporal|postal|disaster-recovery|glitchtip|umami|apm|blackbox|daytona|hipaa) ;;
     *) return 1 ;;
   esac
   for label in $blockers; do
@@ -450,6 +452,7 @@ deploy_component() {
     backup)        require_component_enabled "$component"; run_playbook --tags databases,gitlab,backup 2>&1 | tee -a "${LOG_DIR}/backup.log" ;;
     disaster-recovery) require_component_enabled "$component"; run_playbook --tags databases,gitlab,backup 2>&1 | tee -a "${LOG_DIR}/disaster-recovery.log" ;;
     glitchtip)     require_component_enabled "$component"; run_playbook --tags glitchtip 2>&1 | tee -a "${LOG_DIR}/glitchtip.log" ;;
+    umami)         require_component_enabled "$component"; run_playbook --tags databases,umami 2>&1 | tee -a "${LOG_DIR}/umami.log" ;;
     apm)           require_component_enabled "$component"; run_playbook --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
     blackbox)      require_component_enabled "$component"; run_playbook --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;
     daytona)       require_component_enabled "$component"; deploy_daytona ;;
@@ -460,14 +463,16 @@ deploy_component() {
 }
 
 deploy_all() {
-  local gt_flag apm_flag bb_flag daytona_flag
+  local gt_flag umami_flag apm_flag bb_flag daytona_flag
   gt_flag=$(flag_from_config '.glitchtip.enabled' false)
+  umami_flag=$(flag_from_config '.umami.enabled' false)
   apm_flag=$(flag_from_config '.apm.enabled' false)
   bb_flag=$(flag_from_config '.blackbox.enabled' true)
   daytona_flag=$(flag_from_config '.applications.daytona.enabled' false)
 
   run_playbook \
     -e "deploy_glitchtip=${gt_flag}" \
+    -e "deploy_umami=${umami_flag}" \
     -e "deploy_apm=${apm_flag}" \
     -e "deploy_blackbox=${bb_flag}" \
     -e "deploy_daytona=${daytona_flag}" \
@@ -540,6 +545,7 @@ app IN 3600 A ${ip}"
   is_enabled '.secrets.enabled' && records+=$'\n'"vault IN 3600 A ${ip}"
   is_enabled '.applications.daytona.enabled' && records+=$'\n'"daytona IN 3600 A ${ip}"$'\n'"*.daytona IN 3600 A ${ip}"
   is_enabled '.glitchtip.enabled' && records+=$'\n'"glitchtip IN 3600 A ${ip}"
+  is_enabled '.umami.enabled' && records+=$'\n'"analytics IN 3600 A ${ip}"
   echo "$records"
 }
 
@@ -602,6 +608,15 @@ show_credentials() {
   fi
   if is_enabled '.coroot.enabled'; then
     echo "Coroot (VPN/admin gateway): https://coroot.${DOMAIN}"
+  fi
+  if is_enabled '.umami.enabled' && kubectl get secret umami-runtime -n umami \
+    --request-timeout=3s -o jsonpath='{.data.ADMIN_PASSWORD}' &>/dev/null; then
+    local umami_host
+    umami_host=$(yq -r '.umami.dashboard_domain // ""' "$CONFIG_FILE")
+    [[ -n "$umami_host" ]] || umami_host="umami.${DOMAIN}"
+    echo "Umami (VPN/admin gateway): https://${umami_host}"
+    echo "  User: admin"
+    echo "  Pass: $(kubectl get secret umami-runtime -n umami --request-timeout=3s -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d)"
   fi
 }
 

@@ -732,6 +732,10 @@
                'databases': ['temporal', 'temporal_visibility']},
               {'name': 'glitchtip', 'databases': ['glitchtip']}
             ] + (
+              [{'name': 'umami', 'databases': ['umami']}]
+              if platform_umami_enabled | default(false) | bool
+              else []
+            ] + (
               databases.postgresql.extra_users | default([]) |
               map(attribute='operator') | list
             )

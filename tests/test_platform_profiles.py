@@ -50,6 +50,7 @@ COMPONENT_PATHS = (
     "backup.enabled",
     "backup.disaster_recovery.enabled",
     "glitchtip.enabled",
+    "umami.enabled",
     "apm.enabled",
     "blackbox.enabled",
     "applications.daytona.enabled",
@@ -67,6 +68,7 @@ MEDIUM_SERVICE_PATHS = tuple(
         "temporal.enabled",
         "postal.enabled",
         "glitchtip.enabled",
+        "umami.enabled",
         "observability.pmm.enabled",
         "elasticsearch.enabled",
         "tracing.tempo.enabled",
@@ -78,6 +80,7 @@ OPT_IN_SERVICE_PATHS = (
     "temporal.enabled",
     "postal.enabled",
     "glitchtip.enabled",
+    "umami.enabled",
 )
 MEDIUM_OPTIMIZED_DISABLED_PATHS = (
     "observability.pmm.enabled",
@@ -145,6 +148,7 @@ class TestNamedProfileContract:
             "deploy_temporal",
             "deploy_postal",
             "deploy_glitchtip",
+            "deploy_umami",
         ):
             assert inventory["all"]["vars"][flag] is False
 
@@ -160,6 +164,7 @@ class TestNamedProfileContract:
             "deploy_temporal",
             "deploy_postal",
             "deploy_glitchtip",
+            "deploy_umami",
         ):
             assert defaults[flag] is False
 
@@ -1210,6 +1215,7 @@ class TestComponentLifecycle:
             "backup",
             "disaster-recovery",
             "glitchtip",
+            "umami",
             "apm",
             "blackbox",
             "daytona",
@@ -1250,6 +1256,14 @@ class TestComponentLifecycle:
                     "databases.enabled",
                     "databases.postgresql.enabled",
                     "dragonfly.enabled",
+                ),
+            ),
+            (
+                "umami",
+                (
+                    "umami.enabled",
+                    "databases.enabled",
+                    "databases.postgresql.enabled",
                 ),
             ),
             (
@@ -1366,6 +1380,7 @@ class TestComponentLifecycle:
         (
             ("gitlab.enabled", "dragonfly.enabled", "GitLab chart 10 requires"),
             ("glitchtip.enabled", "dragonfly.enabled", "GlitchTip requires"),
+            ("umami.enabled", "databases.postgresql.enabled", "Umami requires"),
             ("apm.enabled", "elasticsearch.enabled", "APM Server requires"),
             ("temporal.enabled", "databases.postgresql.enabled", "Temporal requires"),
             ("postal.enabled", "dragonfly.enabled", "Postal requires"),
@@ -1395,6 +1410,7 @@ class TestComponentLifecycle:
         profile["gitlab"]["enabled"] = False
         profile["gitlab"]["runner"]["enabled"] = False
         profile["glitchtip"]["enabled"] = False
+        profile["umami"]["enabled"] = False
         profile["apm"]["enabled"] = False
         profile["temporal"]["enabled"] = False
         profile["postal"]["enabled"] = False
@@ -1589,6 +1605,7 @@ class TestComponentLifecycle:
             "backup",
             "disaster-recovery",
             "glitchtip",
+            "umami",
             "apm",
             "blackbox",
             "daytona",
@@ -1628,6 +1645,7 @@ class TestComponentLifecycle:
             "Native backup automation": "backup.enabled",
             "External disaster recovery": "backup.disaster_recovery.enabled",
             "GlitchTip": "glitchtip.enabled",
+            "Umami": "umami.enabled",
             "APM": "apm.enabled",
             "Blackbox": "blackbox.enabled",
             "Daytona": "applications.daytona.enabled",
