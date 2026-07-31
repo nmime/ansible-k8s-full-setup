@@ -181,7 +181,11 @@
             cpu: 200m
             memory: 256Mi
       redis:
-        enabled: true
+        # The bundled single Redis is safe only for the non-HA profile. Argo
+        # CD's HA mode must switch the client endpoint to the chart's
+        # Redis/Sentinel/HAProxy subchart instead of merely scaling the API and
+        # reconciliation pods around a single cache process.
+        enabled: '{{ not (argocd_ha | bool) }}'
         resources:
           requests:
             cpu: '{{ "25m" if resource_tier in ["minimal", "small"] else "50m" }}'
@@ -189,6 +193,41 @@
           limits:
             cpu: 200m
             memory: 256Mi
+      redis-ha:
+        enabled: '{{ argocd_ha | bool }}'
+        replicas: 3
+        hardAntiAffinity: true
+        podDisruptionBudget:
+          maxUnavailable: 1
+        redis:
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+        sentinel:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        haproxy:
+          enabled: true
+          replicas: 3
+          hardAntiAffinity: true
+          podDisruptionBudget:
+            maxUnavailable: 1
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
       notifications:
         enabled: true
         resources:
