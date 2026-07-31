@@ -87,6 +87,16 @@ class TestMainInclusion:
     def test_facts(self):
         c = self._c()
         assert "set_fact" in c and "_backup_project" in c and "_backup_bucket" in c
+    def test_verification_tag_initializes_required_facts(self):
+        content = self._c()
+        fact_section = content.split(
+            '- name: "Backup | Resolve enabled backup component set"', 1
+        )[0]
+        component_section = content.split(
+            '- name: "Backup | Resolve enabled backup component set"', 1
+        )[1].split('- name: "Backup | Create backup metadata namespace"', 1)[0]
+        assert "backup-verify" in fact_section
+        assert "backup-verify" in component_section
     def test_namespace(self):
         c = self._c()
         assert "kind: Namespace" in c and "state: present" in c

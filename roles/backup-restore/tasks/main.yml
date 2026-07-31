@@ -6,7 +6,7 @@
     _backup_ns: "{{ backup_namespace | default('backups') }}"
     _backup_retention: "{{ backup_retention_days | default(30) }}"
     _backup_schedule: "{{ backup_schedule | default('0 2 * * *') }}"
-  tags: [backup, backup-setup]
+  tags: [backup, backup-setup, backup-verify]
 
 - name: "Backup | Resolve enabled backup component set"
   ansible.builtin.set_fact:
@@ -29,7 +29,7 @@
       {%- set _ = ns.items.append('gitlab-secrets') -%}
       {%- endif -%}
       {{ ns.items }}
-  tags: [backup, backup-setup]
+  tags: [backup, backup-setup, backup-verify]
 
 - name: "Backup | Create backup metadata namespace"
   kubernetes.core.k8s:
