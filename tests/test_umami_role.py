@@ -286,6 +286,7 @@ def test_umami_template_renders_valid_ha_and_singleton_resource_sets():
         "NetworkPolicy",
         "NetworkPolicy",
         "CiliumNetworkPolicy",
+        "CiliumNetworkPolicy",
         "HTTPRoute",
         "HTTPRoute",
         "Job",
@@ -320,6 +321,7 @@ def test_umami_dashboard_is_private_and_public_surface_is_minimal():
     assert "fromEntities: [ingress]" in RESOURCES
     assert "postgres-operator.crunchydata.com/role: pgbouncer" in RESOURCES
     assert "name: allow-umami-bootstrap" in RESOURCES
+    assert "name: allow-bootstrap-node-local-dns" in RESOURCES
     assert "app.kubernetes.io/component: bootstrap" in RESOURCES
     assert "169.254.25.10/32" in RESOURCES
     assert "toEntities: [host, remote-node]" in RESOURCES
