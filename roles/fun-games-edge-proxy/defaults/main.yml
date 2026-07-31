@@ -21,6 +21,19 @@ fun_games_edge_hsts_max_age: 31536000
 fun_games_edge_container_cpus: "1.0"
 fun_games_edge_container_memory: 256m
 fun_games_edge_container_pids_limit: 128
+fun_games_edge_tls_group_name: fun-games-edge-tls
+fun_games_edge_tls_group_gid: 39101
+
+# Bootstrap certificates are copied from SafeLine/cert-manager for the canary
+# and cutover. After public DNS reaches this edge, run mode=certificates once;
+# Certbot then owns edge renewals while missing challenge files still fall back
+# to the origin for cert-manager HTTP-01 renewals.
+fun_games_edge_acme_enabled: true
+fun_games_edge_acme_email: >-
+  {{ lookup('env', 'FUN_GAMES_EDGE_ACME_EMAIL') | default('', true) }}
+fun_games_edge_acme_server: ""
+fun_games_edge_acme_webroot: "{{ fun_games_edge_install_root }}/acme-webroot"
+fun_games_edge_acme_certificates: []
 
 # A production cutover is not allowed until the SafeLine archive has been
 # encrypted and round-trip verified in the disaster-recovery object store.
