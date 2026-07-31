@@ -225,11 +225,11 @@ gitlab:
     enabled: true
     replicas: 1
     # General and rootless image-build jobs share a private, tainted CI-build
-    # worker. Keeping one general job plus one protected image job bounds peak
-    # memory and disk pressure without consuming production-node ephemeral
-    # storage. Override worker 5 to cpx42 (8 vCPU, 16 GiB, 320 GB) or larger
-    # for sustained production pipelines.
-    concurrent_jobs: 1
+    # worker. Two general jobs plus one protected image job fit the dedicated
+    # cpx42 worker's 8 vCPU / 16 GiB envelope while keeping production-node
+    # ephemeral storage isolated. Keep worker 5 at cpx42 or larger for
+    # sustained production pipelines.
+    concurrent_jobs: 2
     dedicated_worker_index: 5
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
