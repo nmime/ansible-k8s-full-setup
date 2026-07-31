@@ -291,6 +291,12 @@
       when: deploy_glitchtip | default(false) | bool
       tags: [glitchtip, monitoring, error-tracking]
 
+    - name: Deploy Umami web analytics
+      ansible.builtin.import_role:
+        name: umami
+      when: deploy_umami | default(false) | bool
+      tags: [umami, analytics]
+
     - name: Deploy Daytona workspace platform
       ansible.builtin.import_role:
         name: daytona-deployment
