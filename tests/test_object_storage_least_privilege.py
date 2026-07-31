@@ -110,6 +110,24 @@ def test_storage_default_deny_is_enabled_with_explicit_callers():
     assert "pod.namespace: \"{{ object_storage_namespace_resolved }}\"" in policy
 
 
+def test_backup_verification_reaches_only_the_s3_gateway():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    tasks = read("roles/object-storage/tasks/main.yml")
+    policy = tasks.split(
+        "name: Allow backup verification to reach only the SeaweedFS S3 gateway",
+        1,
+    )[1].split("name: Display object storage summary", 1)[0]
+
+    assert defaults["object_storage_backup_verification_namespace"] == "backups"
+    assert "name: allow-backup-verification-to-seaweedfs" in policy
+    assert "app.kubernetes.io/component: filer" in policy
+    assert "pod.namespace: >-" in policy
+    assert "object_storage_backup_verification_namespace" in policy
+    assert "port: '8333'" in policy
+    for forbidden_port in ("8888", "9333", "8080", "19333"):
+        assert f"port: '{forbidden_port}'" not in policy
+
+
 def test_declared_buckets_have_bounded_credential_groups():
     defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
     buckets = {

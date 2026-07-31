@@ -1130,6 +1130,31 @@
                       - { port: '9327', protocol: TCP }
       when: object_storage_network_policy_enabled | default(false) | bool
 
+    - name: Allow backup verification to reach only the SeaweedFS S3 gateway
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: allow-backup-verification-to-seaweedfs
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            endpointSelector:
+              matchLabels:
+                app.kubernetes.io/name: seaweedfs
+                app.kubernetes.io/instance: "{{ object_storage_release_name | default('seaweedfs') }}"
+                app.kubernetes.io/component: filer
+            ingress:
+              - fromEndpoints:
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: >-
+                        {{ object_storage_backup_verification_namespace | default('backups') }}
+                toPorts:
+                  - ports:
+                      - { port: '8333', protocol: TCP }
+      when: object_storage_network_policy_enabled | default(false) | bool
+
     - name: Display object storage summary
       ansible.builtin.debug:
         msg:

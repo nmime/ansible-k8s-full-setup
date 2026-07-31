@@ -51,16 +51,38 @@
                         echo "=== Backup Verification ${TS} ==="
                         for comp in {{ _backup_components | join(' ') }}; do
                           if [ "$comp" = gitlab ]; then
-                            path="s3://gitlab-backups/"
+                            bucket="gitlab-backups"
+                            prefix=""
                           elif [ "$comp" = postgresql ]; then
-                            path="s3://${B}/pgbackrest/${P}-pg/repo2/"
+                            bucket="$B"
+                            prefix="pgbackrest/${P}-pg/repo2/"
                           elif [ "$comp" = mongodb ]; then
-                            path="s3://${B}/mongodb/${P}-mongo/"
+                            bucket="$B"
+                            prefix="mongodb/${P}-mongo/"
                           else
-                            path="s3://${B}/${P}/${comp}/"
+                            bucket="$B"
+                            prefix="${P}/${comp}/"
                           fi
-                          N=$(aws --endpoint-url="$E" s3 ls "$path" 2>/dev/null | wc -l || echo 0)
-                          if [ "$N" -gt 0 ]; then echo "OK: ${N} ${comp} artifacts"; else echo "FAIL: no ${comp} artifacts"; FAIL=$((FAIL+1)); fi
+                          if ! N=$(aws --endpoint-url="$E" s3api list-objects-v2 \
+                            --bucket "$bucket" --prefix "$prefix" --max-keys 1 --no-paginate \
+                            --query 'length(Contents || `[]`)' --output text 2>/dev/null); then
+                            echo "FAIL: unable to verify ${comp} artifacts"
+                            FAIL=$((FAIL+1))
+                            continue
+                          fi
+                          case "$N" in
+                            ''|*[!0-9]*)
+                              echo "FAIL: invalid ${comp} verification response"
+                              FAIL=$((FAIL+1))
+                              ;;
+                            0)
+                              echo "FAIL: no ${comp} artifacts"
+                              FAIL=$((FAIL+1))
+                              ;;
+                            *)
+                              echo "OK: ${comp} artifacts present"
+                              ;;
+                          esac
                         done
                         echo "Failures: ${FAIL}"
                         [ "$FAIL" -gt 0 ] && echo "STATUS: FAIL" && exit 1

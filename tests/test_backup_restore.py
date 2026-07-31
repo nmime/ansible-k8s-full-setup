@@ -87,6 +87,16 @@ class TestMainInclusion:
     def test_facts(self):
         c = self._c()
         assert "set_fact" in c and "_backup_project" in c and "_backup_bucket" in c
+    def test_verification_tag_initializes_required_facts(self):
+        content = self._c()
+        fact_section = content.split(
+            '- name: "Backup | Resolve enabled backup component set"', 1
+        )[0]
+        component_section = content.split(
+            '- name: "Backup | Resolve enabled backup component set"', 1
+        )[1].split('- name: "Backup | Create backup metadata namespace"', 1)[0]
+        assert "backup-verify" in fact_section
+        assert "backup-verify" in component_section
     def test_namespace(self):
         c = self._c()
         assert "kind: Namespace" in c and "state: present" in c
@@ -273,6 +283,15 @@ def test_postgresql_uses_operator_backup_contract():
     content = (TASKS_DIR / "postgresql_pgbackrest.yml").read_text()
     assert "PerconaPGCluster" in content
     assert "pgbackrest" in content and "repo1" in content and "repo2" in content
+
+def test_verification_uses_bounded_recursive_object_checks_and_fails_closed():
+    content = (TASKS_DIR / "verification.yml").read_text()
+    assert "s3api list-objects-v2" in content
+    assert "--max-keys 1 --no-paginate" in content
+    assert "length(Contents || `[]`)" in content
+    assert "FAIL: unable to verify ${comp} artifacts" in content
+    assert "FAIL: invalid ${comp} verification response" in content
+    assert "wc -l || echo 0" not in content
 
 class TestCronJob:
     @pytest.mark.parametrize("f,n", CJ)
