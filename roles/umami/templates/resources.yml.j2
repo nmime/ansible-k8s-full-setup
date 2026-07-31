@@ -281,6 +281,25 @@ spec:
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
+  name: allow-bootstrap-node-local-dns
+  namespace: {{ umami_ns }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+      app.kubernetes.io/component: bootstrap
+  egress:
+    - toEntities: [host, remote-node]
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
   name: allow-gateway-ingress
   namespace: {{ umami_ns }}
 spec:
