@@ -38,6 +38,24 @@ fun_games_edge_hosts:
     certificate_key_path: /data/safeline/resources/nginx/certs/cert_4.key
 ```
 
+Define the independently renewed edge certificates as an exact, non-duplicated
+partition of `fun_games_edge_hosts`, and provide the account email through
+`FUN_GAMES_EDGE_ACME_EMAIL`:
+
+```yaml
+fun_games_edge_acme_certificates:
+  - name: uno-production
+    domains:
+      - uno.funfiesta.games
+      - api.uno.funfiesta.games
+      - backend.uno.funfiesta.games
+      - bot.uno.funfiesta.games
+      - admin.uno.funfiesta.games
+  - name: s3-production
+    domains:
+      - s3.funfiesta.games
+```
+
 Before a production cutover, the inventory must cover every hostname in
 `fun_games_edge_required_hosts`. This prevents stopping SafeLine while an
 existing game/API entrypoint still depends on it. The fail-closed list includes
@@ -50,8 +68,10 @@ a real request through the configured upstream; a healthy Nginx process with a
 dead origin cannot pass.
 
 The outer edge discards any client-supplied forwarding chain, rejects unknown
-authorities, enforces container CPU/memory/PID limits, and proxies HTTP-01
-requests to the origin so certificate renewal remains possible.
+authorities, and enforces container CPU/memory/PID limits. TLS keys are
+group-readable only by the unprivileged Nginx container. Local Certbot HTTP-01
+tokens are served by the edge; a missing local token is proxied to the origin,
+so the origin cert-manager certificate remains independently renewable.
 
 ## Gates
 
@@ -91,7 +111,23 @@ round-trip checksum. Plaintext and verification copies are removed in an
 Only after that gate does the playbook start the pinned and hardened Nginx
 proxy, verify every hostname and real upstream response, and restore SafeLine
 automatically if any verification fails. Change GCore DNS only after this
-playbook succeeds. Explicit rollback is:
+playbook succeeds.
+
+After every public hostname resolves to the edge, enroll its independent
+certificates and prove a complete staging renewal. This enables the host's
+`certbot.timer`; successful future renewals pass through a strict certificate
+allowlist, atomically replace the group-readable files, validate Nginx, and
+reload it:
+
+```bash
+FUN_GAMES_EDGE_ACME_EMAIL=ops@example.com \
+ansible-playbook -i inventory.yml playbooks/fun-games-edge.yml \
+  -e fun_games_edge_mode=certificates
+```
+
+Do not leave the deployment between DNS cutover and this successful renewal
+gate. The copied SafeLine/cert-manager certificates are bootstrap material,
+not the long-term renewal mechanism. Explicit rollback is:
 
 ```bash
 ansible-playbook -i inventory.yml playbooks/fun-games-edge.yml \
