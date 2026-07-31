@@ -265,10 +265,33 @@ mongodb_pmm_resources:
 gitlab_chart_version: "10.1.2"
 gitlab_runner_concurrent_jobs: 10
 gitlab_runner_worker_index: 0
+# Scheduler requests are independently configurable from container limits so
+# two distinct Runner classes can deliberately serialize on one compact CI
+# node. Defaults preserve the existing general-purpose envelope.
+gitlab_runner_cpu_request: 500m
+gitlab_runner_cpu_limit: 2000m
+gitlab_runner_memory_request: 1Gi
+gitlab_runner_memory_limit: 4Gi
+gitlab_runner_service_cpu_request: 200m
+gitlab_runner_service_cpu_limit: 1000m
+gitlab_runner_service_memory_request: 512Mi
+gitlab_runner_service_memory_limit: 2Gi
+gitlab_runner_helper_cpu_request: 100m
+gitlab_runner_helper_cpu_limit: 500m
+gitlab_runner_helper_memory_request: 256Mi
+gitlab_runner_helper_memory_limit: 512Mi
 gitlab_image_builder_runner_enabled: false
 gitlab_image_builder_runner_replicas: 1
 gitlab_image_builder_runner_concurrent_jobs: 1
 gitlab_image_builder_runner_namespace: gitlab-image-builds
+gitlab_image_builder_cpu_request: 1000m
+gitlab_image_builder_cpu_limit: 4000m
+gitlab_image_builder_memory_request: 2Gi
+gitlab_image_builder_memory_limit: 8Gi
+gitlab_image_builder_helper_cpu_request: 100m
+gitlab_image_builder_helper_cpu_limit: 500m
+gitlab_image_builder_helper_memory_request: 256Mi
+gitlab_image_builder_helper_memory_limit: 512Mi
 gitlab_docker_host_runner_enabled: false
 gitlab_docker_host_runner_replicas: 1
 gitlab_docker_host_runner_concurrent_jobs: 1

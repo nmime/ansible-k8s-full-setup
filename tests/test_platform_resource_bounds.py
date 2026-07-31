@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -150,5 +151,5 @@ def test_gitlab_vendor_init_sidecars_jobs_and_runner_have_limits() -> None:
 
     runner = task_named(tasks, "Install GitLab Runner with Helm")
     runner_config = runner["kubernetes.core.helm"]["values"]["runners"]["config"]
-    assert runner_config.count("cpu_limit") == 3
-    assert runner_config.count("memory_limit") == 3
+    assert len(re.findall(r"(?m)^\s+(?:service_|helper_)?cpu_limit\s*=", runner_config)) == 3
+    assert len(re.findall(r"(?m)^\s+(?:service_|helper_)?memory_limit\s*=", runner_config)) == 3
