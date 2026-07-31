@@ -45,15 +45,15 @@ def test_medium_optimized_capacity_includes_every_persistent_index_volume():
     assert index["provider_billable_gib"] == 0
     assert index["local_reserved_gib"] == 30
     assert index["source"] == "SeaweedFS volume indexes"
-    assert estimate["persistent_total_gib"] == 520
-    assert estimate["requested_persistent_total_gib"] == 462
-    assert estimate["provider_persistent_gib"] == 220
+    assert estimate["persistent_total_gib"] == 540
+    assert estimate["requested_persistent_total_gib"] == 482
+    assert estimate["provider_persistent_gib"] == 240
     assert estimate["local_reserved_gib"] == 300
     assert estimate["backup_scratch_gib"] == 0
     assert estimate["provider_backup_scratch_gib"] == 0
-    assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 31
+    assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 33
     assert "300 GiB active replication-qualified local" in profile["cost_estimate"]
-    assert "220 GiB provider-billable" in profile["cost_estimate"]
+    assert "240 GiB provider-billable" in profile["cost_estimate"]
 
 
 def test_capacity_index_presence_matches_normalized_helm_pvc_contract():
@@ -102,12 +102,12 @@ def test_medium_optimized_cost_document_tracks_capacity_source_of_truth():
 
     for document in (cost, readme, deployment):
         assert "300 GiB" in document
-        assert "220 GiB" in document
-        assert "€253.00" in document
-        assert "€357.98" in document
-        assert "€99.50" in document
-        assert "€204.48" in document
-    assert "462 GiB" in cost
-    assert "520 GiB" in cost
+        assert "240 GiB" in document
+        assert "€254.15" in document
+        assert "€359.13" in document
+        assert "€100.65" in document
+        assert "€205.63" in document
+    assert "482 GiB" in cost
+    assert "540 GiB" in cost
     assert "SeaweedFS" in cost and "index" in cost
     assert "€0.0572" in cost
