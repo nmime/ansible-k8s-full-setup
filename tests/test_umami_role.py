@@ -183,6 +183,30 @@ def test_umami_bootstrap_job_is_resumable_across_credentials_and_templates():
     assert "item.metadata.name != umami_bootstrap_job_name" in TASKS
 
 
+def test_umami_bootstrap_starts_only_after_the_deployment_is_ready():
+    tasks = yaml.safe_load(TASKS)
+    task_names = [task["name"] for task in tasks]
+    runtime_task = next(
+        task
+        for task in tasks
+        if task["name"] == "Reconcile Umami runtime resources before bootstrap"
+    )
+    bootstrap_task = next(
+        task
+        for task in tasks
+        if task["name"]
+        == "Reconcile secure Umami bootstrap job after deployment readiness"
+    )
+
+    assert "rejectattr('kind', 'equalto', 'Job')" in runtime_task["loop"]
+    assert "selectattr('kind', 'equalto', 'Job')" in str(
+        bootstrap_task["kubernetes.core.k8s"]["definition"]
+    )
+    assert task_names.index("Wait for the Umami deployment") < task_names.index(
+        "Reconcile secure Umami bootstrap job after deployment readiness"
+    )
+
+
 def test_umami_rollout_is_highly_available_and_resource_bounded():
     assert "maxUnavailable: 0" in RESOURCES
     assert "maxSurge: 1" in RESOURCES
