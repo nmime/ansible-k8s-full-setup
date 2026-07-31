@@ -30,6 +30,10 @@ umami_database_sslmode: verify-full
 umami_runtime_secret_name: umami-runtime
 umami_manage_runtime_secret: true
 umami_disable_telemetry: true
+# Increment when the bootstrap Job template or API workflow changes. The
+# revision participates in the immutable Job name, making interrupted upgrades
+# resumable without a manual Job delete.
+umami_bootstrap_revision: "2"
 
 # Keep the dashboard on the VPN/admin gateway. Only the tracker and collection
 # endpoint are attached to the public main gateway.
