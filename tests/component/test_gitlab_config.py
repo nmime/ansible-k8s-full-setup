@@ -269,7 +269,23 @@ class TestChart10ValuesStructure:
         )
         rendered = Environment().from_string(
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
-        ).render(gitlab_namespace="gitlab", gitlab_runner_concurrent=1)
+        ).render(
+            gitlab_namespace="gitlab",
+            gitlab_runner_concurrent=1,
+            gitlab_runner_job_resources={},
+            gitlab_runner_cpu_request="500m",
+            gitlab_runner_cpu_limit="2000m",
+            gitlab_runner_memory_request="1Gi",
+            gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_service_cpu_request="200m",
+            gitlab_runner_service_cpu_limit="1000m",
+            gitlab_runner_service_memory_request="512Mi",
+            gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_helper_cpu_request="100m",
+            gitlab_runner_helper_cpu_limit="500m",
+            gitlab_runner_helper_memory_request="256Mi",
+            gitlab_runner_helper_memory_limit="512Mi",
+        )
         runner = tomllib.loads(rendered)["runners"][0]
         kubernetes = runner["kubernetes"]
 
@@ -284,6 +300,28 @@ class TestChart10ValuesStructure:
         assert kubernetes["pod_labels"] == {
             "workload.n0xeid.xyz/class": "ci-job"
         }
+
+        compact_rendered = Environment().from_string(
+            install["kubernetes.core.helm"]["values"]["runners"]["config"]
+        ).render(
+            gitlab_namespace="gitlab",
+            gitlab_runner_concurrent=1,
+            gitlab_runner_job_resources={"memory_request": "3Gi"},
+            gitlab_runner_cpu_request="500m",
+            gitlab_runner_cpu_limit="2000m",
+            gitlab_runner_memory_request="1Gi",
+            gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_service_cpu_request="200m",
+            gitlab_runner_service_cpu_limit="1000m",
+            gitlab_runner_service_memory_request="512Mi",
+            gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_helper_cpu_request="100m",
+            gitlab_runner_helper_cpu_limit="500m",
+            gitlab_runner_helper_memory_request="256Mi",
+            gitlab_runner_helper_memory_limit="512Mi",
+        )
+        compact_runner = tomllib.loads(compact_rendered)["runners"][0]
+        assert compact_runner["kubernetes"]["memory_request"] == "3Gi"
         assert len(kubernetes["pod_spec"]) == 1
         pod_spec = kubernetes["pod_spec"][0]
         assert pod_spec["name"] == "spread-ci-jobs-across-workers"
@@ -395,18 +433,18 @@ class TestChart10ValuesStructure:
         )
         assert 'environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]' in install
         for resource_setting in (
-            'cpu_request = "500m"',
-            'cpu_limit = "2000m"',
-            'memory_request = "1Gi"',
-            'memory_limit = "4Gi"',
-            'service_cpu_request = "200m"',
-            'service_cpu_limit = "1000m"',
-            'service_memory_request = "512Mi"',
-            'service_memory_limit = "2Gi"',
-            'helper_cpu_request = "100m"',
-            'helper_cpu_limit = "500m"',
-            'helper_memory_request = "256Mi"',
-            'helper_memory_limit = "512Mi"',
+            "gitlab_runner_job_resources.cpu_request",
+            "gitlab_runner_job_resources.cpu_limit",
+            "gitlab_runner_job_resources.memory_request",
+            "gitlab_runner_job_resources.memory_limit",
+            "gitlab_runner_job_resources.service_cpu_request",
+            "gitlab_runner_job_resources.service_cpu_limit",
+            "gitlab_runner_job_resources.service_memory_request",
+            "gitlab_runner_job_resources.service_memory_limit",
+            "gitlab_runner_job_resources.helper_cpu_request",
+            "gitlab_runner_job_resources.helper_cpu_limit",
+            "gitlab_runner_job_resources.helper_memory_request",
+            "gitlab_runner_job_resources.helper_memory_limit",
         ):
             assert resource_setting in install
         assert "[runners.kubernetes.build_container_resources]" not in install
@@ -524,6 +562,8 @@ class TestChart10ValuesStructure:
         assert "app" not in values["podLabels"]
         assert 'privileged = false' in config
         assert 'automount_service_account_token = false' in config
+        assert "gitlab.runner.image_builder.job_resources" in config
+        assert "gitlab_image_builder_memory_request" in config
         assert (
             "[runners.kubernetes.build_container_security_context]" in config
         )

@@ -168,10 +168,19 @@ gitlab:
   runner:
     enabled: true
     concurrent_jobs: 5
+    # Optional scheduler envelope for each general CI job. Raising the memory
+    # request can intentionally prevent two different Runner classes from
+    # overlapping on the same compact, tainted worker.
+    # job_resources:
+    #   memory_request: 3Gi
+    #   memory_limit: 4Gi
     image_builder:
       enabled: false
       replicas: 1
       concurrent_jobs: 1
+      # job_resources:
+      #   memory_request: 4Gi
+      #   memory_limit: 6Gi
     docker_host:
       enabled: false
       replicas: 1

@@ -232,14 +232,14 @@
               allow_privilege_escalation = false
               cap_drop = ["ALL"]
               automount_service_account_token = false
-              cpu_request = "1000m"
-              cpu_limit = "4000m"
-              memory_request = "2Gi"
-              memory_limit = "8Gi"
-              helper_cpu_request = "100m"
-              helper_cpu_limit = "500m"
-              helper_memory_request = "256Mi"
-              helper_memory_limit = "512Mi"
+              cpu_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_request | default(gitlab_image_builder_cpu_request) }}"
+              cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_limit | default(gitlab_image_builder_cpu_limit) }}"
+              memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_request | default(gitlab_image_builder_memory_request) }}"
+              memory_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_limit | default(gitlab_image_builder_memory_limit) }}"
+              helper_cpu_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_cpu_request | default(gitlab_image_builder_helper_cpu_request) }}"
+              helper_cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_cpu_limit | default(gitlab_image_builder_helper_cpu_limit) }}"
+              helper_memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_memory_request | default(gitlab_image_builder_helper_memory_request) }}"
+              helper_memory_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_memory_limit | default(gitlab_image_builder_helper_memory_limit) }}"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
