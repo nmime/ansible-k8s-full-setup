@@ -18,6 +18,38 @@ DATABASES = (ROOT / "roles/k8s-databases/tasks/main.yml").read_text()
 ORCHESTRATOR = (ROOT / "platform-orchestrator/platform.sh").read_text()
 
 
+def render_postgresql_users(*, umami_enabled: bool) -> list[dict]:
+    database_tasks = yaml.safe_load(DATABASES)
+    create_cluster = next(
+        task
+        for task in database_tasks
+        if task.get("name") == "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
+    )
+    users_template = create_cluster["kubernetes.core.k8s"]["definition"]["spec"][
+        "users"
+    ]
+    environment = Environment()
+    environment.filters["bool"] = bool
+    rendered = environment.from_string(users_template).render(
+        project_name="n0xeid",
+        app_name="app",
+        platform_umami_enabled=umami_enabled,
+        databases={
+            "postgresql": {
+                "extra_users": [
+                    {
+                        "operator": {
+                            "name": "metabase",
+                            "databases": ["metabase"],
+                        }
+                    }
+                ]
+            }
+        },
+    )
+    return yaml.safe_load(rendered)
+
+
 def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
     environment = Environment(
         loader=FileSystemLoader(ROOT / "roles/umami/templates"),
@@ -90,6 +122,17 @@ def test_umami_reuses_postgresql_with_a_dedicated_principal():
     assert "'database-client-ca'" in TASKS
     assert "ca.crt" in TASKS
     assert "NODE_EXTRA_CA_CERTS" in RESOURCES
+
+
+def test_postgresql_users_template_renders_with_and_without_umami():
+    enabled_users = render_postgresql_users(umami_enabled=True)
+    disabled_users = render_postgresql_users(umami_enabled=False)
+
+    assert {"name": "umami", "databases": ["umami"]} in enabled_users
+    assert {"name": "umami", "databases": ["umami"]} not in disabled_users
+    assert {"name": "metabase", "databases": ["metabase"]} in enabled_users
+    assert {"name": "metabase", "databases": ["metabase"]} in disabled_users
+    assert len(enabled_users) == len(disabled_users) + 1
 
 
 def test_umami_secret_rotation_is_idempotent_and_never_uses_default_in_runtime():
