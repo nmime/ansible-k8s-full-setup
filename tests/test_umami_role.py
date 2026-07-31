@@ -167,7 +167,8 @@ def test_umami_uses_an_immutable_upstream_release():
 def test_umami_reuses_postgresql_with_a_dedicated_principal():
     assert "platform_umami_enabled" in NORMALIZE
     assert "platform_postgresql_enabled | bool" in NORMALIZE
-    assert "{'name': 'umami', 'databases': ['umami']}" in DATABASES
+    assert "'name': 'umami'" in DATABASES
+    assert "'grantPublicSchemaAccess': true" in DATABASES
     assert "if platform_umami_enabled | default(false) | bool" in DATABASES
     assert "pguser-{{ umami_database_user }}" in TASKS
     assert "postgresql://" in TASKS
@@ -183,8 +184,13 @@ def test_postgresql_users_template_renders_with_and_without_umami():
     enabled_users = render_postgresql_users(umami_enabled=True)
     disabled_users = render_postgresql_users(umami_enabled=False)
 
-    assert {"name": "umami", "databases": ["umami"]} in enabled_users
-    assert {"name": "umami", "databases": ["umami"]} not in disabled_users
+    umami_user = {
+        "name": "umami",
+        "databases": ["umami"],
+        "grantPublicSchemaAccess": True,
+    }
+    assert umami_user in enabled_users
+    assert umami_user not in disabled_users
     assert {"name": "metabase", "databases": ["metabase"]} in enabled_users
     assert {"name": "metabase", "databases": ["metabase"]} in disabled_users
     assert len(enabled_users) == len(disabled_users) + 1

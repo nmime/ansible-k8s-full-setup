@@ -732,7 +732,13 @@
                'databases': ['temporal', 'temporal_visibility']},
               {'name': 'glitchtip', 'databases': ['glitchtip']}
             ] + (
-              [{'name': 'umami', 'databases': ['umami']}]
+              [
+                {
+                  'name': 'umami',
+                  'databases': ['umami'],
+                  'grantPublicSchemaAccess': true
+                }
+              ]
               if platform_umami_enabled | default(false) | bool
               else []
             ) + (
