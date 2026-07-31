@@ -39,6 +39,7 @@ def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
         umami_memory_request="256Mi",
         umami_memory_limit="768Mi",
         umami_database_namespace="databases",
+        umami_database_cluster="n0xeid-pg",
         umami_database_service_alias="n0xeid-pg",
         umami_admin_gateway_name="admin-gateway",
         umami_main_gateway_name="main-gateway",
@@ -124,6 +125,7 @@ def test_umami_template_renders_valid_ha_and_singleton_resource_sets():
         "HorizontalPodAutoscaler",
         "NetworkPolicy",
         "NetworkPolicy",
+        "NetworkPolicy",
         "CiliumNetworkPolicy",
         "HTTPRoute",
         "HTTPRoute",
@@ -148,6 +150,9 @@ def test_umami_dashboard_is_private_and_public_surface_is_minimal():
     assert "type: Exact" in RESOURCES
     assert "kind: CiliumNetworkPolicy" in RESOURCES
     assert "fromEntities: [ingress]" in RESOURCES
+    assert "postgres-operator.crunchydata.com/role: pgbouncer" in RESOURCES
+    assert "name: allow-umami-bootstrap" in RESOURCES
+    assert "app.kubernetes.io/component: bootstrap" in RESOURCES
     assert "169.254.25.10/32" in RESOURCES
     assert "toEntities: [host, remote-node]" in RESOURCES
     assert "name: default-deny" in RESOURCES
