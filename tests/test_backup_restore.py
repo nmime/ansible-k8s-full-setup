@@ -287,7 +287,8 @@ def test_postgresql_uses_operator_backup_contract():
 def test_verification_uses_bounded_recursive_object_checks_and_fails_closed():
     content = (TASKS_DIR / "verification.yml").read_text()
     assert "s3api list-objects-v2" in content
-    assert "--max-items 1" in content
+    assert "--max-keys 1 --no-paginate" in content
+    assert "length(Contents || `[]`)" in content
     assert "FAIL: unable to verify ${comp} artifacts" in content
     assert "FAIL: invalid ${comp} verification response" in content
     assert "wc -l || echo 0" not in content
