@@ -449,7 +449,7 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         # One bounded general job and one protected image job may share only
         # the isolated CI-build worker, never an application node.
-        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 2
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
