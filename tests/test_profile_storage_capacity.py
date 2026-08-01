@@ -45,15 +45,15 @@ def test_medium_optimized_capacity_includes_every_persistent_index_volume():
     assert index["provider_billable_gib"] == 0
     assert index["local_reserved_gib"] == 30
     assert index["source"] == "SeaweedFS volume indexes"
-    assert estimate["persistent_total_gib"] == 540
-    assert estimate["requested_persistent_total_gib"] == 482
-    assert estimate["provider_persistent_gib"] == 240
+    assert estimate["persistent_total_gib"] == 550
+    assert estimate["requested_persistent_total_gib"] == 487
+    assert estimate["provider_persistent_gib"] == 250
     assert estimate["local_reserved_gib"] == 300
     assert estimate["backup_scratch_gib"] == 0
     assert estimate["provider_backup_scratch_gib"] == 0
-    assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 33
+    assert sum(claim["replicas"] for claim in estimate["claims"].values()) == 34
     assert "300 GiB active replication-qualified local" in profile["cost_estimate"]
-    assert "240 GiB provider-billable" in profile["cost_estimate"]
+    assert "250 GiB provider-billable" in profile["cost_estimate"]
 
 
 def test_capacity_index_presence_matches_normalized_helm_pvc_contract():

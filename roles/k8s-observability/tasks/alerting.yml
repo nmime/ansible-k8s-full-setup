@@ -26,7 +26,8 @@
       stringData:
         telegram-bot-token: '{{ alert_telegram_bot_token | default("") }}'
         telegram-chat-id: '{{ alert_telegram_chat_id | default("") }}'
-        smtp-password: ''  # Postal internal SMTP has no auth from in-cluster services
+        smtp-username: '{{ postal_smtp_auth_username }}'
+        smtp-password: "{{ postal_smtp_credentials['alertmanager'] if platform_postal_enabled | default(false) | bool else '' }}"
   register: _r_alert_secrets
   retries: 3
   delay: 10
@@ -49,8 +50,10 @@
             resolve_timeout: 5m
           {% if alert_email_configured | bool %}
             smtp_from: 'alerts@{{ domain }}'
-            smtp_smarthost: 'postal-smtp.postal.svc.cluster.local:25'
-            smtp_require_tls: false
+            smtp_smarthost: '{{ postal_submission_hostname }}:587'
+            smtp_auth_username: '{{ postal_smtp_auth_username }}'
+            smtp_auth_password_file: '/etc/vm/secrets/alert-secrets/smtp-password'
+            smtp_require_tls: true
             smtp_hello: '{{ domain }}'
           {% endif %}
 
@@ -126,6 +129,27 @@
       spec:
         replicaCount: "{{ alerting.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"
         configSecret: platform-alertmanager-config
+        podDisruptionBudget:
+          minAvailable: 1
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vmalertmanager
+                    app.kubernetes.io/instance: platform
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          fsGroupChangePolicy: OnRootMismatch
+          containerSecurityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
         configReloaderResources:
           requests: { cpu: 10m, memory: 25Mi }
           limits:

@@ -160,19 +160,39 @@ directory and the matching vault password in the operator backup; never
 initialize again or regenerate credentials merely because a resume controller
 cannot find it.
 
-If Postal was explicitly enabled, verify both schema reconciliation and the unprivileged SMTP
-listener before treating the mail stack as healthy:
+If Postal was explicitly enabled, verify its delivery preflight, schema/domain
+bootstrap, trusted STARTTLS certificate, and the unprivileged SMTP listener
+before treating the transactional mail stack as healthy:
 
 ```bash
+kubectl get job postal-outbound-port-preflight -n postal
 kubectl get job postal-schema-reconcile -n postal
+kubectl get job postal-bootstrap -n postal
 kubectl logs job/postal-schema-reconcile -n postal
 kubectl logs deployment/postal-smtp -n postal | grep 'Listening on :::2525'
+kubectl get certificate postal-smtp -n postal
 kubectl get service postal-smtp -n postal -o yaml
+kubectl get configmap postal-dns-requirements -n postal \
+  -o jsonpath='{.data.records\.json}' | jq .
+openssl s_client -starttls smtp -connect smtp.example.com:25 \
+  -servername smtp.example.com </dev/null
 ```
 
 The Service exposes 25/587 and targets 2525. Gateway API traffic is admitted
 to default-deny service namespaces through the Cilium `ingress` identity; a
 plain namespace selector for the host-network Envoy DaemonSet is insufficient.
+Postal does not provide IMAP mailboxes. For multiple application sender
+domains, publish every record from the generated DNS plan and leave external
+SMTP credentials disabled until SPF, DKIM, return-path, PTR/HELO, and DMARC
+alignment have been checked publicly. New sending IPs must be warmed gradually;
+inbox placement cannot be guaranteed.
+
+The default inbound routes accept `postmaster@`, `abuse@`, and `dmarc-reports@`
+for every declared domain and quarantine messages Postal classifies as spam.
+Inspect those messages
+in Postal or replace the `Accept` route with a deliberate HTTP/SMTP/address
+endpoint. Do not add a wildcard route unless the extra spam-processing load is
+understood and monitored.
 
 ## Deployment and reconciliation
 

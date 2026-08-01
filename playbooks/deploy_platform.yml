@@ -118,6 +118,11 @@
       when:
         - platform_backup_enabled | bool
         - backup_dr_enabled | bool
+        - >-
+          'all' in ansible_run_tags or
+          (ansible_run_tags |
+           intersect(['backup', 'disaster-recovery', 'velero-bootstrap']) |
+           length) > 0
       tags: [always]
 
     - name: Pre-flight check - hcloud CLI installed

@@ -190,6 +190,24 @@
   retries: 3
   delay: 10
   until: _r_add_gitlab_helm_repository is not failed
+- name: Create dedicated Postal SMTP secret for GitLab
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-smtp
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: gitlab
+      type: Opaque
+      stringData:
+        username: '{{ postal_smtp_auth_username }}'
+        password: "{{ postal_smtp_credentials['gitlab'] }}"
+  when: platform_postal_enabled | default(false) | bool
 - name: Create S3 object storage secret for GitLab
   no_log: true
   kubernetes.core.k8s:
@@ -800,6 +818,20 @@
           from: gitlab@{{ domain }}
           display_name: GitLab
           reply_to: noreply@{{ domain }}
+        smtp:
+          enabled: '{{ platform_postal_enabled | default(false) | bool }}'
+          address: '{{ postal_submission_hostname }}'
+          port: 587
+          domain: '{{ domain }}'
+          authentication: plain
+          starttls_auto: true
+          openssl_verify_mode: peer
+          user_name_secret:
+            secret: gitlab-smtp
+            key: username
+          password:
+            secret: gitlab-smtp
+            key: password
         psql:
           host: >-
             {{
@@ -1944,7 +1976,7 @@
         create: true
       nodeSelector: >-
         {{
-          {'workload.n0xeid.xyz/ci-build': 'true'}
+          {'workload.n0xeid.xyz/ci-general': 'true'}
           if gitlab_runner_worker_index | default(0) | int > 0
           else {'node-role.kubernetes.io/worker': 'true'}
         }}
@@ -1953,6 +1985,12 @@
           [
             {
               'key': 'workload.n0xeid.xyz/ci-build',
+              'operator': 'Equal',
+              'value': 'true',
+              'effect': 'NoSchedule'
+            },
+            {
+              'key': 'workload.n0xeid.xyz/ci-docker',
               'operator': 'Equal',
               'value': 'true',
               'effect': 'NoSchedule'
@@ -1979,8 +2017,14 @@
               namespace = "{{ gitlab_namespace }}"
               image = "ubuntu:22.04"
           {% if gitlab_runner_worker_index | default(0) | int > 0 %}
-              node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
-              node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+              # General non-privileged jobs can use both isolated CI workers.
+              # The protected image-builder and privileged DinD runners remain
+              # pinned to their own narrower labels.
+              node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }
+              node_tolerations = {
+                "workload.n0xeid.xyz/ci-build=true" = "NoSchedule",
+                "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"
+              }
           {% else %}
               node_selector = { "node-role.kubernetes.io/worker" = "true" }
           {% endif %}

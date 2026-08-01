@@ -112,26 +112,36 @@ def test_current_medium_optimized_totals_and_safety_statuses():
         "control_plane": "cx33",
         "worker": "cx43",
     }
-    assert selected["cx"]["infrastructure_monthly_net"] == "132.40"
-    assert selected["cx"]["volume_gib"] == 240
+    assert selected["cx"]["infrastructure_monthly_net"] == "148.39"
+    assert selected["cx"]["volume_gib"] == 250
     assert selected["cx"]["local_reserved_gib"] == 300
-    assert selected["cx"]["total_claim_capacity_gib"] == 540
-    assert selected["cx"]["total_monthly_net"] == "146.13"
+    assert selected["cx"]["total_claim_capacity_gib"] == 550
+    assert selected["cx"]["total_monthly_net"] == "162.69"
     assert selected["cx"]["deployment_status"] == "temporarily-unavailable"
-    assert selected["cax"]["total_monthly_net"] == "152.63"
+    assert selected["cax"]["total_monthly_net"] == "163.69"
     assert selected["cax"]["deployment_status"] == "planning-only-arm64-unattested"
-    assert selected["cpx"]["infrastructure_monthly_net"] == "345.40"
-    assert selected["cpx"]["volume_gib"] == 240
-    assert selected["cpx"]["total_monthly_net"] == "359.13"
+    assert selected["cpx"]["infrastructure_monthly_net"] == "380.89"
+    assert selected["cpx"]["volume_gib"] == 250
+    assert selected["cpx"]["total_monthly_net"] == "395.19"
     assert selected["cpx"]["deployment_status"] == "deployable"
-    assert selected["ccx"]["total_monthly_net"] == "942.63"
+    assert selected["ccx"]["total_monthly_net"] == "1029.19"
 
 
-def test_named_profile_defaults_are_the_balanced_cpx_mapping():
+def test_named_profile_defaults_match_the_reviewed_provider_mapping():
     import yaml
 
     for profile_name in report.PROFILE_ORDER:
         profile = yaml.safe_load((PROFILES / f"{profile_name}.yaml").read_text())
+        if profile_name == "medium-optimized":
+            assert profile["network"]["bastion"]["server_type"] == "cpx22"
+            assert profile["infrastructure"]["control_plane"]["type"] == "cx33"
+            assert profile["infrastructure"]["workers"]["type"] == "cx43"
+            assert profile["infrastructure"]["workers"]["type_overrides"] == {
+                4: "cpx32",
+                5: "cpx42",
+                6: "cx33",
+            }
+            continue
         selected = report.TARIFF_TYPES[profile_name]["cpx"]
         assert profile["network"]["bastion"]["server_type"] == selected["bastion"]
         assert profile["infrastructure"]["control_plane"]["type"] == (

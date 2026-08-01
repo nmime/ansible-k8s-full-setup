@@ -552,8 +552,10 @@ app IN 3600 A ${ip}"
 deploy_dns() {
   log "Setting up DNS record preview (preserves existing records)..."
   check_env
-  local bastion_name="${PROJECT}-bastion"
-  local lb_name="${PROJECT}-lb"
+  local server_name_prefix
+  server_name_prefix=$(yq -r '.infrastructure.server_name_prefix // .global.project // "k8s"' "$CONFIG_FILE")
+  local bastion_name="${server_name_prefix}-bastion"
+  local lb_name="${server_name_prefix}-lb"
   local bastion_ip lb_ip public_ip
   bastion_ip=$(hcloud server ip "$bastion_name" 2>/dev/null || echo "")
   lb_ip=$(hcloud load-balancer describe "$lb_name" -o json 2>/dev/null | jq -r '.public_net.ipv4.ip' || echo "")

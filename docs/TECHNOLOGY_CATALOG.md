@@ -89,7 +89,7 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Tempo | `tracing.tempo.enabled` | Tempo trace storage and Grafana datasource | Tracing, object storage; set `tracing.backend: tempo` | off | off | on | off | on |
 | Autoscaling | `autoscaling.enabled` | KEDA | none | on | on | on | on | on |
 | Temporal | `temporal.enabled` | Temporal server, UI, admin tools | PostgreSQL | off | off | off | off | off |
-| Postal | `postal.enabled` | Postal mail server, schema initialize/update gate, and MariaDB; public SMTP 25/587 targets unprivileged container port 2525 | Dragonfly | off | off | off | off | off |
+| Postal | `postal.enabled` | Transactional mail transport with multi-domain bootstrap, direct-delivery PTR/HELO and TCP/25 preflight, SMTP STARTTLS, bounded sending, schema gate, and MariaDB; not an IMAP mailbox server | Dragonfly, public DNS, unblocked outbound TCP/25 | off | off | off | off | off |
 | Native backup automation | `backup.enabled` | GitLab, PostgreSQL, MongoDB, Vault, and SeaweedFS backup jobs plus application-aware restore drills | Object storage | off | off | on | on | on |
 | External disaster recovery | `backup.disaster_recovery.enabled` | Velero/Kopia resource and mounted-PVC protection; complete encrypted etcd/PKI/config/cloud-state bundles; replacement-cluster restore | Native backup automation, object storage, and an independent external S3 endpoint | off | off | on | on | on |
 | GlitchTip | `glitchtip.enabled` | GlitchTip error tracking | PostgreSQL, Dragonfly | off | off | off | off | off |

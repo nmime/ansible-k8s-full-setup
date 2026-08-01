@@ -2,8 +2,8 @@
 # MEDIUM-OPTIMIZED PROFILE - medium foundation, small resource envelope
 # ============================================
 # Best for: Medium base platform on a constrained current-generation x86 shape
-# Nodes: 3 x cpx32 control plane + 3 x cpx32 application workers
-#        + 2 isolated CI workers + 1 x cpx22 bastion + lb11
+# Nodes: 3 x cx33 control plane + 3 x cx43 application workers
+#        + 2 isolated CI workers + 1 x cx33 mail worker + 1 x cpx22 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -13,10 +13,10 @@ platform_profile: medium-optimized
 tier: medium
 resource_tier: small
 cost_estimate: >-
-  Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
+  Current balanced tariff: 3 x cx33 control plane, 3 x cx43 application
   workers, one isolated cpx32 Docker worker, one isolated cpx42 general/image
-  worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
-  replication-qualified local claims, and 240 GiB provider-billable persistent
+  worker, one cx33 mail worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
+  replication-qualified local claims, and 250 GiB provider-billable persistent
   volumes. GitLab backup staging is transient node-local scratch. See
   docs/COST_MODEL.md.
 
@@ -35,7 +35,7 @@ hetzner_tier_specs:
     cp_min_cores: 4
     cp_min_memory: 8
     cp_schedulable: true
-    worker_count: 5
+    worker_count: 6
     worker_min_cores: 4
     worker_min_memory: 8
     lb_enabled: true
@@ -46,13 +46,15 @@ infrastructure:
   region: hel1
   control_plane:
     count: 3
-    type: cpx32
+    type: cx33
     schedulable: true
   workers:
-    count: 5
-    type: cpx32
+    count: 6
+    type: cx43
     type_overrides:
+      4: cpx32
       5: cpx42
+      6: cx33
 
 # ---------------------------------------------
 # Network
@@ -140,7 +142,7 @@ databases:
   postgresql:
     enabled: true
     replicas: 3
-    proxy_replicas: 1
+    proxy_replicas: 2
     storage_size: 30Gi
     data_storage_class: platform-local
     repo_storage_class: hcloud-volumes
@@ -151,7 +153,7 @@ databases:
           name: metabase
           databases: [metabase]
           grantPublicSchemaAccess: true
-        target_namespace: fun
+        target_namespace: analytics
         secret_name: metabase-postgresql
       - operator:
           name: dadya-prod
@@ -373,6 +375,9 @@ temporal:
 
 postal:
   enabled: false
+  # Keep inbound delivery explicit. These aliases are managed for every
+  # configured Postal domain; arbitrary recipients remain rejected.
+  inbound_accept_local_parts: [postmaster, abuse, admin, alerts, dmarc-reports]
   web_replicas: 1
   smtp_replicas: 1
   worker_replicas: 1
@@ -454,6 +459,7 @@ blackbox:
   memory_limit: 128Mi
 
 alerting:
+  replicas: 2
   telegram:
     enabled: false
   email:

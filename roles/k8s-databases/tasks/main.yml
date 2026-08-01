@@ -84,6 +84,20 @@
       target_namespace.
   loop: '{{ databases.postgresql.extra_users | default([]) }}'
   when: platform_postgresql_enabled | default(true) | bool
+- name: Validate MongoDB TLS client consumer declarations
+  ansible.builtin.assert:
+    that:
+    - item.name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.namespace is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.secret_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.namespace in (databases.mongodb.tls_consumer_namespaces | default([]))
+    fail_msg: >-
+      Each databases.mongodb.tls_client_consumers entry requires DNS-safe
+      name, namespace, and secret_name fields. Its namespace must also be in
+      tls_consumer_namespaces so the server CA and client identity are
+      published together.
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -1279,6 +1293,84 @@
   when:
   - platform_mongodb_enabled | default(true) | bool
   - mongo_service_alias | length > 0
+- name: Issue dedicated MongoDB client certificates
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: 'mongodb-client-{{ item.name }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        secretName: 'mongodb-client-{{ item.name }}'
+        commonName: '{{ item.common_name | default(item.name) }}'
+        duration: 2160h
+        renewBefore: 360h
+        privateKey:
+          algorithm: RSA
+          encoding: PKCS8
+          size: 2048
+          rotationPolicy: Always
+        usages:
+        - client auth
+        issuerRef:
+          name: '{{ project_name | default(''k8s'') }}-mongo-psmdb-issuer'
+          kind: Issuer
+          group: cert-manager.io
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Wait for dedicated MongoDB client certificates
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: '{{ db_ns }}'
+    name: 'mongodb-client-{{ item.name }}'
+  register: _mongo_client_certificates
+  until: >-
+    (_mongo_client_certificates.resources | default([])) | length == 1
+    and
+    (
+      _mongo_client_certificates.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) == 1
+  retries: 60
+  delay: 5
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Retrieve dedicated MongoDB client identities
+  no_log: true
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: 'mongodb-client-{{ item.name }}'
+  register: _mongo_client_tls_secret_results
+  until: >-
+    (_mongo_client_tls_secret_results.resources | default([])) | length == 1
+    and
+    (_mongo_client_tls_secret_results.resources[0].data["ca.crt"] | default('') | length) > 0
+    and
+    (_mongo_client_tls_secret_results.resources[0].data["tls.crt"] | default('') | length) > 0
+    and
+    (_mongo_client_tls_secret_results.resources[0].data["tls.key"] | default('') | length) > 0
+  retries: 30
+  delay: 5
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
 - name: Wait for the MongoDB alias certificate to use the active operator CA
   kubernetes.core.k8s_info:
     kind: Secret
@@ -1359,6 +1451,30 @@
       stringData:
         ca.crt: '{{ _mongo_cluster_ca_secret.resources[0].data["ca.crt"] | b64decode }}'
   loop: '{{ databases.mongodb.tls_consumer_namespaces | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Publish dedicated MongoDB client identities
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: '{{ item.item.secret_name }}'
+        namespace: '{{ item.item.namespace }}'
+        annotations:
+          argocd.argoproj.io/compare-options: IgnoreExtraneous
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      type: kubernetes.io/tls
+      data:
+        ca.crt: '{{ item.resources[0].data["ca.crt"] }}'
+        tls.crt: '{{ item.resources[0].data["tls.crt"] }}'
+        tls.key: '{{ item.resources[0].data["tls.key"] }}'
+  loop: '{{ _mongo_client_tls_secret_results.results | default([]) }}'
   when:
   - platform_mongodb_enabled | default(true) | bool
   - mongo_service_alias | length > 0
