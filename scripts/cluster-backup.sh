@@ -20,6 +20,7 @@ FORCE=false
 RUN_APP_BACKUPS=true
 RUN_VELERO_BACKUP=true
 RUN_REMOTE_PUBLISH=true
+KEEP_LOCAL_COPY=true
 ALLOW_INCOMPLETE=false
 SKIP_CLOUD=false
 SKIP_CONTROL_PLANE=false
@@ -67,6 +68,8 @@ Options:
   --skip-app-backups         Do not trigger application-native backups
   --skip-velero              Do not trigger Velero resource/PVC backup
   --skip-remote-publish      Keep the encrypted bundle local only
+  --remote-only              Retain the verified bundle only in external DR;
+                             local files are transient and removed on exit
   --skip-cloud               Do not capture Hetzner state
   --skip-control-plane       Do not capture etcd and control-plane PKI
   --allow-incomplete         Permit an explicitly degraded bundle with skips
@@ -99,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     --skip-app-backups) RUN_APP_BACKUPS=false; shift ;;
     --skip-velero) RUN_VELERO_BACKUP=false; shift ;;
     --skip-remote-publish) RUN_REMOTE_PUBLISH=false; shift ;;
+    --remote-only) KEEP_LOCAL_COPY=false; shift ;;
     --skip-cloud) SKIP_CLOUD=true; shift ;;
     --skip-control-plane) SKIP_CONTROL_PLANE=true; shift ;;
     --allow-incomplete) ALLOW_INCOMPLETE=true; shift ;;
@@ -108,6 +112,10 @@ while [[ $# -gt 0 ]]; do
     *) fail "unknown option: $1" ;;
   esac
 done
+
+if [[ "$KEEP_LOCAL_COPY" != true && "$RUN_REMOTE_PUBLISH" != true ]]; then
+  fail "--remote-only cannot be combined with --skip-remote-publish"
+fi
 
 if [[ "$ALLOW_INCOMPLETE" != true ]] && {
   [[ "$RUN_APP_BACKUPS" != true ]] || [[ "$RUN_VELERO_BACKUP" != true ]] ||
@@ -206,7 +214,11 @@ if [[ "$DRY_RUN" == true ]]; then
   dry "would capture etcd and control-plane PKI: $([[ "$SKIP_CONTROL_PLANE" == true ]] && echo false || echo true)"
   dry "would capture Hetzner state: $([[ "$SKIP_CLOUD" == true ]] && echo false || echo true)"
   dry "would include validated Ansible Vault-encrypted Vault initialization material: $VAULT_INIT_INCLUDED"
-  dry "would write encrypted bundle under: $OUTPUT_DIR"
+  if [[ "$KEEP_LOCAL_COPY" == true ]]; then
+    dry "would retain the encrypted bundle under: $OUTPUT_DIR"
+  else
+    dry "would stage the encrypted bundle transiently and remove it after remote verification"
+  fi
   exit 0
 fi
 
@@ -261,9 +273,13 @@ if [[ "$FORCE" != true ]]; then
 fi
 
 umask 077
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cluster-backup.XXXXXX")
+trap 'rm -rf "$WORK_DIR"' EXIT
+if [[ "$KEEP_LOCAL_COPY" != true ]]; then
+  OUTPUT_DIR="${WORK_DIR}/remote-only-output"
+fi
 mkdir -p "$OUTPUT_DIR"
 chmod 700 "$OUTPUT_DIR"
-WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cluster-backup.XXXXXX")
 STAGE_DIR="${WORK_DIR}/${BACKUP_ID}"
 PLAIN_ARCHIVE="${WORK_DIR}/${BACKUP_ID}.tar.gz"
 mkdir -p "$STAGE_DIR"/{config,cluster/resources/namespaced,cluster/resources/cluster,etcd,control-plane,helm,cloud,application-backups}
@@ -950,8 +966,12 @@ else
   write_completion_receipt "$RECEIPT_PATH" false false not_requested
 fi
 
-log "backup complete: $FINAL_ARCHIVE"
-log "checksum: ${FINAL_ARCHIVE}.sha256"
+if [[ "$KEEP_LOCAL_COPY" == true ]]; then
+  log "backup complete: $FINAL_ARCHIVE"
+  log "checksum: ${FINAL_ARCHIVE}.sha256"
+else
+  log "backup complete: external DR only; transient local artifacts will be removed on exit"
+fi
 log "remote publication: $REMOTE_PUBLISH_RESULT"
 if [[ "$REMOTE_PUBLISH_RESULT" == completed ]]; then
   log "remote receipt: s3://${DR_BUCKET}/${REMOTE_RECEIPT_KEY}"

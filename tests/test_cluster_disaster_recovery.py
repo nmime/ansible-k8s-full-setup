@@ -730,6 +730,22 @@ def test_encrypted_bundle_is_remote_verified_before_manifest_last_receipt():
     assert 'cmp -s "$FINAL_RECEIPT" "$REMOTE_RECEIPT_VERIFY"' in content
 
 
+def test_remote_only_backup_never_retains_output_outside_the_cleanup_tree():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert 'KEEP_LOCAL_COPY=true' in content
+    assert '--remote-only) KEEP_LOCAL_COPY=false' in content
+    assert '--remote-only cannot be combined with --skip-remote-publish' in content
+    assert 'OUTPUT_DIR="${WORK_DIR}/remote-only-output"' in content
+    assert 'trap \'rm -rf "$WORK_DIR"\' EXIT' in content
+    assert 'rm -rf "$WORK_DIR"' in content
+    assert 'external DR only; transient local artifacts will be removed on exit' in content
+
+    work_dir = content.index('WORK_DIR=$(mktemp -d')
+    remote_output = content.index('OUTPUT_DIR="${WORK_DIR}/remote-only-output"')
+    output_create = content.index('mkdir -p "$OUTPUT_DIR"')
+    assert work_dir < remote_output < output_create
+
+
 def test_controller_can_publish_through_a_distinct_route_to_the_same_dr_store():
     content = BACKUP.read_text(encoding="utf-8")
     assert 'DR_CLIENT_ENDPOINT="${BACKUP_DR_CLIENT_ENDPOINT:-}"' in content
