@@ -35,6 +35,15 @@
       - postal_send_limit_per_minute | int <= 1000
       - postal_message_retention_days | int >= 1
       - postal_raw_message_retention_days | int >= 0
+      - postal_dmarc_policy in ['none', 'quarantine', 'reject']
+      - postal_dmarc_subdomain_policy in ['none', 'quarantine', 'reject']
+      - postal_dmarc_dkim_alignment in ['r', 's']
+      - postal_dmarc_spf_alignment in ['r', 's']
+      - postal_dmarc_pct | int >= 1
+      - postal_dmarc_pct | int <= 100
+      - postal_dmarc_report_local_part in postal_inbound_accept_local_parts
+      - postal_sender_dns_default_provider in ['hetzner', 'gcore']
+      - postal_sender_dns_providers is mapping
       - postal_smtp_tls_enabled | bool
       - postal_smtp_client_names is sequence
       - postal_smtp_client_names is not string
@@ -59,6 +68,42 @@
   loop: "{{ postal_domains }}"
   loop_control:
     label: "{{ item }}"
+
+- name: Resolve the authoritative DNS provider for every sender domain
+  ansible.builtin.set_fact:
+    postal_sender_dns_resolved_providers: >-
+      {{
+        postal_sender_dns_resolved_providers | default({}) |
+        combine({item: postal_sender_dns_providers.get(item, postal_sender_dns_default_provider)})
+      }}
+  loop: "{{ postal_domains }}"
+  loop_control:
+    label: "{{ item }} -> {{ postal_sender_dns_providers.get(item, postal_sender_dns_default_provider) }}"
+
+- name: Validate every sender-domain DNS provider
+  ansible.builtin.assert:
+    that:
+      - item.value in ['hetzner', 'gcore']
+    fail_msg: >-
+      Unsupported Postal DNS provider {{ item.value }} for {{ item.key }}.
+      Supported providers are hetzner and gcore.
+  loop: "{{ postal_sender_dns_resolved_providers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} -> {{ item.value }}"
+  when: postal_manage_sender_dns | bool
+
+- name: Require a Gcore API key when a sender zone is hosted by Gcore
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - postal_gcore_api_key | string | length >= 20
+    fail_msg: >-
+      At least one Postal sender domain uses Gcore DNS, but GCORE_API_KEY is
+      missing. Supply a scoped Gcore DNS API token; credentials are never
+      stored in the public profile.
+  when:
+    - postal_manage_sender_dns | bool
+    - "'gcore' in postal_sender_dns_resolved_providers.values()"
 
 - name: Validate each Postal SMTP client identity
   ansible.builtin.assert:
@@ -950,6 +995,7 @@
       type: Opaque
       stringData:
         admin-password: "{{ postal_admin_password }}"
+        smtp-credential: "{{ postal_smtp_credentials['platform-applications'] }}"
         smtp-credentials.json: "{{ postal_smtp_credentials | to_json }}"
 
 - name: Remove the previous Postal bootstrap job
@@ -1488,6 +1534,9 @@
       - default-dkim-record
   register: postal_return_path_dkim
   changed_when: false
+  retries: 5
+  delay: 5
+  until: postal_return_path_dkim.rc == 0
 
 - name: Export public sender-domain DNS requirements
   ansible.builtin.command:
@@ -1504,6 +1553,7 @@
       - runner
       - >-
         require "json";
+        providers = JSON.parse({{ postal_sender_dns_resolved_providers | to_json | to_json }});
         server = Server.find_by!(permalink: {{ postal_server_permalink | to_json }});
         domains = server.domains.order(:name).map do |domain|;
         {domain: domain.name,
@@ -1511,11 +1561,105 @@
         spf: {name: domain.name, type: "TXT", value: domain.spf_record},
         dkim: {name: "#{domain.dkim_record_name.downcase}.#{domain.name}", type: "TXT", value: domain.dkim_record},
         return_path: {name: domain.return_path_domain, type: "CNAME", value: {{ (postal_return_path_domain ~ '.') | to_json }}},
-        dmarc: {name: "_dmarc.#{domain.name}", type: "TXT", value: "v=DMARC1; p=none; adkim=r; aspf=r; pct=100; rua=mailto:dmarc-reports@#{domain.name}"}};
+        dmarc: {name: "_dmarc.#{domain.name}", type: "TXT", value: "v=DMARC1; p={{ postal_dmarc_policy }}; sp={{ postal_dmarc_subdomain_policy }}; adkim={{ postal_dmarc_dkim_alignment }}; aspf={{ postal_dmarc_spf_alignment }}; pct={{ postal_dmarc_pct }}; rua=mailto:{{ postal_dmarc_report_local_part }}@#{domain.name}"}};
         end;
-        puts JSON.generate({domains: domains})
+        records = domains.flat_map do |entry|;
+        zone = entry[:domain];
+        entry.except(:domain).values.map do |record|;
+        relative_name = record[:name] == zone ? "@" : record[:name].delete_suffix(".#{zone}");
+        record.merge(zone: zone, relative_name: relative_name, provider: providers.fetch(zone));
+        end;
+        end;
+        puts JSON.generate({domains: domains, records: records})
   register: postal_dns_requirements
   changed_when: false
+  retries: 5
+  delay: 5
+  until: postal_dns_requirements.rc == 0
+
+- name: Normalize managed sender-domain DNS records
+  ansible.builtin.set_fact:
+    postal_managed_sender_dns_records: >-
+      {{ (postal_dns_requirements.stdout | from_json).records | default([]) }}
+
+- name: Publish sender-domain authentication and inbound DNS
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ item.value }}"
+      - "{{ item.zone }}"
+      - "{{ item.relative_name }}"
+      - "{{ item.type }}"
+  loop: "{{ postal_managed_sender_dns_records }}"
+  loop_control:
+    label: "{{ item.zone }} {{ item.relative_name }} {{ item.type }}"
+  register: postal_sender_dns_publish
+  changed_when: true
+  retries: 3
+  delay: 5
+  until: postal_sender_dns_publish.rc == 0
+  when:
+    - postal_manage_sender_dns | bool
+    - item.provider == 'hetzner'
+
+- name: Publish sender-domain authentication and inbound DNS in Gcore
+  no_log: true
+  ansible.builtin.uri:
+    url: >-
+      {{ postal_gcore_api_url }}/dns/v2/zones/{{ item.zone | urlencode }}/{{ item.name | urlencode }}/{{ item.type }}
+    method: PUT
+    headers:
+      Authorization: "apikey {{ postal_gcore_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      ttl: 300
+      resource_records:
+        - content: >-
+            {{
+              [item.value.split(' ', 1)[0] | int, item.value.split(' ', 1)[1]]
+              if item.type == 'MX'
+              else [item.value]
+            }}
+    status_code: [200, 201]
+  loop: "{{ postal_managed_sender_dns_records }}"
+  loop_control:
+    label: "{{ item.zone }} {{ item.relative_name }} {{ item.type }}"
+  register: postal_gcore_sender_dns_publish
+  retries: 3
+  delay: 5
+  until: postal_gcore_sender_dns_publish is not failed
+  when:
+    - postal_manage_sender_dns | bool
+    - item.provider == 'gcore'
+
+- name: Wait for sender-domain DNS on independent public resolvers
+  ansible.builtin.shell: |
+    set -euo pipefail
+    fqdn={{ (item.zone if item.relative_name == '@' else item.relative_name ~ '.' ~ item.zone) | quote }}
+    for resolver in 1.1.1.1 8.8.8.8; do
+      if [ {{ item.type | quote }} = TXT ]; then
+        actual=$(dig +short @"$resolver" TXT "$fqdn" | sed 's/" "//g; s/^"//; s/"$//')
+      else
+        actual=$(dig +short @"$resolver" {{ item.type | quote }} "$fqdn")
+      fi
+      test "$actual" = {{ item.value | quote }}
+    done
+  args:
+    executable: /bin/bash
+  loop: "{{ postal_managed_sender_dns_records }}"
+  loop_control:
+    label: "{{ item.zone }} {{ item.relative_name }} {{ item.type }}"
+  register: postal_sender_dns_public_readback
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: postal_sender_dns_public_readback.rc == 0
+  when: postal_manage_sender_dns | bool
 
 - name: Publish the public Postal DNS plan inside the cluster
   kubernetes.core.k8s:

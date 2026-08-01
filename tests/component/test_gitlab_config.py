@@ -35,6 +35,13 @@ DOCKER_HOST_NETWORK_PATH = os.path.join(
     "tasks",
     "docker-host-network.yml",
 )
+GENERAL_RUNNER_BOUNDARY_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "general-runner-boundary.yml",
+)
 
 def read(path):
     with open(path) as f:
@@ -232,7 +239,7 @@ class TestChart10ValuesStructure:
         assert "workload.n0xeid.xyz/ci-general" in values["nodeSelector"]
         assert "gitlab_runner_worker_index" in values["nodeSelector"]
         assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
-        assert "workload.n0xeid.xyz/ci-docker" in values["tolerations"]
+        assert "workload.n0xeid.xyz/ci-docker" not in values["tolerations"]
         assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
             "request_concurrency = {{ gitlab_runner_concurrent | int }}"
@@ -417,6 +424,9 @@ class TestChart10ValuesStructure:
         assert "gitlab_runner_concurrent | int > 0" in gate
         assert "gitlab_runner_replicas | int > 0" in gate
         assert "gitlab_runner_worker_index | int <= worker_count | int" in gate
+        assert "gitlab_runner_namespace != gitlab_namespace" in gate
+        assert "gitlab_runner_namespace != gitlab_image_builder_runner_namespace" in gate
+        assert "gitlab_runner_namespace != gitlab_docker_host_runner_namespace" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
@@ -439,7 +449,10 @@ class TestChart10ValuesStructure:
             in install
         )
         assert '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule"' in install
-        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' in install
+        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' not in install
+        assert "gitlab_runner_namespace" in install
+        assert 'BucketName = "gitlab-runner-cache"' in install
+        assert "secretName: gitlab-runner-s3-cache" in install
         assert 'environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]' in install
         for resource_setting in (
             "gitlab_runner_job_resources.cpu_request",
@@ -485,6 +498,51 @@ class TestChart10ValuesStructure:
         assert "runner-token: '{{ _gitlab_runner_auth_token }}'" in bootstrap
         assert bootstrap.count("no_log: true") >= 6
 
+        migration = self.content.split(
+            "- name: Check for active jobs on the legacy general Runner", 1
+        )[1].split("- name: Remove legacy invalid Cilium default-deny", 1)[0]
+        assert "workload.n0xeid.xyz/class=ci-job" in migration
+        assert "status.phase!=Succeeded" in migration
+        assert "status.phase!=Failed" in migration
+        assert "Refuse to interrupt active jobs" in migration
+        assert "release_state: absent" in migration
+
+    def test_general_runner_has_a_bounded_fail_closed_namespace(self):
+        tasks = yaml.safe_load(read(GENERAL_RUNNER_BOUNDARY_PATH))
+        namespace = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Create the isolated namespace"
+        )["kubernetes.core.k8s"]["definition"]
+        assert namespace["metadata"]["labels"][
+            "pod-security.kubernetes.io/enforce"
+        ] == "restricted"
+
+        quota = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Bound aggregate namespace resources"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert quota["requests.cpu"] == "4"
+        assert quota["requests.memory"] == "8Gi"
+        assert quota["limits.cpu"] == "7"
+        assert quota["limits.memory"] == "10Gi"
+        assert quota["persistentvolumeclaims"] == "0"
+
+        policies = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Apply the fail-closed network boundary"
+        )["loop"]
+        names = {policy["metadata"]["name"] for policy in policies}
+        assert "default-deny" in names
+        assert "allow-dns-api-gitlab-and-cache" in names
+        public = next(
+            policy for policy in policies
+            if policy["metadata"]["name"] == "allow-public-dependency-egress"
+        )
+        assert public["spec"]["egress"][0]["ports"] == [
+            {"protocol": "TCP", "port": 80},
+            {"protocol": "TCP", "port": 443},
+        ]
+
         secrets = read(GENERATE_SECRETS_PATH)
         resolution = secrets.split("- name: Resolve GitLab Runner authentication token", 1)[
             1
@@ -526,7 +584,7 @@ class TestChart10ValuesStructure:
         assert "updatedReplicas" in converge["until"]
 
     def test_image_builder_exception_is_isolated_and_fail_closed(self):
-        assert "include_tasks: image-builder-runner.yml" in self.content
+        assert "file: image-builder-runner.yml" in self.content
         assert "when: gitlab_image_builder_runner_enabled | bool" in self.content
         gate = self.content.split(
             "- name: Require a dedicated protected image-builder Runner identity",
@@ -608,6 +666,13 @@ class TestChart10ValuesStructure:
         assert labels["pod-security.kubernetes.io/enforce"] == "privileged"
         assert labels["pod-security.kubernetes.io/audit"] == "restricted"
         assert labels["pod-security.kubernetes.io/warn"] == "restricted"
+        quota = next(
+            task for task in tasks
+            if task.get("name") == "Image builder | Bound aggregate namespace resources"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert quota["limits.cpu"] == "4"
+        assert quota["limits.memory"] == "5Gi"
+        assert quota["persistentvolumeclaims"] == "0"
 
         network = read(IMAGE_BUILDER_NETWORK_PATH)
         assert (
@@ -672,7 +737,7 @@ class TestChart10ValuesStructure:
         ) == 2
 
     def test_docker_smoke_privilege_is_service_only_and_digest_pinned(self):
-        assert "include_tasks: docker-host-runner.yml" in self.content
+        assert "file: docker-host-runner.yml" in self.content
         assert "when: gitlab_docker_host_runner_enabled | bool" in self.content
         gate = self.content.split(
             "- name: Require a dedicated protected Docker-smoke Runner identity",
@@ -776,6 +841,13 @@ class TestChart10ValuesStructure:
             ]
             == "privileged"
         )
+        quota = next(
+            task for task in tasks
+            if task.get("name") == "Docker smoke | Bound aggregate namespace resources"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert quota["limits.cpu"] == "8"
+        assert quota["limits.memory"] == "7Gi"
+        assert quota["persistentvolumeclaims"] == "0"
         assert (
             "Establish the fail-closed network boundary" in runner
             and runner.index("Establish the fail-closed network boundary")
@@ -1244,3 +1316,19 @@ class TestNoDeprecatedKeys:
                 s = line.strip()
                 if not s.startswith("#") and re.match(r'install:', s):
                     pytest.fail(f"Deprecated redis.install: {s}")
+
+
+class TestPostalSmtpIntegration:
+    @pytest.fixture(autouse=True)
+    def _content(self):
+        self.content = read(GITLAB_TASKS_PATH)
+
+    @pytest.mark.component
+    def test_gitlab_rails_has_narrow_postal_submission_egress(self):
+        assert "name: allow-gitlab-postal-submission" in self.content
+        assert "values: [webservice, sidekiq, toolbox]" in self.content
+        assert "k8s:io.kubernetes.pod.namespace: postal" in self.content
+        assert "k8s:component: smtp" in self.content
+        assert "port: '587'" in self.content
+        assert "port: '2525'" in self.content
+        assert "platform_postal_enabled" in self.content

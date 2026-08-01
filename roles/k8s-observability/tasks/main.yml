@@ -18,6 +18,15 @@
     grafana_replicas: '{{ observability.grafana.replicas | default(2 if resource_tier == ''production'' else 1) }}'
     bastion_metrics_ip: >-
       {{ bastion_private_ip | default(bastion_public_ip | default('')) }}
+    ha_egress_metrics_ips: >-
+      {{
+        [
+          ha_egress.gateway_1_private_ip | default(ha_egress.active_private_ip),
+          ha_egress.gateway_2_private_ip | default(ha_egress.standby_private_ip)
+        ]
+        if ha_egress is defined and ha_egress.enabled | default(false) | bool
+        else []
+      }}
 - name: Require a persisted bastion address for host metrics
   ansible.builtin.assert:
     that:
@@ -168,12 +177,104 @@
         name: bastion-node-exporter
         namespace: '{{ monitoring_namespace }}'
       spec:
+        discoveryRole: endpointslices
         selector:
           matchLabels:
             app: bastion-node-exporter
         endpoints:
         - port: metrics
           interval: 30s
+- name: Add HA egress health EndpointSlice
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: discovery.k8s.io/v1
+      kind: EndpointSlice
+      metadata:
+        name: ha-egress-health
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app: ha-egress-health
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+          kubernetes.io/service-name: ha-egress-health
+      addressType: IPv4
+      endpoints:
+      - addresses: ['{{ ha_egress_metrics_ips[0] }}']
+      - addresses: ['{{ ha_egress_metrics_ips[1] }}']
+      ports:
+      - name: metrics
+        port: '{{ ha_egress.health_port | default(9911) | int }}'
+        protocol: TCP
+  when: ha_egress_metrics_ips | length == 2
+- name: Add HA egress health headless Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ha-egress-health
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app: ha-egress-health
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+      spec:
+        clusterIP: None
+        ports:
+        - name: metrics
+          port: '{{ ha_egress.health_port | default(9911) | int }}'
+          protocol: TCP
+  when: ha_egress_metrics_ips | length == 2
+- name: Allow only VictoriaMetrics to scrape the private HA egress gateways
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-vmagent-to-ha-egress
+        namespace: '{{ monitoring_namespace }}'
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: vmagent
+            app.kubernetes.io/instance: vmagent
+        policyTypes: [Egress]
+        egress:
+        - to:
+          - ipBlock:
+              cidr: '{{ ha_egress_metrics_ips[0] }}/32'
+          - ipBlock:
+              cidr: '{{ ha_egress_metrics_ips[1] }}/32'
+          ports:
+          - protocol: TCP
+            port: '{{ ha_egress.health_port | default(9911) | int }}'
+  when: ha_egress_metrics_ips | length == 2
+- name: Add VMServiceScrape for HA egress health
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: ha-egress-health
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+      spec:
+        discoveryRole: endpointslices
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: ha-egress-health
+            app.kubernetes.io/component: network-egress
+        endpoints:
+        - port: metrics
+          path: /metrics
+          interval: 15s
+  when: ha_egress_metrics_ips | length == 2
 - name: Deploy VMCluster (distributed mode)
   kubernetes.core.k8s:
     state: present
@@ -1438,6 +1539,22 @@
               severity: warning
             annotations:
               summary: High memory usage on {{ '{{ $labels.instance }}' }}
+        - name: egress
+          rules:
+          - alert: HAEgressGatewayNotReady
+            expr: count(n0xeid_egress_ready == 1) < 2
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: Fewer than two HA egress gateways are ready
+          - alert: HAEgressActiveGatewayCountInvalid
+            expr: sum(n0xeid_egress_active) != 1
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: HA egress must have exactly one active Floating-IP owner
         - name: databases
           rules:
           - alert: PostgreSQLDown

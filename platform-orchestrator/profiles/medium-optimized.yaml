@@ -65,6 +65,17 @@ network:
     enabled: true
     server_type: cpx22
 
+  # Billable opt-in. The live n0xeid profile enables this with a cross-location
+  # standby and activates it only after Floating-IP mail DNS is aligned.
+  egress:
+    enabled: false
+    activate: false
+    standby_server_type: cpx22
+    standby_location: fsn1
+    standby_private_ip: 10.0.2.12
+    floating_ip_home_location: hel1
+    manage_mail_dns: false
+
   load_balancer:
     enabled: true
     type: lb11
@@ -119,6 +130,32 @@ storage:
     cpu_limit: "1"
     memory_request: 512Mi
     memory_limit: 2Gi
+  # Hetzner CSI provisions provider objects as pvc-UUID. Reconcile these
+  # display names after provisioning; Kubernetes continues to bind by volume
+  # ID, so renaming does not detach, recreate, or interrupt a claim.
+  provider_volume_names:
+    vault/audit-vault-0: vault-audit-0
+    vault/audit-vault-1: vault-audit-1
+    vault/audit-vault-2: vault-audit-2
+    storage/data-filer-seaweedfs-filer-0: storage-filer-0
+    monitoring/vmstorage-db-vmstorage-vmcluster-0: monitoring-vmstorage-0
+    monitoring/storage-loki-0: monitoring-loki-0
+    monitoring/grafana: monitoring-grafana
+    monitoring/vmalertmanager-platform-db-vmalertmanager-platform-0: monitoring-alertmanager-0
+    monitoring/vmalertmanager-platform-db-vmalertmanager-platform-1: monitoring-alertmanager-1
+    coroot/data-coroot-coroot-0: coroot-data-0
+    coroot/data-coroot-clickhouse-shard-0-0: coroot-clickhouse-0
+    coroot/data-coroot-clickhouse-keeper-0: coroot-keeper-0
+    coroot/data-coroot-clickhouse-keeper-1: coroot-keeper-1
+    coroot/data-coroot-clickhouse-keeper-2: coroot-keeper-2
+    databases/n0xeid-medium-optimized-cx-pg-repo1: databases-pgbackrest-0
+    dragonfly/df-dragonfly-0: dragonfly-shared-0
+    gitlab/repo-data-gitlab-gitaly-0: gitlab-gitaly-0
+    postal/data-postal-mariadb-0: postal-mariadb-0
+    fun-games-preproduction/df-fun-games-cache-0: fun-preprod-cache-0
+    fun-games-preproduction/df-fun-games-cache-1: fun-preprod-cache-1
+    fun-games-production/df-fun-games-cache-0: fun-production-cache-0
+    fun-games-production/df-fun-games-cache-1: fun-production-cache-1
 
 # ---------------------------------------------
 # Secrets
@@ -242,6 +279,7 @@ gitlab:
   runner:
     enabled: true
     replicas: 1
+    namespace: gitlab-ci-general
     # General and rootless image-build jobs share a private, tainted CI-build
     # worker. Two general jobs plus one protected image job fit the dedicated
     # cpx42 worker's 8 vCPU / 16 GiB envelope while keeping production-node
@@ -249,6 +287,19 @@ gitlab:
     # sustained production pipelines.
     concurrent_jobs: 2
     dedicated_worker_index: 5
+    job_resources:
+      cpu_request: 750m
+      cpu_limit: '2'
+      memory_request: 2Gi
+      memory_limit: 3Gi
+      service_cpu_request: 200m
+      service_cpu_limit: 750m
+      service_memory_request: 512Mi
+      service_memory_limit: 1Gi
+      helper_cpu_request: 100m
+      helper_cpu_limit: 250m
+      helper_memory_request: 256Mi
+      helper_memory_limit: 512Mi
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.
@@ -256,6 +307,15 @@ gitlab:
       enabled: true
       replicas: 1
       concurrent_jobs: 1
+      job_resources:
+        cpu_request: 1000m
+        cpu_limit: 2500m
+        memory_request: 2Gi
+        memory_limit: 4Gi
+        helper_cpu_request: 100m
+        helper_cpu_limit: 500m
+        helper_memory_request: 256Mi
+        helper_memory_limit: 512Mi
     # Backward-compatible docker-host tag without Docker access on bastion:
     # only the digest-pinned DinD service is privileged in its own namespace.
     docker_host:
@@ -393,7 +453,10 @@ postal:
   enabled: false
   # Keep inbound delivery explicit. These aliases are managed for every
   # configured Postal domain; arbitrary recipients remain rejected.
-  inbound_accept_local_parts: [postmaster, abuse, admin, alerts, dmarc-reports]
+  inbound_accept_local_parts: [postmaster, abuse, admin, alerts, dmarc-reports, unsubscribe]
+  manage_sender_dns: false
+  sender_dns_providers: {}
+  dmarc_policy: none
   web_replicas: 1
   smtp_replicas: 1
   worker_replicas: 1

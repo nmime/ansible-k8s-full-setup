@@ -1095,6 +1095,10 @@
                   - matchLabels:
                       k8s:io.kubernetes.pod.namespace: gitlab
                   - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: >-
+                        {{ (gitlab.runner | default({})).namespace |
+                           default('gitlab-ci-general', true) }}
+                  - matchLabels:
                       k8s:io.kubernetes.pod.namespace: monitoring
                   - matchLabels:
                       k8s:io.kubernetes.pod.namespace: databases

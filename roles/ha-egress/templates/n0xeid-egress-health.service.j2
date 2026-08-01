@@ -1,0 +1,22 @@
+[Unit]
+Description=n0xeid egress gateway private health endpoint
+After=network-online.target n0xeid-egress-nat.service
+Wants=network-online.target
+Requires=n0xeid-egress-nat.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/n0xeid-egress-health
+Restart=always
+RestartSec=2
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

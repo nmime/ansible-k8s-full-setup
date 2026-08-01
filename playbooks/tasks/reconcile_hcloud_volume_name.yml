@@ -1,0 +1,50 @@
+---
+- name: Resolve the Kubernetes volume for {{ provider_volume_claim.key }}
+  ansible.builtin.set_fact:
+    provider_volume_matches: >-
+      {{
+        provider_volume_pvs.resources
+        | selectattr('spec.claimRef', 'defined')
+        | selectattr('spec.claimRef.namespace', 'equalto', provider_volume_claim.key.split('/')[0])
+        | selectattr('spec.claimRef.name', 'equalto', provider_volume_claim.key.split('/', 1)[1])
+        | list
+      }}
+    provider_volume_desired_name: "{{ volume_name_prefix }}-{{ provider_volume_claim.value }}"
+
+- name: Validate the Kubernetes/provider identity for {{ provider_volume_claim.key }}
+  ansible.builtin.assert:
+    that:
+      - provider_volume_claim.key.split('/') | length == 2
+      - provider_volume_matches | length == 1
+      - provider_volume_matches[0].status.phase == 'Bound'
+      - provider_volume_matches[0].spec.csi.driver == 'csi.hetzner.cloud'
+      - provider_volume_matches[0].spec.csi.volumeHandle | string | length > 0
+      - provider_volume_desired_name is match('^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$')
+    fail_msg: >-
+      {{ provider_volume_claim.key }} must resolve to exactly one Bound Hetzner
+      CSI volume and its desired provider name must be 2-64 lowercase
+      alphanumeric/hyphen characters.
+
+- name: Read the current Hetzner volume name for {{ provider_volume_claim.key }}
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - volume
+      - describe
+      - "{{ provider_volume_matches[0].spec.csi.volumeHandle }}"
+      - -o
+      - json
+  register: provider_volume_description
+  changed_when: false
+
+- name: Rename the Hetzner volume for {{ provider_volume_claim.key }}
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - volume
+      - update
+      - --name
+      - "{{ provider_volume_desired_name }}"
+      - "{{ provider_volume_matches[0].spec.csi.volumeHandle }}"
+  when: (provider_volume_description.stdout | from_json).name != provider_volume_desired_name
+  changed_when: true

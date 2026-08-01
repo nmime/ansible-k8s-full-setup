@@ -84,13 +84,32 @@ def test_postal_bootstraps_multiple_domains_without_rotating_credentials() -> No
     assert "credentials.each do |name, desired_key|" in content
     assert "differs; refusing implicit rotation" in content
     assert "postal-dns-requirements" in content
-    assert "v=DMARC1; p=none; adkim=r; aspf=r; pct=100; rua=mailto:dmarc-reports@" in content
+    assert "postal_dmarc_policy" in defaults
+    assert "p={{ postal_dmarc_policy }}" in content
     assert "Require Postal to accept every sender-domain DNS configuration" in content
     assert "domains.each(&:check_dns)" in content
     assert "domains.reject(&:dns_ok?)" in content
     assert 'route.mode = "Accept"' in content
     assert 'route.spam_mode = "Quarantine"' in content
     assert "'postmaster', 'abuse', 'dmarc-reports'" in defaults
+
+
+def test_postal_can_manage_sender_dns_and_enforce_dmarc_progression() -> None:
+    content = TASKS.read_text()
+    defaults = DEFAULTS.read_text()
+
+    assert "postal_manage_sender_dns" in defaults
+    assert "postal_dmarc_policy in ['none', 'quarantine', 'reject']" in content
+    assert "postal_dmarc_report_local_part in postal_inbound_accept_local_parts" in content
+    assert "Publish sender-domain authentication and inbound DNS" in content
+    assert "Wait for sender-domain DNS on independent public resolvers" in content
+    assert "postal_manage_sender_dns | bool" in content
+    assert "postal_sender_dns_providers" in defaults
+    assert "postal_sender_dns_resolved_providers" in content
+    assert "item.provider == 'hetzner'" in content
+    assert "Publish sender-domain authentication and inbound DNS in Gcore" in content
+    assert 'Authorization: "apikey {{ postal_gcore_api_key }}"' in content
+    assert "if item.type == 'MX'" in content
 
 
 def test_postal_persists_required_signing_and_bootstrap_secrets() -> None:
@@ -103,6 +122,9 @@ def test_postal_persists_required_signing_and_bootstrap_secrets() -> None:
     assert "postal_signing_key: {{ postal_signing_key | to_json }}" in secrets
     assert "generated_postal_smtp_credential" in secrets
     assert "generated_postal_smtp_credentials" in secrets
+    assert "persisted_postal_smtp_credentials" in secrets
+    assert "Refuse implicit replacement of persisted Postal SMTP credentials" in secrets
+    assert "generated_postal_smtp_credentials['platform-applications']" in secrets
     assert "postal_smtp_credentials: {{ postal_smtp_credentials | to_json }}" in secrets
     assert "argv: [openssl, rsa, -check, -noout]" in tasks
 
