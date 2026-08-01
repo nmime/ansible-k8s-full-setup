@@ -36,6 +36,9 @@ network:
     domain: ""             # Defaults to vpn.<global.domain>
 
 infrastructure:
+  # Optional short Hetzner server display prefix. Kubernetes node names and
+  # project labels remain stable when this differs from project_name.
+  server_name_prefix: ""
   provider: hetzner
   region: hel1
   ssh_key_path: ~/.ssh/id_ed25519
@@ -224,6 +227,13 @@ temporal:
 
 postal:
   enabled: false      # Requires Dragonfly
+  # Postal is a transactional mail transport, not an IMAP mailbox service.
+  # domains: [example.com, example.net]
+  # outbound_ipv4: 203.0.113.10
+  # The HELO A record and IPv4 PTR must both use mailout.<global.domain>.
+  # Direct delivery also fails closed when cluster egress cannot reach TCP/25.
+  # smtp_credential_enabled: false  # enable only after SPF/DKIM/DMARC verify
+  # worker_index: 0  # dedicate and taint one non-CI worker for mail when > 0
 
 coroot:
   enabled: false      # Requires observability; eBPF node agent is privileged

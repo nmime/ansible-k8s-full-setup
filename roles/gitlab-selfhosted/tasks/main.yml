@@ -1944,7 +1944,7 @@
         create: true
       nodeSelector: >-
         {{
-          {'workload.n0xeid.xyz/ci-build': 'true'}
+          {'workload.n0xeid.xyz/ci-general': 'true'}
           if gitlab_runner_worker_index | default(0) | int > 0
           else {'node-role.kubernetes.io/worker': 'true'}
         }}
@@ -1953,6 +1953,12 @@
           [
             {
               'key': 'workload.n0xeid.xyz/ci-build',
+              'operator': 'Equal',
+              'value': 'true',
+              'effect': 'NoSchedule'
+            },
+            {
+              'key': 'workload.n0xeid.xyz/ci-docker',
               'operator': 'Equal',
               'value': 'true',
               'effect': 'NoSchedule'
@@ -1979,8 +1985,14 @@
               namespace = "{{ gitlab_namespace }}"
               image = "ubuntu:22.04"
           {% if gitlab_runner_worker_index | default(0) | int > 0 %}
-              node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
-              node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+              # General non-privileged jobs can use both isolated CI workers.
+              # The protected image-builder and privileged DinD runners remain
+              # pinned to their own narrower labels.
+              node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }
+              node_tolerations = {
+                "workload.n0xeid.xyz/ci-build=true" = "NoSchedule",
+                "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"
+              }
           {% else %}
               node_selector = { "node-role.kubernetes.io/worker" = "true" }
           {% endif %}
