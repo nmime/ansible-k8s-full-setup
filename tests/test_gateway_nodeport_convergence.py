@@ -102,13 +102,26 @@ def test_live_evidence_captures_gateway_provider_parity_without_secrets():
     script = EVIDENCE_SCRIPT.read_text()
 
     assert "io.cilium.gateway/owning-gateway=main-gateway" in script
-    assert 'hcloud load-balancer describe "${project}-lb" -o json' in script
+    assert "server_name_prefix=$(yq -r '.infrastructure.server_name_prefix" in script
+    assert 'load_balancer_name="${server_name_prefix}-lb"' in script
+    assert 'hcloud load-balancer describe "$load_balancer_name" -o json' in script
     assert "ports_match" in script
     assert "healthy_checks" in script
     assert "$gateway_edge.valid" in script
     assert "HCLOUD_TOKEN" in script
     assert "load-balancer.json" in script
     assert "Secrets" in script
+
+
+def test_provider_load_balancer_uses_the_configured_short_name_prefix_everywhere():
+    infra = INFRA_TASKS.read_text()
+    cluster = CLUSTER_TASKS.read_text()
+
+    assert 'load_balancer_name: "{{ hetzner_server_name_prefix }}-lb"' in infra
+    assert "{{ project }}-lb" not in infra
+    assert "load_balancer_name:" in cluster
+    assert "{{ project }}-lb" not in cluster
+    assert "project ~ '-lb'" not in cluster
 
 
 def test_public_gateway_supports_additional_project_certificates():

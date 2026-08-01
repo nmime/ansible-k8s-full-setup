@@ -3299,6 +3299,9 @@ def test_profile_scale_in_refuses_bound_node_local_data():
 def test_cluster_backup_cloud_capture_is_fail_closed_and_uses_managed_dns_zone():
     content = (ROOT / "scripts" / "cluster-backup.sh").read_text(encoding="utf-8")
 
+    assert "SERVER_NAME_PREFIX=$(yq -r '.infrastructure.server_name_prefix" in content
+    assert 'LOAD_BALANCER_NAME="${SERVER_NAME_PREFIX}-lb"' in content
+    assert '"load-balancer:${LOAD_BALANCER_NAME}"' in content
     assert '"zone:${DNS_ZONE}"' in content
     assert '"zone:${DOMAIN}"' not in content
     assert "if grep -qi 'not found'" in content

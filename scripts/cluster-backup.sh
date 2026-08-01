@@ -121,6 +121,8 @@ fi
 [[ -n "$SECRETS_FILE" ]] || SECRETS_FILE="${PROJECT_ROOT}/playbooks/.platform-secrets.yml"
 [[ -f "$SECRETS_FILE" ]] || fail "generated secrets file not found: $SECRETS_FILE"
 PROJECT=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
+SERVER_NAME_PREFIX=$(yq -r '.infrastructure.server_name_prefix // .global.project // "k8s"' "$CONFIG_FILE")
+LOAD_BALANCER_NAME="${SERVER_NAME_PREFIX}-lb"
 VAULT_INIT_REQUIRED=$(yq -r '.secrets.enabled // false' "$CONFIG_FILE")
 [[ "$VAULT_INIT_REQUIRED" =~ ^(true|false)$ ]] \
   || fail "secrets.enabled must resolve to true or false"
@@ -620,7 +622,7 @@ if [[ "$SKIP_CLOUD" != true ]]; then
   hcloud_safe version > "$STAGE_DIR/cloud/hcloud-version.txt"
   hcloud_safe server list --selector "project=${PROJECT}" -o json > "$STAGE_DIR/cloud/servers.json"
   for spec in "network:${PROJECT}-network" "firewall:${PROJECT}-fw-bastion" "firewall:${PROJECT}-fw-nodes" \
-    "load-balancer:${PROJECT}-lb" "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DNS_ZONE}"; do
+    "load-balancer:${LOAD_BALANCER_NAME}" "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DNS_ZONE}"; do
     kind=${spec%%:*}; name=${spec#*:}; safe_name=${name//[^[:alnum:]._-]/_}
     file="${kind//-/_}-${safe_name}"
     # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
