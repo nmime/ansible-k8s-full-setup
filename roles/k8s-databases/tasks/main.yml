@@ -1767,6 +1767,61 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
+- name: Allow SocialAgents migration and runtime workloads to reach PostgreSQL
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-social-agents-postgres
+        namespace: agents
+      spec:
+        endpointSelector:
+          matchLabels:
+            k8s:app.kubernetes.io/name: social-agents
+        egress:
+        - toServices:
+          - k8sService:
+              serviceName: '{{ project_name | default(''k8s'') }}-pg-primary'
+              namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+        - toServices:
+          - k8sService:
+              serviceName: '{{ project_name | default(''k8s'') }}-pg-pgbouncer'
+              namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+              k8s:postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
+              k8s:app.kubernetes.io/component: pg
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+              k8s:postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
+              k8s:postgres-operator.crunchydata.com/role: pgbouncer
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - >-
+    'agents' in (
+      databases.postgresql.extra_users | default([]) |
+      map(attribute='target_namespace') | list
+    )
 - name: Allow database egress (replication + backups)
   kubernetes.core.k8s:
     state: present

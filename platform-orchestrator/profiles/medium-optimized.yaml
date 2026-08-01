@@ -170,7 +170,9 @@ databases:
       - operator:
           name: social-agents-owner
           databases: [social_agents]
-          options: BYPASSRLS
+          # Used only by the one-shot migration and role-bootstrap hooks. The
+          # runtime API and worker use separate restricted login roles.
+          options: BYPASSRLS CREATEROLE
           grantPublicSchemaAccess: true
         target_namespace: agents
         secret_name: social-agents-owner-postgresql

@@ -127,7 +127,7 @@ def test_medium_optimized_declares_scoped_application_database_users():
         "dadya-pp",
         "social-agents-owner",
     }
-    assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS"
+    assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
     assert {
         item["target_namespace"] for item in users.values()
     } == {"analytics", "dadya-production", "dadya-preproduction", "agents"}
