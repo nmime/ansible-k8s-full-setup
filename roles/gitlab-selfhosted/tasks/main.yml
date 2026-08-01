@@ -3,6 +3,7 @@
     gitlab_chart_version: 10.1.2
     gitlab_namespace: gitlab
     gitlab_domain: "{{ gitlab.domain | default('git.' ~ domain, true) }}"
+    gitlab_admin_email: "{{ email }}"
     registry_domain: registry.{{ domain }}
     kas_domain: kas.{{ domain }}
     gitlab_mode: '{{ gitlab.mode | default(''light'' if resource_tier in [''minimal'', ''small''] or tier == ''medium'' else ''full'') }}'
@@ -1669,6 +1670,37 @@
   changed_when: "'changed=true' in _gitlab_disable_public_signup.stdout"
   failed_when: "'signup_enabled=false' not in _gitlab_disable_public_signup.stdout"
   when: gitlab_public_webservice_enabled | bool
+- name: Replace the generated GitLab root email placeholder
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - --namespace
+      - '{{ gitlab_namespace }}'
+      - deployment/gitlab-toolbox
+      - --container
+      - toolbox
+      - --
+      - gitlab-rails
+      - runner
+      - >-
+        user = User.find_by_username!("root");
+        desired = {{ gitlab_admin_email | to_json }};
+        placeholder = user.email.to_s.end_with?("@example.com");
+        changed = placeholder && user.email != desired;
+        if changed then
+          user.email = desired;
+          user.skip_reconfirmation!;
+          user.save!;
+        end;
+        puts "changed=#{changed};email=#{user.email}"
+  register: _gitlab_root_email_reconcile
+  changed_when: "'changed=true' in _gitlab_root_email_reconcile.stdout"
+  failed_when:
+    - _gitlab_root_email_reconcile.rc != 0
+    - >-
+      ('email=' + gitlab_admin_email) not in
+      _gitlab_root_email_reconcile.stdout
 - name: Create private GitLab Gateway API HTTPRoute
   kubernetes.core.k8s:
     state: present
