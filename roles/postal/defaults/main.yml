@@ -12,6 +12,17 @@ postal_return_path_domain: "rp.{{ domain }}"
 postal_route_domain: "routes.{{ domain }}"
 postal_domains: "{{ postal.domains | default([domain]) }}"
 postal_inbound_accept_local_parts: "{{ postal.inbound_accept_local_parts | default(['postmaster', 'abuse', 'dmarc-reports']) }}"
+postal_manage_sender_dns: "{{ postal.manage_sender_dns | default(false) }}"
+postal_sender_dns_default_provider: "{{ postal.sender_dns_default_provider | default('hetzner') }}"
+postal_sender_dns_providers: "{{ postal.sender_dns_providers | default({}) }}"
+postal_gcore_api_url: "{{ postal.gcore_api_url | default('https://api.gcore.com') }}"
+postal_gcore_api_key: "{{ gcore_api_key | default(lookup('env', 'GCORE_API_KEY'), true) }}"
+postal_dmarc_policy: "{{ postal.dmarc_policy | default('none') }}"
+postal_dmarc_subdomain_policy: "{{ postal.dmarc_subdomain_policy | default(postal_dmarc_policy) }}"
+postal_dmarc_dkim_alignment: "{{ postal.dmarc_dkim_alignment | default('r') }}"
+postal_dmarc_spf_alignment: "{{ postal.dmarc_spf_alignment | default('r') }}"
+postal_dmarc_pct: "{{ postal.dmarc_pct | default(100) | int }}"
+postal_dmarc_report_local_part: "{{ postal.dmarc_report_local_part | default('dmarc-reports') }}"
 postal_admin_email: "{{ postal.admin_email | default(email) }}"
 postal_admin_first_name: "{{ postal.admin_first_name | default('Platform') }}"
 postal_admin_last_name: "{{ postal.admin_last_name | default('Administrator') }}"
@@ -37,7 +48,17 @@ postal_smtp_tls_source_namespace: "{{ postal.smtp_tls_source_namespace | default
 postal_smtp_tls_source_secret: "{{ postal.smtp_tls_source_secret | default('wildcard-tls') }}"
 postal_smtp_tls_sync_image: "{{ postal.smtp_tls_sync_image | default('docker.io/alpine/k8s:1.35.4') }}"
 postal_smtp_load_balancer_name: "{{ postal.smtp_load_balancer_name | default((project_name | default('k8s')) + '-postal-smtp') }}"
-postal_shared_load_balancer_name: "{{ postal.shared_load_balancer_name | default((project | default(project_name | default('k8s'))) + '-lb') }}"
+postal_shared_load_balancer_name: >-
+  {{
+    postal.shared_load_balancer_name |
+    default(
+      (
+        infrastructure.server_name_prefix |
+        default(project | default(project_name | default('k8s')), true)
+      ) ~ '-lb',
+      true
+    )
+  }}
 postal_smtp_public_ipv4: "{{ postal.smtp_public_ipv4 | default(lb_ip | default('')) }}"
 postal_smtp_credential_enabled: "{{ postal.smtp_credential_enabled | default(false) }}"
 postal_smtp_client_names: >-

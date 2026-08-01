@@ -73,6 +73,10 @@ def test_static_local_pool_is_retained_capacity_aware_and_gated():
     assert "key: workload.n0xeid.xyz/ci-docker" in tasks
     assert "key: workload.n0xeid.xyz/ci-build" in tasks
     assert "workload.n0xeid.xyz/ci-general" in tasks
+    docker_boundary = tasks.split(
+        "{% elif i == (dedicated_docker_ci_worker_index | int) %}", 1
+    )[1].split("{% elif i == (dedicated_postal_worker_index | int) %}", 1)[0]
+    assert "workload.n0xeid.xyz/ci-general" not in docker_boundary
     assert "workload.n0xeid.xyz/mail=true:NoSchedule" in tasks
     assert "operator: DoesNotExist" in tasks
     assert "workload.n0xeid.xyz/ci-docker=true:NoSchedule" in tasks

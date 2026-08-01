@@ -27,6 +27,25 @@ network:
   bastion:
     enabled: true
     server_type: cpx22
+  # Active/passive egress uses a second billable server and Floating IPv4.
+  # Stage with activate=false; publish forward/PTR/SPF, then activate=true.
+  egress:
+    enabled: false
+    activate: false
+    standby_server_type: cpx22
+    standby_location: fsn1
+    standby_private_ip: 10.0.2.12
+    floating_ip_home_location: hel1
+    ptr: ""                 # Defaults to mailout.<global.domain>
+    failure_threshold: 3
+    watchdog_interval_seconds: 10
+    health_timeout_seconds: 4
+    promotion_timeout_seconds: 90
+    manage_mail_dns: false
+    mail_dns_zone: ""       # Defaults to hetzner_dns_zone/global.domain
+    mail_spf_name: spf
+    mail_legacy_ipv4: ""
+    mail_include_legacy_ipv4: false
   load_balancer:
     enabled: true
     type: lb11
@@ -94,6 +113,9 @@ storage:
 
 secrets:
   enabled: true
+  # Set this explicitly for long-lived/component-only environments so every
+  # reconciliation reads and rewrites the same encrypted campaign state.
+  file: ""
   vault:
     replicas: 1
     storage_size: 20Gi
@@ -173,6 +195,7 @@ gitlab:
   sidekiq_replicas: 1
   runner:
     enabled: true
+    namespace: gitlab-ci-general  # keep untrusted jobs outside the GitLab namespace
     concurrent_jobs: 5
     # Optional scheduler envelope for each general CI job. Raising the memory
     # request can intentionally prevent two different Runner classes from
@@ -236,6 +259,11 @@ postal:
   # The HELO A record and IPv4 PTR must both use mailout.<global.domain>.
   # Direct delivery also fails closed when cluster egress cannot reach TCP/25.
   # smtp_credential_enabled: false  # enable only after SPF/DKIM/DMARC verify
+  # manage_sender_dns: false        # manage MX/SPF/DKIM/return-path/DMARC in every sender zone
+  # sender_dns_providers:           # authoritative provider for each sender zone
+  #   example.com: hetzner
+  #   example.net: gcore            # requires a scoped GCORE_API_KEY
+  # dmarc_policy: none              # progress to quarantine/reject after aggregate reports are clean
   # worker_index: 0  # dedicate and taint one non-CI worker for mail when > 0
 
 coroot:

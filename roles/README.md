@@ -9,6 +9,7 @@ user-facing selector and version matrix is in
 | `generate-secrets` | strong credential generation and Ansible-Vault-encrypted persistence |
 | `hetzner-infra` | Hetzner network, subnets, firewall, servers, placement, load balancer, volumes, DNS inputs |
 | `network-security` | bastion packages/hardening, UFW, fail2ban, NAT, Headscale/Caddy VPN, node-exporter, auditd |
+| `ha-egress` | cross-location standby gateway, protected Floating IPv4, explicit static SNAT, health checks, and provider route failover |
 | `k8s-cluster-management` | Kubespray, Kubernetes/containerd, Cilium/Hubble/encryption, Gateway API, cert-manager, Hetzner webhook/CCM/CSI, MetalLB |
 | `k8s-secrets` | pinned Vault Raft/TLS deployment and optional External Secrets Operator integration |
 | `object-storage` | active SeaweedFS S3-compatible implementation |

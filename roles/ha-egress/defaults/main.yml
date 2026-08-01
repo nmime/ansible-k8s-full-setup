@@ -1,0 +1,54 @@
+---
+# Active/passive private-network egress with one movable public identity.
+# Disabled unless a profile selects network.egress.enabled explicitly because
+# both the standby server and Floating IPv4 are billable Hetzner resources.
+ha_egress_enabled: "{{ ((network.egress | default({})).enabled | default(false)) | bool }}"
+ha_egress_activate: "{{ ((network.egress | default({})).activate | default(false)) | bool }}"
+ha_egress_provider_prefix: >-
+  {{ infrastructure.server_name_prefix |
+     default(project_name | default('k8s'), true) }}
+ha_egress_server_name: >-
+  {{ (network.egress | default({})).standby_name |
+     default(ha_egress_provider_prefix ~ '-egress-2', true) }}
+ha_egress_server_type: >-
+  {{ (network.egress | default({})).standby_server_type | default('cpx22', true) }}
+ha_egress_location: >-
+  {{ (network.egress | default({})).standby_location | default('fsn1', true) }}
+ha_egress_private_ip: >-
+  {{ (network.egress | default({})).standby_private_ip | default('10.0.2.12', true) }}
+ha_egress_network_cidr: >-
+  {{ (network.private_network | default({})).cidr | default(private_network_cidr) }}
+ha_egress_floating_ip_name: >-
+  {{ (network.egress | default({})).floating_ip_name |
+     default(ha_egress_provider_prefix ~ '-egress-ipv4', true) }}
+ha_egress_floating_ip_home_location: >-
+  {{ (network.egress | default({})).floating_ip_home_location |
+     default(infrastructure.region | default(hetzner_region | default('hel1')), true) }}
+ha_egress_ptr: >-
+  {{ (network.egress | default({})).ptr | default('mailout.' ~ domain, true) }}
+ha_egress_health_port: >-
+  {{ (network.egress | default({})).health_port | default(9911) | int }}
+ha_egress_watchdog_interval_seconds: >-
+  {{ (network.egress | default({})).watchdog_interval_seconds | default(10) | int }}
+ha_egress_failure_threshold: >-
+  {{ (network.egress | default({})).failure_threshold | default(3) | int }}
+ha_egress_health_timeout_seconds: >-
+  {{ (network.egress | default({})).health_timeout_seconds | default(4) | int }}
+ha_egress_promotion_timeout_seconds: >-
+  {{ (network.egress | default({})).promotion_timeout_seconds | default(90) | int }}
+ha_egress_manage_mail_dns: >-
+  {{ ((network.egress | default({})).manage_mail_dns | default(false)) | bool }}
+ha_egress_mail_dns_zone: >-
+  {{ (network.egress | default({})).mail_dns_zone |
+     default(hetzner_dns_zone | default(domain, true), true) }}
+ha_egress_mail_spf_name: >-
+  {{ (network.egress | default({})).mail_spf_name | default('spf', true) }}
+ha_egress_mail_legacy_ipv4: >-
+  {{ (network.egress | default({})).mail_legacy_ipv4 | default('', true) }}
+ha_egress_mail_include_legacy_ipv4: >-
+  {{ ((network.egress | default({})).mail_include_legacy_ipv4 | default(false)) | bool }}
+ha_egress_api_endpoint: https://api.hetzner.cloud/v1
+ha_egress_monitoring_enabled: >-
+  {{ ((network.egress | default({})).monitoring_enabled | default(true)) | bool }}
+ha_egress_monitoring_namespace: >-
+  {{ (network.egress | default({})).monitoring_namespace | default('monitoring', true) }}

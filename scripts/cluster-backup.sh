@@ -175,6 +175,7 @@ else
 fi
 PROFILE=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 BASTION_SERVER_TYPE=$(yq -r '.network.bastion.server_type // ""' "$CONFIG_FILE")
+EGRESS_STANDBY_SERVER_TYPE=$(yq -r '.network.egress.standby_server_type // ""' "$CONFIG_FILE")
 CONTROL_PLANE_SERVER_TYPE=$(yq -r '.infrastructure.control_plane.type // ""' "$CONFIG_FILE")
 WORKER_SERVER_TYPE=$(yq -r '.infrastructure.workers.type // ""' "$CONFIG_FILE")
 [[ -n "$DR_ENDPOINT" ]] || DR_ENDPOINT=$(yq -r '.backup.disaster_recovery.endpoint // ""' "$CONFIG_FILE")
@@ -638,7 +639,8 @@ if [[ "$SKIP_CLOUD" != true ]]; then
   hcloud_safe version > "$STAGE_DIR/cloud/hcloud-version.txt"
   hcloud_safe server list --selector "project=${PROJECT}" -o json > "$STAGE_DIR/cloud/servers.json"
   for spec in "network:${PROJECT}-network" "firewall:${PROJECT}-fw-bastion" "firewall:${PROJECT}-fw-nodes" \
-    "load-balancer:${LOAD_BALANCER_NAME}" "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DNS_ZONE}"; do
+    "load-balancer:${LOAD_BALANCER_NAME}" "floating-ip:${SERVER_NAME_PREFIX}-egress-ipv4" \
+    "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DNS_ZONE}"; do
     kind=${spec%%:*}; name=${spec#*:}; safe_name=${name//[^[:alnum:]._-]/_}
     file="${kind//-/_}-${safe_name}"
     # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
@@ -805,7 +807,7 @@ jq -n \
   --arg id "$BACKUP_ID" --arg timestamp "$TIMESTAMP" --arg project "$PROJECT" \
   --arg domain "$DOMAIN" --arg profile "$PROFILE" --arg context "$CONTEXT" \
   --arg bastionType "$BASTION_SERVER_TYPE" --arg controlPlaneType "$CONTROL_PLANE_SERVER_TYPE" \
-  --arg workerType "$WORKER_SERVER_TYPE" \
+  --arg workerType "$WORKER_SERVER_TYPE" --arg egressStandbyType "$EGRESS_STANDBY_SERVER_TYPE" \
   --arg sourceClusterUid "$SOURCE_CLUSTER_UID" \
   --arg completeness "$COMPLETENESS" --arg app "$APP_BACKUP_RESULT" \
   --arg velero "$VELERO_BACKUP_RESULT" --arg veleroName "$VELERO_BACKUP_NAME" \
@@ -824,7 +826,7 @@ jq -n \
   '{schema_version:2,backup_id:$id,created_at:$timestamp,project:$project,domain:$domain,
     profile:$profile,source_context:$context,source_cluster_uid:$sourceClusterUid,
     provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType,
-      worker:$workerType},
+      worker:$workerType,egress_standby:$egressStandbyType},
     completeness:$completeness,
     application_backups:$app,velero_backup:$velero,velero_backup_name:$veleroName,
     velero_storage_prefix:$veleroPrefix,
