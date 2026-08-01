@@ -313,6 +313,52 @@
       intersect(_df_cluster_namespaces.resources |
       map(attribute='metadata.name') | list) }}
 
+- name: Allow agents workloads to resolve DNS and reach Dragonfly
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-agents-dragonfly
+        namespace: agents
+      spec:
+        endpointSelector:
+          matchExpressions:
+            - key: k8s:app.kubernetes.io/name
+              operator: In
+              values: [steel-browser, social-agents]
+        egress:
+          - toEntities: [host]
+            toPorts:
+              - ports:
+                  - { port: '53', protocol: UDP }
+                  - { port: '53', protocol: TCP }
+          - toCIDR: [169.254.25.10/32]
+            toPorts:
+              - ports:
+                  - { port: '53', protocol: UDP }
+                  - { port: '53', protocol: TCP }
+          - toServices:
+              - k8sService:
+                  serviceName: dragonfly
+                  namespace: "{{ df_ns }}"
+            toPorts:
+              - ports:
+                  - { port: '6379', protocol: TCP }
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: "{{ df_ns }}"
+                  k8s:app.kubernetes.io/name: dragonfly
+                  k8s:app: dragonfly
+                  k8s:role: master
+            toPorts:
+              - ports:
+                  - { port: '6379', protocol: TCP }
+  when: >-
+    'agents' in (_df_cluster_namespaces.resources |
+    map(attribute='metadata.name') | list)
+
 - name: Allow consumers to egress to Dragonfly
   kubernetes.core.k8s:
     state: present
