@@ -130,17 +130,22 @@ def test_public_gateway_supports_additional_project_certificates():
     normalize = NORMALIZE_PROFILE.read_text()
 
     assert defaults["gateway_extra_certificate_refs"] == []
+    assert defaults["gateway_extra_certificates"] == []
     assert defaults["gateway_https_hostname"] == ""
     assert defaults["gateway_extra_https_listeners"] == []
     assert defaults["gateway_http_allowed_routes"] == {"namespaces": {"from": "All"}}
     assert defaults["gateway_https_allowed_routes"] == {"namespaces": {"from": "All"}}
     assert "kubernetes.gateway" in normalize
     assert "extra_certificate_refs" in normalize
+    assert "extra_certificates" in normalize
     assert "https_hostname" in normalize
     assert "extra_https_listeners" in normalize
     assert "http_allowed_routes" in normalize
     assert "https_allowed_routes" in normalize
     assert "gateway_extra_certificate_refs | default([])" in cluster
+    assert "gateway_extra_certificates | default([])" in cluster
+    assert "Create extra Gateway TLS certificates" in cluster
+    assert "Wait for extra Gateway TLS certificates to become ready" in cluster
     assert "Reject overlapping certificates on a hostname-scoped Gateway listener" in cluster
     assert "Cilium/Envoy creates overlapping" in cluster
     assert "gateway_extra_https_listeners | default([])" in cluster

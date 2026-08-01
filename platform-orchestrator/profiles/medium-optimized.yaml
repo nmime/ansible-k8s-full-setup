@@ -176,6 +176,20 @@ databases:
           grantPublicSchemaAccess: true
         target_namespace: agents
         secret_name: social-agents-owner-postgresql
+      - operator:
+          name: social-agents-production-owner
+          databases: [social_agents_production]
+          options: BYPASSRLS CREATEROLE
+          grantPublicSchemaAccess: true
+        target_namespace: social-agents-production
+        secret_name: social-agents-owner-postgresql
+      - operator:
+          name: social-agents-preproduction-owner
+          databases: [social_agents_preproduction]
+          options: BYPASSRLS CREATEROLE
+          grantPublicSchemaAccess: true
+        target_namespace: social-agents-preproduction
+        secret_name: social-agents-owner-postgresql
   mongodb:
     enabled: false
     service_alias: n0xeid-mongo

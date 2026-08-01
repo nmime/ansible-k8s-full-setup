@@ -126,11 +126,22 @@ def test_medium_optimized_declares_scoped_application_database_users():
         "dadya-prod",
         "dadya-pp",
         "social-agents-owner",
+        "social-agents-production-owner",
+        "social-agents-preproduction-owner",
     }
     assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
+    assert users["social-agents-production-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
+    assert users["social-agents-preproduction-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
     assert {
         item["target_namespace"] for item in users.values()
-    } == {"analytics", "dadya-production", "dadya-preproduction", "agents"}
+    } == {
+        "analytics",
+        "dadya-production",
+        "dadya-preproduction",
+        "agents",
+        "social-agents-production",
+        "social-agents-preproduction",
+    }
     for item in users.values():
         assert "target_namespace" not in item["operator"]
         assert "secret_name" not in item["operator"]
