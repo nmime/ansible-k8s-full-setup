@@ -1815,6 +1815,30 @@
       kubernetes.gateway.extra_https_listeners must contain unique names and
       must not duplicate the managed http or https listeners.
 
+- name: Validate extra Gateway certificate definitions
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | length > 0
+      - item.dns_names is defined
+      - item.dns_names | length > 0
+      - >-
+        (
+          gateway_extra_certificates | default([])
+          | map(attribute='name') | list
+        ) | length
+        ==
+        (
+          gateway_extra_certificates | default([])
+          | map(attribute='name') | unique | list
+        ) | length
+    fail_msg: >-
+      kubernetes.gateway.extra_certificates entries require a unique name and
+      at least one dns_names value.
+  loop: "{{ gateway_extra_certificates | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('unnamed-certificate') }}"
+
 - name: Reject overlapping certificates on a hostname-scoped Gateway listener
   ansible.builtin.assert:
     that:
@@ -2523,6 +2547,51 @@
           'ge',
           wildcard_tls_certificate.resources[0].metadata.generation | default(1)
         )
+      | list | length == 1
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Create extra Gateway TLS certificates
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ item.name }}"
+        namespace: gateway-secrets
+      spec:
+        secretName: "{{ item.secret_name | default(item.name) }}"
+        issuerRef:
+          name: "{{ item.issuer_name | default(cert_manager_cluster_issuer) }}"
+          kind: ClusterIssuer
+        dnsNames: "{{ item.dns_names }}"
+  loop: "{{ gateway_extra_certificates | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: k8s_create_external_tls | default(true) | bool
+  register: _r_create_extra_gateway_tls_certificates
+  retries: 3
+  delay: 10
+  until: _r_create_extra_gateway_tls_certificates is not failed
+
+- name: Wait for extra Gateway TLS certificates to become ready
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: gateway-secrets
+    name: "{{ item.name }}"
+  loop: "{{ gateway_extra_certificates | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: extra_gateway_tls_certificate
+  retries: 60
+  delay: 10
+  until:
+    - extra_gateway_tls_certificate.resources | default([]) | length == 1
+    - >-
+      extra_gateway_tls_certificate.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
       | list | length == 1
   when: k8s_create_external_tls | default(true) | bool
 
