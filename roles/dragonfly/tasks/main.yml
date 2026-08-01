@@ -290,6 +290,7 @@
                 port: 6379
   loop:
     - production
+    - agents
     - postal
     - glitchtip
     - daytona
