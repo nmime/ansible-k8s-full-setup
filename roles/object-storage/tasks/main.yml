@@ -1114,6 +1114,7 @@
                       - { port: '18888', protocol: TCP }
                       - { port: '19333', protocol: TCP }
                       - { port: '9327', protocol: TCP }
+
             egress:
               - toEndpoints:
                   - matchLabels:
@@ -1128,6 +1129,32 @@
                       - { port: '18888', protocol: TCP }
                       - { port: '19333', protocol: TCP }
                       - { port: '9327', protocol: TCP }
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Allow agents namespace to use the SeaweedFS S3 gateway
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: allow-from-agents-s3
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: seaweedfs
+                app.kubernetes.io/instance: seaweedfs
+                app.kubernetes.io/component: filer
+            policyTypes: [Ingress]
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: agents
+                ports:
+                  - protocol: TCP
+                    port: 8333
       when: object_storage_network_policy_enabled | default(false) | bool
 
     - name: Allow backup verification to reach only the SeaweedFS S3 gateway

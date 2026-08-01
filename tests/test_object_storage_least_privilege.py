@@ -109,6 +109,14 @@ def test_storage_default_deny_is_enabled_with_explicit_callers():
         assert f"pod.namespace: {namespace}" in policy
     assert "pod.namespace: \"{{ object_storage_namespace_resolved }}\"" in policy
 
+    agents_policy = tasks.split(
+        "name: Allow agents namespace to use the SeaweedFS S3 gateway", 1
+    )[1].split("name: Display object storage summary", 1)[0]
+    assert "name: allow-from-agents-s3" in agents_policy
+    assert "app.kubernetes.io/component: filer" in agents_policy
+    assert "kubernetes.io/metadata.name: agents" in agents_policy
+    assert "port: 8333" in agents_policy
+
 
 def test_backup_verification_reaches_only_the_s3_gateway():
     defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
