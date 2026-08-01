@@ -536,6 +536,20 @@
         readOnlyRootFilesystem: true
         seccompProfile:
           type: RuntimeDefault
+      # Node-local log collection must cover dedicated CI and mail workers as
+      # well as general workers. These tolerations do not weaken workload
+      # isolation: Promtail remains a small, resource-bounded DaemonSet and
+      # does not make the tainted nodes eligible for ordinary workloads.
+      tolerations:
+      - key: workload.n0xeid.xyz/ci-docker
+        operator: Exists
+        effect: NoSchedule
+      - key: workload.n0xeid.xyz/ci-build
+        operator: Exists
+        effect: NoSchedule
+      - key: workload.n0xeid.xyz/mail
+        operator: Exists
+        effect: NoSchedule
   register: _r_install_promtail_for_log_collection
   retries: 3
   delay: 10
@@ -664,6 +678,24 @@
     grafana_es_password: '{{ _r_grafana_es_credentials.resources[0].data.ELASTIC_PASSWORD | b64decode }}'
   when: log_stack != "loki" and _r_grafana_es_credentials.resources | default([]) | length > 0
   no_log: true
+- name: Create dedicated Postal SMTP secret for Grafana
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: grafana-smtp
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: observability
+      type: Opaque
+      stringData:
+        username: '{{ postal_smtp_auth_username }}'
+        password: "{{ postal_smtp_credentials['grafana'] }}"
+  when: platform_postal_enabled | default(false) | bool
 - name: Install Grafana with Helm
   no_log: true
   kubernetes.core.helm:
@@ -682,6 +714,28 @@
         type: Recreate
       adminUser: '{{ grafana_admin_user | default(''admin'') }}'
       adminPassword: '{{ grafana_admin_password }}'
+      envValueFrom: >-
+        {{
+          {
+            'GF_SMTP_USER': {
+              'secretKeyRef': {'name': 'grafana-smtp', 'key': 'username'}
+            },
+            'GF_SMTP_PASSWORD': {
+              'secretKeyRef': {'name': 'grafana-smtp', 'key': 'password'}
+            }
+          }
+          if platform_postal_enabled | default(false) | bool
+          else {}
+        }}
+      grafana.ini:
+        smtp:
+          enabled: '{{ platform_postal_enabled | default(false) | bool }}'
+          host: '{{ postal_submission_hostname }}:587'
+          user: $__env{GF_SMTP_USER}
+          password: $__env{GF_SMTP_PASSWORD}
+          from_address: grafana@{{ domain }}
+          from_name: n0xeid Grafana
+          startTLS_policy: MandatoryStartTLS
       persistence:
         enabled: true
         size: 10Gi
@@ -2089,6 +2143,12 @@
         - toEntities:
           - cluster
           - kube-apiserver
+        - toFQDNs:
+          - matchName: '{{ postal_submission_hostname }}'
+          toPorts:
+          - ports:
+            - port: '587'
+              protocol: TCP
         ingress:
         - fromEntities:
           - cluster

@@ -146,7 +146,34 @@ Postal deployment is schema-gated: a fresh MariaDB runs `postal initialize`,
 an existing database runs `postal update`, and web/worker/SMTP processes are
 not reconciled until that Job completes. This path runs only after Postal is
 explicitly enabled. SMTP stays public on ports 25/587 but uses unprivileged
-container port 2525.
+container port 2525. Postal is a transactional mail transport for applications,
+not an IMAP mailbox server.
+
+Direct delivery is deliberately fail-closed. Configure every sender under
+`postal.domains`, set `postal.outbound_ipv4`, publish
+`mailout.<global.domain>` to that address, and set the IPv4 PTR back to the same
+HELO hostname. Before MariaDB or Postal is created, the role verifies that
+forward/reverse alignment and proves that a pod can receive an SMTP banner over
+outbound TCP/25. This catches Hetzner's account-level mail-port block instead of
+leaving messages stuck in a healthy-looking queue.
+
+The role issues a cert-manager certificate for SMTP STARTTLS, persists Postal's
+required signing key in the encrypted platform secrets, and idempotently
+bootstraps the admin, organization, mail server, and all configured sender
+domains. It publishes the resulting public SPF/DKIM/return-path/DMARC plan in
+`ConfigMap/postal-dns-requirements`. Keep `smtp_credential_enabled: false` until
+those records resolve and Postal reports clean domain checks. Start DMARC at
+`p=none`, verify real traffic and alignment, then advance to quarantine/reject;
+no infrastructure setting can guarantee inbox placement or replace IP warm-up,
+bounce handling, consent, and content quality.
+
+Postal also creates explicit `postmaster`, `abuse`, and `dmarc-reports` inbound routes for each
+sender domain by default (`postal.inbound_accept_local_parts`). They accept mail
+into Postal with spam quarantine enabled; they are not IMAP mailboxes. The DMARC
+record sends aggregate reports to the domain-local `dmarc-reports` route. Configure
+an HTTP, SMTP, or address endpoint in Postal when an application or operator
+mailbox must receive forwarded copies. Catch-all routes are intentionally not
+created because they substantially increase unsolicited-mail processing.
 
 Umami is also entirely opt-in. Set `umami.enabled: true`, choose separate
 `dashboard_domain` and `ingest_domain` names, and declare stable UUIDs under

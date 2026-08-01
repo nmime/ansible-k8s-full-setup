@@ -1324,6 +1324,22 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
     ]["definition"]
     assert "type" not in published_ca
     assert "_mongo_cluster_ca_secret" in published_ca["stringData"]["ca.crt"]
+    client_certificate = by_name["Issue dedicated MongoDB client certificates"][
+        "kubernetes.core.k8s"
+    ]["definition"]["spec"]
+    assert client_certificate["privateKey"] == {
+        "algorithm": "RSA",
+        "encoding": "PKCS8",
+        "size": 2048,
+        "rotationPolicy": "Always",
+    }
+    assert client_certificate["usages"] == ["client auth"]
+    published_identity = by_name["Publish dedicated MongoDB client identities"][
+        "kubernetes.core.k8s"
+    ]["definition"]
+    assert published_identity["type"] == "kubernetes.io/tls"
+    assert set(published_identity["data"]) == {"ca.crt", "tls.crt", "tls.key"}
+    assert published_identity["metadata"]["namespace"] == "{{ item.item.namespace }}"
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():

@@ -39,7 +39,7 @@ def test_only_application_replicated_claims_use_local_ssd():
         "postgresql/data",
     }
     assert estimate["local_reserved_gib"] == 300
-    assert estimate["provider_persistent_gib"] == 240
+    assert estimate["provider_persistent_gib"] == 250
     assert estimate["provider_backup_scratch_gib"] == 0
     assert all(
         claim["storage_class"] == "hcloud-volumes"
@@ -72,6 +72,8 @@ def test_static_local_pool_is_retained_capacity_aware_and_gated():
     )
     assert "key: workload.n0xeid.xyz/ci-docker" in tasks
     assert "key: workload.n0xeid.xyz/ci-build" in tasks
+    assert "workload.n0xeid.xyz/ci-general" in tasks
+    assert "workload.n0xeid.xyz/mail=true:NoSchedule" in tasks
     assert "operator: DoesNotExist" in tasks
     assert "workload.n0xeid.xyz/ci-docker=true:NoSchedule" in tasks
     assert (

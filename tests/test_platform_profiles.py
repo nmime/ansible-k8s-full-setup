@@ -395,9 +395,14 @@ class TestMediumOptimizedContract:
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
-        assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
-        assert self.profile["infrastructure"]["workers"]["count"] == 5
-        assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
+        assert self.profile["infrastructure"]["control_plane"]["type"] == "cx33"
+        assert self.profile["infrastructure"]["workers"]["count"] == 6
+        assert self.profile["infrastructure"]["workers"]["type"] == "cx43"
+        assert self.profile["infrastructure"]["workers"]["type_overrides"] == {
+            4: "cpx32",
+            5: "cpx42",
+            6: "cx33",
+        }
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][
@@ -878,6 +883,15 @@ class TestResourceTierConsumers:
         assert 'zone rrset list "$DNS_ZONE"' in backup
         assert 'DNS_RECORD_ROOT="${DOMAIN%."$DNS_ZONE"}"' in backup
         assert 'jq --arg root "$DNS_RECORD_ROOT"' in backup
+
+    def test_dns_preview_uses_the_configured_provider_name_prefix(self):
+        orchestrator = (
+            REPO_ROOT / "platform-orchestrator" / "platform.sh"
+        ).read_text(encoding="utf-8")
+
+        assert "server_name_prefix=$(yq -r '.infrastructure.server_name_prefix" in orchestrator
+        assert 'local bastion_name="${server_name_prefix}-bastion"' in orchestrator
+        assert 'local lb_name="${server_name_prefix}-lb"' in orchestrator
 
     def test_restore_drill_manifest_is_process_unique(self):
         drill = (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text(

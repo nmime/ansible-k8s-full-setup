@@ -91,6 +91,12 @@
     gateway_extra_https_listeners: >-
       {{ (kubernetes.gateway | default({})).extra_https_listeners |
          default(gateway_extra_https_listeners) }}
+    gateway_http_allowed_routes: >-
+      {{ (kubernetes.gateway | default({})).http_allowed_routes |
+         default(gateway_http_allowed_routes) }}
+    gateway_https_allowed_routes: >-
+      {{ (kubernetes.gateway | default({})).https_allowed_routes |
+         default(gateway_https_allowed_routes) }}
     storage_class: '{{ storage.storage_class | default(storage_class) }}'
     local_storage_enabled: '{{ local_storage.enabled | default(local_storage_enabled) | bool }}'
     local_storage_class: '{{ local_storage.storage_class | default(local_storage_class) }}'
@@ -534,10 +540,32 @@
   ansible.builtin.assert:
     that:
       - platform_dragonfly_enabled | bool
+      - postal.send_limit_per_minute | default(60) | int > 0
+      - postal.send_limit_per_minute | default(60) | int <= 1000
     fail_msg: >-
-      Postal requires Dragonfly for its queue. Enable dragonfly in the
-      selected platform profile.
+      Postal requires Dragonfly and a send limit between 1 and 1000 messages
+      per minute.
   when: platform_postal_enabled | bool
+
+- name: Validate Postal sender domains
+  ansible.builtin.assert:
+    that:
+      - postal_profile_domains is sequence
+      - postal_profile_domains is not string
+      - postal_profile_domains | length > 0
+      - postal_profile_domains | unique | list | length == postal_profile_domains | length
+      - >-
+        postal_profile_domains |
+        reject('match', '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$') |
+        list | length == 0
+    fail_msg: >-
+      Postal sender domains must be a non-empty, unique list of valid DNS
+      names.
+  vars:
+    postal_profile_domains: "{{ postal.domains | default([global.domain]) }}"
+  when:
+    - platform_postal_enabled | bool
+    - postal.domains is defined or (global.domain | default('') | length > 0)
 
 - name: Validate the tracing backend selection
   ansible.builtin.assert:
