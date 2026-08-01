@@ -51,6 +51,8 @@ command -v yq >/dev/null 2>&1 || fail "yq is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 project=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
+server_name_prefix=$(yq -r '.infrastructure.server_name_prefix // .global.project // "k8s"' "$CONFIG_FILE")
+load_balancer_name="${server_name_prefix}-lb"
 profile=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 expected_nodes=$(yq -r '(.infrastructure.control_plane.count // 0) + (.infrastructure.workers.count // 0)' "$CONFIG_FILE")
 lb_required=$(yq -r '.network.load_balancer.enabled' "$CONFIG_FILE")
@@ -141,7 +143,7 @@ lb_read=false
 if [[ "$lb_required" == true ]] && command -v hcloud >/dev/null 2>&1 \
   && [[ -n "${HCLOUD_TOKEN:-}" ]]; then
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if hcloud load-balancer describe "${project}-lb" -o json \
+    if hcloud load-balancer describe "$load_balancer_name" -o json \
       >"$tmp_dir/load-balancer.json" 2>/dev/null; then
       lb_read=true
       break

@@ -8,6 +8,7 @@
   set_fact:
     project: "{{ project_name | default('k8s') }}"
     server_name_prefix: "{{ hetzner_server_name_prefix }}"
+    load_balancer_name: "{{ hetzner_server_name_prefix }}-lb"
     region: "{{ infrastructure.region | default(hetzner_region | default('hel1')) }}"
     infra_tier: "{{ tier | default('medium') }}"
     network_cidr: "{{ network.private_network.cidr | default(private_network_cidr) }}"
@@ -1345,7 +1346,7 @@
 
 - name: Check if load balancer already exists
   ansible.builtin.command:
-    cmd: hcloud load-balancer describe {{ project }}-lb -o json
+    cmd: hcloud load-balancer describe {{ load_balancer_name }} -o json
   register: lb_check
   changed_when: false
   retries: "{{ hcloud_read_retries }}"
@@ -1359,7 +1360,7 @@
 
 - name: Remove load balancer when disabled by the profile
   ansible.builtin.command:
-    cmd: hcloud load-balancer delete {{ project }}-lb
+    cmd: hcloud load-balancer delete {{ load_balancer_name }}
   when:
     - not (lb_enabled | bool)
     - lb_check.rc == 0
@@ -1368,7 +1369,7 @@
   ansible.builtin.command:
     cmd: >
       hcloud load-balancer create
-      --name {{ project }}-lb
+      --name {{ load_balancer_name }}
       --type {{ load_balancer_type }}
       --location {{ region }}
       --label project={{ project }}
@@ -1389,7 +1390,7 @@
 - name: Attach LB to private network
   ansible.builtin.command:
     cmd: >
-      hcloud load-balancer attach-to-network {{ project }}-lb
+      hcloud load-balancer attach-to-network {{ load_balancer_name }}
       --network {{ project }}-network
   register: lb_network
   changed_when: lb_network.rc == 0
@@ -1404,7 +1405,7 @@
 
 - name: Read load balancer configuration for convergence
   ansible.builtin.command:
-    cmd: hcloud load-balancer describe {{ project }}-lb -o json
+    cmd: hcloud load-balancer describe {{ load_balancer_name }} -o json
   register: lb_config
   changed_when: false
   retries: "{{ hcloud_read_retries }}"
@@ -1431,14 +1432,14 @@
       - delete-service
       - --listen-port
       - '{{ item.listen_port | string }}'
-      - '{{ project }}-lb'
+      - '{{ load_balancer_name }}'
   loop: '{{ lb_current_services | rejectattr("listen_port", "in", [80, 443]) | list }}'
   when: lb_enabled | bool
 
 - name: Add missing bootstrap LB service for HTTPS
   ansible.builtin.command:
     cmd: >-
-      hcloud load-balancer add-service {{ project }}-lb
+      hcloud load-balancer add-service {{ load_balancer_name }}
       --protocol tcp --listen-port 443 --destination-port 30443
       --health-check-protocol tcp --health-check-port 30443
   register: lb_https_create
@@ -1459,7 +1460,7 @@
 - name: Add missing bootstrap LB service for HTTP
   ansible.builtin.command:
     cmd: >-
-      hcloud load-balancer add-service {{ project }}-lb
+      hcloud load-balancer add-service {{ load_balancer_name }}
       --protocol tcp --listen-port 80 --destination-port 30080
       --health-check-protocol tcp --health-check-port 30080
   register: lb_http_create
@@ -1480,7 +1481,7 @@
 - name: Add worker servers as LB targets
   ansible.builtin.command:
     cmd: >
-      hcloud load-balancer add-target {{ project }}-lb
+      hcloud load-balancer add-target {{ load_balancer_name }}
       --server {{ server_name_prefix }}-worker-{{ item }}
       --use-private-ip
   loop: >-
@@ -1501,7 +1502,7 @@
 - name: Ensure dedicated CI workers are not LB targets
   ansible.builtin.command:
     cmd: >
-      hcloud load-balancer remove-target {{ project }}-lb
+      hcloud load-balancer remove-target {{ load_balancer_name }}
       --server {{ server_name_prefix }}-worker-{{ item }}
   loop: "{{ dedicated_ci_worker_indices }}"
   register: ci_lb_target_removal
@@ -1523,7 +1524,7 @@
 - name: Get load balancer public IP
   ansible.builtin.command:
     cmd: >
-      hcloud load-balancer describe {{ project }}-lb -o json
+      hcloud load-balancer describe {{ load_balancer_name }} -o json
   register: lb_info
   changed_when: false
   retries: "{{ hcloud_read_retries }}"
@@ -1570,19 +1571,19 @@
 
 - name: Remove undeclared server targets from load balancer
   ansible.builtin.command:
-    argv: [hcloud, load-balancer, remove-target, --server, '{{ item | string }}', '{{ project }}-lb']
+    argv: [hcloud, load-balancer, remove-target, --server, '{{ item | string }}', '{{ load_balancer_name }}']
   loop: '{{ current_lb_server_target_ids | difference(desired_lb_server_target_ids) }}'
   when: lb_enabled | bool
 
 - name: Remove undeclared IP targets from load balancer
   ansible.builtin.command:
-    argv: [hcloud, load-balancer, remove-target, --ip, '{{ item }}', '{{ project }}-lb']
+    argv: [hcloud, load-balancer, remove-target, --ip, '{{ item }}', '{{ load_balancer_name }}']
   loop: '{{ unmanaged_lb_ip_targets }}'
   when: lb_enabled | bool
 
 - name: Remove undeclared label-selector targets from load balancer
   ansible.builtin.command:
-    argv: [hcloud, load-balancer, remove-target, --label-selector, '{{ item }}', '{{ project }}-lb']
+    argv: [hcloud, load-balancer, remove-target, --label-selector, '{{ item }}', '{{ load_balancer_name }}']
   loop: '{{ unmanaged_lb_label_targets }}'
   when: lb_enabled | bool
 
