@@ -1,0 +1,29 @@
+---
+- name: Deploy or reconcile static HA egress
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - ../defaults/main.yml
+  pre_tasks:
+    - name: Validate the profile selected HA egress
+      ansible.builtin.assert:
+        that:
+          - ((network.egress | default({})).enabled | default(false)) | bool
+        fail_msg: network.egress.enabled must be true for this playbook.
+
+    - name: Load persisted infrastructure facts
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
+
+    - name: Create project-scoped SSH trust storage
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts-{{ project_name }}"
+        state: touch
+        mode: '0600'
+        access_time: preserve
+        modification_time: preserve
+
+  roles:
+    - role: ha-egress

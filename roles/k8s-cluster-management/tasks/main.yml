@@ -221,7 +221,6 @@
       {% elif i == (dedicated_docker_ci_worker_index | int) %}
             node_labels:
               workload.n0xeid.xyz/ci-docker: "true"
-              workload.n0xeid.xyz/ci-general: "true"
             node_taints:
               - "workload.n0xeid.xyz/ci-docker=true:NoSchedule"
       {% elif i == (dedicated_postal_worker_index | int) %}

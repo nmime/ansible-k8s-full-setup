@@ -48,6 +48,43 @@
 - name: Docker smoke | Establish the fail-closed network boundary
   ansible.builtin.include_tasks: docker-host-network.yml
 
+- name: Docker smoke | Bound aggregate namespace resources
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: protected-docker-smoke-budget
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        hard:
+          requests.cpu: '3'
+          requests.memory: 6Gi
+          limits.cpu: '8'
+          limits.memory: 7Gi
+          pods: '10'
+          services: '8'
+          secrets: '20'
+          configmaps: '12'
+          persistentvolumeclaims: '0'
+
+- name: Docker smoke | Bound each container
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: protected-docker-smoke-containers
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            max: {cpu: '4', memory: 4Gi}
+            defaultRequest: {cpu: 100m, memory: 128Mi}
+            default: {cpu: 500m, memory: 512Mi}
+
 - name: Docker smoke | Read the persisted Runner authentication token
   no_log: true
   kubernetes.core.k8s_info:
