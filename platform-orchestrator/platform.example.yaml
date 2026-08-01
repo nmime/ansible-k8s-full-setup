@@ -150,6 +150,9 @@ databases:
     tls_mode: preferTLS
     tls_cutover_confirmed: false
     tls_consumer_namespaces: []
+    # Optional mTLS identities issued by the MongoDB operator CA and copied to
+    # consumer namespaces. Each namespace must also be listed above.
+    tls_client_consumers: []
     version: "8.0"
     replicas: 1
     storage_size: 30Gi

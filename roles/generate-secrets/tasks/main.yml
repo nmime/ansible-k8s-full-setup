@@ -111,6 +111,59 @@
     generated_alert_email_to: "{{ lookup('env', 'ALERT_EMAIL_TO') | default(saved_secrets.alert_email_to | default('alerts@' + domain), true) }}"
   no_log: true
 
+- name: Initialize persisted Postal SMTP client credentials
+  ansible.builtin.set_fact:
+    generated_postal_smtp_credentials: >-
+      {{
+        {
+          'platform-applications': generated_postal_smtp_credential
+        } | combine(saved_secrets.postal_smtp_credentials | default({}))
+      }}
+  no_log: true
+
+- name: Generate missing Postal SMTP client credentials
+  ansible.builtin.set_fact:
+    generated_postal_smtp_credentials: >-
+      {{
+        generated_postal_smtp_credentials | combine({
+          item: (
+            generated_postal_smtp_credentials[item]
+            if item in generated_postal_smtp_credentials
+            else lookup('password', '/dev/null chars=ascii_letters,digits length=32')
+          )
+        })
+      }}
+  loop: "{{ postal_smtp_client_names | default(['platform-applications']) }}"
+  no_log: true
+
+- name: Validate an explicitly requested Postal SMTP credential rotation
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | length > 0
+      - lookup('env', 'POSTAL_SMTP_ROTATE_CREDENTIAL') | length >= 24
+      - lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') in postal_smtp_client_names
+    fail_msg: >-
+      POSTAL_SMTP_ROTATE_CLIENT and a credential of at least 24 characters
+      must be supplied together, and the client must be managed by this
+      profile.
+    quiet: true
+  when: >-
+    lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | length > 0 or
+    lookup('env', 'POSTAL_SMTP_ROTATE_CREDENTIAL') | length > 0
+  no_log: true
+
+- name: Apply an explicitly requested Postal SMTP credential rotation
+  ansible.builtin.set_fact:
+    generated_postal_smtp_credentials: >-
+      {{
+        generated_postal_smtp_credentials | combine({
+          lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT'):
+            lookup('env', 'POSTAL_SMTP_ROTATE_CREDENTIAL')
+        })
+      }}
+  when: lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | length > 0
+  no_log: true
+
 - name: Resolve GitLab Runner authentication token
   ansible.builtin.set_fact:
     generated_gitlab_runner_token: >-
@@ -225,6 +278,13 @@
     postal_rails_secret: "{{ generated_postal_rails_secret }}"
     postal_admin_password: "{{ generated_postal_admin_password }}"
     postal_smtp_credential: "{{ generated_postal_smtp_credential }}"
+    postal_smtp_credentials: "{{ generated_postal_smtp_credentials }}"
+    postal_smtp_auth_username: >-
+      {{
+        (postal.organization_permalink | default(project_name | default('platform')))
+        ~ '/'
+        ~ (postal.server_permalink | default('transactional'))
+      }}
     postal_signing_key: "{{ generated_postal_signing_key }}"
     gitlab_runner_token: "{{ generated_gitlab_runner_token }}"
     gitlab_image_builder_runner_token: >-
@@ -274,6 +334,7 @@
       postal_rails_secret: "{{ postal_rails_secret }}"
       postal_admin_password: "{{ postal_admin_password }}"
       postal_smtp_credential: "{{ postal_smtp_credential }}"
+      postal_smtp_credentials: {{ postal_smtp_credentials | to_json }}
       postal_signing_key: {{ postal_signing_key | to_json }}
       gitlab_runner_token: "{{ gitlab_runner_token }}"
       gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"
@@ -328,6 +389,7 @@
           postal_rails_secret: "{{ postal_rails_secret }}"
           postal_admin_password: "{{ postal_admin_password }}"
           postal_smtp_credential: "{{ postal_smtp_credential }}"
+          postal_smtp_credentials: {{ postal_smtp_credentials | to_json }}
           postal_signing_key: {{ postal_signing_key | to_json }}
           gitlab_runner_token: "{{ gitlab_runner_token }}"
           gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"

@@ -3185,6 +3185,7 @@ def test_deployment_fails_before_provisioning_without_external_dr_contract():
     assert "Fail early when external disaster-recovery storage is incomplete" in content
     assert "BACKUP_DR_ACCESS_KEY/BACKUP_DR_SECRET_KEY before provisioning" in content
     assert "backup_dr_enabled | bool" in content
+    assert "intersect(['backup', 'disaster-recovery', 'velero-bootstrap'])" in content
 
 
 def test_project_env_dr_location_is_used_as_blank_profile_fallback_without_secret_argv():

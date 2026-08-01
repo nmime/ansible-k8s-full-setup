@@ -4,6 +4,7 @@ postal_version: "3.3.7"
 postal_image: "ghcr.io/postalserver/postal"
 postal_web_hostname: "mail.{{ domain }}"
 postal_smtp_hostname: "smtp.{{ domain }}"
+postal_submission_hostname: "submission.{{ domain }}"
 postal_helo_hostname: "mailout.{{ domain }}"
 postal_track_domain: "track.{{ domain }}"
 postal_spf_domain: "spf.{{ domain }}"
@@ -39,6 +40,34 @@ postal_smtp_load_balancer_name: "{{ postal.smtp_load_balancer_name | default((pr
 postal_shared_load_balancer_name: "{{ postal.shared_load_balancer_name | default((project | default(project_name | default('k8s'))) + '-lb') }}"
 postal_smtp_public_ipv4: "{{ postal.smtp_public_ipv4 | default(lb_ip | default('')) }}"
 postal_smtp_credential_enabled: "{{ postal.smtp_credential_enabled | default(false) }}"
+postal_smtp_client_names: >-
+  {{
+    postal.smtp_clients | default([
+      'platform-applications',
+      'alertmanager',
+      'argocd',
+      'gitlab',
+      'grafana',
+      'metabase',
+      'fun-uno-preproduction',
+      'fun-durak-preproduction',
+      'fun-uno-production',
+      'fun-durak-production'
+    ])
+  }}
+postal_smtp_client_namespaces: >-
+  {{
+    postal.smtp_client_namespaces | default([
+      'analytics',
+      'argocd',
+      'gitlab',
+      'monitoring',
+      'umami',
+      'glitchtip',
+      'fun-games-production',
+      'fun-games-preproduction'
+    ])
+  }}
 postal_worker_index: "{{ postal.worker_index | default(0) | int }}"
 postal_mail_node_label: "workload.n0xeid.xyz/mail"
 

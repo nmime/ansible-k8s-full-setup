@@ -39,7 +39,7 @@ def test_only_application_replicated_claims_use_local_ssd():
         "postgresql/data",
     }
     assert estimate["local_reserved_gib"] == 300
-    assert estimate["provider_persistent_gib"] == 240
+    assert estimate["provider_persistent_gib"] == 250
     assert estimate["provider_backup_scratch_gib"] == 0
     assert all(
         claim["storage_class"] == "hcloud-volumes"

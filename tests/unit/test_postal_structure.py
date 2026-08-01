@@ -30,10 +30,15 @@ def test_postal_application_containers_are_restricted() -> None:
 
 def test_postal_smtp_uses_an_unprivileged_container_port() -> None:
     content = TASKS.read_text()
+    defaults = DEFAULTS.read_text()
 
     assert "default_port: 2525" in content
     assert "containerPort: 2525" in content
     assert content.count("targetPort: 2525") == 2
+    assert "postal-allow-cluster-submission" in content
+    assert "postal_smtp_client_namespaces" in defaults
+    assert 'postal_submission_hostname: "submission.{{ domain }}"' in defaults
+    assert "kubernetes.io/metadata.name" in content
 
 
 def test_postal_storage_growth_preserves_the_mariadb_claim() -> None:
@@ -74,7 +79,10 @@ def test_postal_bootstraps_multiple_domains_without_rotating_credentials() -> No
     assert "POSTAL_INBOUND_ACCEPT_LOCAL_PARTS_B64" in content
     assert "server.domains.find_or_initialize_by(name: name)" in content
     assert "record.verification_method = \"DNS\"" in content
-    assert "Persisted Postal SMTP credential differs; refusing implicit rotation" in content
+    assert "postal_smtp_client_names" in defaults
+    assert "POSTAL_SMTP_CREDENTIALS_B64" in content
+    assert "credentials.each do |name, desired_key|" in content
+    assert "differs; refusing implicit rotation" in content
     assert "postal-dns-requirements" in content
     assert "v=DMARC1; p=none; adkim=r; aspf=r; pct=100; rua=mailto:dmarc-reports@" in content
     assert "Require Postal to accept every sender-domain DNS configuration" in content
@@ -94,6 +102,8 @@ def test_postal_persists_required_signing_and_bootstrap_secrets() -> None:
     assert "generated_postal_signing_key" in secrets
     assert "postal_signing_key: {{ postal_signing_key | to_json }}" in secrets
     assert "generated_postal_smtp_credential" in secrets
+    assert "generated_postal_smtp_credentials" in secrets
+    assert "postal_smtp_credentials: {{ postal_smtp_credentials | to_json }}" in secrets
     assert "argv: [openssl, rsa, -check, -noout]" in tasks
 
 
@@ -102,6 +112,9 @@ def test_postal_components_have_health_and_spread_guards() -> None:
     defaults = DEFAULTS.read_text()
 
     assert "topologySpreadConstraints:" in content
+    assert "'DoNotSchedule' if item.replicas | int > 1 else 'ScheduleAnyway'" in content
+    assert "maxSurge: 0" in content
+    assert 'maxUnavailable: "{{ 1 if item.replicas | int > 1 else 0 }}"' in content
     assert "postal_mail_node_label" in defaults
     assert "workload.n0xeid.xyz/mail" in defaults
     assert "{postal_mail_node_label: 'true'}" in content
