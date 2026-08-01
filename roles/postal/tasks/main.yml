@@ -36,6 +36,11 @@
       - postal_message_retention_days | int >= 1
       - postal_raw_message_retention_days | int >= 0
       - postal_smtp_tls_enabled | bool
+      - postal_smtp_client_names is sequence
+      - postal_smtp_client_names is not string
+      - postal_smtp_client_names | length > 0
+      - postal_smtp_client_names | unique | list | length == postal_smtp_client_names | length
+      - postal_smtp_client_names | difference(postal_smtp_credentials.keys() | list) | length == 0
       - postal_worker_index | int >= 0
       - postal_worker_index | int <= worker_count | int
       - postal_smtp_public_ipv4 is match('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')
@@ -54,6 +59,17 @@
   loop: "{{ postal_domains }}"
   loop_control:
     label: "{{ item }}"
+
+- name: Validate each Postal SMTP client identity
+  ansible.builtin.assert:
+    that:
+      - item is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$')
+      - postal_smtp_credentials[item] | string | length >= 24
+    fail_msg: "Invalid or missing persisted Postal SMTP credential for {{ item }}"
+  loop: "{{ postal_smtp_client_names }}"
+  loop_control:
+    label: "{{ item }}"
+  no_log: true
 
 - name: Resolve the direct-delivery HELO address and reverse DNS
   ansible.builtin.shell: |
@@ -122,6 +138,32 @@
           - from:
               - ipBlock:
                   cidr: 0.0.0.0/0
+            ports:
+              - protocol: TCP
+                port: 2525
+
+- name: Allow authenticated cluster clients to reach Postal submission
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postal-allow-cluster-submission
+        namespace: "{{ p_ns }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app: postal
+            component: smtp
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchExpressions:
+                    - key: kubernetes.io/metadata.name
+                      operator: In
+                      values: "{{ postal_smtp_client_namespaces }}"
             ports:
               - protocol: TCP
                 port: 2525
@@ -874,13 +916,24 @@
           end
 
           if ENV.fetch("POSTAL_SMTP_CREDENTIAL_ENABLED") == "enabled"
-            credential = server.credentials.find_or_initialize_by(type: "SMTP", name: "platform-applications")
-            desired_key = ENV.fetch("POSTAL_SMTP_CREDENTIAL")
-            if credential.new_record?
-              credential.save!
-              credential.update_column(:key, desired_key)
-            elsif credential.key != desired_key
-              raise "Persisted Postal SMTP credential differs; refusing implicit rotation"
+            credentials = JSON.parse(Base64.strict_decode64(ENV.fetch("POSTAL_SMTP_CREDENTIALS_B64")))
+            rotate_client = ENV.fetch("POSTAL_SMTP_ROTATE_CLIENT", "")
+            unless credentials.is_a?(Hash) && credentials.any?
+              raise "POSTAL_SMTP_CREDENTIALS_B64 must decode to a non-empty object"
+            end
+
+            credentials.each do |name, desired_key|
+              credential = server.credentials.find_or_initialize_by(type: "SMTP", name: name)
+              if credential.new_record?
+                credential.save!
+                credential.update_column(:key, desired_key)
+              elsif credential.key != desired_key
+                if name == rotate_client
+                  credential.update_column(:key, desired_key)
+                else
+                  raise "Persisted Postal SMTP credential #{name} differs; refusing implicit rotation"
+                end
+              end
             end
           end
 
@@ -897,7 +950,7 @@
       type: Opaque
       stringData:
         admin-password: "{{ postal_admin_password }}"
-        smtp-credential: "{{ postal_smtp_credential }}"
+        smtp-credentials.json: "{{ postal_smtp_credentials | to_json }}"
 
 - name: Remove the previous Postal bootstrap job
   kubernetes.core.k8s:
@@ -978,11 +1031,10 @@
                     value: "{{ postal_raw_message_retention_size }}i"
                   - name: POSTAL_SMTP_CREDENTIAL_ENABLED
                     value: "{{ 'enabled' if postal_smtp_credential_enabled | bool else 'disabled' }}"
-                  - name: POSTAL_SMTP_CREDENTIAL
-                    valueFrom:
-                      secretKeyRef:
-                        name: postal-bootstrap-credentials
-                        key: smtp-credential
+                  - name: POSTAL_SMTP_CREDENTIALS_B64
+                    value: "{{ postal_smtp_credentials | to_json | b64encode }}"
+                  - name: POSTAL_SMTP_ROTATE_CLIENT
+                    value: "{{ lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | default('', true) }}"
                 volumeMounts:
                   - name: config
                     mountPath: /config/postal.yml
@@ -1029,6 +1081,14 @@
           component: "{{ item.name }}"
       spec:
         replicas: "{{ item.replicas | int }}"
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            # Remove one old replica before scheduling its replacement. This
+            # preserves the preferred dedicated-mail placement during updates
+            # instead of letting surge pods permanently displace it.
+            maxSurge: 0
+            maxUnavailable: "{{ 1 if item.replicas | int > 1 else 0 }}"
         selector:
           matchLabels:
             app: postal
@@ -1090,7 +1150,8 @@
             topologySpreadConstraints:
               - maxSkew: 1
                 topologyKey: kubernetes.io/hostname
-                whenUnsatisfiable: ScheduleAnyway
+                whenUnsatisfiable: >-
+                  {{ 'DoNotSchedule' if item.replicas | int > 1 else 'ScheduleAnyway' }}
                 labelSelector:
                   matchLabels:
                     app: postal

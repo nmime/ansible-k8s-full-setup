@@ -46,7 +46,7 @@ glitchtip_enable_organization_creation: false
 # Email (reuses Postal if deployed)
 glitchtip_email_backend: "smtp"
 glitchtip_default_from_email: "glitchtip@{{ domain }}"
-glitchtip_smtp_host: "postal-smtp.postal.svc.cluster.local"
+glitchtip_smtp_host: "{{ postal_submission_hostname }}"
 glitchtip_smtp_port: 25
 glitchtip_smtp_user: ""
 glitchtip_smtp_password: ""

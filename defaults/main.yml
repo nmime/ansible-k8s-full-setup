@@ -369,6 +369,7 @@ es_cluster_name: "platform-es"
 # Postal
 # renovate: datasource=github-releases depName=postalserver/postal
 postal_version: "3.3.7"
+postal_submission_hostname: "submission.{{ domain }}"
 
 # Blackbox exporter
 blackbox_chart_version: "11.15.1"

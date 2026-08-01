@@ -395,9 +395,14 @@ class TestMediumOptimizedContract:
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
-        assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
-        assert self.profile["infrastructure"]["workers"]["count"] == 5
-        assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
+        assert self.profile["infrastructure"]["control_plane"]["type"] == "cx33"
+        assert self.profile["infrastructure"]["workers"]["count"] == 6
+        assert self.profile["infrastructure"]["workers"]["type"] == "cx43"
+        assert self.profile["infrastructure"]["workers"]["type_overrides"] == {
+            4: "cpx32",
+            5: "cpx42",
+            6: "cx33",
+        }
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][
