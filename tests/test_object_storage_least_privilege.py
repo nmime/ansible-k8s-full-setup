@@ -116,6 +116,11 @@ def test_storage_default_deny_is_enabled_with_explicit_callers():
     assert "app.kubernetes.io/component: filer" in agents_policy
     assert "kubernetes.io/metadata.name: agents" in agents_policy
     assert "port: 8333" in agents_policy
+    assert "name: allow-agents-seaweedfs-s3" in agents_policy
+    assert "toEntities: [host]" in agents_policy
+    assert "toCIDR: [169.254.25.10/32]" in agents_policy
+    assert "serviceName: seaweedfs-s3" in agents_policy
+    assert "k8s:app.kubernetes.io/component: filer" in agents_policy
 
 
 def test_backup_verification_reaches_only_the_s3_gateway():
