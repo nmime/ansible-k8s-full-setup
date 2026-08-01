@@ -85,6 +85,9 @@
     gateway_extra_certificate_refs: >-
       {{ (kubernetes.gateway | default({})).extra_certificate_refs |
          default(gateway_extra_certificate_refs) }}
+    gateway_extra_certificates: >-
+      {{ (kubernetes.gateway | default({})).extra_certificates |
+         default(gateway_extra_certificates) }}
     gateway_https_hostname: >-
       {{ (kubernetes.gateway | default({})).https_hostname |
          default(gateway_https_hostname) }}
