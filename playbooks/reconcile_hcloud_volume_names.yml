@@ -1,0 +1,36 @@
+---
+- name: Reconcile semantic Hetzner CSI volume names
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    volume_name_prefix: "{{ global.project | default(project_name | default('k8s')) }}"
+    provider_volume_name_map: "{{ storage.provider_volume_names | default({}) }}"
+  pre_tasks:
+    - name: Validate provider volume naming inputs
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'HCLOUD_TOKEN') | length > 0
+          - lookup('env', 'KUBECONFIG') | length > 0
+          - provider_volume_name_map is mapping
+          - provider_volume_name_map | length > 0
+          - volume_name_prefix is match('^[a-z0-9][a-z0-9-]*[a-z0-9]$')
+        fail_msg: >-
+          HCLOUD_TOKEN, KUBECONFIG, a safe volume_name_prefix and
+          storage.provider_volume_names are required.
+      no_log: true
+
+  tasks:
+    - name: Read Kubernetes persistent volumes
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolume
+      register: provider_volume_pvs
+
+    - name: Reconcile every configured provider volume display name
+      ansible.builtin.include_tasks: tasks/reconcile_hcloud_volume_name.yml
+      loop: "{{ provider_volume_name_map | dict2items }}"
+      loop_control:
+        loop_var: provider_volume_claim
+        label: "{{ provider_volume_claim.key }} -> {{ volume_name_prefix }}-{{ provider_volume_claim.value }}"

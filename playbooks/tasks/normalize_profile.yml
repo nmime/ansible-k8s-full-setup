@@ -448,6 +448,30 @@
       Cilium, Gateway API, Hubble, Kubernetes secret encryption, and network
       policies. These are foundations rather than optional platform services.
 
+- name: Validate the optional static HA egress contract
+  ansible.builtin.assert:
+    that:
+      - (network.egress.standby_location | default('fsn1')) in ['hel1', 'fsn1', 'nbg1']
+      - (network.egress.floating_ip_home_location | default(infrastructure.region)) in ['hel1', 'fsn1', 'nbg1']
+      - network.egress.standby_private_ip | default('10.0.2.12') is match('^10\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - network.egress.standby_server_type | default('cpx22') | length > 0
+      - network.egress.failure_threshold | default(3) | int >= 2
+      - network.egress.watchdog_interval_seconds | default(10) | int >= 5
+      - network.egress.health_timeout_seconds | default(4) | int >= 2
+      - network.egress.promotion_timeout_seconds | default(90) | int >= 45
+      - network.egress.promotion_timeout_seconds | default(90) | int <= 180
+      - >-
+        network.egress.health_timeout_seconds | default(4) | int <
+        network.egress.watchdog_interval_seconds | default(10) | int
+      - >-
+        not (network.egress.manage_mail_dns | default(false) | bool) or
+        network.egress.activate | default(false) | bool
+    fail_msg: >-
+      network.egress must use a valid eu-central standby, a stable RFC1918
+      address, bounded health timings, and may manage mail DNS only during
+      activation.
+  when: network.egress.enabled | default(false) | bool
+
 - name: Validate parent and bundled component selections
   ansible.builtin.assert:
     that:

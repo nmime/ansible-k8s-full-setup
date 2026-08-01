@@ -25,6 +25,22 @@
           - '!env'
       tags: [always]
 
+    - name: Normalize the platform identity from the profile
+      ansible.builtin.set_fact:
+        project_name: >-
+          {{ (global | default({})).project |
+             default(project_name, true) }}
+        domain: >-
+          {{ (global | default({})).domain |
+             default(domain | default(''), true) }}
+        email: >-
+          {{ (global | default({})).email |
+             default(email | default(''), true) }}
+        platform_secrets_file: >-
+          {{ (secrets | default({})).file |
+             default(platform_secrets_file | default(''), true) }}
+      tags: [always]
+
     - name: Check for persisted infrastructure facts
       ansible.builtin.stat:
         path: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
@@ -195,6 +211,12 @@
       ansible.builtin.import_role:
         name: network-security
       tags: [network, security]
+
+    - name: Deploy static HA egress gateways
+      ansible.builtin.import_role:
+        name: ha-egress
+      when: ((network.egress | default({})).enabled | default(false)) | bool
+      tags: [egress, network, infrastructure]
 
     - name: Deploy Kubernetes Cluster
       ansible.builtin.import_role:

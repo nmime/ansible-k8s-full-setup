@@ -1,0 +1,157 @@
+---
+- name: Read the monitoring namespace
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ ha_egress_monitoring_namespace }}"
+  register: ha_egress_monitoring_namespace_readback
+
+- name: Read VictoriaMetrics monitoring CRDs
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+  loop:
+    - vmservicescrapes.operator.victoriametrics.com
+    - vmrules.operator.victoriametrics.com
+  register: ha_egress_monitoring_crds
+
+- name: Require an installed VictoriaMetrics monitoring plane
+  ansible.builtin.assert:
+    that:
+      - ha_egress_monitoring_namespace_readback.resources | length == 1
+      - >-
+        ha_egress_monitoring_crds.results |
+        map(attribute='resources') | map('length') | min == 1
+    fail_msg: >-
+      network.egress.monitoring_enabled requires the monitoring namespace and
+      VictoriaMetrics VMServiceScrape/VMRule CRDs to exist.
+
+- name: Publish both HA egress gateways as scrape endpoints
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: discovery.k8s.io/v1
+      kind: EndpointSlice
+      metadata:
+        name: ha-egress-health
+        namespace: "{{ ha_egress_monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+          kubernetes.io/service-name: ha-egress-health
+      addressType: IPv4
+      endpoints:
+        - addresses: ["{{ ha_egress_active_private_ip }}"]
+          conditions: {ready: true}
+          hostname: "{{ ha_egress_active_name }}"
+        - addresses: ["{{ ha_egress_private_ip }}"]
+          conditions: {ready: true}
+          hostname: "{{ ha_egress_server_name }}"
+      ports:
+        - name: metrics
+          port: "{{ ha_egress_health_port | int }}"
+          protocol: TCP
+
+- name: Allow only VictoriaMetrics to scrape the private gateways
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-vmagent-to-ha-egress
+        namespace: "{{ ha_egress_monitoring_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: vmagent
+            app.kubernetes.io/instance: vmagent
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - ipBlock:
+                  cidr: "{{ ha_egress_active_private_ip }}/32"
+              - ipBlock:
+                  cidr: "{{ ha_egress_private_ip }}/32"
+            ports:
+              - protocol: TCP
+                port: "{{ ha_egress_health_port | int }}"
+
+- name: Publish the HA egress headless metrics service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ha-egress-health
+        namespace: "{{ ha_egress_monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+      spec:
+        clusterIP: None
+        ports:
+          - name: metrics
+            port: "{{ ha_egress_health_port | int }}"
+            protocol: TCP
+
+- name: Scrape both HA egress gateways every fifteen seconds
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMServiceScrape
+      metadata:
+        name: ha-egress-health
+        namespace: "{{ ha_egress_monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+      spec:
+        discoveryRole: endpointslices
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: ha-egress-health
+            app.kubernetes.io/component: network-egress
+        endpoints:
+          - port: metrics
+            path: /metrics
+            interval: 15s
+            scrapeTimeout: 8s
+
+- name: Alert on lost redundancy or invalid Floating-IP ownership
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: ha-egress-alerts
+        namespace: "{{ ha_egress_monitoring_namespace }}"
+        labels:
+          app.kubernetes.io/name: ha-egress-health
+          app.kubernetes.io/component: network-egress
+      spec:
+        groups:
+          - name: ha-egress
+            rules:
+              - alert: HAEgressGatewayNotReady
+                expr: count(n0xeid_egress_ready == 1) != 2
+                for: 2m
+                labels: {severity: critical}
+                annotations:
+                  summary: Fewer than two HA egress gateways are ready
+              - alert: HAEgressActiveGatewayCountInvalid
+                expr: sum(n0xeid_egress_active) != 1
+                for: 1m
+                labels: {severity: critical}
+                annotations:
+                  summary: HA egress must have exactly one active Floating-IP owner
+              - alert: HAEgressGatewayFlapping
+                expr: changes(n0xeid_egress_active[10m]) > 2
+                for: 1m
+                labels: {severity: warning}
+                annotations:
+                  summary: HA egress ownership is flapping
