@@ -218,9 +218,10 @@ class TestChart10ValuesStructure:
         assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
         assert values["metrics"] == {"enabled": True}
         assert values["serviceAccount"] == {"create": True}
-        assert "workload.n0xeid.xyz/ci-build" in values["nodeSelector"]
+        assert "workload.n0xeid.xyz/ci-general" in values["nodeSelector"]
         assert "gitlab_runner_worker_index" in values["nodeSelector"]
         assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
+        assert "workload.n0xeid.xyz/ci-docker" in values["tolerations"]
         assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
             "request_concurrency = {{ gitlab_runner_concurrent | int }}"
@@ -423,14 +424,11 @@ class TestChart10ValuesStructure:
         assert 'cap_drop = ["ALL"]' in install
         assert "automount_service_account_token = false" in install
         assert (
-            'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
+            'node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }'
             in install
         )
-        assert (
-            'node_tolerations = { '
-            '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }'
-            in install
-        )
+        assert '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule"' in install
+        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' in install
         assert 'environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]' in install
         for resource_setting in (
             "gitlab_runner_job_resources.cpu_request",

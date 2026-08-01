@@ -136,6 +136,8 @@ k8s_create_external_tls: true
 gateway_extra_certificate_refs: []
 gateway_https_hostname: ""
 gateway_extra_https_listeners: []
+gateway_http_allowed_routes: {namespaces: {from: All}}
+gateway_https_allowed_routes: {namespaces: {from: All}}
 object_storage_create_external_routes: true
 object_storage_enabled: true
 

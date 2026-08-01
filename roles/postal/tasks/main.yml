@@ -11,7 +11,80 @@
     p_db_password: "{{ postal_db_password }}"
     p_rails_secret: "{{ postal_rails_secret }}"
     p_queue_password: "{{ dragonfly_password }}"
+    p_signing_key: "{{ postal_signing_key | regex_replace('(?m)^[ \\t]+', '') | regex_replace('(?m)[ \\t]+$', '') }}"
   no_log: true
+
+- name: Validate the persisted Postal RSA signing key
+  no_log: true
+  ansible.builtin.command:
+    # `openssl pkey -check` is unavailable in the controller's LibreSSL, while
+    # `openssl rsa -check` validates both PKCS#1 and unencrypted PKCS#8 RSA keys.
+    argv: [openssl, rsa, -check, -noout]
+    stdin: "{{ p_signing_key }}"
+  changed_when: false
+
+- name: Validate Postal multi-domain and delivery settings
+  ansible.builtin.assert:
+    that:
+      - postal_domains is sequence
+      - postal_domains is not string
+      - postal_domains | length > 0
+      - postal_domains | unique | list | length == postal_domains | length
+      - postal_admin_email is match('^[^@\\s]+@[^@\\s]+$')
+      - postal_send_limit_per_minute | int > 0
+      - postal_send_limit_per_minute | int <= 1000
+      - postal_message_retention_days | int >= 1
+      - postal_raw_message_retention_days | int >= 0
+      - postal_smtp_tls_enabled | bool
+      - postal_worker_index | int >= 0
+      - postal_worker_index | int <= worker_count | int
+      - postal_smtp_public_ipv4 is match('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - not (postal_direct_delivery_enabled | bool) or postal_outbound_ipv4 is match('^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')
+    fail_msg: >-
+      Postal requires a unique non-empty domain list, a valid admin address,
+      bounded retention/rate limits, SMTP TLS, and an explicit outbound IPv4
+      address for direct delivery.
+
+- name: Validate each Postal sender domain
+  ansible.builtin.assert:
+    that:
+      - item == item | lower
+      - item is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$')
+    fail_msg: "Invalid Postal sender domain: {{ item }}"
+  loop: "{{ postal_domains }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Resolve the direct-delivery HELO address and reverse DNS
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for resolver in 1.1.1.1 8.8.8.8; do
+      dig +short @"$resolver" A {{ postal_helo_hostname | quote }} |
+        grep -Fqx {{ postal_outbound_ipv4 | quote }}
+      ptr=$(dig +short @"$resolver" -x {{ postal_outbound_ipv4 | quote }} |
+        sed 's/\.$//' | tr '[:upper:]' '[:lower:]')
+      test "$ptr" = {{ postal_helo_hostname | lower | quote }}
+    done
+  args:
+    executable: /bin/bash
+  register: postal_direct_dns
+  changed_when: false
+  failed_when: false
+  when:
+    - postal_direct_delivery_enabled | bool
+    - postal_require_ptr_alignment | bool
+
+- name: Require forward-confirmed reverse DNS for direct delivery
+  ansible.builtin.assert:
+    that:
+      - postal_direct_dns.rc == 0
+    fail_msg: >-
+      Direct mail delivery requires {{ postal_helo_hostname }} to resolve to
+      {{ postal_outbound_ipv4 }} and the IPv4 PTR to resolve back to the same
+      HELO hostname. Publish the A record and set Hetzner reverse DNS first.
+  when:
+    - postal_direct_delivery_enabled | bool
+    - postal_require_ptr_alignment | bool
 
 - name: Create Postal namespace
   kubernetes.core.k8s:
@@ -24,10 +97,399 @@
         labels:
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
+          gateway.n0xeid.xyz/n0xeid-route: "true"
   register: _r_postal_ns
   retries: 3
   delay: 10
   until: _r_postal_ns is not failed
+
+- name: Allow public SMTP traffic only to Postal SMTP pods
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postal-allow-public-smtp
+        namespace: "{{ p_ns }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app: postal
+            component: smtp
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - ipBlock:
+                  cidr: 0.0.0.0/0
+            ports:
+              - protocol: TCP
+                port: 2525
+
+- name: Remove the obsolete Postal admin-Gateway policy name
+  kubernetes.core.k8s:
+    state: absent
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    name: postal-allow-admin-gateway
+    namespace: "{{ p_ns }}"
+
+- name: Allow the public Cilium Gateway to reach Postal web pods
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postal-allow-web-gateway
+        namespace: "{{ p_ns }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app: postal
+            component: web
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: cilium-system
+            ports:
+              - protocol: TCP
+                port: 5000
+
+- name: Remove the previous Postal outbound-port preflight
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    name: postal-outbound-port-preflight
+    namespace: "{{ p_ns }}"
+    wait: true
+  when: postal_direct_delivery_enabled | bool
+
+- name: Prove direct SMTP delivery is permitted from the cluster egress
+  kubernetes.core.k8s:
+    state: present
+    wait: true
+    wait_timeout: 120
+    wait_condition:
+      type: Complete
+      status: 'True'
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-outbound-port-preflight
+        namespace: "{{ p_ns }}"
+      spec:
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 3600
+        activeDeadlineSeconds: "{{ (postal_port25_probe_timeout_seconds | int) + 30 }}"
+        template:
+          metadata:
+            labels:
+              app: postal-outbound-port-preflight
+          spec:
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 999
+              runAsGroup: 999
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: smtp-probe
+                image: "{{ p_img }}"
+                command: [ruby]
+                args:
+                  - -rsocket
+                  - -rtimeout
+                  - -e
+                  - >-
+                    Timeout.timeout(Integer(ENV.fetch("PROBE_TIMEOUT").delete_suffix("s"))) do;
+                    socket = TCPSocket.new(ENV.fetch("PROBE_HOST"), 25);
+                    banner = socket.gets;
+                    raise "SMTP banner missing" unless banner&.start_with?("220");
+                    socket.close;
+                    end
+                env:
+                  - name: PROBE_HOST
+                    value: "{{ postal_port25_probe_host }}"
+                  - name: PROBE_TIMEOUT
+                    value: "{{ postal_port25_probe_timeout_seconds }}s"
+                resources:
+                  requests: {cpu: 10m, memory: 32Mi}
+                  limits: {cpu: 100m, memory: 128Mi}
+                securityContext:
+                  # The upstream image applies cap_net_bind_service to Ruby.
+                  # no_new_privs rejects executing that binary with EPERM.
+                  allowPrivilegeEscalation: true
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop: [ALL]
+                    add: [NET_BIND_SERVICE]
+  when: postal_direct_delivery_enabled | bool
+
+- name: Remove the dedicated SMTP certificate when the platform wildcard is authoritative
+  kubernetes.core.k8s:
+    state: absent
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: postal-smtp
+    namespace: "{{ p_ns }}"
+    wait: true
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Read the ready platform wildcard certificate
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ postal_smtp_tls_source_secret }}"
+    namespace: "{{ postal_smtp_tls_source_namespace }}"
+  register: p_smtp_source_certificate
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Validate that the platform wildcard covers the SMTP hostname
+  ansible.builtin.assert:
+    that:
+      - p_smtp_source_certificate.resources | default([]) | length == 1
+      - >-
+        p_smtp_source_certificate.resources[0].status.conditions | default([])
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length == 1
+      - >-
+        ('*.' + (p_smtp_host.split('.', 1)[1]))
+        in (p_smtp_source_certificate.resources[0].spec.dnsNames | default([]))
+    fail_msg: >-
+      The ready platform wildcard certificate does not cover {{ p_smtp_host }}.
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Read the platform wildcard TLS secret
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ postal_smtp_tls_source_secret }}"
+    namespace: "{{ postal_smtp_tls_source_namespace }}"
+  register: p_smtp_source_secret
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Seed Postal SMTP TLS from the platform wildcard
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ postal_smtp_tls_secret }}"
+        namespace: "{{ p_ns }}"
+        labels:
+          app.kubernetes.io/name: postal
+          app.kubernetes.io/component: smtp-tls
+          app.kubernetes.io/managed-by: ansible
+      type: kubernetes.io/tls
+      data:
+        tls.crt: "{{ p_smtp_source_secret.resources[0].data['tls.crt'] }}"
+        tls.key: "{{ p_smtp_source_secret.resources[0].data['tls.key'] }}"
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Permit the Postal TLS sync account to read the platform wildcard
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: postal-tls-sync
+        namespace: "{{ p_ns }}"
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: postal-tls-sync-read
+        namespace: "{{ postal_smtp_tls_source_namespace }}"
+      rules:
+        - apiGroups: ['']
+          resources: [secrets]
+          resourceNames: ["{{ postal_smtp_tls_source_secret }}"]
+          verbs: [get]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: postal-tls-sync-read
+        namespace: "{{ postal_smtp_tls_source_namespace }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: postal-tls-sync-read
+      subjects:
+        - kind: ServiceAccount
+          name: postal-tls-sync
+          namespace: "{{ p_ns }}"
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: postal-tls-sync-write
+        namespace: "{{ p_ns }}"
+      rules:
+        - apiGroups: ['']
+          resources: [secrets]
+          resourceNames: ["{{ postal_smtp_tls_secret }}"]
+          verbs: [get, create, patch, update]
+        - apiGroups: [apps]
+          resources: [deployments]
+          resourceNames: [postal-smtp]
+          verbs: [get, patch]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: postal-tls-sync-write
+        namespace: "{{ p_ns }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: postal-tls-sync-write
+      subjects:
+        - kind: ServiceAccount
+          name: postal-tls-sync
+          namespace: "{{ p_ns }}"
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Allow the Postal TLS sync job to reach the Kubernetes API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: postal-tls-sync-kube-api
+        namespace: "{{ p_ns }}"
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: postal-tls-sync
+        egress:
+          - toEntities:
+              - kube-apiserver
+            toPorts:
+              - ports:
+                  - port: '443'
+                    protocol: TCP
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Keep Postal SMTP TLS synchronized after wildcard renewal
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: postal-tls-sync
+        namespace: "{{ p_ns }}"
+      spec:
+        schedule: '17 * * * *'
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 2
+        jobTemplate:
+          spec:
+            ttlSecondsAfterFinished: 3600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: postal-tls-sync
+              spec:
+                serviceAccountName: postal-tls-sync
+                automountServiceAccountToken: true
+                restartPolicy: OnFailure
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1001
+                  runAsGroup: 1001
+                  fsGroup: 1001
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: sync
+                    image: "{{ postal_smtp_tls_sync_image }}"
+                    imagePullPolicy: IfNotPresent
+                    command: [/bin/sh, -ec]
+                    args:
+                      - |
+                        umask 077
+                        kubectl -n "$SOURCE_NAMESPACE" get secret "$SOURCE_SECRET" -o jsonpath='{.data.tls\.crt}' | base64 -d > /work/tls.crt
+                        kubectl -n "$SOURCE_NAMESPACE" get secret "$SOURCE_SECRET" -o jsonpath='{.data.tls\.key}' | base64 -d > /work/tls.key
+                        test -s /work/tls.crt && test -s /work/tls.key
+                        source_sum=$(sha256sum /work/tls.crt | cut -d' ' -f1)
+                        target_sum=$(kubectl -n "$TARGET_NAMESPACE" get secret "$TARGET_SECRET" -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d | sha256sum | cut -d' ' -f1 || true)
+                        if [ "$source_sum" != "$target_sum" ]; then
+                          kubectl -n "$TARGET_NAMESPACE" create secret tls "$TARGET_SECRET" --cert=/work/tls.crt --key=/work/tls.key --dry-run=client -o yaml | kubectl apply -f -
+                          kubectl -n "$TARGET_NAMESPACE" rollout restart deployment/postal-smtp
+                        fi
+                    env:
+                      - name: SOURCE_NAMESPACE
+                        value: "{{ postal_smtp_tls_source_namespace }}"
+                      - name: SOURCE_SECRET
+                        value: "{{ postal_smtp_tls_source_secret }}"
+                      - name: TARGET_NAMESPACE
+                        value: "{{ p_ns }}"
+                      - name: TARGET_SECRET
+                        value: "{{ postal_smtp_tls_secret }}"
+                    resources:
+                      requests: {cpu: 10m, memory: 32Mi}
+                      limits: {cpu: 100m, memory: 128Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: [ALL]
+                    volumeMounts:
+                      - name: work
+                        mountPath: /work
+                volumes:
+                  - name: work
+                    emptyDir: {}
+  when: postal_smtp_tls_use_platform_wildcard | bool
+
+- name: Issue a trusted certificate for SMTP STARTTLS
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: postal-smtp
+        namespace: "{{ p_ns }}"
+      spec:
+        secretName: "{{ postal_smtp_tls_secret }}"
+        issuerRef:
+          kind: ClusterIssuer
+          name: "{{ postal_smtp_tls_issuer }}"
+        privateKey:
+          algorithm: RSA
+          size: 2048
+          rotationPolicy: Always
+        usages:
+          - server auth
+        dnsNames:
+          - "{{ p_smtp_host }}"
+  when: not (postal_smtp_tls_use_platform_wildcard | bool)
+
+- name: Wait for the Postal SMTP certificate
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: postal-smtp
+    namespace: "{{ p_ns }}"
+    wait: true
+    wait_timeout: 600
+    wait_condition:
+      type: Ready
+      status: 'True'
+  when: not (postal_smtp_tls_use_platform_wildcard | bool)
 
 - name: Create MariaDB credentials secret
   no_log: true
@@ -76,6 +538,25 @@
             labels:
               app: postal-mariadb
           spec:
+            nodeSelector: >-
+              {{
+                {postal_mail_node_label: 'true'}
+                if postal_worker_index | int > 0
+                else omit
+              }}
+            tolerations: >-
+              {{
+                [
+                  {
+                    'key': postal_mail_node_label,
+                    'operator': 'Equal',
+                    'value': 'true',
+                    'effect': 'NoSchedule'
+                  }
+                ]
+                if postal_worker_index | int > 0
+                else omit
+              }}
             securityContext:
               fsGroup: 999
             containers:
@@ -142,6 +623,10 @@
             web_protocol: https
             smtp_hostname: {{ p_smtp_host }}
             default_maximum_delivery_attempts: 18
+            default_spam_threshold: {{ postal_default_spam_threshold }}
+            default_spam_failure_threshold: {{ postal_default_spam_failure_threshold }}
+            batch_queued_messages: {{ postal_batch_queued_messages | bool | lower }}
+            signing_key_path: /config/signing.key
           web_server:
             default_port: 5000
             default_bind_address: 0.0.0.0
@@ -168,6 +653,9 @@
             max_message_size: {{ postal_max_message_size }}
             default_health_server_port: 9091
             default_health_server_bind_address: 0.0.0.0
+            tls_enabled: {{ postal_smtp_tls_enabled | bool | lower }}
+            tls_certificate_path: /config/tls/tls.crt
+            tls_private_key_path: /config/tls/tls.key
           dns:
             mx_records:
               - {{ p_smtp_host }}
@@ -175,7 +663,9 @@
             return_path_domain: {{ postal_return_path_domain }}
             route_domain: {{ postal_route_domain }}
             track_domain: {{ postal_track_domain }}
-            helo_hostname: {{ p_smtp_host }}
+            helo_hostname: {{ postal_helo_hostname }}
+            dkim_identifier: {{ postal_dkim_identifier }}
+            custom_return_path_prefix: {{ postal_custom_return_path_prefix }}
           rails:
             environment: production
             secret_key: {{ p_rails_secret }}
@@ -186,6 +676,7 @@
             password: {{ p_queue_password }}
           logging:
             enabled: true
+        signing.key: "{{ p_signing_key }}"
 
 - name: Wait for Postal MariaDB before schema reconciliation
   ansible.builtin.command:
@@ -222,6 +713,23 @@
   retries: 30
   delay: 2
   until: _postal_schema_exists.rc == 0
+
+- name: Grant Postal access to its isolated per-server message databases
+  no_log: true
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - '{{ p_ns }}'
+      - postal-mariadb-0
+      - --
+      - sh
+      - -ec
+      - >-
+        mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e
+        "GRANT ALL PRIVILEGES ON \`postal-%\`.* TO 'postal'@'%'; FLUSH PRIVILEGES;"
+  changed_when: false
 
 - name: Remove the previous Postal schema reconciliation job
   kubernetes.core.k8s:
@@ -276,7 +784,7 @@
                     subPath: postal.yml
                     readOnly: true
                 securityContext:
-                  allowPrivilegeEscalation: false
+                  allowPrivilegeEscalation: true
                   capabilities:
                     drop: [ALL]
                     add: [NET_BIND_SERVICE]
@@ -284,6 +792,228 @@
               - name: config
                 secret:
                   secretName: postal-config
+
+- name: Create idempotent Postal organization and domain bootstrap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: postal-bootstrap
+        namespace: "{{ p_ns }}"
+      data:
+        bootstrap.rb: |
+          # frozen_string_literal: true
+          require "base64"
+          require "json"
+
+          domains = JSON.parse(Base64.strict_decode64(ENV.fetch("POSTAL_DOMAINS_B64")))
+          raise "POSTAL_DOMAINS_B64 must decode to a non-empty array" unless domains.is_a?(Array) && domains.any?
+          inbound_accept_local_parts = JSON.parse(Base64.strict_decode64(ENV.fetch("POSTAL_INBOUND_ACCEPT_LOCAL_PARTS_B64")))
+          unless inbound_accept_local_parts.is_a?(Array) && inbound_accept_local_parts.all? { |name| name.is_a?(String) && name.match?(/\A[a-z0-9.-]+\z/) }
+            raise "POSTAL_INBOUND_ACCEPT_LOCAL_PARTS_B64 must decode to an array of local parts"
+          end
+
+          admin = User.find_or_initialize_by(email_address: ENV.fetch("POSTAL_ADMIN_EMAIL"))
+          if admin.new_record?
+            admin.first_name = ENV.fetch("POSTAL_ADMIN_FIRST_NAME")
+            admin.last_name = ENV.fetch("POSTAL_ADMIN_LAST_NAME")
+            admin.password = ENV.fetch("POSTAL_ADMIN_PASSWORD")
+            admin.password_confirmation = ENV.fetch("POSTAL_ADMIN_PASSWORD")
+            admin.admin = true
+            admin.email_verified_at = Time.current
+            admin.save!
+          elsif !admin.admin?
+            raise "Existing Postal bootstrap user is not a global administrator"
+          end
+
+          organization = Organization.find_or_initialize_by(permalink: ENV.fetch("POSTAL_ORGANIZATION_PERMALINK"))
+          if organization.new_record?
+            organization.name = ENV.fetch("POSTAL_ORGANIZATION_NAME")
+            organization.owner = admin
+            organization.save!
+          elsif organization.owner_id != admin.id
+            raise "Existing Postal organization owner differs from the bootstrap administrator"
+          end
+
+          membership = OrganizationUser.find_or_initialize_by(organization: organization, user: admin)
+          membership.admin = true
+          membership.all_servers = true
+          membership.save!
+
+          server = organization.servers.find_or_initialize_by(permalink: ENV.fetch("POSTAL_SERVER_PERMALINK"))
+          server.name = ENV.fetch("POSTAL_SERVER_NAME")
+          server.mode = "Live"
+          server.send_limit = Integer(ENV.fetch("POSTAL_SEND_LIMIT").delete_suffix("i"))
+          server.message_retention_days = Integer(ENV.fetch("POSTAL_MESSAGE_RETENTION_DAYS").delete_suffix("i"))
+          server.raw_message_retention_days = Integer(ENV.fetch("POSTAL_RAW_MESSAGE_RETENTION_DAYS").delete_suffix("i"))
+          server.raw_message_retention_size = Integer(ENV.fetch("POSTAL_RAW_MESSAGE_RETENTION_SIZE").delete_suffix("i"))
+          server.privacy_mode = true
+          server.log_smtp_data = false
+          server.save!
+
+          domains.each do |name|
+            record = server.domains.find_or_initialize_by(name: name)
+            record.verification_method = "DNS"
+            record.verified_at ||= Time.current
+            record.outgoing = true
+            record.incoming = true
+            record.save!
+
+            inbound_accept_local_parts.each do |local_part|
+              route = server.routes.find_or_initialize_by(domain: record, name: local_part)
+              if route.new_record?
+                route.mode = "Accept"
+                route.spam_mode = "Quarantine"
+                route.save!
+              elsif route.mode != "Accept" || route.spam_mode != "Quarantine"
+                raise "Managed inbound route #{local_part}@#{name} differs from Accept/Quarantine"
+              end
+            end
+          end
+
+          if ENV.fetch("POSTAL_SMTP_CREDENTIAL_ENABLED") == "enabled"
+            credential = server.credentials.find_or_initialize_by(type: "SMTP", name: "platform-applications")
+            desired_key = ENV.fetch("POSTAL_SMTP_CREDENTIAL")
+            if credential.new_record?
+              credential.save!
+              credential.update_column(:key, desired_key)
+            elsif credential.key != desired_key
+              raise "Persisted Postal SMTP credential differs; refusing implicit rotation"
+            end
+          end
+
+- name: Create Postal bootstrap credentials secret
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: postal-bootstrap-credentials
+        namespace: "{{ p_ns }}"
+      type: Opaque
+      stringData:
+        admin-password: "{{ postal_admin_password }}"
+        smtp-credential: "{{ postal_smtp_credential }}"
+
+- name: Remove the previous Postal bootstrap job
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    name: postal-bootstrap
+    namespace: "{{ p_ns }}"
+    wait: true
+
+- name: Bootstrap Postal administrator, organization, server, and sender domains
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    wait: true
+    wait_timeout: 900
+    wait_condition:
+      type: Complete
+      status: 'True'
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: postal-bootstrap
+        namespace: "{{ p_ns }}"
+      spec:
+        backoffLimit: 2
+        ttlSecondsAfterFinished: 3600
+        template:
+          metadata:
+            labels:
+              app: postal-bootstrap
+          spec:
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 999
+              runAsGroup: 999
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: bootstrap
+                image: "{{ p_img }}"
+                command: [bundle, exec, rails, runner, /bootstrap/bootstrap.rb]
+                env:
+                  - name: POSTAL_CONFIG_FILE_PATH
+                    value: /config/postal.yml
+                  - name: POSTAL_DOMAINS_B64
+                    value: "{{ postal_domains | to_json | b64encode }}"
+                  - name: POSTAL_INBOUND_ACCEPT_LOCAL_PARTS_B64
+                    value: "{{ postal_inbound_accept_local_parts | to_json | b64encode }}"
+                  - name: POSTAL_ADMIN_EMAIL
+                    value: "{{ postal_admin_email }}"
+                  - name: POSTAL_ADMIN_FIRST_NAME
+                    value: "{{ postal_admin_first_name }}"
+                  - name: POSTAL_ADMIN_LAST_NAME
+                    value: "{{ postal_admin_last_name }}"
+                  - name: POSTAL_ADMIN_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: postal-bootstrap-credentials
+                        key: admin-password
+                  - name: POSTAL_ORGANIZATION_NAME
+                    value: "{{ postal_organization_name }}"
+                  - name: POSTAL_ORGANIZATION_PERMALINK
+                    value: "{{ postal_organization_permalink }}"
+                  - name: POSTAL_SERVER_NAME
+                    value: "{{ postal_server_name }}"
+                  - name: POSTAL_SERVER_PERMALINK
+                    value: "{{ postal_server_permalink }}"
+                  - name: POSTAL_SEND_LIMIT
+                    value: "{{ postal_send_limit_per_minute }}i"
+                  - name: POSTAL_MESSAGE_RETENTION_DAYS
+                    value: "{{ postal_message_retention_days }}i"
+                  - name: POSTAL_RAW_MESSAGE_RETENTION_DAYS
+                    value: "{{ postal_raw_message_retention_days }}i"
+                  - name: POSTAL_RAW_MESSAGE_RETENTION_SIZE
+                    value: "{{ postal_raw_message_retention_size }}i"
+                  - name: POSTAL_SMTP_CREDENTIAL_ENABLED
+                    value: "{{ 'enabled' if postal_smtp_credential_enabled | bool else 'disabled' }}"
+                  - name: POSTAL_SMTP_CREDENTIAL
+                    valueFrom:
+                      secretKeyRef:
+                        name: postal-bootstrap-credentials
+                        key: smtp-credential
+                volumeMounts:
+                  - name: config
+                    mountPath: /config/postal.yml
+                    subPath: postal.yml
+                    readOnly: true
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+                    readOnly: true
+                  - name: bootstrap
+                    mountPath: /bootstrap/bootstrap.rb
+                    subPath: bootstrap.rb
+                    readOnly: true
+                securityContext:
+                  allowPrivilegeEscalation: true
+                  capabilities:
+                    drop: [ALL]
+                    add: [NET_BIND_SERVICE]
+            volumes:
+              - name: config
+                secret:
+                  secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-config
+                  items:
+                    - key: signing.key
+                      path: signing.key
+              - name: bootstrap
+                configMap:
+                  name: postal-bootstrap
 
 - name: Deploy Postal components
   kubernetes.core.k8s:
@@ -308,13 +1038,63 @@
             labels:
               app: postal
               component: "{{ item.name }}"
+            annotations:
+              checksum/postal-config: "{{ (p_signing_key ~ p_rails_secret ~ p_db_password ~ p_queue_password ~ (postal_domains | to_json)) | hash('sha256') }}"
+              checksum/postal-tls: "{{ p_smtp_source_secret.resources[0].data['tls.crt'] | hash('sha256') if postal_smtp_tls_use_platform_wildcard | bool else postal_smtp_tls_secret | hash('sha256') }}"
           spec:
+            tolerations: >-
+              {{
+                [
+                  {
+                    'key': postal_mail_node_label,
+                    'operator': 'Equal',
+                    'value': 'true',
+                    'effect': 'NoSchedule'
+                  }
+                ]
+                if postal_worker_index | int > 0
+                else omit
+              }}
+            affinity: >-
+              {{
+                {
+                  'nodeAffinity': {
+                    'preferredDuringSchedulingIgnoredDuringExecution': [
+                      {
+                        'weight': 100,
+                        'preference': {
+                          'matchExpressions': [
+                            {
+                              'key': postal_mail_node_label,
+                              'operator': 'In',
+                              'values': ['true']
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+                if postal_worker_index | int > 0
+                else omit
+              }}
             securityContext:
               runAsNonRoot: true
               runAsUser: 999
               runAsGroup: 999
+              fsGroup: 999
+              fsGroupChangePolicy: OnRootMismatch
               seccompProfile:
                 type: RuntimeDefault
+            terminationGracePeriodSeconds: 60
+            topologySpreadConstraints:
+              - maxSkew: 1
+                topologyKey: kubernetes.io/hostname
+                whenUnsatisfiable: ScheduleAnyway
+                labelSelector:
+                  matchLabels:
+                    app: postal
+                    component: "{{ item.name }}"
             containers:
               - name: "{{ item.name }}"
                 image: "{{ p_img }}"
@@ -327,6 +1107,16 @@
                   - name: config
                     mountPath: /config/postal.yml
                     subPath: postal.yml
+                    readOnly: true
+                  - name: signing-key
+                    mountPath: /config/signing.key
+                    subPath: signing.key
+                    readOnly: true
+                  - name: smtp-tls
+                    mountPath: /config/tls
+                    readOnly: true
+                readinessProbe: "{{ item.readiness_probe }}"
+                livenessProbe: "{{ item.liveness_probe }}"
                 resources:
                   requests:
                     cpu: "{{ item.cpu_req }}"
@@ -335,7 +1125,7 @@
                     cpu: "{{ item.cpu_lim }}"
                     memory: "{{ item.mem_lim }}"
                 securityContext:
-                  allowPrivilegeEscalation: false
+                  allowPrivilegeEscalation: true
                   capabilities:
                     drop: [ALL]
                     add: [NET_BIND_SERVICE]
@@ -343,6 +1133,17 @@
               - name: config
                 secret:
                   secretName: postal-config
+              - name: signing-key
+                secret:
+                  secretName: postal-config
+                  defaultMode: 288
+                  items:
+                    - key: signing.key
+                      path: signing.key
+              - name: smtp-tls
+                secret:
+                  secretName: "{{ postal_smtp_tls_secret }}"
+                  defaultMode: 288
   loop:
     - name: web
       command: [postal, web-server]
@@ -354,6 +1155,18 @@
       mem_req: "{{ postal_web_memory_req }}"
       cpu_lim: "{{ postal_web_cpu_lim }}"
       mem_lim: "{{ postal_web_memory_lim }}"
+      readiness_probe:
+        tcpSocket: {port: 5000}
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 6
+      liveness_probe:
+        tcpSocket: {port: 5000}
+        initialDelaySeconds: 20
+        periodSeconds: 20
+        timeoutSeconds: 3
+        failureThreshold: 3
     - name: smtp
       command: [postal, smtp-server]
       replicas: "{{ postal_smtp_replicas }}"
@@ -366,6 +1179,18 @@
       mem_req: "{{ postal_smtp_memory_req }}"
       cpu_lim: "{{ postal_smtp_cpu_lim }}"
       mem_lim: "{{ postal_smtp_memory_lim }}"
+      readiness_probe:
+        httpGet: {path: /health, port: 9091}
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 6
+      liveness_probe:
+        httpGet: {path: /health, port: 9091}
+        initialDelaySeconds: 20
+        periodSeconds: 20
+        timeoutSeconds: 3
+        failureThreshold: 3
     - name: worker
       command: [postal, worker]
       replicas: "{{ postal_worker_replicas }}"
@@ -376,6 +1201,320 @@
       mem_req: "{{ postal_worker_memory_req }}"
       cpu_lim: "{{ postal_worker_cpu_lim }}"
       mem_lim: "{{ postal_worker_memory_lim }}"
+      readiness_probe:
+        httpGet: {path: /health, port: 9090}
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 6
+      liveness_probe:
+        httpGet: {path: /health, port: 9090}
+        initialDelaySeconds: 20
+        periodSeconds: 20
+        timeoutSeconds: 3
+        failureThreshold: 3
+
+- name: Protect Postal data and serving components from voluntary eviction
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ p_ns }}"
+      spec:
+        minAvailable: 1
+        selector:
+          matchLabels: "{{ item.selector }}"
+  loop:
+    - name: postal-mariadb
+      selector: {app: postal-mariadb}
+    - name: postal-web
+      selector: {app: postal, component: web}
+    - name: postal-smtp
+      selector: {app: postal, component: smtp}
+    - name: postal-worker
+      selector: {app: postal, component: worker}
+
+- name: Wait for all Postal components to become available
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - "deployment/postal-{{ item }}"
+      - -n
+      - "{{ p_ns }}"
+      - --timeout=10m
+  loop: [web, smtp, worker]
+  changed_when: false
+
+- name: Create Postal SMTP service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: postal-smtp
+        namespace: "{{ p_ns }}"
+      spec:
+        type: NodePort
+        externalTrafficPolicy: Cluster
+        selector:
+          app: postal
+          component: smtp
+        ports:
+          - name: smtp
+            port: 25
+            targetPort: 2525
+            protocol: TCP
+          - name: submission
+            port: 587
+            targetPort: 2525
+            protocol: TCP
+
+- name: Read the Postal SMTP NodePorts
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: postal-smtp
+    namespace: "{{ p_ns }}"
+  register: postal_smtp_service
+  retries: 12
+  delay: 5
+  until:
+    - postal_smtp_service.resources | default([]) | length == 1
+    - >-
+      postal_smtp_service.resources[0].spec.ports
+      | selectattr('name', 'equalto', 'smtp')
+      | selectattr('nodePort', 'defined') | list | length == 1
+    - >-
+      postal_smtp_service.resources[0].spec.ports
+      | selectattr('name', 'equalto', 'submission')
+      | selectattr('nodePort', 'defined') | list | length == 1
+
+- name: Record the Postal SMTP NodePorts and public address
+  ansible.builtin.set_fact:
+    postal_smtp_node_port: >-
+      {{ postal_smtp_service.resources[0].spec.ports
+         | selectattr('name', 'equalto', 'smtp')
+         | map(attribute='nodePort') | first | int }}
+    postal_submission_node_port: >-
+      {{ postal_smtp_service.resources[0].spec.ports
+         | selectattr('name', 'equalto', 'submission')
+         | map(attribute='nodePort') | first | int }}
+    postal_smtp_external_ip: "{{ postal_smtp_public_ipv4 }}"
+
+- name: Read the shared Hetzner load balancer before SMTP convergence
+  ansible.builtin.command:
+    argv: [hcloud, load-balancer, describe, "{{ postal_shared_load_balancer_name }}", -o, json]
+  register: postal_lb_config
+  changed_when: false
+  retries: 5
+  delay: 5
+  until: postal_lb_config.rc == 0
+
+- name: Add missing public SMTP services to the shared load balancer
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - load-balancer
+      - add-service
+      - "{{ postal_shared_load_balancer_name }}"
+      - --protocol
+      - tcp
+      - --listen-port
+      - "{{ item.listen_port | string }}"
+      - --destination-port
+      - "{{ item.node_port | string }}"
+      - --health-check-protocol
+      - tcp
+      - --health-check-port
+      - "{{ item.node_port | string }}"
+  loop:
+    - {listen_port: 25, node_port: "{{ postal_smtp_node_port }}"}
+    - {listen_port: 587, node_port: "{{ postal_submission_node_port }}"}
+  loop_control:
+    label: "TCP/{{ item.listen_port }}"
+  vars:
+    postal_existing_lb_service: >-
+      {{ (postal_lb_config.stdout | from_json).services
+         | selectattr('listen_port', 'equalto', item.listen_port)
+         | list | first | default({}) }}
+  when: postal_existing_lb_service | length == 0
+  register: postal_lb_service_add
+  retries: 5
+  delay: 5
+  until: postal_lb_service_add is not failed
+
+- name: Update drifted public SMTP services on the shared load balancer
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - load-balancer
+      - update-service
+      - "{{ postal_shared_load_balancer_name }}"
+      - --listen-port
+      - "{{ item.listen_port | string }}"
+      - --protocol
+      - tcp
+      - --destination-port
+      - "{{ item.node_port | string }}"
+      - --health-check-protocol
+      - tcp
+      - --health-check-port
+      - "{{ item.node_port | string }}"
+  loop:
+    - {listen_port: 25, node_port: "{{ postal_smtp_node_port }}"}
+    - {listen_port: 587, node_port: "{{ postal_submission_node_port }}"}
+  loop_control:
+    label: "TCP/{{ item.listen_port }}"
+  vars:
+    postal_existing_lb_service: >-
+      {{ (postal_lb_config.stdout | from_json).services
+         | selectattr('listen_port', 'equalto', item.listen_port)
+         | list | first | default({}) }}
+  when:
+    - postal_existing_lb_service | length > 0
+    - >-
+      postal_existing_lb_service.destination_port | int != item.node_port | int
+      or postal_existing_lb_service.health_check.protocol != 'tcp'
+      or postal_existing_lb_service.health_check.port | int != item.node_port | int
+  register: postal_lb_service_update
+  retries: 5
+  delay: 5
+  until: postal_lb_service_update is not failed
+
+- name: Require public SMTP load-balancer readback and healthy targets
+  ansible.builtin.shell: |
+    set -euo pipefail
+    hcloud load-balancer describe {{ postal_shared_load_balancer_name | quote }} -o json |
+      jq -e \
+        --arg public_ip {{ postal_smtp_external_ip | quote }} \
+        --argjson smtp {{ postal_smtp_node_port | quote }} \
+        --argjson submission {{ postal_submission_node_port | quote }} '
+          . as $lb
+          | $lb.public_net.enabled == true
+          and $lb.public_net.ipv4.ip == $public_ip
+          and ([$lb.services[] | select(.listen_port == 25)][0].destination_port == $smtp)
+          and ([$lb.services[] | select(.listen_port == 587)][0].destination_port == $submission)
+          and ([$lb.targets[].health_status[]
+                | select(.listen_port == 25 or .listen_port == 587)] | length == ($lb.targets | length * 2))
+          and all($lb.targets[].health_status[]
+                  | select(.listen_port == 25 or .listen_port == 587);
+                  .status == "healthy")
+        '
+  args:
+    executable: /bin/bash
+  register: postal_lb_readback
+  changed_when: false
+  retries: 24
+  delay: 10
+  until: postal_lb_readback.rc == 0
+
+- name: Export the global return-path DKIM record
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ p_ns }}"
+      - deployment/postal-web
+      - --
+      - postal
+      - default-dkim-record
+  register: postal_return_path_dkim
+  changed_when: false
+
+- name: Export public sender-domain DNS requirements
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ p_ns }}"
+      - deployment/postal-web
+      - --
+      - bundle
+      - exec
+      - rails
+      - runner
+      - >-
+        require "json";
+        server = Server.find_by!(permalink: {{ postal_server_permalink | to_json }});
+        domains = server.domains.order(:name).map do |domain|;
+        {domain: domain.name,
+        mx: {name: domain.name, type: "MX", value: "10 {{ p_smtp_host }}."},
+        spf: {name: domain.name, type: "TXT", value: domain.spf_record},
+        dkim: {name: "#{domain.dkim_record_name.downcase}.#{domain.name}", type: "TXT", value: domain.dkim_record},
+        return_path: {name: domain.return_path_domain, type: "CNAME", value: {{ (postal_return_path_domain ~ '.') | to_json }}},
+        dmarc: {name: "_dmarc.#{domain.name}", type: "TXT", value: "v=DMARC1; p=none; adkim=r; aspf=r; pct=100; rua=mailto:dmarc-reports@#{domain.name}"}};
+        end;
+        puts JSON.generate({domains: domains})
+  register: postal_dns_requirements
+  changed_when: false
+
+- name: Publish the public Postal DNS plan inside the cluster
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: postal-dns-requirements
+        namespace: "{{ p_ns }}"
+      data:
+        records.json: "{{ postal_dns_requirements.stdout }}"
+        infrastructure.json: >-
+          {{ {
+            'records': [
+              {'name': p_web_host, 'type': 'A', 'value': postal_smtp_external_ip},
+              {'name': p_smtp_host, 'type': 'A', 'value': postal_smtp_external_ip},
+              {'name': postal_helo_hostname, 'type': 'A', 'value': postal_outbound_ipv4},
+              {'name': postal_helo_hostname, 'type': 'TXT', 'value': 'v=spf1 ip4:' ~ postal_outbound_ipv4 ~ ' -all'},
+              {'name': postal_spf_domain, 'type': 'TXT', 'value': 'v=spf1 ip4:' ~ postal_outbound_ipv4 ~ ' -all'},
+              {'name': postal_return_path_domain, 'type': 'A', 'value': postal_smtp_external_ip},
+              {'name': postal_return_path_domain, 'type': 'MX', 'value': '10 ' ~ p_smtp_host ~ '.'},
+              {'name': postal_return_path_domain, 'type': 'TXT', 'value': 'v=spf1 a mx include:' ~ postal_spf_domain ~ ' -all'},
+              {'name': postal_dkim_identifier ~ '._domainkey.' ~ postal_return_path_domain, 'type': 'TXT', 'value': postal_return_path_dkim.stdout},
+              {'name': postal_route_domain, 'type': 'MX', 'value': '10 ' ~ p_smtp_host ~ '.'},
+              {'name': postal_track_domain, 'type': 'A', 'value': postal_smtp_external_ip}
+            ],
+            'ptr': {'ip': postal_outbound_ipv4, 'value': postal_helo_hostname}
+          } | to_json }}
+
+- name: Require Postal to accept every sender-domain DNS configuration
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ p_ns }}"
+      - deployment/postal-web
+      - --
+      - bundle
+      - exec
+      - rails
+      - runner
+      - >-
+        server = Server.find_by!(permalink: {{ postal_server_permalink | to_json }});
+        domains = server.domains.order(:name).to_a;
+        domains.each(&:check_dns);
+        domains.each(&:reload);
+        failures = domains.reject(&:dns_ok?);
+        puts domains.map { |d|
+          [d.name, d.spf_status, d.dkim_status, d.return_path_status, d.mx_status].join("|")
+        }.join("\n");
+        abort "Postal DNS verification failed for: #{failures.map(&:name).join(', ')}"
+        unless failures.empty?
+  register: postal_domain_dns_verification
+  changed_when: false
+  retries: 12
+  delay: 10
+  until: postal_domain_dns_verification.rc == 0
+  when: postal_smtp_credential_enabled | bool
 
 - name: Create Postal web service
   kubernetes.core.k8s:
@@ -396,50 +1535,22 @@
             port: 5000
             targetPort: 5000
 
-- name: Create Postal SMTP service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: postal-smtp
-        namespace: "{{ p_ns }}"
-        annotations:
-          load-balancer.hetzner.cloud/location: "{{ hetzner_region | default('hel1') }}"
-          load-balancer.hetzner.cloud/name: "{{ project_name | default('k8s') }}-postal-smtp"
-      spec:
-        type: LoadBalancer
-        externalTrafficPolicy: Local
-        selector:
-          app: postal
-          component: smtp
-        ports:
-          - name: smtp
-            port: 25
-            targetPort: 2525
-            protocol: TCP
-          - name: submission
-            port: 587
-            targetPort: 2525
-            protocol: TCP
-
-- name: Create Postal web HTTPRoute
+- name: Create separate Postal web and tracking HTTPRoutes
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: gateway.networking.k8s.io/v1
       kind: HTTPRoute
       metadata:
-        name: postal-web
+        name: "{{ item.name }}"
         namespace: "{{ p_ns }}"
       spec:
         parentRefs:
-          - name: admin-gateway
+          - name: main-gateway
             namespace: cilium-system
             sectionName: https
         hostnames:
-          - "{{ p_web_host }}"
+          - "{{ item.hostname }}"
         rules:
           - matches:
               - path:
@@ -448,6 +1559,11 @@
             backendRefs:
               - name: postal-web
                 port: 5000
+  loop:
+    - {name: postal-web, hostname: "{{ p_web_host }}"}
+    - {name: postal-track, hostname: "{{ postal_track_domain }}"}
+  loop_control:
+    label: "{{ item.name }} -> {{ item.hostname }}"
 
 - name: Display Postal deployment summary
   debug:
@@ -457,6 +1573,10 @@
       - "=========================================="
       - "  Web UI: https://{{ p_web_host }}"
       - "  SMTP: {{ p_smtp_host }}:25"
+      - "  HELO/PTR: {{ postal_helo_hostname }} -> {{ postal_outbound_ipv4 }}"
+      - "  Sender domains: {{ postal_domains | join(', ') }}"
+      - "  DNS plan: configmap/{{ p_ns }}/postal-dns-requirements"
+      - "  SMTP credential enabled: {{ postal_smtp_credential_enabled | bool }}"
       - "  Queue: Dragonfly using dragonfly-auth secret"
-      - "  Admin: admin@{{ domain }}"
+      - "  Admin: {{ postal_admin_email }}"
       - "=========================================="
