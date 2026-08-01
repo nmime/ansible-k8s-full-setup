@@ -1696,11 +1696,13 @@
         puts "changed=#{changed};email=#{user.email}"
   register: _gitlab_root_email_reconcile
   changed_when: "'changed=true' in _gitlab_root_email_reconcile.stdout"
-  failed_when:
-    - _gitlab_root_email_reconcile.rc != 0
-    - >-
+  failed_when: >-
+    _gitlab_root_email_reconcile.rc != 0 or
+    (
+      'changed=true' in _gitlab_root_email_reconcile.stdout and
       ('email=' + gitlab_admin_email) not in
       _gitlab_root_email_reconcile.stdout
+    )
 - name: Create private GitLab Gateway API HTTPRoute
   kubernetes.core.k8s:
     state: present
