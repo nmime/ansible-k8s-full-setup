@@ -178,6 +178,17 @@ class TestChart10ValuesStructure:
             disable_signup["ansible.builtin.command"]["argv"][-1]
         )
         assert tasks.index(disable_signup) < tasks.index(public_route)
+        root_email = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Replace the generated GitLab root email placeholder"
+        )
+        root_email_script = root_email["ansible.builtin.command"]["argv"][-1]
+        assert 'end_with?("@example.com")' in root_email_script
+        assert "user.skip_reconfirmation!" in root_email_script
+        assert "gitlab_admin_email | to_json" in root_email_script
+        assert tasks.index(disable_signup) < tasks.index(root_email)
         private_spec = private_route["kubernetes.core.k8s"]["definition"]["spec"]
         assert {parent["name"] for parent in private_spec["parentRefs"]} == {
             "admin-gateway"
