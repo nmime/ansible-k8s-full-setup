@@ -68,9 +68,13 @@ def test_controller_secret_is_root_only_and_hidden_from_ansible_output() -> None
 
 
 def test_monitoring_and_backup_cover_both_gateways_and_floating_ip() -> None:
+    defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
+    gateway = read("roles/ha-egress/tasks/configure_gateway.yml")
     observability = read("roles/k8s-observability/tasks/main.yml")
     monitoring = read("roles/ha-egress/tasks/monitoring.yml")
     backup = read("scripts/cluster-backup.sh")
+    assert "k8s_pod_cidr" in defaults["ha_egress_monitoring_pod_cidr"]
+    assert "ufw allow from {{ ha_egress_monitoring_pod_cidr }}" in gateway
     assert "ha_egress.gateway_1_private_ip" in observability
     assert "ha_egress.gateway_2_private_ip" in observability
     assert "HAEgressGatewayNotReady" in observability

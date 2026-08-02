@@ -16,6 +16,9 @@
     apt-get -o DPkg::Lock::Timeout=300 update -q
     apt-get -o DPkg::Lock::Timeout=300 install -y python3 curl iptables ufw
     ufw allow from {{ ha_egress_network_cidr }} to {{ ha_gateway.private_ip }} port {{ ha_egress_health_port }} proto tcp
+    {% if ha_egress_monitoring_enabled | bool %}
+    ufw allow from {{ ha_egress_monitoring_pod_cidr }} to {{ ha_gateway.private_ip }} port {{ ha_egress_health_port }} proto tcp
+    {% endif %}
     REMOTE
   args:
     executable: /bin/bash
