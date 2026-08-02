@@ -52,3 +52,6 @@ ha_egress_monitoring_enabled: >-
   {{ ((network.egress | default({})).monitoring_enabled | default(true)) | bool }}
 ha_egress_monitoring_namespace: >-
   {{ (network.egress | default({})).monitoring_namespace | default('monitoring', true) }}
+ha_egress_monitoring_pod_cidr: >-
+  {{ (network.egress | default({})).monitoring_pod_cidr |
+     default(k8s_pod_cidr | default('10.233.64.0/18'), true) }}
