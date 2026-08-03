@@ -43,6 +43,44 @@ log() { echo -e "${GREEN}[$(date +'%H:%M:%S')]${NC} $1" | tee -a "${LOG_DIR}/pla
 error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
 
+MUTATION_LOCK_DIR=""
+
+release_mutation_lock() {
+  [[ -n "$MUTATION_LOCK_DIR" ]] || return 0
+  if [[ -f "${MUTATION_LOCK_DIR}/pid" ]] \
+    && [[ "$(cat "${MUTATION_LOCK_DIR}/pid")" == "$$" ]]; then
+    rm -f "${MUTATION_LOCK_DIR}/pid"
+    rmdir "$MUTATION_LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+acquire_mutation_lock() {
+  local lock_root lock_dir owner_pid
+  lock_root="${TMPDIR:-/tmp}/ansible-k8s-platform-locks"
+  lock_dir="${lock_root}/${PROJECT}.lock"
+  umask 077
+  mkdir -p "$lock_root"
+  chmod 700 "$lock_root"
+
+  for _ in 1 2; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' "$$" >"${lock_dir}/pid"
+      MUTATION_LOCK_DIR="$lock_dir"
+      trap release_mutation_lock EXIT
+      return 0
+    fi
+    owner_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+      error "Project ${PROJECT} already has an active mutation (PID ${owner_pid})"
+      return 1
+    fi
+    rm -f "${lock_dir}/pid"
+    rmdir "$lock_dir" 2>/dev/null || true
+  done
+  error "Cannot acquire the mutation lock for project ${PROJECT}"
+  return 1
+}
+
 check_env() {
   if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
     error "HCLOUD_TOKEN not set"
@@ -660,7 +698,7 @@ main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
-    deploy)       load_config; deploy_component "${1:-all}" ;;
+    deploy)       load_config; acquire_mutation_lock; deploy_component "${1:-all}" ;;
     components)   show_components ;;
     enable)       enable_component "${1:-}" ;;
     disable)      disable_component "${1:-}" ;;

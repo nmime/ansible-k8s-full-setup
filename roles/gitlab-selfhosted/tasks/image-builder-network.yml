@@ -141,6 +141,9 @@
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
+              # BuildKit's dockerfile frontend is currently served from this
+              # nested CloudFront hostname. Keep the exact audited endpoint;
+              # broad CloudFront egress is intentionally not allowed.
               - {matchName: production.cloudfront.docker.com}
               - {matchName: registry.npmjs.org}
               - {matchName: dl-cdn.alpinelinux.org}

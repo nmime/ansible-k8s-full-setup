@@ -455,11 +455,20 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["toolbox_memory_limit"] == "3Gi"
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
-        assert self.profile["gitlab"]["runner"]["replicas"] == 1
+        assert self.profile["gitlab"]["runner"]["general_pool_enabled"] is True
+        assert self.profile["gitlab"]["runner"]["replicas"] == 2
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
-        # One bounded general job and one protected image job may share only
-        # the isolated CI-build worker, never an application node.
-        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 2
+        # Two managers each accept one job and remain isolated on workers 4/5.
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
+        assert self.profile["gitlab"]["runner"]["job_resources"][
+            "memory_limit"
+        ] == "6Gi"
+        assert self.profile["gitlab"]["runner"]["general_pool_quota"] == {
+            "requests_cpu": "5",
+            "requests_memory": "12Gi",
+            "limits_cpu": "20",
+            "limits_memory": "34Gi",
+        }
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"

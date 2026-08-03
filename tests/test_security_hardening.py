@@ -1562,6 +1562,19 @@ def test_orchestrator_defaults_to_the_project_campaign_kubeconfig():
     assert "export K8S_AUTH_KUBECONFIG" in orchestrator
 
 
+def test_orchestrator_serializes_project_mutations_across_worktrees():
+    orchestrator = read("platform-orchestrator/platform.sh")
+
+    assert 'lock_root="${TMPDIR:-/tmp}/ansible-k8s-platform-locks"' in orchestrator
+    assert 'lock_dir="${lock_root}/${PROJECT}.lock"' in orchestrator
+    assert 'kill -0 "$owner_pid"' in orchestrator
+    assert "trap release_mutation_lock EXIT" in orchestrator
+    assert (
+        'deploy)       load_config; acquire_mutation_lock; '
+        'deploy_component "${1:-all}"'
+    ) in orchestrator
+
+
 def test_bastion_default_route_reconcile_is_inventory_driven_and_idempotent():
     tasks = load_yaml("roles/network-security/tasks/main.yml")
     by_name = {task["name"]: task for task in tasks if "name" in task}
