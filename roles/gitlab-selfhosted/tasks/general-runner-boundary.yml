@@ -25,10 +25,18 @@
         namespace: '{{ gitlab_runner_namespace }}'
       spec:
         hard:
-          requests.cpu: '4'
-          requests.memory: 8Gi
-          limits.cpu: '7'
-          limits.memory: 10Gi
+          requests.cpu: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_cpu |
+               default('5') }}
+          requests.memory: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_memory |
+               default('8Gi') }}
+          limits.cpu: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_cpu |
+               default('10') }}
+          limits.memory: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_memory |
+               default('18Gi') }}
           pods: '16'
           services: '10'
           secrets: '30'
@@ -47,9 +55,15 @@
       spec:
         limits:
           - type: Container
-            max: {cpu: '3', memory: 4Gi}
             defaultRequest: {cpu: 100m, memory: 128Mi}
             default: {cpu: 500m, memory: 512Mi}
+            max:
+              cpu: >-
+                {{ gitlab_runner_job_resources.cpu_limit |
+                   default(gitlab_runner_cpu_limit) }}
+              memory: >-
+                {{ gitlab_runner_job_resources.memory_limit |
+                   default(gitlab_runner_memory_limit) }}
 
 - name: General Runner | Apply the fail-closed network boundary
   kubernetes.core.k8s:
@@ -190,6 +204,63 @@
               - {protocol: TCP, port: 9252}
   loop_control:
     label: '{{ item.metadata.name }}'
+
+- name: General Runner | Allow all isolated Runner pools into the SeaweedFS cache
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-gitlab-runners-s3
+        namespace: storage
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: seaweedfs
+            app.kubernetes.io/instance: seaweedfs
+            app.kubernetes.io/component: filer
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_runner_namespace }}'
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_image_builder_runner_namespace }}'
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_docker_host_runner_namespace }}'
+            ports:
+              - {port: 8333, protocol: TCP}
+
+- name: General Runner | Allow all isolated Runner pools into the Cilium-protected SeaweedFS cache
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-from-gitlab-runners-s3
+        namespace: storage
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: seaweedfs
+            app.kubernetes.io/instance: seaweedfs
+            app.kubernetes.io/component: filer
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ gitlab_runner_namespace }}'
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ gitlab_image_builder_runner_namespace }}'
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ gitlab_docker_host_runner_namespace }}'
+            toPorts:
+              - ports:
+                  - {port: '8333', protocol: TCP}
 
 - name: General Runner | Allow GitLab webservice ingress from CI
   kubernetes.core.k8s:
