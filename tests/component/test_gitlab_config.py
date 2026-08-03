@@ -239,12 +239,13 @@ class TestChart10ValuesStructure:
         assert "workload.n0xeid.xyz/ci-general" in values["nodeSelector"]
         assert "gitlab_runner_worker_index" in values["nodeSelector"]
         assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
-        assert "workload.n0xeid.xyz/ci-docker" not in values["tolerations"]
+        assert "workload.n0xeid.xyz/ci-docker" in values["tolerations"]
         assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
-            "request_concurrency = {{ gitlab_runner_concurrent | int }}"
+            "request_concurrency = {{ [gitlab_runner_concurrent | int, 2] | max }}"
             in values["runners"]["config"]
         )
+        assert "limit = {{ gitlab_runner_concurrent | int }}" in values["runners"]["config"]
         assert (
             'node_selector = { "node-role.kubernetes.io/worker" = "true" }'
             in values["runners"]["config"]
@@ -290,7 +291,13 @@ class TestChart10ValuesStructure:
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
         ).render(
             gitlab_namespace="gitlab",
+            gitlab_runner_namespace="gitlab-ci-general",
             gitlab_runner_concurrent=1,
+            gitlab_general_runner_pool_enabled=False,
+            gitlab_runner_worker_index=0,
+            gitlab_runner_cleanup_grace_period_seconds=5,
+            gitlab_runner_pod_termination_grace_period_seconds=5,
+            gitlab_runner_cleanup_resources_timeout="30s",
             gitlab_runner_job_resources={},
             gitlab_runner_cpu_request="500m",
             gitlab_runner_cpu_limit="2000m",
@@ -308,7 +315,8 @@ class TestChart10ValuesStructure:
         runner = tomllib.loads(rendered)["runners"][0]
         kubernetes = runner["kubernetes"]
 
-        assert runner["request_concurrency"] == 1
+        assert runner["request_concurrency"] == 2
+        assert runner["limit"] == 1
         assert kubernetes["node_selector"] == {
             "node-role.kubernetes.io/worker": "true"
         }
@@ -324,7 +332,13 @@ class TestChart10ValuesStructure:
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
         ).render(
             gitlab_namespace="gitlab",
+            gitlab_runner_namespace="gitlab-ci-general",
             gitlab_runner_concurrent=1,
+            gitlab_general_runner_pool_enabled=False,
+            gitlab_runner_worker_index=0,
+            gitlab_runner_cleanup_grace_period_seconds=5,
+            gitlab_runner_pod_termination_grace_period_seconds=5,
+            gitlab_runner_cleanup_resources_timeout="30s",
             gitlab_runner_job_resources={"memory_request": "3Gi"},
             gitlab_runner_cpu_request="500m",
             gitlab_runner_cpu_limit="2000m",
@@ -341,6 +355,54 @@ class TestChart10ValuesStructure:
         )
         compact_runner = tomllib.loads(compact_rendered)["runners"][0]
         assert compact_runner["kubernetes"]["memory_request"] == "3Gi"
+
+        pooled_rendered = Environment().from_string(
+            install["kubernetes.core.helm"]["values"]["runners"]["config"]
+        ).render(
+            gitlab_namespace="gitlab",
+            gitlab_runner_namespace="gitlab-ci-general",
+            gitlab_general_runner_pool_enabled=True,
+            gitlab_runner_worker_index=5,
+            gitlab_runner_concurrent=1,
+            gitlab_runner_cleanup_grace_period_seconds=5,
+            gitlab_runner_pod_termination_grace_period_seconds=5,
+            gitlab_runner_cleanup_resources_timeout="30s",
+            gitlab_runner_job_resources={
+                "cpu_request": "750m",
+                "cpu_limit": "3",
+                "memory_request": "2Gi",
+                "memory_limit": "6Gi",
+            },
+            gitlab_runner_cpu_request="500m",
+            gitlab_runner_cpu_limit="2000m",
+            gitlab_runner_memory_request="1Gi",
+            gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_service_cpu_request="200m",
+            gitlab_runner_service_cpu_limit="1000m",
+            gitlab_runner_service_memory_request="512Mi",
+            gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_helper_cpu_request="100m",
+            gitlab_runner_helper_cpu_limit="500m",
+            gitlab_runner_helper_memory_request="256Mi",
+            gitlab_runner_helper_memory_limit="512Mi",
+        )
+        pooled_runner = tomllib.loads(pooled_rendered)["runners"][0]
+        pooled_kubernetes = pooled_runner["kubernetes"]
+        assert pooled_runner["request_concurrency"] == 2
+        assert pooled_runner["limit"] == 1
+        assert pooled_runner["cache_dir"] == "/tmp/cache"
+        assert pooled_kubernetes["namespace"] == "gitlab-ci-general"
+        assert pooled_kubernetes["node_selector"] == {
+            "workload.n0xeid.xyz/ci-general": "true"
+        }
+        assert pooled_kubernetes["node_tolerations"] == {
+            "workload.n0xeid.xyz/ci-build=true": "NoSchedule",
+            "workload.n0xeid.xyz/ci-docker=true": "NoSchedule",
+        }
+        assert pooled_kubernetes["cpu_request"] == "750m"
+        assert pooled_kubernetes["cpu_limit"] == "3"
+        assert pooled_kubernetes["memory_request"] == "2Gi"
+        assert pooled_kubernetes["memory_limit"] == "6Gi"
         assert len(kubernetes["pod_spec"]) == 1
         pod_spec = kubernetes["pod_spec"][0]
         assert pod_spec["name"] == "spread-ci-jobs-across-workers"
@@ -431,10 +493,10 @@ class TestChart10ValuesStructure:
         assert "quiet: true" in gate
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
         assert "replicas: '{{ gitlab_runner_replicas | int }}'" in install
-        assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
+        assert "concurrent: '{{ [gitlab_runner_concurrent | int, 2] | max }}'" in install
         assert "chart_version: 0.91.0" in install
-        assert "maxSurge: 1" in install
-        assert "maxUnavailable: 0" in install
+        assert "maxSurge: 0" in install
+        assert "maxUnavailable: 1" in install
         assert "topologySpreadConstraints:" in install
         assert "topologyKey: kubernetes.io/hostname" in install
         assert "whenUnsatisfiable: ScheduleAnyway" in install
@@ -449,7 +511,13 @@ class TestChart10ValuesStructure:
             in install
         )
         assert '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule"' in install
-        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' not in install
+        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' in install
+        assert "cleanup_grace_period_seconds" in install
+        assert "pod_termination_grace_period_seconds" in install
+        assert "cleanup_resources_timeout" in install
+        assert 'cache_dir = "/tmp/cache"' in install
+        assert 'logs_base_dir = "/tmp"' in install
+        assert 'scripts_base_dir = "/tmp"' in install
         assert "gitlab_runner_namespace" in install
         assert 'BucketName = "gitlab-runner-cache"' in install
         assert "secretName: gitlab-runner-s3-cache" in install
@@ -508,6 +576,56 @@ class TestChart10ValuesStructure:
         assert "release_state: absent" in migration
 
     def test_general_runner_has_a_bounded_fail_closed_namespace(self):
+        role_tasks = yaml.safe_load(self.content)
+        build_discovery = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Discover the dedicated build CI node for the general Runner pool"
+        )
+        docker_discovery = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Discover the dedicated Docker CI node for the general Runner pool"
+        )
+        pool_gate = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Require two distinct dedicated nodes for the general Runner pool"
+        )
+        pool_reconcile = next(
+            task
+            for task in role_tasks
+            if task.get("name") == "Reconcile the two-node general Runner pool label"
+        )
+        stale_reconcile = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Remove stale general Runner pool labels from all other nodes"
+        )
+        assert build_discovery["kubernetes.core.k8s_info"]["label_selectors"] == [
+            "workload.n0xeid.xyz/ci-build=true"
+        ]
+        assert docker_discovery["kubernetes.core.k8s_info"]["label_selectors"] == [
+            "workload.n0xeid.xyz/ci-docker=true"
+        ]
+        assert "metadata.name !=" in " ".join(
+            pool_gate["ansible.builtin.assert"]["that"]
+        )
+        assert pool_gate["ansible.builtin.assert"]["quiet"] is True
+        assert pool_reconcile["kubernetes.core.k8s"]["definition"]["metadata"][
+            "labels"
+        ]["workload.n0xeid.xyz/ci-general"] == "true"
+        assert stale_reconcile["kubernetes.core.k8s"]["definition"]["metadata"][
+            "labels"
+        ]["workload.n0xeid.xyz/ci-general"] is None
+        assert "not in _gitlab_general_pool_node_names" in " ".join(
+            stale_reconcile["when"]
+        )
+
         tasks = yaml.safe_load(read(GENERAL_RUNNER_BOUNDARY_PATH))
         namespace = next(
             task for task in tasks
@@ -521,11 +639,18 @@ class TestChart10ValuesStructure:
             task for task in tasks
             if task.get("name") == "General Runner | Bound aggregate namespace resources"
         )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
-        assert quota["requests.cpu"] == "4"
-        assert quota["requests.memory"] == "8Gi"
-        assert quota["limits.cpu"] == "7"
-        assert quota["limits.memory"] == "10Gi"
+        assert "general_pool_quota" in quota["requests.cpu"]
+        assert "general_pool_quota" in quota["requests.memory"]
+        assert "general_pool_quota" in quota["limits.cpu"]
+        assert "general_pool_quota" in quota["limits.memory"]
         assert quota["persistentvolumeclaims"] == "0"
+
+        limit_range = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Bound each container"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["limits"][0]
+        assert "gitlab_runner_job_resources.cpu_limit" in limit_range["max"]["cpu"]
+        assert "gitlab_runner_job_resources.memory_limit" in limit_range["max"]["memory"]
 
         policies = next(
             task for task in tasks
@@ -542,6 +667,23 @@ class TestChart10ValuesStructure:
             {"protocol": "TCP", "port": 80},
             {"protocol": "TCP", "port": 443},
         ]
+
+        storage_ingress = next(
+            task for task in tasks
+            if task.get("name")
+            == "General Runner | Allow all isolated Runner pools into the SeaweedFS cache"
+        )["kubernetes.core.k8s"]["definition"]
+        assert storage_ingress["metadata"]["namespace"] == "storage"
+        assert storage_ingress["spec"]["ingress"][0]["ports"] == [
+            {"port": 8333, "protocol": "TCP"}
+        ]
+        cilium_storage_ingress = next(
+            task for task in tasks
+            if task.get("name")
+            == "General Runner | Allow all isolated Runner pools into the Cilium-protected SeaweedFS cache"
+        )["kubernetes.core.k8s"]["definition"]
+        assert cilium_storage_ingress["kind"] == "CiliumNetworkPolicy"
+        assert cilium_storage_ingress["metadata"]["namespace"] == "storage"
 
         secrets = read(GENERATE_SECRETS_PATH)
         resolution = secrets.split("- name: Resolve GitLab Runner authentication token", 1)[
@@ -571,7 +713,7 @@ class TestChart10ValuesStructure:
         assert install["kubernetes.core.helm"]["wait"] is True
         assert install["kubernetes.core.helm"]["force_conflicts"] is True
         assert install["kubernetes.core.helm"]["values"]["concurrent"] == (
-            "{{ gitlab_runner_concurrent | int }}"
+            "{{ [gitlab_runner_concurrent | int, 2] | max }}"
         )
         assert install["kubernetes.core.helm"]["values"]["replicas"] == (
             "{{ gitlab_runner_replicas | int }}"
@@ -612,6 +754,26 @@ class TestChart10ValuesStructure:
         assert "readyReplicas" in converge["until"]
         assert "availableReplicas" in converge["until"]
         assert "updatedReplicas" in converge["until"]
+
+        pool_gate = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Require the converged general Runner to remain on the isolated two-node pool"
+        )
+        assertions = "\n".join(pool_gate["ansible.builtin.assert"]["that"])
+        assert "spec.replicas | int) == 2" in assertions
+        assert "maxSurge" in assertions
+        assert "maxUnavailable" in assertions
+        assert "workload.n0xeid.xyz/ci-general" in assertions
+        assert "workload.n0xeid.xyz/ci-build" in assertions
+        assert "workload.n0xeid.xyz/ci-docker" in assertions
+        assert "_gitlab_general_pool_node_names" in assertions
+        assert "limit = 1" in assertions
+        assert pool_gate["when"] == [
+            "gitlab_runner_enabled | bool",
+            "gitlab_general_runner_pool_enabled | bool",
+        ]
 
     def test_image_builder_exception_is_isolated_and_fail_closed(self):
         assert "file: image-builder-runner.yml" in self.content
