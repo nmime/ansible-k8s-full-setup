@@ -2076,18 +2076,40 @@
       concurrent: '{{ gitlab_runner_concurrent | int }}'
       checkInterval: 3
       strategy:
+        type: RollingUpdate
         rollingUpdate:
-          maxSurge: 1
-          maxUnavailable: 0
+          # Each manager has a local `limit = 1`. A surge replica therefore
+          # becomes an unintended third execution slot before it is Ready.
+          # Replace one manager at a time instead; the chart's one-hour
+          # termination grace lets GitLab Runner drain its active job first.
+          maxSurge: 0
+          maxUnavailable: 1
+      terminationGracePeriodSeconds: 3600
+      shutdown_timeout: 3300
+      podLabels:
+        workload.n0xeid.xyz/component: gitlab-runner-manager
+      affinity:
+        podAntiAffinity:
+          # The hard topology-spread rule below keeps the steady two replicas
+          # on distinct nodes. Keep anti-affinity preferred so a one-at-a-time
+          # replacement can return to either isolated CI worker.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    workload.n0xeid.xyz/component: gitlab-runner-manager
+                topologyKey: kubernetes.io/hostname
       topologySpreadConstraints:
         - maxSkew: 1
+          minDomains: 2
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           nodeAffinityPolicy: Honor
           nodeTaintsPolicy: Honor
           labelSelector:
             matchLabels:
-              app: gitlab-runner
+              workload.n0xeid.xyz/component: gitlab-runner-manager
       podDisruptionBudget:
         maxUnavailable: 1
       metrics:

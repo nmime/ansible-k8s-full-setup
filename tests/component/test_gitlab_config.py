@@ -576,6 +576,36 @@ class TestChart10ValuesStructure:
         assert install["kubernetes.core.helm"]["values"]["replicas"] == (
             "{{ gitlab_runner_replicas | int }}"
         )
+        values = install["kubernetes.core.helm"]["values"]
+        assert values["strategy"]["type"] == "RollingUpdate"
+        assert values["strategy"]["rollingUpdate"] == {
+            "maxSurge": 0,
+            "maxUnavailable": 1,
+        }
+        assert values["terminationGracePeriodSeconds"] == 3600
+        assert values["shutdown_timeout"] == 3300
+        manager_label = "workload.n0xeid.xyz/component"
+        assert values["podLabels"][manager_label] == "gitlab-runner-manager"
+        anti_affinity = values["affinity"]["podAntiAffinity"]
+        assert "requiredDuringSchedulingIgnoredDuringExecution" not in anti_affinity
+        preferred = anti_affinity["preferredDuringSchedulingIgnoredDuringExecution"]
+        assert preferred[0]["weight"] == 100
+        term = preferred[0]["podAffinityTerm"]
+        assert term["topologyKey"] == "kubernetes.io/hostname"
+        assert term["labelSelector"]["matchLabels"][manager_label] == (
+            "gitlab-runner-manager"
+        )
+        spread = values["topologySpreadConstraints"][0]
+        assert spread["maxSkew"] == 1
+        assert spread["minDomains"] == 2
+        assert spread["topologyKey"] == "kubernetes.io/hostname"
+        assert spread["whenUnsatisfiable"] == "DoNotSchedule"
+        assert spread["nodeAffinityPolicy"] == "Honor"
+        assert spread["nodeTaintsPolicy"] == "Honor"
+        assert spread["labelSelector"]["matchLabels"][manager_label] == (
+            "gitlab-runner-manager"
+        )
+        assert values["podDisruptionBudget"] == {"maxUnavailable": 1}
         assert converge["kubernetes.core.k8s_info"]["name"] == "gitlab-runner"
         assert converge["when"] == "gitlab_runner_enabled | bool"
         assert converge["retries"] == 60
@@ -878,6 +908,16 @@ class TestChart10ValuesStructure:
             ]
         assert "workload.n0xeid.xyz/class: protected-docker-smoke-job" in network
         assert "port: '443'" in network
+        assert "matchName: codeload.github.com" in network
+        assert "matchName: production.cloudfront.docker.com" in network
+        assert "matchName: release-assets.githubusercontent.com" in network
+        assert "matchName: unofficial-builds.nodejs.org" in network
+        cache_policy = docker_policies[
+            "Docker smoke | Allow runner cache traffic to SeaweedFS"
+        ]["kubernetes.core.k8s"]["definition"]
+        assert cache_policy["spec"]["egress"][0]["ports"] == [
+            {"port": 8333, "protocol": "TCP"}
+        ]
 
         secrets = read(GENERATE_SECRETS_PATH)
         assert "GITLAB_DOCKER_HOST_RUNNER_TOKEN" in secrets

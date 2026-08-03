@@ -141,6 +141,10 @@
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
+              # BuildKit's dockerfile frontend is currently served from this
+              # nested CloudFront hostname. Cilium FQDN wildcards match one
+              # label only, so '*.docker.com' cannot authorize it.
+              - {matchName: production.cloudfront.docker.com}
               - {matchPattern: '*.docker.com'}
               - {matchPattern: '*.docker.io'}
               - {matchPattern: '*.cloudflarestorage.com'}
