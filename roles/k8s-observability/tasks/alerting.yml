@@ -91,12 +91,15 @@
                   parse_mode: HTML
                   message: |
                     {% raw %}<b>🚨 {{ .Status | toUpper }}{{ if eq .Status "firing" }} ({{ .Alerts.Firing | len }}){{ end }}</b>
-                    {{ range .Alerts -}}
+                    {{ range $index, $alert := .Alerts -}}
+                    {{ if lt $index 6 }}
                     <b>{{ .Labels.alertname }}</b> [{{ .Labels.severity }}]
                     <i>{{ .Annotations.summary }}</i>
                     {{ .Annotations.description }}
                     <code>{{ .Labels.namespace }}/{{ .Labels.pod }}</code>
-                    {{ end }}{% endraw %}
+                    {{ end }}
+                    {{ end -}}
+                    {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
 
           {% endif %}
           {% if alert_email_configured | bool %}

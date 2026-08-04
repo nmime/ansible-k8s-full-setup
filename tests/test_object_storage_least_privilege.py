@@ -183,3 +183,19 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "@sha256:" in defaults["object_storage_policy_image"]
     assert "CACHE_TTL_HOURS" not in tasks
     assert "CACHE_MAX_BYTES" not in tasks
+
+
+def test_gitlab_backup_growth_is_bounded_without_automatic_deletion():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    tasks = read("roles/object-storage/tasks/main.yml")
+    quotas = {
+        item["name"]: item
+        for item in defaults["object_storage_additional_bucket_quotas"]
+    }
+
+    assert "gitlab-backups" in quotas
+    assert "51200" in quotas["gitlab-backups"]["quota_mib"]
+    assert "object_storage_additional_bucket_quotas" in tasks
+    assert "s3.bucket.quota.enforce -apply" in tasks
+    assert "s3.rm" not in tasks
+    assert "s3.bucket.delete" not in tasks

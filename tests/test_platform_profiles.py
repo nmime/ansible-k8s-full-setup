@@ -399,10 +399,11 @@ class TestMediumOptimizedContract:
         assert self.profile["infrastructure"]["workers"]["count"] == 6
         assert self.profile["infrastructure"]["workers"]["type"] == "cx43"
         assert self.profile["infrastructure"]["workers"]["type_overrides"] == {
-            4: "cpx32",
-            5: "cpx42",
+            4: "cx43",
+            5: "cx43",
             6: "cx33",
         }
+        assert self.profile["kubernetes"]["terminated_pod_gc_threshold"] == 200
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][
