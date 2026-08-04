@@ -623,4 +623,6 @@ class TestDrillScriptDryRun:
 def test_production_database_replicas_can_use_reserved_control_plane_capacity():
     tasks = (REPO_ROOT / "roles" / "k8s-databases" / "tasks" / "main.yml").read_text()
     assert tasks.count('node-role.kubernetes.io/control-plane') >= 2
-    assert tasks.count('if tier == "production" else []') >= 2
+    assert 'if tier == "production" else []' in tasks
+    assert "pg_data_storage_class == local_storage_class" in tasks
+    assert "not (cp_schedulable | default(false) | bool)" in tasks

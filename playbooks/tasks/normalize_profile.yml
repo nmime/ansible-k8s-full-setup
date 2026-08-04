@@ -127,6 +127,8 @@
       {{ storage.volume_replicas | default(object_storage_volume_replicas | default(object_storage_replicas | default(1))) }}
     object_storage_filer_replicas: >-
       {{ storage.filer_replicas | default(object_storage_filer_replicas | default(1)) }}
+    object_storage_filer_node_selector: >-
+      {{ storage.filer_node_selector | default(object_storage_filer_node_selector | default({})) }}
     object_storage_replication_placement: >-
       {{ storage.replication_placement | default(object_storage_replication_placement | default('000')) }}
     object_storage_master_size: '{{ storage.master_size | default(object_storage_master_size) }}'

@@ -478,6 +478,8 @@
           filer:
             enabled: true
             replicas: "{{ object_storage_filer_replicas | int }}"
+            nodeSelector: |
+              {{ object_storage_filer_node_selector | default({}) | to_nice_yaml(indent=2) | indent(14) }}
             resources:
               requests:
                 cpu: "{{ object_storage_filer_cpu_request | default('100m') }}"
