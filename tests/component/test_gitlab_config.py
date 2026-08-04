@@ -361,6 +361,7 @@ class TestChart10ValuesStructure:
         ).render(
             gitlab_namespace="gitlab",
             gitlab_runner_namespace="gitlab-ci-general",
+            gitlab_docker_host_runner_namespace="gitlab-docker-builds",
             gitlab_general_runner_pool_enabled=True,
             gitlab_runner_worker_index=5,
             gitlab_runner_concurrent=1,
@@ -403,11 +404,26 @@ class TestChart10ValuesStructure:
         assert pooled_kubernetes["cpu_limit"] == "3"
         assert pooled_kubernetes["memory_request"] == "2Gi"
         assert pooled_kubernetes["memory_limit"] == "6Gi"
-        assert len(kubernetes["pod_spec"]) == 1
-        pod_spec = kubernetes["pod_spec"][0]
+        assert len(pooled_kubernetes["pod_spec"]) == 1
+        pod_spec = pooled_kubernetes["pod_spec"][0]
         assert pod_spec["name"] == "spread-ci-jobs-across-workers"
         assert pod_spec["patch_type"] == "strategic"
-        spread = yaml.safe_load(pod_spec["patch"])["topologySpreadConstraints"]
+        pod_patch = yaml.safe_load(pod_spec["patch"])
+        anti_affinity = pod_patch["affinity"]["podAntiAffinity"][
+            "requiredDuringSchedulingIgnoredDuringExecution"
+        ]
+        assert anti_affinity == [
+            {
+                "labelSelector": {
+                    "matchLabels": {
+                        "workload.n0xeid.xyz/class": "protected-docker-smoke-job"
+                    }
+                },
+                "namespaces": ["gitlab-docker-builds"],
+                "topologyKey": "kubernetes.io/hostname",
+            }
+        ]
+        spread = pod_patch["topologySpreadConstraints"]
         assert spread == [
             {
                 "maxSkew": 1,
@@ -1001,6 +1017,9 @@ class TestChart10ValuesStructure:
         assert "privileged: true" in config
         assert "allowPrivilegeEscalation: true" in config
         assert "type: Unconfined" in config
+        assert 'name = "separate-protected-docker-from-general-ci"' in config
+        assert "namespaces:" in config
+        assert '"{{ gitlab_runner_namespace }}"' in config
         assert config.count("type: RuntimeDefault") == 2
         assert config.count("privileged: true") == 1
         assert install["no_log"] is True
