@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/usr/local/sbin/n0xeid-egress-nat activate
 ExecStart=/usr/local/sbin/n0xeid-egressctl watchdog
 User=root
 Nice=10
