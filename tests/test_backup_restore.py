@@ -286,6 +286,8 @@ def test_postgresql_uses_operator_backup_contract():
 
 def test_verification_uses_bounded_recursive_object_checks_and_fails_closed():
     content = (TASKS_DIR / "verification.yml").read_text()
+    assert "backoffLimit: 0" in content
+    assert "restartPolicy: Never" in content
     assert "s3api list-objects-v2" in content
     assert "--max-keys 1 --no-paginate" in content
     assert "length(Contents || `[]`)" in content

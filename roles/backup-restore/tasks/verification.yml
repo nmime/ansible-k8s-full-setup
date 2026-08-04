@@ -22,11 +22,14 @@
         jobTemplate:
           spec:
             ttlSecondsAfterFinished: 600
-            backoffLimit: 2
+            # Verification is read-only and AWS CLI already retries transient
+            # requests. Re-running a deterministic missing-artifact result in
+            # the same Pod only inflates restart alerts without adding proof.
+            backoffLimit: 0
             activeDeadlineSeconds: "{{ backup_verification_timeout | default(3600) }}"
             template:
               spec:
-                restartPolicy: OnFailure
+                restartPolicy: Never
                 securityContext:
                   runAsNonRoot: true
                   seccompProfile:
