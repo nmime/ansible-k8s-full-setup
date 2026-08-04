@@ -1072,6 +1072,7 @@ class TestChart10ValuesStructure:
         assert "port: '443'" in network
         assert "matchName: codeload.github.com" in network
         assert "matchName: production.cloudfront.docker.com" in network
+        assert "matchName: nx-cache.n0xeid.xyz" in network
         assert "matchName: release-assets.githubusercontent.com" in network
         assert "matchName: unofficial-builds.nodejs.org" in network
         cache_policy = docker_policies[

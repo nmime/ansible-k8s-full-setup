@@ -165,6 +165,9 @@
               # nested CloudFront hostname. Cilium FQDN wildcards match one
               # label only, so '*.docker.com' cannot authorize it.
               - {matchName: production.cloudfront.docker.com}
+              # Protected component jobs publish their cacheable Nx result
+              # through the authenticated public cache route.
+              - {matchName: nx-cache.n0xeid.xyz}
               - {matchPattern: '*.docker.com'}
               - {matchPattern: '*.docker.io'}
               - {matchPattern: '*.cloudflarestorage.com'}
