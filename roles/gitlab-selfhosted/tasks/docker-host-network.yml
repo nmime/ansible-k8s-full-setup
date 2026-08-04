@@ -1,4 +1,43 @@
 ---
+- name: Docker smoke | Bound per-container resources
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: protected-docker-smoke-containers
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          workload.n0xeid.xyz/trust-boundary: protected-docker-smoke
+      spec:
+        limits:
+          - type: Container
+            # Keep missing-resource defaults small while admitting the exact
+            # build, helper, and DinD limits rendered into Runner config.toml.
+            defaultRequest:
+              cpu: >-
+                {{ gitlab_docker_host_runner_job_resources.helper_cpu_request |
+                   default('100m') }}
+              memory: >-
+                {{ gitlab_docker_host_runner_job_resources.helper_memory_request |
+                   default('256Mi') }}
+            default:
+              cpu: >-
+                {{ gitlab_docker_host_runner_job_resources.helper_cpu_limit |
+                   default('500m') }}
+              memory: >-
+                {{ gitlab_docker_host_runner_job_resources.helper_memory_limit |
+                   default('512Mi') }}
+            max:
+              cpu: >-
+                {{ gitlab_docker_host_runner_job_resources.service_cpu_limit |
+                   default('4000m') }}
+              memory: >-
+                {{ gitlab_docker_host_runner_job_resources.service_memory_limit |
+                   default('6Gi') }}
+
 - name: Docker smoke | Bound protected Runner admission with cleanup headroom
   kubernetes.core.k8s:
     state: present
