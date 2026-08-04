@@ -100,7 +100,12 @@ class TestMainInclusion:
     def test_namespace(self):
         c = self._c()
         assert "kind: Namespace" in c and "state: present" in c
-    def test_secret(self): assert "backup-storage-credentials" in self._c()
+    def test_secret(self):
+        content = self._c()
+        assert "backup-storage-credentials" in content
+        assert "backup-gitlab-verification-credentials" in content
+        assert "GITLAB_AWS_ACCESS_KEY_ID" in content
+        assert "GITLAB_AWS_SECRET_ACCESS_KEY" in content
 
 
 def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
@@ -294,6 +299,9 @@ def test_verification_uses_bounded_recursive_object_checks_and_fails_closed():
     assert "FAIL: unable to verify ${comp} artifacts" in content
     assert "FAIL: invalid ${comp} verification response" in content
     assert "wc -l || echo 0" not in content
+    assert "backup-gitlab-verification-credentials" in content
+    assert 'AWS_ACCESS_KEY_ID="$GITLAB_AWS_ACCESS_KEY_ID"' in content
+    assert 'AWS_SECRET_ACCESS_KEY="$GITLAB_AWS_SECRET_ACCESS_KEY"' in content
 
 class TestCronJob:
     @pytest.mark.parametrize("f,n", CJ)
