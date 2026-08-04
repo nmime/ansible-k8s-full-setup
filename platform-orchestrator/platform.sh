@@ -477,7 +477,7 @@ deploy_component() {
     elasticsearch) require_component_enabled "$component"; run_playbook --tags elasticsearch 2>&1 | tee -a "${LOG_DIR}/elasticsearch.log" ;;
     dragonfly)     require_component_enabled "$component"; run_playbook --tags dragonfly 2>&1 | tee -a "${LOG_DIR}/dragonfly.log" ;;
     gitlab)        require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab.log" ;;
-    gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
+    gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab-runner 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
     gitops)        require_component_enabled "$component"; run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
     observability) require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
     pmm)           require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/pmm.log" ;;
