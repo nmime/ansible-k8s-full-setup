@@ -110,12 +110,15 @@
                   parse_mode: HTML
                   message: |-
                     {% raw %}<b>🚨 {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
-                    {{ range .Alerts }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
+                    {{ range $index, $alert := .Alerts -}}
+                    {{ if lt $index 6 }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
                     <i>{{ .Annotations.summary }}</i>
                     {{ .Annotations.description }}
                     <b>Context:</b> <code>{{ if .Labels.namespace }}{{ .Labels.namespace }}{{ else }}cluster{{ end }}{{ with .Labels.pod }}/{{ . }}{{ end }}</code>{{ with .Labels.deployment }} · deployment <code>{{ . }}</code>{{ end }}{{ with .Labels.runner_name }} · runner <code>{{ . }}</code>{{ end }}{{ with .Labels.runner }} · id <code>{{ . }}</code>{{ end }}{{ with .Labels.status }} · HTTP <code>{{ . }}</code>{{ end }}{{ with .Labels.level }} · level <code>{{ . }}</code>{{ end }}
                     {{ if .Annotations.runbook_url }}📘 <a href="{{ .Annotations.runbook_url }}">Runbook</a>{{ end }}
-                    {{ end }}{% endraw %}
+                    {{ end }}
+                    {{ end -}}
+                    {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
 
             - name: telegram-warning
               telegram_configs:
@@ -125,12 +128,15 @@
                   parse_mode: HTML
                   message: |-
                     {% raw %}<b>⚠️ {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
-                    {{ range .Alerts }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
+                    {{ range $index, $alert := .Alerts -}}
+                    {{ if lt $index 6 }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
                     <i>{{ .Annotations.summary }}</i>
                     {{ .Annotations.description }}
                     <b>Context:</b> <code>{{ if .Labels.namespace }}{{ .Labels.namespace }}{{ else }}cluster{{ end }}{{ with .Labels.pod }}/{{ . }}{{ end }}</code>{{ with .Labels.deployment }} · deployment <code>{{ . }}</code>{{ end }}{{ with .Labels.runner_name }} · runner <code>{{ . }}</code>{{ end }}{{ with .Labels.runner }} · id <code>{{ . }}</code>{{ end }}{{ with .Labels.status }} · HTTP <code>{{ . }}</code>{{ end }}{{ with .Labels.level }} · level <code>{{ . }}</code>{{ end }}
                     {{ if .Annotations.runbook_url }}📘 <a href="{{ .Annotations.runbook_url }}">Runbook</a>{{ end }}
-                    {{ end }}{% endraw %}
+                    {{ end }}
+                    {{ end -}}
+                    {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
 
           {% endif %}
           {% if alert_email_configured | bool %}
