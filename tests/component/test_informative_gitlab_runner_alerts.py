@@ -27,6 +27,7 @@ def test_runner_error_and_queue_alerts_preserve_actionable_dimensions():
     assert "sum by (namespace, runner, runner_name, le)" in content
     assert "humanizeDuration $value" in content
     assert content.count("runbook_url: 'https://git.n0xeid.xyz/fun/argocd/") >= 4
+    assert "git.n0xeid.xyz/agents/argocd/" not in content
 
 
 def test_telegram_templates_render_runner_identity_when_available():
