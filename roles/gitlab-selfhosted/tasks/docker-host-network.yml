@@ -21,7 +21,7 @@
           limits.cpu: >-
             {{ gitlab_docker_host_runner_quota.limits_cpu | default('14') }}
           limits.memory: >-
-            {{ gitlab_docker_host_runner_quota.limits_memory | default('14Gi') }}
+            {{ gitlab_docker_host_runner_quota.limits_memory | default('18Gi') }}
           configmaps: '12'
           secrets: '20'
           services: '8'
