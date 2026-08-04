@@ -53,10 +53,13 @@ def test_controller_owns_both_provider_mutations_and_rolls_back() -> None:
 
 def test_watchdog_requires_consecutive_failures_and_uses_lock() -> None:
     controller = read("roles/ha-egress/templates/n0xeid-egressctl.py.j2")
+    service = read("roles/ha-egress/templates/n0xeid-egress-watchdog.service.j2")
     assert "consecutive_failures" in controller
     assert "failure_threshold" in controller
     assert "fcntl.flock(lock, fcntl.LOCK_EX)" in controller
     assert "server[\"status\"] != \"running\"" in controller
+    assert "ExecStartPre=/usr/local/sbin/n0xeid-egress-nat activate" in service
+    assert service.index("ExecStartPre=") < service.index("ExecStart=")
 
 
 def test_controller_secret_is_root_only_and_hidden_from_ansible_output() -> None:
