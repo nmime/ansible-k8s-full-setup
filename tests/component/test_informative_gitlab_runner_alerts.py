@@ -26,8 +26,9 @@ def test_runner_error_and_queue_alerts_preserve_actionable_dimensions():
     assert "sum by (namespace, pod, job, status)" in content
     assert "sum by (namespace, runner, runner_name, le)" in content
     assert "humanizeDuration $value" in content
-    assert content.count("runbook_url: 'https://git.n0xeid.xyz/fun/argocd/") >= 4
-    assert "git.n0xeid.xyz/agents/argocd/" not in content
+    assert content.count("runbook_url: '{{ alert_runbook_url_resolved }}'") >= 4
+    assert "git.n0xeid.xyz" not in content
+    assert "github.com/nmime/ansible-k8s-full-setup/blob/main/RUNBOOK.md" in content
 
 
 def test_telegram_templates_are_compact_and_render_context_when_available():
