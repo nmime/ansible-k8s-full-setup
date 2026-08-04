@@ -426,7 +426,7 @@
                 annotations:
                   summary: 'HTTP 5xx ratio above 2% for {{ "{{ $labels.app_id }}" }}'
                   description: 'At least 20 requests were observed; the 5xx ratio has remained elevated for 10 minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: ServiceHttp5xxRatioCritical
                 expr: >-
                   100 * sum by (app_id) (rate(container_http_inbound_requests_total{status="5xx",app_id!=""}[5m]))
@@ -440,7 +440,7 @@
                 annotations:
                   summary: 'HTTP 5xx ratio above 10% for {{ "{{ $labels.app_id }}" }}'
                   description: 'The service is returning a sustained high rate of server errors.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: GitLabHttp5xxRatioHigh
                 expr: >-
                   100 * sum(rate(http_requests_total{namespace="gitlab",status="5xx"}[5m]))
@@ -451,7 +451,7 @@
                 annotations:
                   summary: GitLab HTTP 5xx ratio is elevated
                   description: GitLab has returned more than 2% server errors for 10 minutes.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
 
           - name: kubernetes-workloads
             interval: 30s
@@ -463,14 +463,14 @@
                 annotations:
                   summary: 'Pod restarted: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} restarted during the last 10 minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: PodRestartStorm
                 expr: increase(kube_pod_container_status_restarts_total[15m]) >= 3
                 labels: {severity: critical, owner: platform}
                 annotations:
                   summary: 'Restart storm: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} restarted at least three times in 15 minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: PodCrashLoopBackOffPersistent
                 expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
                 for: 5m
@@ -478,7 +478,7 @@
                 annotations:
                   summary: 'CrashLoopBackOff: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} has been crash-looping for five minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: PodOOMKilledProduction
                 expr: >-
                   increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace=~"agents|production|.*-production"}[10m]) > 0
@@ -486,7 +486,7 @@
                 annotations:
                   summary: 'Production OOMKill: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} exceeded its memory boundary.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: PodPendingTooLong
                 expr: >-
                   kube_pod_status_phase{phase="Pending",namespace!~"gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds"} == 1
@@ -495,7 +495,7 @@
                 annotations:
                   summary: 'Pod pending for 10 minutes: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: Inspect scheduling events, resource quota, PVC binding, and image pulls.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: ProductionDeploymentUnavailable
                 expr: kube_deployment_status_replicas_unavailable{namespace=~"agents|production|.*-production"} > 0
                 for: 5m
@@ -503,7 +503,7 @@
                 annotations:
                   summary: 'Production deployment unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
                   description: One or more desired production replicas have been unavailable for five minutes.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: StatefulSetReplicaMismatch
                 expr: kube_statefulset_status_replicas_ready < kube_statefulset_replicas
                 for: 10m
@@ -511,7 +511,7 @@
                 annotations:
                   summary: 'StatefulSet replica mismatch: {{ "{{ $labels.namespace }}/{{ $labels.statefulset }}" }}'
                   description: Ready replicas have remained below desired replicas for 10 minutes.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: KubernetesJobFailed
                 expr: increase(kube_job_status_failed[10m]) > 0
                 for: 2m
@@ -519,7 +519,7 @@
                 annotations:
                   summary: 'Job failed: {{ "{{ $labels.namespace }}/{{ $labels.job_name }}" }}'
                   description: A Kubernetes Job has one or more failed pods.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
 
           - name: node-capacity
             interval: 30s

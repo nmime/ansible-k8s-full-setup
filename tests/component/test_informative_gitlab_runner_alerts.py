@@ -3,6 +3,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 ALERTING = REPO / "roles" / "k8s-observability" / "tasks" / "alerting.yml"
+OBSERVABILITY_MAIN = (
+    REPO / "roles" / "k8s-observability" / "tasks" / "main.yml"
+)
 
 
 def alerting_source() -> str:
@@ -34,3 +37,9 @@ def test_telegram_templates_render_runner_identity_when_available():
     assert content.count("Labels.system_id") >= 2
     assert content.count("Labels.level") >= 2
     assert content.count("Labels.status") >= 2
+
+
+def test_alerting_supports_narrow_reconciliation():
+    content = OBSERVABILITY_MAIN.read_text(encoding="utf-8")
+    include = """- name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)\n  ansible.builtin.import_tasks: alerting.yml\n  tags: [alerting]"""
+    assert include in content
