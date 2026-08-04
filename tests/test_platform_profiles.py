@@ -287,12 +287,27 @@ class TestNamedProfileContract:
 
     def test_full_stack_scheduling_contract_matches_available_capacity(self):
         medium = load_profile("medium")
+        medium_optimized = load_profile("medium-optimized")
         production = load_profile("production")
 
         # Medium intentionally counts its three HA control-plane nodes in the
         # workload envelope; production has three application workers, one
         # tainted CI worker, and dedicates its control plane to cluster services.
         assert medium["infrastructure"]["control_plane"]["schedulable"] is True
+        assert medium_optimized["kubernetes"]["kubelet"] == {
+            "kube_memory_reserved": "512Mi",
+            "system_memory_reserved": "1Gi",
+            "eviction_hard": {
+                "memory.available": "1Gi",
+                "nodefs.available": "10%",
+                "nodefs.inodesFree": "5%",
+                "imagefs.available": "15%",
+                "imagefs.inodesFree": "5%",
+            },
+        }
+        assert medium_optimized["storage"]["filer_node_selector"] == {
+            "node-role.kubernetes.io/worker": "true"
+        }
         assert medium["infrastructure"]["workers"]["count"] == 2
         assert production["infrastructure"]["control_plane"]["schedulable"] is False
         assert production["infrastructure"]["workers"]["count"] == 4

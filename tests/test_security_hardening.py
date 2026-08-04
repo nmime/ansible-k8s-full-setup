@@ -1144,6 +1144,12 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
     assert pg_spec["instances"][0]["containers"]["replicaCertCopy"]["resources"] == (
         "{{ postgresql_replica_cert_copy_resources }}"
     )
+    assert "not (cp_schedulable | default(false) | bool)" in (
+        pg_spec["instances"][0]["tolerations"]
+    )
+    assert "pg_data_storage_class == local_storage_class" in (
+        pg_spec["instances"][0]["tolerations"]
+    )
     pgbackrest = pg_spec["backups"]["pgbackrest"]
     assert pgbackrest["containers"]["pgbackrest"]["resources"] == (
         "{{ postgresql_pgbackrest_resources }}"
