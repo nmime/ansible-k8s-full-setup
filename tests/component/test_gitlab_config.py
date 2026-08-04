@@ -961,6 +961,23 @@ class TestChart10ValuesStructure:
         runner = read(DOCKER_HOST_TASKS_PATH)
         network = read(DOCKER_HOST_NETWORK_PATH)
         tasks = yaml.safe_load(runner)
+        network_tasks = yaml.safe_load(network)
+        quota = next(
+            task
+            for task in network_tasks
+            if task.get("name")
+            == "Docker smoke | Bound protected Runner admission with cleanup headroom"
+        )["kubernetes.core.k8s"]["definition"]
+        assert quota["metadata"]["name"] == "protected-docker-smoke-budget"
+        assert quota["spec"]["hard"]["requests.cpu"] == (
+            "{{ gitlab_docker_host_runner_quota.requests_cpu | default('4') }}"
+        )
+        assert quota["spec"]["hard"]["limits.cpu"] == (
+            "{{ gitlab_docker_host_runner_quota.limits_cpu | default('14') }}"
+        )
+        assert quota["spec"]["hard"]["limits.memory"] == (
+            "{{ gitlab_docker_host_runner_quota.limits_memory | default('14Gi') }}"
+        )
         install = next(
             task
             for task in tasks
