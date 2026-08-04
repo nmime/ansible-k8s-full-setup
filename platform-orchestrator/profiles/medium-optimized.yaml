@@ -279,6 +279,10 @@ gitlab:
   # while the 40 GiB/node free-space gate protects local scratch headroom.
   backup_persistence_enabled: false
   backup_persistence_size: 30Gi
+  # The retained verified archives currently exceed the 50 GiB safety quota.
+  # Keep backup execution suspended without disabling the chart or deleting
+  # another recovery point. Resume only after an explicit retention decision.
+  toolbox_backup_suspended: true
   runner:
     enabled: true
     # General non-privileged jobs spread across workers 4 and 5. Protected
