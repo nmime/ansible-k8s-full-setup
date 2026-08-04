@@ -976,7 +976,7 @@ class TestChart10ValuesStructure:
             "{{ gitlab_docker_host_runner_quota.limits_cpu | default('14') }}"
         )
         assert quota["spec"]["hard"]["limits.memory"] == (
-            "{{ gitlab_docker_host_runner_quota.limits_memory | default('14Gi') }}"
+            "{{ gitlab_docker_host_runner_quota.limits_memory | default('18Gi') }}"
         )
         install = next(
             task
@@ -1017,6 +1017,12 @@ class TestChart10ValuesStructure:
         assert "allowed_privileged_services" not in config
         assert f'allowed_services = ["{dind}"]' in config
         assert f'allowed_images = ["{node}"]' in config
+        assert (
+            'service_memory_limit = "{{ '
+            "gitlab_docker_host_runner_job_resources.service_memory_limit "
+            "| default('6Gi') }}\""
+            in config
+        )
         assert (
             'node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }'
             in config
