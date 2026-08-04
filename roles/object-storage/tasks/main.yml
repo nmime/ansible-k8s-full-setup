@@ -66,11 +66,14 @@
             (object_storage_chart_version | string) in
             (object_storage_managed_bucket_policy_supported_chart_versions | default([]))
           - >-
-            object_storage_managed_bucket_policies | default([]) |
+            ((object_storage_managed_bucket_policies | default([])) +
+            (object_storage_additional_bucket_quotas | default([]))) |
             map(attribute='name') | unique | length ==
-            object_storage_managed_bucket_policies | default([]) | length
+            ((object_storage_managed_bucket_policies | default([])) +
+            (object_storage_additional_bucket_quotas | default([]))) | length
           - >-
-            object_storage_managed_bucket_policies | default([]) |
+            ((object_storage_managed_bucket_policies | default([])) +
+            (object_storage_additional_bucket_quotas | default([]))) |
             map(attribute='quota_mib') | map('int') | min > 0
         fail_msg: >-
           Managed bucket TTL/quota automation is enabled, but the selected
@@ -797,7 +800,7 @@
                         command: ["/bin/sh", "-ec"]
                         args:
                           - |
-                            {% for policy in object_storage_managed_bucket_policies | default([]) %}
+                            {% for policy in ((object_storage_managed_bucket_policies | default([])) + (object_storage_additional_bucket_quotas | default([]))) %}
                             printf '%s\n' 's3.bucket.quota -name={{ policy.name }} -op=set -sizeMB={{ policy.quota_mib | int }}' | /usr/bin/weed shell
                             {% endfor %}
                             printf '%s\n' 's3.bucket.quota.enforce -apply' | /usr/bin/weed shell

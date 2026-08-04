@@ -52,8 +52,8 @@ infrastructure:
     count: 6
     type: cx43
     type_overrides:
-      4: cpx32
-      5: cpx42
+      4: cx43
+      5: cx43
       6: cx33
 
 # ---------------------------------------------
@@ -90,6 +90,9 @@ kubernetes:
   version: v1.35.4
   cni: cilium
   ha_control_plane: true
+  # Bound only terminal Pod API objects. Running workloads and persistent data
+  # are unaffected, while restart cascades cannot accumulate 12,500 tombstones.
+  terminated_pod_gc_threshold: 200
   features:
     gateway_api: true
     hubble: true
