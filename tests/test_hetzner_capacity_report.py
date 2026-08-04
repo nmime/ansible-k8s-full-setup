@@ -137,8 +137,8 @@ def test_named_profile_defaults_match_the_reviewed_provider_mapping():
             assert profile["infrastructure"]["control_plane"]["type"] == "cx33"
             assert profile["infrastructure"]["workers"]["type"] == "cx43"
             assert profile["infrastructure"]["workers"]["type_overrides"] == {
-                4: "cpx32",
-                5: "cpx42",
+                4: "cx43",
+                5: "cx43",
                 6: "cx33",
             }
             continue

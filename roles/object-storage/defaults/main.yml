@@ -80,6 +80,27 @@ object_storage_managed_bucket_policies:
         else 30720
       }}
 
+# Quota-only buckets are deliberately separate from createBuckets/TTL policy.
+# GitLab backup archives must never acquire an implicit expiry policy, while a
+# bounded logical-size ceiling prevents replication 001 from filling all three
+# local SeaweedFS volume hosts. The enforcer switches an over-quota bucket
+# read-only; it never deletes an archive. medium-optimized keeps room for the
+# current retained set plus one complete daily archive before the safety gate.
+object_storage_additional_bucket_quotas:
+  - name: gitlab-backups
+    quota_mib: >-
+      {{
+        51200
+        if platform_profile | default('') == 'medium-optimized'
+        else 4096
+        if resource_tier | default(tier | default('minimal')) == 'minimal'
+        else 16384
+        if resource_tier | default(tier | default('minimal')) == 'small'
+        else 40960
+        if resource_tier | default(tier | default('minimal')) == 'medium'
+        else 61440
+      }}
+
 # Credentials are generated and persisted by generate-secrets. The storage role
 # fails closed when they are absent; repository-known fallback credentials are
 # never accepted, including in non-production profiles.

@@ -283,6 +283,7 @@
       enable_nodelocaldns: true
       kubelet_max_pods: 110
       kubelet_rotate_certificates: true
+      kube_controller_terminated_pod_gc_threshold: {{ kube_controller_terminated_pod_gc_threshold | int }}
       # Kubelet must delegate cloud identity to the external provider. The CCM
       # itself is installed and pinned below instead of by Kubespray.
       cloud_provider: external
