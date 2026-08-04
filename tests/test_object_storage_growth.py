@@ -23,6 +23,15 @@ def test_resource_efficient_seaweedfs_grows_one_logical_volume_at_a_time():
     assert "retries: 3" in reclaim
 
 
+def test_seaweedfs_filer_can_be_pinned_off_schedulable_control_planes():
+    defaults = (ROOT / "roles/object-storage/defaults/main.yml").read_text()
+    tasks = (ROOT / "roles/object-storage/tasks/main.yml").read_text()
+
+    assert "object_storage_filer_node_selector: {}" in defaults
+    assert "object_storage_filer_node_selector" in tasks
+    assert "nodeSelector: |" in tasks
+
+
 def test_s3_load_verification_uses_tools_available_in_pinned_aws_image():
     load_test = (ROOT / "scripts/tier-load-test.sh").read_text()
     s3_phase = load_test.split("phase_s3()", 1)[1].split("phase_postgresql()", 1)[0]

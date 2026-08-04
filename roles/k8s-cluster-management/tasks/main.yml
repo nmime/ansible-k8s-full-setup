@@ -283,6 +283,19 @@
       enable_nodelocaldns: true
       kubelet_max_pods: 110
       kubelet_rotate_certificates: true
+      # Keep the Kubespray defaults unless a compact schedulable-control-plane
+      # profile explicitly reserves more host memory. eviction_hard is rendered
+      # as a complete map because kubelet does not merge partial threshold maps.
+      kube_memory_reserved: "{{ kubernetes.kubelet.kube_memory_reserved | default('256Mi') }}"
+      system_memory_reserved: "{{ kubernetes.kubelet.system_memory_reserved | default('512Mi') }}"
+      eviction_hard:
+      {{ (kubernetes.kubelet.eviction_hard | default({
+           'memory.available': '100Mi',
+           'nodefs.available': '10%',
+           'nodefs.inodesFree': '5%',
+           'imagefs.available': '15%',
+           'imagefs.inodesFree': '5%'
+         })) | to_nice_yaml(indent=2) | indent(8, true) }}
       kube_controller_terminated_pod_gc_threshold: {{ kube_controller_terminated_pod_gc_threshold | int }}
       # Kubelet must delegate cloud identity to the external provider. The CCM
       # itself is installed and pinned below instead of by Kubespray.

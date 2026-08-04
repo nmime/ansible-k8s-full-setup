@@ -94,6 +94,19 @@ kubernetes:
   # metrics. Retain at most one terminal Pod cluster-wide so scale-up is never
   # blocked by a growing tombstone set; centralized logs preserve the history.
   terminated_pod_gc_threshold: 1
+  # The control planes are intentionally schedulable in this compact profile,
+  # so kubelet must preserve enough host headroom to evict a low-priority
+  # workload before Linux reaches a global OOM. The defaults leave only 100Mi,
+  # which is too small for an 8Gi control plane running etcd and the API server.
+  kubelet:
+    kube_memory_reserved: 512Mi
+    system_memory_reserved: 1Gi
+    eviction_hard:
+      memory.available: 1Gi
+      nodefs.available: 10%
+      nodefs.inodesFree: 5%
+      imagefs.available: 15%
+      imagefs.inodesFree: 5%
   features:
     gateway_api: true
     hubble: true
@@ -129,6 +142,11 @@ storage:
   index_size: 2Gi
   index_persistent: true
   filer_size: 5Gi
+  # The CSI-backed filer can move between application workers. Keeping its
+  # burstable cache off the 8Gi schedulable control planes removes the largest
+  # workload spike observed during the control-plane OOM incident.
+  filer_node_selector:
+    node-role.kubernetes.io/worker: "true"
   filer_resources:
     cpu_request: 100m
     cpu_limit: "1"
