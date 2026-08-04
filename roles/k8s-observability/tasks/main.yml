@@ -2272,6 +2272,7 @@
 
 - name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)
   ansible.builtin.import_tasks: alerting.yml
+  tags: [alerting]
 
 - name: Include Coroot (auto-discovering application observability)
   ansible.builtin.import_tasks: coroot.yml

@@ -4,6 +4,15 @@
 
 - name: Resolve configured alert delivery channels
   ansible.builtin.set_fact:
+    # Component-only --tags alerting runs skip the role-wide sizing fact task.
+    # Resolve the stable namespace locally so alert reconciliation is a safe,
+    # independently runnable operation.
+    monitoring_namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    alert_runbook_url_resolved: >-
+      {{
+        alert_runbook_url |
+        default('https://github.com/nmime/ansible-k8s-full-setup/blob/main/RUNBOOK.md')
+      }}
     alert_telegram_configured: >-
       {{
         alert_telegram_enabled | default(false) | bool
@@ -59,7 +68,7 @@
 
           route:
             receiver: default
-            group_by: ['alertname', 'namespace', 'severity']
+            group_by: ['cluster', 'environment_tier', 'namespace', 'service', 'alertname', 'severity']
             group_wait: 30s
             group_interval: 5m
             repeat_interval: 4h
@@ -72,6 +81,16 @@
                 matchers:
                   - severity="critical"
                 continue: true
+                group_wait: 10s
+                group_interval: 2m
+                repeat_interval: 30m
+              - receiver: telegram-warning
+                matchers:
+                  - severity="warning"
+                continue: true
+                group_wait: 1m
+                group_interval: 10m
+                repeat_interval: 4h
           {% endif %}
           {% if alert_email_configured | bool %}
               - receiver: email-warning
@@ -86,17 +105,35 @@
             - name: telegram-critical
               telegram_configs:
                 - send_resolved: true
-                  bot_token_file: /etc/alertmanager/secrets/alert-secrets/telegram-bot-token
+                  bot_token_file: /etc/vm/secrets/alert-secrets/telegram-bot-token
                   chat_id: {{ alert_telegram_chat_id | default(0) | int }}
                   parse_mode: HTML
-                  message: |
-                    {% raw %}<b>🚨 {{ .Status | toUpper }}{{ if eq .Status "firing" }} ({{ .Alerts.Firing | len }}){{ end }}</b>
+                  message: |-
+                    {% raw %}<b>🚨 {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
                     {{ range $index, $alert := .Alerts -}}
-                    {{ if lt $index 6 }}
-                    <b>{{ .Labels.alertname }}</b> [{{ .Labels.severity }}]
+                    {{ if lt $index 6 }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
                     <i>{{ .Annotations.summary }}</i>
                     {{ .Annotations.description }}
-                    <code>{{ .Labels.namespace }}/{{ .Labels.pod }}</code>
+                    <b>Context:</b> <code>{{ if .Labels.namespace }}{{ .Labels.namespace }}{{ else }}cluster{{ end }}{{ with .Labels.pod }}/{{ . }}{{ end }}</code>{{ with .Labels.deployment }} · deployment <code>{{ . }}</code>{{ end }}{{ with .Labels.runner_name }} · runner <code>{{ . }}</code>{{ end }}{{ with .Labels.runner }} · id <code>{{ . }}</code>{{ end }}{{ with .Labels.status }} · HTTP <code>{{ . }}</code>{{ end }}{{ with .Labels.level }} · level <code>{{ . }}</code>{{ end }}
+                    {{ if .Annotations.runbook_url }}📘 <a href="{{ .Annotations.runbook_url }}">Runbook</a>{{ end }}
+                    {{ end }}
+                    {{ end -}}
+                    {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
+
+            - name: telegram-warning
+              telegram_configs:
+                - send_resolved: true
+                  bot_token_file: /etc/vm/secrets/alert-secrets/telegram-bot-token
+                  chat_id: {{ alert_telegram_chat_id | default(0) | int }}
+                  parse_mode: HTML
+                  message: |-
+                    {% raw %}<b>⚠️ {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
+                    {{ range $index, $alert := .Alerts -}}
+                    {{ if lt $index 6 }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
+                    <i>{{ .Annotations.summary }}</i>
+                    {{ .Annotations.description }}
+                    <b>Context:</b> <code>{{ if .Labels.namespace }}{{ .Labels.namespace }}{{ else }}cluster{{ end }}{{ with .Labels.pod }}/{{ . }}{{ end }}</code>{{ with .Labels.deployment }} · deployment <code>{{ . }}</code>{{ end }}{{ with .Labels.runner_name }} · runner <code>{{ . }}</code>{{ end }}{{ with .Labels.runner }} · id <code>{{ . }}</code>{{ end }}{{ with .Labels.status }} · HTTP <code>{{ . }}</code>{{ end }}{{ with .Labels.level }} · level <code>{{ . }}</code>{{ end }}
+                    {{ if .Annotations.runbook_url }}📘 <a href="{{ .Annotations.runbook_url }}">Runbook</a>{{ end }}
                     {{ end }}
                     {{ end -}}
                     {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
@@ -114,11 +151,30 @@
           inhibit_rules:
             - source_matchers: [severity="critical"]
               target_matchers: [severity="warning"]
-              equal: [alertname, namespace]
+              equal: [alertname, namespace, service]
   register: _r_am_cfg
   retries: 3
   delay: 10
   until: _r_am_cfg is not failed
+
+- name: Read the authoritative Alertmanager config Secret revision
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: '{{ monitoring_namespace }}'
+    name: platform-alertmanager-config
+  register: _alertmanager_config_secret_revision
+  no_log: true
+
+- name: Require the authoritative Alertmanager config Secret revision
+  ansible.builtin.assert:
+    that:
+      - _alertmanager_config_secret_revision.resources | length == 1
+      - >-
+        (_alertmanager_config_secret_revision.resources[0].metadata.resourceVersion |
+         default('') | length) > 0
+    fail_msg: Alertmanager source config Secret has no stable resource revision.
+  no_log: true
 
 - name: Deploy VMAlertmanager CR
   kubernetes.core.k8s:
@@ -129,6 +185,12 @@
       metadata:
         name: platform
         namespace: '{{ monitoring_namespace }}'
+        annotations:
+          # VMAlertmanager does not project an updated source config Secret
+          # until its CR reconciles. Track the exact source revision so config
+          # edits regenerate the operator-owned Secret without manual restarts.
+          n0xeid.xyz/config-secret-resource-version: >-
+            {{ _alertmanager_config_secret_revision.resources[0].metadata.resourceVersion }}
       spec:
         replicaCount: "{{ alerting.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"
         configSecret: platform-alertmanager-config
@@ -249,21 +311,14 @@
 
           - name: workload
             rules:
-              - alert: PodCrashLoopBackOff
-                expr: rate(kube_pod_container_status_restarts_total[5m]) > 0.1
-                for: 10m
-                labels: { severity: warning }
-                annotations:
-                  summary: Pod {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }} crashlooping
-                  description: Container {{ "{{ $labels.container }}" }} restarting frequently
               - alert: PodOOMKilled
-                expr: increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) > 0
+                expr: increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace!~"agents|production|.*-production"}[10m]) > 0
                 for: 1m
                 labels: { severity: warning }
                 annotations:
                   summary: OOMKill {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}
               - alert: DeploymentReplicasUnavailable
-                expr: kube_deployment_status_replicas_unavailable > 0
+                expr: kube_deployment_status_replicas_unavailable{namespace!~"agents|production|.*-production"} > 0
                 for: 15m
                 labels: { severity: warning }
                 annotations:
@@ -352,6 +407,268 @@
   retries: 3
   delay: 10
   until: _r_vmrules is not failed
+
+- name: Deploy service SLO and operational VMRules
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: platform-slo
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        groups:
+          - name: http-slo
+            interval: 30s
+            rules:
+              - alert: ServiceHttp5xxRatioHigh
+                expr: >-
+                  100 * sum by (app_id) (rate(container_http_inbound_requests_total{status="5xx",app_id!=""}[5m]))
+                  / clamp_min(sum by (app_id) (rate(container_http_inbound_requests_total{app_id!=""}[5m])), 0.001) > 2
+                  and sum by (app_id) (increase(container_http_inbound_requests_total{app_id!=""}[5m])) >= 20
+                for: 10m
+                labels:
+                  severity: warning
+                  owner: platform
+                  service: '{{ "{{ $labels.app_id }}" }}'
+                annotations:
+                  summary: 'HTTP 5xx ratio above 2% for {{ "{{ $labels.app_id }}" }}'
+                  description: 'At least 20 requests were observed; the 5xx ratio has remained elevated for 10 minutes.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: ServiceHttp5xxRatioCritical
+                expr: >-
+                  100 * sum by (app_id) (rate(container_http_inbound_requests_total{status="5xx",app_id!=""}[5m]))
+                  / clamp_min(sum by (app_id) (rate(container_http_inbound_requests_total{app_id!=""}[5m])), 0.001) > 10
+                  and sum by (app_id) (increase(container_http_inbound_requests_total{status="5xx",app_id!=""}[5m])) >= 10
+                for: 5m
+                labels:
+                  severity: critical
+                  owner: platform
+                  service: '{{ "{{ $labels.app_id }}" }}'
+                annotations:
+                  summary: 'HTTP 5xx ratio above 10% for {{ "{{ $labels.app_id }}" }}'
+                  description: 'The service is returning a sustained high rate of server errors.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: GitLabHttp5xxRatioHigh
+                expr: >-
+                  100 * sum(rate(http_requests_total{namespace="gitlab",status="5xx"}[5m]))
+                  / clamp_min(sum(rate(http_requests_total{namespace="gitlab"}[5m])), 0.001) > 2
+                  and sum(increase(http_requests_total{namespace="gitlab"}[5m])) >= 20
+                for: 10m
+                labels: {severity: warning, owner: platform, service: gitlab, environment_tier: platform}
+                annotations:
+                  summary: GitLab HTTP 5xx ratio is elevated
+                  description: GitLab has returned more than 2% server errors for 10 minutes.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+
+          - name: kubernetes-workloads
+            interval: 30s
+            rules:
+              - alert: PodUnexpectedRestart
+                expr: >-
+                  increase(kube_pod_container_status_restarts_total{namespace!~"kube-system|gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds"}[10m]) > 0
+                labels: {severity: warning, owner: platform}
+                annotations:
+                  summary: 'Pod restarted: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: 'Container {{ "{{ $labels.container }}" }} restarted during the last 10 minutes.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: PodRestartStorm
+                expr: increase(kube_pod_container_status_restarts_total[15m]) >= 3
+                labels: {severity: critical, owner: platform}
+                annotations:
+                  summary: 'Restart storm: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: 'Container {{ "{{ $labels.container }}" }} restarted at least three times in 15 minutes.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: PodCrashLoopBackOffPersistent
+                expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+                for: 5m
+                labels: {severity: critical, owner: platform}
+                annotations:
+                  summary: 'CrashLoopBackOff: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: 'Container {{ "{{ $labels.container }}" }} has been crash-looping for five minutes.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: PodOOMKilledProduction
+                expr: >-
+                  increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace=~"agents|production|.*-production"}[10m]) > 0
+                labels: {severity: critical, owner: platform, environment_tier: production}
+                annotations:
+                  summary: 'Production OOMKill: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: 'Container {{ "{{ $labels.container }}" }} exceeded its memory boundary.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: PodPendingTooLong
+                expr: >-
+                  kube_pod_status_phase{phase="Pending",namespace!~"gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds"} == 1
+                for: 10m
+                labels: {severity: warning, owner: platform}
+                annotations:
+                  summary: 'Pod pending for 10 minutes: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: Inspect scheduling events, resource quota, PVC binding, and image pulls.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: ProductionDeploymentUnavailable
+                expr: kube_deployment_status_replicas_unavailable{namespace=~"agents|production|.*-production"} > 0
+                for: 5m
+                labels: {severity: critical, owner: platform, environment_tier: production}
+                annotations:
+                  summary: 'Production deployment unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
+                  description: One or more desired production replicas have been unavailable for five minutes.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: StatefulSetReplicaMismatch
+                expr: kube_statefulset_status_replicas_ready < kube_statefulset_replicas
+                for: 10m
+                labels: {severity: warning, owner: platform}
+                annotations:
+                  summary: 'StatefulSet replica mismatch: {{ "{{ $labels.namespace }}/{{ $labels.statefulset }}" }}'
+                  description: Ready replicas have remained below desired replicas for 10 minutes.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: KubernetesJobFailed
+                expr: max by (namespace, job_name) (increase(kube_job_status_failed[10m])) > 0
+                for: 2m
+                labels: {severity: warning, owner: platform}
+                annotations:
+                  summary: 'Job failed: {{ "{{ $labels.namespace }}/{{ $labels.job_name }}" }}'
+                  description: A Kubernetes Job has one or more failed pods.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+
+          - name: node-capacity
+            interval: 30s
+            rules:
+              - alert: NodeCpuSaturation
+                expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 90
+                for: 15m
+                labels: {severity: warning, owner: platform, service: kubernetes}
+                annotations:
+                  summary: 'Node CPU above 90%: {{ "{{ $labels.instance }}" }}'
+                  description: Sustained CPU saturation may delay services and CI jobs.
+              - alert: NodeMemoryAvailableLow
+                expr: 100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 10
+                for: 10m
+                labels: {severity: critical, owner: platform, service: kubernetes}
+                annotations:
+                  summary: 'Node memory below 10%: {{ "{{ $labels.instance }}" }}'
+                  description: Available node memory is critically low.
+              - alert: NodeFilesystemInodesLow
+                expr: >-
+                  100 * node_filesystem_files_free{fstype!~"tmpfs|overlay"}
+                  / node_filesystem_files{fstype!~"tmpfs|overlay"} < 10
+                for: 15m
+                labels: {severity: warning, owner: platform, service: kubernetes}
+                annotations:
+                  summary: 'Filesystem inodes below 10%: {{ "{{ $labels.instance }} {{ $labels.mountpoint }}" }}'
+                  description: Free inodes are nearly exhausted even if byte capacity remains.
+
+          - name: gitlab-ci
+            interval: 30s
+            rules:
+              - alert: GitLabRunnerMetricsDown
+                expr: >-
+                  (
+                    kube_deployment_spec_replicas{
+                      namespace=~"gitlab|gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds",
+                      deployment=~".*gitlab.*runner.*|gitlab-runner"
+                    }
+                    - on (namespace, deployment)
+                    kube_deployment_status_replicas_available{
+                      namespace=~"gitlab|gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds",
+                      deployment=~".*gitlab.*runner.*|gitlab-runner"
+                    }
+                  ) > 0
+                for: 10m
+                labels: {severity: critical, owner: platform, service: gitlab-runner}
+                annotations:
+                  summary: 'Runner managers unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: GitLabRunnerSystemErrors
+                expr: >-
+                  sum by (namespace, pod, job, level) (
+                    increase(gitlab_runner_errors_total{level=~"error|fatal|panic"}[15m])
+                  ) >= 3
+                for: 2m
+                labels: {severity: warning, owner: platform, service: gitlab-runner}
+                annotations:
+                  summary: 'Runner system errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: GitLabRunnerApiErrors
+                expr: >-
+                  sum by (namespace, pod, job, status) (
+                    increase(gitlab_runner_api_request_statuses_total{status=~"4..|5.."}[15m])
+                  ) >= 5
+                for: 2m
+                labels: {severity: critical, owner: platform, service: gitlab-runner}
+                annotations:
+                  summary: 'Runner API errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+              - alert: GitLabRunnerQueueSlow
+                expr: >-
+                  histogram_quantile(
+                    0.95,
+                    sum by (namespace, runner, runner_name, le) (
+                      rate(gitlab_runner_job_queue_duration_seconds_bucket[15m])
+                    )
+                  ) > 300
+                for: 15m
+                labels: {severity: warning, owner: platform, service: gitlab-runner}
+                annotations:
+                  summary: 'Runner queue slow: {{ "{{ $labels.namespace }}/{{ $labels.runner }}" }}'
+                  description: 'Queue p95 is {{ "{{ humanizeDuration $value }}" }} over 15 minutes on manager {{ "{{ $labels.runner_name }}" }}. Check pending jobs, quota, node headroom, and runner concurrency.'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
+
+          - name: storage-and-alert-delivery
+            interval: 30s
+            rules:
+              - alert: ObjectStorageS35xx
+                expr: sum(rate(SeaweedFS_s3_request_total{code=~"5.."}[5m])) > 0
+                for: 5m
+                labels: {severity: critical, owner: platform, service: seaweedfs, environment_tier: platform}
+                annotations:
+                  summary: SeaweedFS S3 is returning 5xx responses
+                  description: Registry, CI cache, and backup object operations may be failing.
+              - alert: ObjectStorageNoMasterLeader
+                expr: >-
+                  sum(SeaweedFS_master_is_leader) < 1
+                  or absent(SeaweedFS_master_is_leader)
+                for: 2m
+                labels: {severity: critical, owner: platform, service: seaweedfs, environment_tier: platform}
+                annotations:
+                  summary: SeaweedFS has no elected master leader
+                  description: Object storage writes cannot be trusted until leadership is restored.
+              - alert: ObjectStorageWritePlacementErrors
+                expr: sum(increase(SeaweedFS_master_pick_for_write_error[10m])) > 0
+                labels: {severity: warning, owner: platform, service: seaweedfs, environment_tier: platform}
+                annotations:
+                  summary: SeaweedFS failed to place a write
+                  description: Check writable volume count, replication placement, and disk capacity.
+              - alert: AlertDeliveryFailed
+                expr: sum by (integration, reason) (increase(alertmanager_notifications_failed_total[10m])) > 0
+                labels: {severity: critical, owner: platform, service: alertmanager, environment_tier: platform}
+                annotations:
+                  summary: 'Alert delivery failed via {{ "{{ $labels.integration }}" }}'
+                  description: 'Alertmanager reports notification failure reason {{ "{{ $labels.reason }}" }}.'
+              - alert: AlertmanagerConfigReloadFailed
+                expr: alertmanager_config_last_reload_successful == 0
+                for: 2m
+                labels: {severity: critical, owner: platform, service: alertmanager, environment_tier: platform}
+                annotations:
+                  summary: Alertmanager rejected its configuration
+                  description: The running configuration did not reload successfully.
+              - alert: VMAlertRuleEvaluationErrors
+                expr: increase(vmalert_execution_errors_total[5m]) > 0
+                labels: {severity: critical, owner: platform, service: vmalert, environment_tier: platform}
+                annotations:
+                  summary: VMAlert rule evaluation failed
+                  description: One or more alert expressions could not be evaluated.
+  register: _r_platform_slo_rules
+  retries: 3
+  delay: 10
+  until: _r_platform_slo_rules is not failed
 
 - name: Create Alertmanager HTTPRoute (VPN-only via admin-gateway)
   kubernetes.core.k8s:
