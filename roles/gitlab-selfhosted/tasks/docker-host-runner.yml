@@ -318,6 +318,23 @@
                           type: Unconfined
                 '''
                 patch_type = "strategic"
+              [[runners.kubernetes.pod_spec]]
+                name = "separate-protected-docker-from-general-ci"
+                patch = '''
+                  affinity:
+                    podAntiAffinity:
+                      requiredDuringSchedulingIgnoredDuringExecution:
+                        - labelSelector:
+                            matchLabels:
+                              workload.n0xeid.xyz/class: ci-job
+                          # General jobs live outside this protected namespace.
+                          # Cross-namespace matching is required for the hard
+                          # anti-affinity to reserve the Docker worker in fact.
+                          namespaces:
+                            - "{{ gitlab_runner_namespace }}"
+                          topologyKey: kubernetes.io/hostname
+                '''
+                patch_type = "strategic"
         tags: docker-host
         runUntagged: false
       podLabels:
