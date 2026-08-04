@@ -513,7 +513,7 @@
                   description: Ready replicas have remained below desired replicas for 10 minutes.
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: KubernetesJobFailed
-                expr: increase(kube_job_status_failed[10m]) > 0
+                expr: max by (namespace, job_name) (increase(kube_job_status_failed[10m])) > 0
                 for: 2m
                 labels: {severity: warning, owner: platform}
                 annotations:
@@ -568,7 +568,8 @@
                 labels: {severity: critical, owner: platform, service: gitlab-runner}
                 annotations:
                   summary: 'Runner managers unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
-                  description: '{{ "{{ printf \"%.0f\" $value }}" }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: GitLabRunnerSystemErrors
                 expr: >-
@@ -579,7 +580,8 @@
                 labels: {severity: warning, owner: platform, service: gitlab-runner}
                 annotations:
                   summary: 'Runner system errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
-                  description: '{{ "{{ printf \"%.0f\" $value }}" }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: GitLabRunnerApiErrors
                 expr: >-
@@ -590,7 +592,8 @@
                 labels: {severity: critical, owner: platform, service: gitlab-runner}
                 annotations:
                   summary: 'Runner API errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
-                  description: '{{ "{{ printf \"%.0f\" $value }}" }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: GitLabRunnerQueueSlow
                 expr: >-
