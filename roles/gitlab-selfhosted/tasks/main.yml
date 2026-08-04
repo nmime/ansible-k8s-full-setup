@@ -2372,6 +2372,18 @@
               [[runners.kubernetes.pod_spec]]
                 name = "spread-ci-jobs-across-workers"
                 patch = '''
+                  affinity:
+                    podAntiAffinity:
+                      requiredDuringSchedulingIgnoredDuringExecution:
+                        - labelSelector:
+                            matchLabels:
+                              workload.n0xeid.xyz/class: protected-docker-smoke-job
+                          # Pod affinity terms default to the current namespace.
+                          # Protected jobs live in a separate namespace, so name
+                          # it explicitly or this hard anti-affinity is a no-op.
+                          namespaces:
+                            - "{{ gitlab_docker_host_runner_namespace }}"
+                          topologyKey: kubernetes.io/hostname
                   topologySpreadConstraints:
                     - maxSkew: 1
                       topologyKey: kubernetes.io/hostname
