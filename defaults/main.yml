@@ -79,11 +79,11 @@ gateway_api_version: v1.6.0
 k8s_pod_cidr: 10.233.64.0/18
 k8s_service_cidr: 10.233.0.0/18
 # Bound completed/failed Pod API objects well below Kubespray's upstream
-# default (12,500). This does not delete running workloads or their storage;
-# it prevents a restart incident from leaving thousands of terminal objects
-# for the controller manager, API server, and monitoring stack to process.
+# default (12,500). This does not delete running workloads or their storage.
+# Keep at most one terminal Pod because Succeeded Deployment Pods still match
+# HPA selectors and are treated as missing metrics, which suppresses scale-up.
 kube_controller_terminated_pod_gc_threshold: >-
-  {{ (kubernetes | default({})).terminated_pod_gc_threshold | default(200) }}
+  {{ (kubernetes | default({})).terminated_pod_gc_threshold | default(1) }}
 
 # Cluster addons (patch/minor-safe upgrades)
 cert_manager_version: v1.21.0

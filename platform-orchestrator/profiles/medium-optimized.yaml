@@ -90,9 +90,10 @@ kubernetes:
   version: v1.35.4
   cni: cilium
   ha_control_plane: true
-  # Bound only terminal Pod API objects. Running workloads and persistent data
-  # are unaffected, while restart cascades cannot accumulate 12,500 tombstones.
-  terminated_pod_gc_threshold: 200
+  # Succeeded Deployment Pods still match HPA selectors and count as missing
+  # metrics. Retain at most one terminal Pod cluster-wide so scale-up is never
+  # blocked by a growing tombstone set; centralized logs preserve the history.
+  terminated_pod_gc_threshold: 1
   features:
     gateway_api: true
     hubble: true
