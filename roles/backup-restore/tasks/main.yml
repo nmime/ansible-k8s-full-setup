@@ -76,6 +76,38 @@
   no_log: true
   tags: [backup, backup-setup]
 
+- name: "Backup | Require scoped GitLab verification credentials"
+  ansible.builtin.assert:
+    that:
+      - backup_gitlab_verification_access_key | length >= 12
+      - backup_gitlab_verification_secret_key | length >= 24
+    fail_msg: >-
+      GitLab backup verification credentials are missing or insecure. Run the
+      generate-secrets role; do not broaden the general backup identity to the
+      GitLab buckets.
+  when: "'gitlab' in _backup_components"
+  no_log: true
+  tags: [backup, backup-setup, backup-verify]
+
+- name: "Backup | Create scoped GitLab verification credentials secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: backup-gitlab-verification-credentials
+        namespace: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+      type: Opaque
+      stringData:
+        GITLAB_AWS_ACCESS_KEY_ID: "{{ backup_gitlab_verification_access_key }}"
+        GITLAB_AWS_SECRET_ACCESS_KEY: "{{ backup_gitlab_verification_secret_key }}"
+  when: "'gitlab' in _backup_components"
+  no_log: true
+  tags: [backup, backup-setup, backup-verify]
+
 - name: "Backup | Include PostgreSQL backup tasks"
   ansible.builtin.include_tasks: postgresql_pgbackrest.yml
   when: "'postgresql' in _backup_components"

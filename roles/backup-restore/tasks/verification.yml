@@ -22,11 +22,14 @@
         jobTemplate:
           spec:
             ttlSecondsAfterFinished: 600
-            backoffLimit: 2
+            # Verification is read-only and AWS CLI already retries transient
+            # requests. Re-running a deterministic missing-artifact result in
+            # the same Pod only inflates restart alerts without adding proof.
+            backoffLimit: 0
             activeDeadlineSeconds: "{{ backup_verification_timeout | default(3600) }}"
             template:
               spec:
-                restartPolicy: OnFailure
+                restartPolicy: Never
                 securityContext:
                   runAsNonRoot: true
                   seccompProfile:
@@ -63,11 +66,21 @@
                             bucket="$B"
                             prefix="${P}/${comp}/"
                           fi
-                          if ! N=$(aws --endpoint-url="$E" s3api list-objects-v2 \
-                            --bucket "$bucket" --prefix "$prefix" --max-keys 1 --no-paginate \
-                            --query 'length(Contents || `[]`)' --output text 2>/dev/null); then
+                          if [ "$comp" = gitlab ]; then
+                            N=$(AWS_ACCESS_KEY_ID="$GITLAB_AWS_ACCESS_KEY_ID" \
+                              AWS_SECRET_ACCESS_KEY="$GITLAB_AWS_SECRET_ACCESS_KEY" \
+                              aws --endpoint-url="$E" s3api list-objects-v2 \
+                              --bucket "$bucket" --prefix "$prefix" --max-keys 1 --no-paginate \
+                              --query 'length(Contents || `[]`)' --output text 2>/dev/null) || N_ERROR=1
+                          else
+                            N=$(aws --endpoint-url="$E" s3api list-objects-v2 \
+                              --bucket "$bucket" --prefix "$prefix" --max-keys 1 --no-paginate \
+                              --query 'length(Contents || `[]`)' --output text 2>/dev/null) || N_ERROR=1
+                          fi
+                          if [ "${N_ERROR:-0}" -eq 1 ]; then
                             echo "FAIL: unable to verify ${comp} artifacts"
                             FAIL=$((FAIL+1))
+                            unset N_ERROR
                             continue
                           fi
                           case "$N" in
@@ -95,6 +108,8 @@
                     envFrom:
                       - secretRef:
                           name: backup-storage-credentials
+                      - secretRef:
+                          name: backup-gitlab-verification-credentials
                     resources:
                       requests:
                         cpu: "{{ backup_job_cpu_request | default('100m') }}"
