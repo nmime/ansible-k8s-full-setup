@@ -86,6 +86,8 @@
     gitlab_docker_host_runner_worker_index: >-
       {{ (gitlab.runner.docker_host | default({})).dedicated_worker_index |
          default(gitlab_docker_host_runner_worker_index | default(0)) }}
+    gitlab_docker_host_runner_quota: >-
+      {{ (gitlab.runner.docker_host | default({})).quota | default({}) }}
     gitlab_public_webservice_enabled: '{{ gitlab.public_webservice_enabled | default(false) | bool }}'
     gitlab_readiness_timeout: '{{ gitlab.readiness_timeout | default(''30m'') }}'
     gitlab_readiness_retries: '{{ gitlab.readiness_retries | default(180) }}'

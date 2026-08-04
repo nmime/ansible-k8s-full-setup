@@ -1,4 +1,32 @@
 ---
+- name: Docker smoke | Bound protected Runner admission with cleanup headroom
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: protected-docker-smoke-budget
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        hard:
+          # Runner concurrency remains one. This quota intentionally admits the
+          # completed Pod and its successor during the bounded cleanup window,
+          # preventing stage transitions from failing before Pod creation.
+          pods: '10'
+          requests.cpu: >-
+            {{ gitlab_docker_host_runner_quota.requests_cpu | default('4') }}
+          requests.memory: >-
+            {{ gitlab_docker_host_runner_quota.requests_memory | default('7Gi') }}
+          limits.cpu: >-
+            {{ gitlab_docker_host_runner_quota.limits_cpu | default('14') }}
+          limits.memory: >-
+            {{ gitlab_docker_host_runner_quota.limits_memory | default('14Gi') }}
+          configmaps: '12'
+          secrets: '20'
+          services: '8'
+          persistentvolumeclaims: '0'
+
 - name: Docker smoke | Create default-deny policy
   kubernetes.core.k8s:
     state: present
