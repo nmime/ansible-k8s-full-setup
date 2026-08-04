@@ -962,6 +962,31 @@ class TestChart10ValuesStructure:
         network = read(DOCKER_HOST_NETWORK_PATH)
         tasks = yaml.safe_load(runner)
         network_tasks = yaml.safe_load(network)
+        limit_range = next(
+            task
+            for task in network_tasks
+            if task.get("name")
+            == "Docker smoke | Bound per-container resources"
+        )["kubernetes.core.k8s"]["definition"]
+        assert limit_range["metadata"]["name"] == (
+            "protected-docker-smoke-containers"
+        )
+        assert limit_range["metadata"]["labels"] == {
+            "app.kubernetes.io/managed-by": "ansible",
+            "workload.n0xeid.xyz/trust-boundary": "protected-docker-smoke",
+        }
+        container_limits = limit_range["spec"]["limits"][0]
+        assert container_limits["type"] == "Container"
+        assert "helper_cpu_request" in container_limits["defaultRequest"]["cpu"]
+        assert "helper_memory_request" in container_limits["defaultRequest"][
+            "memory"
+        ]
+        assert "helper_cpu_limit" in container_limits["default"]["cpu"]
+        assert "helper_memory_limit" in container_limits["default"]["memory"]
+        assert "service_cpu_limit" in container_limits["max"]["cpu"]
+        assert "default('4000m')" in container_limits["max"]["cpu"]
+        assert "service_memory_limit" in container_limits["max"]["memory"]
+        assert "default('6Gi')" in container_limits["max"]["memory"]
         quota = next(
             task
             for task in network_tasks
