@@ -535,7 +535,26 @@
         instances:
         - name: instance1
           replicas: '{{ pg_replicas | int }}'
-          tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
+          # Local-PV replicas can be physically pinned to a control-plane node.
+          # Preserve only that case when a grown compact cluster dedicates its
+          # control plane; ordinary workloads remain blocked by NoSchedule.
+          tolerations: >-
+            {{
+              [{
+                'key': 'node-role.kubernetes.io/control-plane',
+                'operator': 'Exists',
+                'effect': 'NoSchedule'
+              }]
+              if (
+                tier == 'production'
+                or (
+                  local_storage_enabled | default(false) | bool
+                  and pg_data_storage_class == local_storage_class
+                  and not (cp_schedulable | default(false) | bool)
+                )
+              )
+              else []
+            }}
           dataVolumeClaimSpec:
             accessModes:
             - ReadWriteOnce

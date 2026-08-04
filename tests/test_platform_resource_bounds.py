@@ -44,6 +44,28 @@ def test_cilium_chart_and_reconciliation_bound_operator_and_envoy() -> None:
         assert_complete_resources(containers[0]["resources"])
 
 
+def test_kubespray_group_vars_preserve_kubelet_oom_headroom() -> None:
+    tasks = load_tasks("roles/k8s-cluster-management/tasks/main.yml")
+    group_vars = task_named(tasks, "Generate Kubespray group_vars")["copy"][
+        "content"
+    ]
+
+    assert 'kube_memory_reserved: "{{ kubernetes.kubelet.kube_memory_reserved' in group_vars
+    assert (
+        'system_memory_reserved: "{{ kubernetes.kubelet.system_memory_reserved'
+        in group_vars
+    )
+    assert "eviction_hard:" in group_vars
+    for threshold in (
+        "memory.available",
+        "nodefs.available",
+        "nodefs.inodesFree",
+        "imagefs.available",
+        "imagefs.inodesFree",
+    ):
+        assert f"'{threshold}'" in group_vars
+
+
 def test_nodelocal_ccm_and_every_csi_container_have_complete_bounds() -> None:
     tasks = load_tasks("roles/k8s-cluster-management/tasks/main.yml")
 
