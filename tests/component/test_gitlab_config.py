@@ -1417,6 +1417,24 @@ class TestDefaultsTasksConsistency:
         assert "state: patched" in self.tasks_raw
 
     @pytest.mark.component
+    def test_toolbox_backup_can_be_suspended_without_disabling_the_chart(self):
+        assert "gitlab_toolbox_backup_suspended:" in self.tasks_raw
+        assert "gitlab.toolbox_backup_suspended | default(false)" in self.tasks_raw
+        assert "name: gitlab-toolbox-backup" in self.tasks_raw
+        assert "suspend: '{{ gitlab_toolbox_backup_suspended | bool }}'" in self.tasks_raw
+        medium = yaml.safe_load(
+            read(
+                os.path.join(
+                    REPO_ROOT,
+                    "platform-orchestrator",
+                    "profiles",
+                    "medium-optimized.yaml",
+                )
+            )
+        )
+        assert medium["gitlab"]["toolbox_backup_suspended"] is True
+
+    @pytest.mark.component
     def test_every_toolbox_backup_bucket_is_bootstrapped(self):
         buckets = read(os.path.join(REPO_ROOT, "roles", "object-storage", "defaults", "main.yml"))
         for bucket in (

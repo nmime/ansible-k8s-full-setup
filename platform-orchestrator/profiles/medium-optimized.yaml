@@ -52,8 +52,8 @@ infrastructure:
     count: 6
     type: cx43
     type_overrides:
-      4: cpx32
-      5: cpx42
+      4: cx43
+      5: cx43
       6: cx33
 
 # ---------------------------------------------
@@ -90,6 +90,9 @@ kubernetes:
   version: v1.35.4
   cni: cilium
   ha_control_plane: true
+  # Bound only terminal Pod API objects. Running workloads and persistent data
+  # are unaffected, while restart cascades cannot accumulate 12,500 tombstones.
+  terminated_pod_gc_threshold: 200
   features:
     gateway_api: true
     hubble: true
@@ -276,6 +279,10 @@ gitlab:
   # while the 40 GiB/node free-space gate protects local scratch headroom.
   backup_persistence_enabled: false
   backup_persistence_size: 30Gi
+  # The retained verified archives currently exceed the 50 GiB safety quota.
+  # Keep backup execution suspended without disabling the chart or deleting
+  # another recovery point. Resume only after an explicit retention decision.
+  toolbox_backup_suspended: true
   runner:
     enabled: true
     # General non-privileged jobs spread across workers 4 and 5. Protected
