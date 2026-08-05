@@ -76,15 +76,15 @@ maintenance is required. Production backups must also be copied to storage
 outside this cluster.
 
 At the authenticated Hetzner API prices audited on 2026-07-30, the complete
-currently placeable balanced shape is €357.984/month net (€357.98 rounded),
+currently placeable balanced shape is €358.556/month net (€358.56 rounded),
 including isolated `cpx32` Docker and `cpx42` general/image-build workers,
 bastion IPv4, 300 GiB of active
 replication-qualified local claims in a
-450 GiB expandable static pool, and 220 GiB
+450 GiB expandable static pool, and 230 GiB
 of billable CSI volumes. Its six-node platform base without the CI worker is
-€253.00/month. GitLab backup staging uses transient node SSD before its immediate
+€253.58/month. GitLab backup staging uses transient node SSD before its immediate
 object-storage upload. The intermittent CX cost-optimized platform base is
-€99.50/month whenever all required shapes are
+€100.08/month whenever all required shapes are
 placeable: three `cx33` control planes retain economical quorum capacity while
 three `cx43` workers provide 24 vCPU, 48 GiB RAM, and 480 GiB worker-local SSD.
 It was temporarily unavailable for new `hel1`
@@ -96,7 +96,7 @@ see [the cost model](docs/COST_MODEL.md) and
 
 The current live deployment uses the CX platform base plus isolated `cpx32`
 Docker and `cpx42` general/image-build workers. At the current authenticated
-prices, the resulting footprint is **€204.48/month net**, including 220 GiB of
+prices, the resulting footprint is **€205.06/month net**, including 230 GiB of
 provider volumes. Both workers are private, tainted, excluded from ingress and
 local PVs, and required to keep CI disk pressure away from production.
 

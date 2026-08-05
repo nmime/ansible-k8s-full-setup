@@ -26,8 +26,8 @@ balancer's public address is part of the load-balancer resource.
 
 ## Hybrid persistent capacity
 
-The base profile has 31 operational PVCs in 17 claim groups. It has a
-conservative 520 GiB active-claim envelope and assigns only
+The base profile has 32 operational PVCs in 17 claim groups. It has a
+conservative 530 GiB active-claim envelope and assigns only
 application-replicated data to server-local SSD:
 
 | Claim group | Storage class | Reserved GiB |
@@ -48,8 +48,8 @@ application-replicated data to server-local SSD:
 
 `scripts/profile-storage-capacity.py` applies Hetzner's 10 GiB minimum to CSI
 claims and uses the same minimum as a conservative reservation for small local
-claims. Operational Kubernetes requests total 462 GiB and conservatively
-reserve 520 GiB. This
+claims. Operational Kubernetes requests total 472 GiB and conservatively
+reserve 530 GiB. This
 prevents the cost and capacity plan from depending on sub-10-GiB packing.
 
 The playbook creates 24 target-generation static local PV slots totaling
@@ -75,8 +75,8 @@ within the requested size. `NodeDiskUsageHigh` at 85%, kubelet `DiskPressure`,
 and the retained 40 GiB deployment gate protect the remaining operating-system
 and container-runtime headroom.
 
-At €0.0572/GiB-month, 220 GiB of provider volumes costs €12.584/month, rounded
-to €12.58. The 450 GiB expandable static pool is already included in server
+At €0.0572/GiB-month, 230 GiB of provider volumes costs €13.156/month, rounded
+to €13.16. The 450 GiB expandable static pool is already included in server
 prices. GitLab uses up to 30 GiB of transient node-local backup scratch and
 uploads completed archives to object storage; that scratch is not durable
 state. Enabling MongoDB consumes only the remaining replicated local-pool
@@ -87,12 +87,12 @@ capacity and therefore does not increase this provider-volume baseline.
 The six-node workload platform base, before the isolated CI worker, is:
 
 ```text
-€240.420 infrastructure + €12.584 volumes = €253.004/month net
+€240.420 infrastructure + €13.156 volumes = €253.576/month net
 ```
 
-That is **€253.00/month net** rounded to cents. Adding the isolated `cpx32`
+That is **€253.58/month net** rounded to cents. Adding the isolated `cpx32`
 Docker worker and the isolated `cpx42` general/image-build worker makes the
-complete currently placeable named profile **€357.98/month net**. Hetzner's
+complete currently placeable named profile **€358.56/month net**. Hetzner's
 API supplies explicit
 hourly rates for servers, the load balancer, and Primary IPv4, giving a direct
 uncapped infrastructure rate of **€0.3854/hour**. It supplies volumes as a
@@ -120,10 +120,10 @@ The optimized CX mapping uses three `cx33` schedulable control planes, three
 | `lb11` | 1 | €7.49 | €7.49 |
 | Bastion Primary IPv4 | 1 | €0.50 | €0.50 |
 | **Infrastructure subtotal** | | | **€86.92** |
-| 220 GiB durable CSI volumes | | €0.0572/GiB | **€12.58** |
+| 230 GiB durable CSI volumes | | €0.0572/GiB | **€13.16** |
 | Up to 30 GiB transient GitLab backup scratch | | server-local SSD | **€0.00** |
 | 300 GiB active claims in a 450 GiB server-SSD pool | | included | **€0.00** |
-| **Total** | | | **€99.50** |
+| **Total** | | | **€100.08** |
 
 The production deployment uses two tainted CI workers. Worker 4 runs only the
 protected Docker-in-Docker compatibility lane. Worker 5 runs one general job
@@ -136,8 +136,8 @@ were unavailable in every EU location, while CPX32 and CPX42 were placeable:
 | Isolated `cpx32` Docker CI worker | 1 | €35.49 | **€35.49** |
 | Isolated `cpx42` general/image CI worker | 1 | €69.49 | **€69.49** |
 | **Infrastructure subtotal with CI** | | | **€191.90** |
-| 220 GiB durable CSI volumes | | €0.0572/GiB | **€12.58** |
-| **Live CX production total with CI** | | | **€204.48** |
+| 230 GiB durable CSI volumes | | €0.0572/GiB | **€13.16** |
+| **Live CX production total with CI** | | | **€205.06** |
 
 The Kubernetes nodes then provide 48 vCPU, 96 GiB RAM, and 1,200 GiB aggregate
 node-local SSD. Only the original three `cx43` workers contribute to the
