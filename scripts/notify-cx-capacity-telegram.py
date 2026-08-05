@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Notify Telegram when medium-optimized CX availability changes in Helsinki."""
+"""Acquire one CX33 and two CX43 servers when available in Helsinki."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import html
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -23,7 +24,35 @@ DEFAULT_STATE_FILE = (
     ROOT / "platform-orchestrator" / ".state" / "cx-capacity-monitor.json"
 )
 TARGET_LOCATION = "hel1"
-ROLE_ORDER = ("bastion", "control_plane", "worker")
+ROLE_ORDER = ("control_plane", "worker")
+ORDER_SET = "k8s-cx33-cx43-pair"
+ORDER_SPECS = (
+    {
+        "order_key": "cx33-1",
+        "availability_role": "control_plane",
+        "server_type": "cx33",
+        "name_suffix": "master-1",
+        "server_role": "reserve-master",
+        "display_role": "Kubernetes control plane",
+    },
+    {
+        "order_key": "cx43-1",
+        "availability_role": "worker",
+        "server_type": "cx43",
+        "name_suffix": "worker-1",
+        "server_role": "reserve-worker",
+        "display_role": "Kubernetes worker",
+    },
+    {
+        "order_key": "cx43-2",
+        "availability_role": "worker",
+        "server_type": "cx43",
+        "name_suffix": "worker-2",
+        "server_role": "reserve-worker",
+        "display_role": "Kubernetes worker",
+    },
+)
+LEGACY_ORDER_KEYS = {"cx33": "cx33-1", "cx43": "cx43-1"}
 
 
 def load_capacity_report() -> Any:
@@ -85,23 +114,20 @@ def collect_snapshot(
     )
     if plan is None:
         raise RuntimeError("medium-optimized CX mapping is missing from capacity plans")
+    requested_types = {role: plan["types"][role] for role in ROLE_ORDER}
+    requested_availability = {
+        role: bool(plan["availability"].get(role, False)) for role in ROLE_ORDER
+    }
     location_result = {
         **location,
-        "available": bool(plan["all_types_available"]),
-        "types": plan["types"],
-        "availability": plan["availability"],
-        "control_plane_count": plan["control_plane_count"],
-        "worker_count": plan["worker_count"],
-        "infrastructure_monthly_net": plan["infrastructure_monthly_net"],
-        "volume_gib": plan["volume_gib"],
-        "volume_monthly_net": plan["volume_monthly_net"],
-        "local_reserved_gib": plan["local_reserved_gib"],
-        "total_monthly_net": plan["total_monthly_net"],
+        "available": all(requested_availability.values()),
+        "types": requested_types,
+        "availability": requested_availability,
     }
     return {
-        "schema_version": 3,
+        "schema_version": 5,
         "checked_at": utc_now(),
-        "profile": "medium-optimized",
+        "profile": "k8s-cx-pair",
         "family": "cx",
         "complete_locations": (
             [TARGET_LOCATION] if location_result["available"] else []
@@ -171,7 +197,7 @@ def build_message(
         elif available_types:
             status = f"🟡 PARTIAL — {len(available_types)}/{len(ROLE_ORDER)} shapes"
         else:
-            status = "⚫ UNAVAILABLE — 0/3 shapes"
+            status = "⚫ UNAVAILABLE — 0/2 shapes"
         previous = previous_signature.get(name, {})
         transitions = [
             f"<code>{html.escape(types[role])}</code>: "
@@ -206,18 +232,10 @@ def build_message(
                         else "none"
                     ),
                     *([f"• changed: {'; '.join(transitions)}"] if transitions else []),
-                    f"• target: 1 × <code>{html.escape(types['bastion'])}</code>, "
-                    f"{location['control_plane_count']} × "
+                    f"• target: 1 × "
                     f"<code>{html.escape(types['control_plane'])}</code>, "
-                    f"{location['worker_count']} × "
+                    f"2 × "
                     f"<code>{html.escape(types['worker'])}</code>",
-                    f"• infrastructure plan: "
-                    f"€{html.escape(location['infrastructure_monthly_net'])}/month net",
-                    f"• CSI volumes: {location['volume_gib']} GiB, "
-                    f"€{html.escape(location['volume_monthly_net'])}/month net",
-                    f"• active local claims: {location['local_reserved_gib']} GiB",
-                    f"• <b>planned total: "
-                    f"€{html.escape(location['total_monthly_net'])}/month net</b>",
                 ]
             )
         )
@@ -230,10 +248,9 @@ def build_message(
     )
     return "\n".join(
         [
-            "📊 <b>Hetzner CX capacity changed</b>",
+            "📊 <b>Hetzner Helsinki CX pair availability changed</b>",
             "",
-            "Required for <code>medium-optimized</code>: "
-            "<code>cx23 + cx33 + cx43</code>.",
+            "Requested Kubernetes reserve: <code>1 × cx33 + 2 × cx43</code>.",
             locations_text,
             "",
             f"Checked: <code>{html.escape(snapshot['checked_at'])}</code>",
@@ -241,8 +258,9 @@ def build_message(
             "Inspect the current location report:",
             f"<code>./scripts/hetzner-capacity-report.sh --location "
             f"{html.escape(first_location)}</code>",
-            "Notification only: this monitor contains no provisioning path and "
-            "never creates, resizes, or deletes resources.",
+            "Available types are acquired independently. The hard cap is one "
+            "<code>cx33</code> and two <code>cx43</code>; no other server type "
+            "is created.",
         ]
     )
 
@@ -303,6 +321,340 @@ def send_telegram(
         raise RuntimeError(f"Telegram API rejected the message: {description}")
 
 
+def env_enabled(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")
+
+
+def order_settings() -> dict[str, Any]:
+    reservation_project = os.environ.get(
+        "CX_CAPACITY_ORDER_PROJECT", "n0xeid-medium-optimized-cx-reserve"
+    ).strip()
+    if not reservation_project:
+        raise RuntimeError("CX_CAPACITY_ORDER_PROJECT must not be empty")
+    return {
+        "enabled": env_enabled("CX_CAPACITY_ORDER_ENABLED", False),
+        "hcloud_bin": str(
+            Path(
+                os.environ.get("CX_CAPACITY_HCLOUD_BIN", "/opt/homebrew/bin/hcloud")
+            ).expanduser()
+        ),
+        "reservation_project": reservation_project,
+        "cluster": os.environ.get(
+            "CX_CAPACITY_ORDER_CLUSTER", "n0xeid-medium-optimized-cx"
+        ).strip(),
+        "network": os.environ.get(
+            "CX_CAPACITY_ORDER_NETWORK",
+            "n0xeid-medium-optimized-cx-network",
+        ).strip(),
+        "firewall": os.environ.get(
+            "CX_CAPACITY_ORDER_FIREWALL",
+            "n0xeid-medium-optimized-cx-fw-nodes",
+        ).strip(),
+        "ssh_key": os.environ.get("CX_CAPACITY_ORDER_SSH_KEY", "splox key 1").strip(),
+        "placement_group": os.environ.get(
+            "CX_CAPACITY_ORDER_PLACEMENT_GROUP",
+            "n0xeid-medium-optimized-cx-spread",
+        ).strip(),
+        "image": os.environ.get("CX_CAPACITY_ORDER_IMAGE", "ubuntu-24.04").strip(),
+    }
+
+
+def run_hcloud(arguments: list[str], binary: str) -> subprocess.CompletedProcess[str]:
+    path = Path(binary)
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError(f"hcloud binary is not executable: {binary}")
+    try:
+        return subprocess.run(
+            [binary, *arguments],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=180,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"hcloud command failed to execute: {exc}") from exc
+
+
+def hcloud_json(result: subprocess.CompletedProcess[str], context: str) -> Any:
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RuntimeError(f"{context} failed: {detail}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{context} returned invalid JSON") from exc
+
+
+def server_type_name(server: dict[str, Any]) -> str:
+    value = server.get("server_type", "")
+    if isinstance(value, dict):
+        return str(value.get("name", ""))
+    return str(value)
+
+
+def expected_server_name(
+    settings: dict[str, Any], specification: dict[str, str]
+) -> str:
+    return f"{settings['reservation_project']}-{specification['name_suffix']}"
+
+
+def expected_server_labels(
+    settings: dict[str, Any], specification: dict[str, str]
+) -> dict[str, str]:
+    return {
+        "project": settings["reservation_project"],
+        "cluster": settings["cluster"],
+        "role": specification["server_role"],
+        "managed-by": "cx-capacity-monitor",
+        "order-set": ORDER_SET,
+    }
+
+
+def validate_managed_server(
+    server: dict[str, Any],
+    settings: dict[str, Any],
+    specification: dict[str, str],
+) -> None:
+    name = expected_server_name(settings, specification)
+    if str(server.get("name", "")) != name:
+        raise RuntimeError(f"unexpected managed server name: {server.get('name')}")
+    actual_type = server_type_name(server)
+    if actual_type != specification["server_type"]:
+        raise RuntimeError(
+            f"managed server {name} has type {actual_type}, expected "
+            f"{specification['server_type']}"
+        )
+    labels = server.get("labels", {})
+    expected_labels = expected_server_labels(settings, specification)
+    if not isinstance(labels, dict) or any(
+        labels.get(key) != value for key, value in expected_labels.items()
+    ):
+        raise RuntimeError(f"managed server {name} has unexpected labels")
+
+
+def order_notification(server: dict[str, Any], specification: dict[str, str]) -> str:
+    return "\n".join(
+        [
+            "🛒 <b>Hetzner Kubernetes reserve acquired</b>",
+            f"Type: <code>{html.escape(specification['server_type'])}</code>",
+            f"Role: {html.escape(specification['display_role'])}",
+            f"Server: <code>{html.escape(str(server['name']))}</code>",
+            f"Location: <code>{TARGET_LOCATION}</code> (Helsinki)",
+            "Networking: private Kubernetes network, node firewall, no public IP",
+            "Order cap: 1 × <code>cx33</code> + 2 × <code>cx43</code>.",
+        ]
+    )
+
+
+def persist_orders(state_file: Path, orders: dict[str, Any]) -> None:
+    state = read_state(state_file)
+    state["orders"] = orders
+    atomic_write_state(state_file, state)
+
+
+def normalize_order_receipts(value: Any) -> dict[str, Any]:
+    orders = dict(value) if isinstance(value, dict) else {}
+    for legacy_key, order_key in LEGACY_ORDER_KEYS.items():
+        if order_key not in orders and legacy_key in orders:
+            orders[order_key] = orders[legacy_key]
+        orders.pop(legacy_key, None)
+    return orders
+
+
+def maybe_order_servers(
+    snapshot: dict[str, Any],
+    state_file: Path,
+    token: str,
+    chat_id: str,
+    *,
+    notify: Callable[[str, str, str], None] = send_telegram,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    settings = order_settings()
+    if not settings["enabled"]:
+        return {"enabled": False, "limit": len(ORDER_SPECS), "statuses": {}}
+
+    execute = runner or (
+        lambda arguments: run_hcloud(arguments, settings["hcloud_bin"])
+    )
+    inventory_result = execute(
+        [
+            "server",
+            "list",
+            "--selector",
+            f"order-set={ORDER_SET}",
+            "-o",
+            "json",
+        ]
+    )
+    inventory = hcloud_json(inventory_result, "managed server inventory")
+    if not isinstance(inventory, list):
+        raise RuntimeError("managed server inventory is not a JSON list")
+    if len(inventory) > len(ORDER_SPECS):
+        raise RuntimeError(
+            f"managed server cap exceeded: found {len(inventory)}, "
+            f"maximum is {len(ORDER_SPECS)}"
+        )
+
+    expected_by_name = {
+        expected_server_name(settings, specification): specification
+        for specification in ORDER_SPECS
+    }
+    unexpected = sorted(
+        str(server.get("name", ""))
+        for server in inventory
+        if str(server.get("name", "")) not in expected_by_name
+    )
+    if unexpected:
+        raise RuntimeError(
+            f"unexpected servers use order-set={ORDER_SET}: {', '.join(unexpected)}"
+        )
+    for server in inventory:
+        validate_managed_server(server, settings, expected_by_name[str(server["name"])])
+
+    state = read_state(state_file)
+    previous_orders = state.get("orders", {})
+    orders = normalize_order_receipts(previous_orders)
+    if orders != previous_orders:
+        persist_orders(state_file, orders)
+    statuses: dict[str, str] = {}
+    by_name = {str(server["name"]): server for server in inventory}
+    availability = snapshot["locations"][TARGET_LOCATION]["availability"]
+
+    for specification in ORDER_SPECS:
+        order_key = specification["order_key"]
+        server_type = specification["server_type"]
+        name = expected_server_name(settings, specification)
+        existing = by_name.get(name)
+        previous = orders.get(order_key, {})
+        previous = previous if isinstance(previous, dict) else {}
+
+        if existing is None and previous.get("status") == "acquired":
+            statuses[order_key] = "previously-acquired-missing"
+            continue
+
+        if existing is None and not bool(
+            availability.get(specification["availability_role"], False)
+        ):
+            statuses[order_key] = "waiting-for-capacity"
+            continue
+
+        if existing is None:
+            if len(by_name) >= len(ORDER_SPECS):
+                raise RuntimeError("managed server cap reached before order")
+            name_check = execute(["server", "describe", name, "-o", "json"])
+            if name_check.returncode == 0:
+                existing = hcloud_json(name_check, f"server {name} lookup")
+                if not isinstance(existing, dict):
+                    raise RuntimeError(f"server {name} lookup returned invalid JSON")
+                validate_managed_server(existing, settings, specification)
+            else:
+                lookup_error = (
+                    name_check.stderr.strip() or name_check.stdout.strip()
+                ).lower()
+                if "not found" not in lookup_error:
+                    raise RuntimeError(
+                        f"server {name} lookup failed: "
+                        f"{name_check.stderr.strip() or name_check.stdout.strip()}"
+                    )
+                labels = expected_server_labels(settings, specification)
+                create_arguments = [
+                    "server",
+                    "create",
+                    "--name",
+                    name,
+                    "--type",
+                    server_type,
+                    "--image",
+                    settings["image"],
+                    "--location",
+                    TARGET_LOCATION,
+                    "--ssh-key",
+                    settings["ssh_key"],
+                    "--network",
+                    settings["network"],
+                    "--firewall",
+                    settings["firewall"],
+                    "--placement-group",
+                    settings["placement_group"],
+                    "--without-ipv4",
+                    "--without-ipv6",
+                ]
+                for key, value in labels.items():
+                    create_arguments.extend(["--label", f"{key}={value}"])
+                create_arguments.extend(["-o", "json"])
+                created = execute(create_arguments)
+                if created.returncode != 0:
+                    detail = created.stderr.strip() or created.stdout.strip()
+                    normalized = detail.lower()
+                    if (
+                        "resource_unavailable" in normalized
+                        or "not available" in normalized
+                        or "unavailable" in normalized
+                    ):
+                        statuses[order_key] = "capacity-lost-before-order"
+                        continue
+                    raise RuntimeError(f"server {name} creation failed: {detail}")
+                create_document = hcloud_json(created, f"server {name} creation")
+                existing = (
+                    create_document.get("server", create_document)
+                    if isinstance(create_document, dict)
+                    else create_document
+                )
+                if not isinstance(existing, dict):
+                    raise RuntimeError(f"server {name} creation returned invalid JSON")
+                validate_managed_server(existing, settings, specification)
+                by_name[name] = existing
+
+        record = {
+            **previous,
+            "status": "acquired",
+            "server_id": existing.get("id"),
+            "server_name": name,
+            "server_type": server_type,
+            "role": specification["server_role"],
+            "location": TARGET_LOCATION,
+            "ordered_at": previous.get("ordered_at")
+            or existing.get("created")
+            or utc_now(),
+        }
+        orders[order_key] = record
+        persist_orders(state_file, orders)
+        if not record.get("notified_at"):
+            try:
+                notify(
+                    token,
+                    chat_id,
+                    order_notification(existing, specification),
+                )
+            except RuntimeError as exc:
+                record["notification_error"] = str(exc)
+                orders[order_key] = record
+                persist_orders(state_file, orders)
+                raise
+            record["notified_at"] = utc_now()
+            record.pop("notification_error", None)
+            orders[order_key] = record
+            persist_orders(state_file, orders)
+        statuses[order_key] = "acquired"
+
+    return {
+        "enabled": True,
+        "limit": len(ORDER_SPECS),
+        "statuses": statuses,
+        "managed_count": len(by_name),
+    }
+
+
 def reconcile(
     snapshot: dict[str, Any],
     state_file: Path,
@@ -355,6 +707,8 @@ def reconcile(
             else previous.get("last_notification_at")
         ),
     }
+    if isinstance(previous.get("orders"), dict):
+        state["orders"] = previous["orders"]
     if not dry_run:
         atomic_write_state(state_file, state)
     return {
@@ -370,7 +724,7 @@ def reconcile(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Notify Telegram when medium-optimized CX availability changes in Helsinki."
+            "Acquire one CX33 and two CX43 servers when available in Helsinki."
         )
     )
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
@@ -429,6 +783,16 @@ def main() -> int:
             os.chmod(lock_path, 0o600)
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             snapshot = collect_snapshot(hcloud_token, args.endpoint, args.profiles_dir)
+            order_result = (
+                None
+                if args.dry_run
+                else maybe_order_servers(
+                    snapshot,
+                    args.state_file,
+                    token,
+                    chat_id,
+                )
+            )
             result = reconcile(
                 snapshot,
                 args.state_file,
@@ -436,6 +800,8 @@ def main() -> int:
                 chat_id,
                 dry_run=args.dry_run,
             )
+            if order_result is not None:
+                result["orders"] = order_result
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
