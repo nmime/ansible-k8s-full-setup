@@ -113,18 +113,18 @@ def test_current_medium_optimized_totals_and_safety_statuses():
         "worker": "cx43",
     }
     assert selected["cx"]["infrastructure_monthly_net"] == "132.40"
-    assert selected["cx"]["volume_gib"] == 220
+    assert selected["cx"]["volume_gib"] == 230
     assert selected["cx"]["local_reserved_gib"] == 300
-    assert selected["cx"]["total_claim_capacity_gib"] == 520
-    assert selected["cx"]["total_monthly_net"] == "144.98"
+    assert selected["cx"]["total_claim_capacity_gib"] == 530
+    assert selected["cx"]["total_monthly_net"] == "145.56"
     assert selected["cx"]["deployment_status"] == "temporarily-unavailable"
-    assert selected["cax"]["total_monthly_net"] == "151.48"
+    assert selected["cax"]["total_monthly_net"] == "152.06"
     assert selected["cax"]["deployment_status"] == "planning-only-arm64-unattested"
     assert selected["cpx"]["infrastructure_monthly_net"] == "345.40"
-    assert selected["cpx"]["volume_gib"] == 220
-    assert selected["cpx"]["total_monthly_net"] == "357.98"
+    assert selected["cpx"]["volume_gib"] == 230
+    assert selected["cpx"]["total_monthly_net"] == "358.56"
     assert selected["cpx"]["deployment_status"] == "deployable"
-    assert selected["ccx"]["total_monthly_net"] == "941.48"
+    assert selected["ccx"]["total_monthly_net"] == "942.06"
 
 
 def test_named_profile_defaults_are_the_balanced_cpx_mapping():
