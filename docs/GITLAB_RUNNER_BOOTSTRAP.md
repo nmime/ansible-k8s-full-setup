@@ -147,6 +147,15 @@ runner at one replica/concurrent job. Its 320 GB SSD prevents container-image
 snapshots from consuming the 160 GB application-worker disks. The protected
 image runner remains a separate identity and namespace with concurrency one.
 
+When a smaller worker is selected, set
+`gitlab.runner.job_resources.memory_request` and
+`gitlab.runner.image_builder.job_resources.memory_request` so the sum of the
+two build Pods (including helper requests) is greater than node allocatable
+memory. Kubernetes then serializes the independently tagged queues instead of
+allowing simultaneous jobs to exhaust the node. Keep each request below the
+single-node allocatable value and confirm it against `kubectl describe node`
+before changing the dedicated worker.
+
 ## Version compatibility
 
 The helper requires GitLab 17.1 through 19.x and fails closed outside that

@@ -25,6 +25,43 @@
 - name: Image builder | Establish the fail-closed network boundary
   ansible.builtin.include_tasks: image-builder-network.yml
 
+- name: Image builder | Bound aggregate namespace resources
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: protected-image-build-budget
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        hard:
+          requests.cpu: '2'
+          requests.memory: 4Gi
+          limits.cpu: '4'
+          limits.memory: 5Gi
+          pods: '8'
+          services: '6'
+          secrets: '20'
+          configmaps: '12'
+          persistentvolumeclaims: '0'
+
+- name: Image builder | Bound each container
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: protected-image-build-containers
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            max: {cpu: '3', memory: 4Gi}
+            defaultRequest: {cpu: 100m, memory: 128Mi}
+            default: {cpu: 500m, memory: 512Mi}
+
 - name: Image builder | Read the persisted Runner authentication token
   no_log: true
   kubernetes.core.k8s_info:
@@ -250,6 +287,14 @@
               helper_cpu_limit = "500m"
               helper_memory_request = "256Mi"
               helper_memory_limit = "512Mi"
+              cpu_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_request | default(gitlab_image_builder_cpu_request) }}"
+              cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_limit | default(gitlab_image_builder_cpu_limit) }}"
+              memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_request | default(gitlab_image_builder_memory_request) }}"
+              memory_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_limit | default(gitlab_image_builder_memory_limit) }}"
+              helper_cpu_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_cpu_request | default(gitlab_image_builder_helper_cpu_request) }}"
+              helper_cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_cpu_limit | default(gitlab_image_builder_helper_cpu_limit) }}"
+              helper_memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_memory_request | default(gitlab_image_builder_helper_memory_request) }}"
+              helper_memory_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_memory_limit | default(gitlab_image_builder_helper_memory_limit) }}"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"

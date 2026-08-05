@@ -66,11 +66,14 @@
             (object_storage_chart_version | string) in
             (object_storage_managed_bucket_policy_supported_chart_versions | default([]))
           - >-
-            object_storage_managed_bucket_policies | default([]) |
+            ((object_storage_managed_bucket_policies | default([])) +
+            (object_storage_additional_bucket_quotas | default([]))) |
             map(attribute='name') | unique | length ==
-            object_storage_managed_bucket_policies | default([]) | length
+            ((object_storage_managed_bucket_policies | default([])) +
+            (object_storage_additional_bucket_quotas | default([]))) | length
           - >-
-            object_storage_managed_bucket_policies | default([]) |
+            ((object_storage_managed_bucket_policies | default([])) +
+            (object_storage_additional_bucket_quotas | default([]))) |
             map(attribute='quota_mib') | map('int') | min > 0
         fail_msg: >-
           Managed bucket TTL/quota automation is enabled, but the selected
@@ -530,6 +533,8 @@
                 drop: [ALL]
               seccompProfile:
                 type: RuntimeDefault
+            nodeSelector: |
+              {{ object_storage_filer_node_selector | default({}) | to_nice_yaml(indent=2) | indent(14) }}
             resources:
               requests:
                 cpu: "{{ object_storage_filer_cpu_request | default('100m') }}"
@@ -852,7 +857,7 @@
                         command: ["/bin/sh", "-ec"]
                         args:
                           - |
-                            {% for policy in object_storage_managed_bucket_policies | default([]) %}
+                            {% for policy in ((object_storage_managed_bucket_policies | default([])) + (object_storage_additional_bucket_quotas | default([]))) %}
                             printf '%s\n' 's3.bucket.quota -name={{ policy.name }} -op=set -sizeMB={{ policy.quota_mib | int }}' | /usr/bin/weed shell
                             {% endfor %}
                             printf '%s\n' 's3.bucket.quota.enforce -apply' | /usr/bin/weed shell
@@ -1157,6 +1162,10 @@
                   - matchLabels:
                       k8s:io.kubernetes.pod.namespace: gitlab
                   - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: >-
+                        {{ (gitlab.runner | default({})).namespace |
+                           default('gitlab-ci-general', true) }}
+                  - matchLabels:
                       k8s:io.kubernetes.pod.namespace: monitoring
                   - matchLabels:
                       k8s:io.kubernetes.pod.namespace: databases
@@ -1176,6 +1185,7 @@
                       - { port: '18888', protocol: TCP }
                       - { port: '19333', protocol: TCP }
                       - { port: '9327', protocol: TCP }
+
             egress:
               - toEndpoints:
                   - matchLabels:
@@ -1190,6 +1200,109 @@
                       - { port: '18888', protocol: TCP }
                       - { port: '19333', protocol: TCP }
                       - { port: '9327', protocol: TCP }
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Allow agents namespace to use the SeaweedFS S3 gateway
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: allow-from-agents-s3
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: seaweedfs
+                app.kubernetes.io/instance: seaweedfs
+                app.kubernetes.io/component: filer
+            policyTypes: [Ingress]
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: agents
+                ports:
+                  - protocol: TCP
+                    port: 8333
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Discover the agents namespace for S3 service egress
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: agents
+      register: _object_storage_agents_namespace
+      when: object_storage_network_policy_enabled | default(false) | bool
+
+    - name: Allow agents workloads to resolve DNS and reach the SeaweedFS S3 service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: allow-agents-seaweedfs-s3
+            namespace: agents
+          spec:
+            endpointSelector:
+              matchExpressions:
+                - key: k8s:app.kubernetes.io/name
+                  operator: In
+                  values: [steel-browser, social-agents]
+            egress:
+              - toEntities: [host]
+                toPorts:
+                  - ports:
+                      - { port: '53', protocol: UDP }
+                      - { port: '53', protocol: TCP }
+              - toCIDR: [169.254.25.10/32]
+                toPorts:
+                  - ports:
+                      - { port: '53', protocol: UDP }
+                      - { port: '53', protocol: TCP }
+              - toServices:
+                  - k8sService:
+                      serviceName: seaweedfs-s3
+                      namespace: "{{ object_storage_namespace_resolved }}"
+                toPorts:
+                  - ports:
+                      - { port: '8333', protocol: TCP }
+              - toEndpoints:
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: "{{ object_storage_namespace_resolved }}"
+                      k8s:app.kubernetes.io/instance: seaweedfs
+                toPorts:
+                  - ports:
+                      - { port: '8333', protocol: TCP }
+      when:
+        - object_storage_network_policy_enabled | default(false) | bool
+        - (_object_storage_agents_namespace.resources | default([]) | length) > 0
+
+    - name: Allow backup verification to reach only the SeaweedFS S3 gateway
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cilium.io/v2
+          kind: CiliumNetworkPolicy
+          metadata:
+            name: allow-backup-verification-to-seaweedfs
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            endpointSelector:
+              matchLabels:
+                app.kubernetes.io/name: seaweedfs
+                app.kubernetes.io/instance: "{{ object_storage_release_name | default('seaweedfs') }}"
+                app.kubernetes.io/component: filer
+            ingress:
+              - fromEndpoints:
+                  - matchLabels:
+                      k8s:io.kubernetes.pod.namespace: >-
+                        {{ object_storage_backup_verification_namespace | default('backups') }}
+                toPorts:
+                  - ports:
+                      - { port: '8333', protocol: TCP }
       when: object_storage_network_policy_enabled | default(false) | bool
 
     - name: Display object storage summary

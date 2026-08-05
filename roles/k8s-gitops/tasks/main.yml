@@ -1,3 +1,23 @@
+- name: Discover the in-cluster GitLab Shell service for component-only runs
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: '{{ gitlab_namespace | default("gitlab") }}'
+    name: gitlab-gitlab-shell
+  register: argocd_gitlab_shell_service
+  retries: 30
+  delay: 5
+  until:
+    - argocd_gitlab_shell_service.resources | default([]) | length == 1
+    - >-
+      argocd_gitlab_shell_service.resources[0].spec.clusterIP |
+      default('') | length > 0
+
+- name: Record the in-cluster GitLab Shell address for Argo CD
+  ansible.builtin.set_fact:
+    gitlab_shell_cluster_ip: >-
+      {{ argocd_gitlab_shell_service.resources[0].spec.clusterIP }}
+
 - name: Set ArgoCD tier-specific variables
   set_fact:
     argocd_namespace: argocd
@@ -13,7 +33,7 @@
          default(argocd_insecure_mode | default(false)) | bool }}
     argocd_repo_host_aliases: >-
       {{ [{'ip': gitlab_shell_cluster_ip,
-           'hostnames': ([gitlab.domain | default('gitlab.' ~ domain, true)] +
+           'hostnames': ([gitlab.domain | default('git.' ~ domain, true)] +
                          (gitlab.domain_aliases |
                           default([], true)) |
                          unique | list)}]
@@ -52,7 +72,7 @@
   no_log: true
   ansible.builtin.set_fact:
     argocd_gitlab_ssh_known_hosts: |
-      {% set hostnames = [gitlab.domain | default('gitlab.' ~ domain, true)] +
+      {% set hostnames = [gitlab.domain | default('git.' ~ domain, true)] +
                          (gitlab.domain_aliases | default([], true)) %}
       {% set key_names = ['ssh_host_ecdsa_key.pub',
                           'ssh_host_ed25519_key.pub',
@@ -131,6 +151,9 @@
     release_namespace: '{{ argocd_namespace }}'
     create_namespace: true
     release_state: present
+    # Helm 4 uses server-side apply. Reclaim fields written by the legacy
+    # kubectl bootstrap before reconciling chart-owned ConfigMaps and Secrets.
+    force_conflicts: true
     wait: true
     timeout: 10m0s
     values:
@@ -181,7 +204,11 @@
             cpu: 200m
             memory: 256Mi
       redis:
-        enabled: true
+        # The bundled single Redis is safe only for the non-HA profile. Argo
+        # CD's HA mode must switch the client endpoint to the chart's
+        # Redis/Sentinel/HAProxy subchart instead of merely scaling the API and
+        # reconciliation pods around a single cache process.
+        enabled: '{{ not (argocd_ha | bool) }}'
         resources:
           requests:
             cpu: '{{ "25m" if resource_tier in ["minimal", "small"] else "50m" }}'
@@ -189,8 +216,101 @@
           limits:
             cpu: 200m
             memory: 256Mi
+      redis-ha:
+        enabled: '{{ argocd_ha | bool }}'
+        replicas: 3
+        hardAntiAffinity: true
+        podDisruptionBudget:
+          maxUnavailable: 1
+        redis:
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+        sentinel:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        haproxy:
+          enabled: true
+          replicas: 3
+          hardAntiAffinity: true
+          podDisruptionBudget:
+            maxUnavailable: 1
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
       notifications:
         enabled: true
+        secret:
+          create: true
+          name: argocd-notifications-secret
+          items: >-
+            {{
+              {
+                'email-username': postal_smtp_auth_username,
+                'email-password': postal_smtp_credentials['argocd']
+              }
+              if platform_postal_enabled | default(false) | bool
+              else {}
+            }}
+        notifiers:
+          service.email.postal: |
+            username: $email-username
+            password: $email-password
+            host: '{{ postal_submission_hostname }}'
+            port: 587
+            from: argocd@{{ domain }}
+            html: true
+            insecure_skip_verify: false
+        subscriptions: >-
+          {{
+            [{
+              'recipients': ['postal:' ~ (alert_email_to | default('alerts@' ~ domain))],
+              'triggers': ['on-health-degraded', 'on-sync-failed']
+            }]
+            if platform_postal_enabled | default(false) | bool
+            else []
+          }}
+        templates:
+          template.app-health-degraded: |
+            {% raw %}
+            email:
+              subject: Application {{.app.metadata.name}} has degraded
+            message: |
+              Application {{.app.metadata.name}} is degraded.
+              Details: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}
+            {% endraw %}
+          template.app-sync-failed: |
+            {% raw %}
+            email:
+              subject: Failed to sync application {{.app.metadata.name}}
+            message: |
+              Sync of {{.app.metadata.name}} failed: {{.app.status.operationState.message}}
+              Details: {{.context.argocdUrl}}/applications/{{.app.metadata.name}}?operation=true
+            {% endraw %}
+        triggers:
+          trigger.on-health-degraded: |
+            - description: Application has degraded
+              oncePer: app.status.operationState?.syncResult?.revision
+              send: [app-health-degraded]
+              when: app.status.health.status == 'Degraded'
+          trigger.on-sync-failed: |
+            - description: Application syncing has failed
+              oncePer: app.status.operationState?.syncResult?.revision
+              send: [app-sync-failed]
+              when: app.status.operationState != nil and app.status.operationState.phase in ['Error', 'Failed']
         resources:
           requests:
             cpu: '{{ "10m" if resource_tier in ["minimal", "small"] else "50m" }}'
@@ -448,6 +568,8 @@
               protocol: TCP
             - port: '53'
               protocol: UDP
+            - port: '587'
+              protocol: TCP
 - name: Create ArgoCD VMServiceScrape
   kubernetes.core.k8s:
     state: present

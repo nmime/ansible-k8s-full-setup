@@ -10,6 +10,13 @@ hetzner_bastion_type: '{{ network.bastion.server_type | default("") }}'
 hetzner_cp_type: '{{ infrastructure.control_plane.type | default("") }}'
 hetzner_worker_type: '{{ infrastructure.workers.type | default("") }}'
 
+# Optional short provider-side server prefix. Kubernetes node names and the
+# project label intentionally remain based on project_name so an operator can
+# make the Hetzner console readable without forcing a destructive node rejoin.
+hetzner_server_name_prefix: >-
+  {{ infrastructure.server_name_prefix
+     | default(project_name | default('k8s'), true) }}
+
 # Deprecated compatibility input. The role now always fails closed on server
 # deletion and type drift; scripts/migrate-profile.sh owns safe, one-node-at-a-
 # time convergence with Kubernetes and etcd gates.

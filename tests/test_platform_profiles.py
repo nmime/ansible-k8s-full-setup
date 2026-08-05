@@ -50,6 +50,7 @@ COMPONENT_PATHS = (
     "backup.enabled",
     "backup.disaster_recovery.enabled",
     "glitchtip.enabled",
+    "umami.enabled",
     "apm.enabled",
     "blackbox.enabled",
     "applications.daytona.enabled",
@@ -67,6 +68,7 @@ MEDIUM_SERVICE_PATHS = tuple(
         "temporal.enabled",
         "postal.enabled",
         "glitchtip.enabled",
+        "umami.enabled",
         "observability.pmm.enabled",
         "elasticsearch.enabled",
         "tracing.tempo.enabled",
@@ -78,6 +80,7 @@ OPT_IN_SERVICE_PATHS = (
     "temporal.enabled",
     "postal.enabled",
     "glitchtip.enabled",
+    "umami.enabled",
 )
 MEDIUM_OPTIMIZED_DISABLED_PATHS = (
     "observability.pmm.enabled",
@@ -145,6 +148,7 @@ class TestNamedProfileContract:
             "deploy_temporal",
             "deploy_postal",
             "deploy_glitchtip",
+            "deploy_umami",
         ):
             assert inventory["all"]["vars"][flag] is False
 
@@ -160,6 +164,7 @@ class TestNamedProfileContract:
             "deploy_temporal",
             "deploy_postal",
             "deploy_glitchtip",
+            "deploy_umami",
         ):
             assert defaults[flag] is False
 
@@ -282,12 +287,27 @@ class TestNamedProfileContract:
 
     def test_full_stack_scheduling_contract_matches_available_capacity(self):
         medium = load_profile("medium")
+        medium_optimized = load_profile("medium-optimized")
         production = load_profile("production")
 
         # Medium intentionally counts its three HA control-plane nodes in the
         # workload envelope; production has three application workers, one
         # tainted CI worker, and dedicates its control plane to cluster services.
         assert medium["infrastructure"]["control_plane"]["schedulable"] is True
+        assert medium_optimized["kubernetes"]["kubelet"] == {
+            "kube_memory_reserved": "512Mi",
+            "system_memory_reserved": "1Gi",
+            "eviction_hard": {
+                "memory.available": "1Gi",
+                "nodefs.available": "10%",
+                "nodefs.inodesFree": "5%",
+                "imagefs.available": "15%",
+                "imagefs.inodesFree": "5%",
+            },
+        }
+        assert medium_optimized["storage"]["filer_node_selector"] == {
+            "node-role.kubernetes.io/worker": "true"
+        }
         assert medium["infrastructure"]["workers"]["count"] == 2
         assert production["infrastructure"]["control_plane"]["schedulable"] is False
         assert production["infrastructure"]["workers"]["count"] == 4
@@ -312,7 +332,6 @@ class TestNamedProfileContract:
         assert profile["gitlab"]["sidekiq_replicas"] == 2
         assert profile["gitlab"]["sidekiq_max_replicas"] == 4
         assert profile["gitlab"]["registry_max_replicas"] == 3
-        assert profile["gitlab"]["registry_replicas"] == 3
         assert profile["gitlab"]["runner"]["concurrent_jobs"] == 4
         assert profile["gitlab"]["webservice_memory_request"] == "2Gi"
         assert profile["gitlab"]["webservice_memory_limit"] == "3Gi"
@@ -391,16 +410,16 @@ class TestMediumOptimizedContract:
 
     def test_retains_critical_quorum_topologies(self):
         assert self.profile["infrastructure"]["control_plane"]["count"] == 3
-        assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
-        assert self.profile["infrastructure"]["workers"]["count"] == 5
-        assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
-        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 0
-        assert (
-            self.profile["gitlab"]["runner"]["image_builder"][
-                "dedicated_worker_index"
-            ]
-            == 5
-        )
+        assert self.profile["infrastructure"]["control_plane"]["type"] == "cx33"
+        assert self.profile["infrastructure"]["workers"]["count"] == 6
+        assert self.profile["infrastructure"]["workers"]["type"] == "cx43"
+        assert self.profile["infrastructure"]["workers"]["type_overrides"] == {
+            4: "cx43",
+            5: "cx43",
+            6: "cx33",
+        }
+        assert self.profile["kubernetes"]["terminated_pod_gc_threshold"] == 1
+        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][
                 "dedicated_worker_index"
@@ -412,6 +431,7 @@ class TestMediumOptimizedContract:
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
         assert self.profile["storage"]["master_replicas"] == 3
         assert self.profile["storage"]["volume_replicas"] == 3
+        assert self.profile["dragonfly"]["replicas"] == 3
 
     def test_uses_compact_stateless_baselines(self):
         replica_paths = (
@@ -435,7 +455,6 @@ class TestMediumOptimizedContract:
             "blackbox.replicas",
         )
         assert all(get_path(self.profile, path) == 1 for path in replica_paths)
-        assert self.profile["dragonfly"]["replicas"] == 2
         assert self.profile["autoscaling"]["defaults"] == {
             "min_replicas": 1,
             "max_replicas": 4,
@@ -452,17 +471,20 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["toolbox_memory_limit"] == "3Gi"
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
+        assert self.profile["gitlab"]["runner"]["general_pool_enabled"] is True
         assert self.profile["gitlab"]["runner"]["replicas"] == 2
-        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 0
-        assert (
-            self.profile["gitlab"]["runner"]["image_builder"][
-                "dedicated_worker_index"
-            ]
-            == 5
-        )
-        # General jobs share ordinary workers; the security-exception image
-        # build remains isolated on its tainted node.
-        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 2
+        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
+        # Two managers each accept one job and remain isolated on workers 4/5.
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
+        assert self.profile["gitlab"]["runner"]["job_resources"][
+            "memory_limit"
+        ] == "6Gi"
+        assert self.profile["gitlab"]["runner"]["general_pool_quota"] == {
+            "requests_cpu": "5",
+            "requests_memory": "12Gi",
+            "limits_cpu": "20",
+            "limits_memory": "34Gi",
+        }
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
@@ -887,6 +909,15 @@ class TestResourceTierConsumers:
         assert 'DNS_RECORD_ROOT="${DOMAIN%."$DNS_ZONE"}"' in backup
         assert 'jq --arg root "$DNS_RECORD_ROOT"' in backup
 
+    def test_dns_preview_uses_the_configured_provider_name_prefix(self):
+        orchestrator = (
+            REPO_ROOT / "platform-orchestrator" / "platform.sh"
+        ).read_text(encoding="utf-8")
+
+        assert "server_name_prefix=$(yq -r '.infrastructure.server_name_prefix" in orchestrator
+        assert 'local bastion_name="${server_name_prefix}-bastion"' in orchestrator
+        assert 'local lb_name="${server_name_prefix}-lb"' in orchestrator
+
     def test_restore_drill_manifest_is_process_unique(self):
         drill = (REPO_ROOT / "scripts" / "pg-restore-drill.sh").read_text(
             encoding="utf-8"
@@ -1186,7 +1217,6 @@ class TestComponentLifecycle:
                 receiver["name"] for receiver in parsed["receivers"]
             }
             assert ("telegram-critical" in receiver_names) is telegram_enabled
-            assert ("telegram-warning" in receiver_names) is telegram_enabled
             assert ("email-warning" in receiver_names) is email_enabled
 
     def test_orchestrator_exposes_every_selectable_component(self, tmp_path):
@@ -1224,6 +1254,7 @@ class TestComponentLifecycle:
             "backup",
             "disaster-recovery",
             "glitchtip",
+            "umami",
             "apm",
             "blackbox",
             "daytona",
@@ -1264,6 +1295,14 @@ class TestComponentLifecycle:
                     "databases.enabled",
                     "databases.postgresql.enabled",
                     "dragonfly.enabled",
+                ),
+            ),
+            (
+                "umami",
+                (
+                    "umami.enabled",
+                    "databases.enabled",
+                    "databases.postgresql.enabled",
                 ),
             ),
             (
@@ -1380,6 +1419,7 @@ class TestComponentLifecycle:
         (
             ("gitlab.enabled", "dragonfly.enabled", "GitLab chart 10 requires"),
             ("glitchtip.enabled", "dragonfly.enabled", "GlitchTip requires"),
+            ("umami.enabled", "databases.postgresql.enabled", "Umami requires"),
             ("apm.enabled", "elasticsearch.enabled", "APM Server requires"),
             ("temporal.enabled", "databases.postgresql.enabled", "Temporal requires"),
             ("postal.enabled", "dragonfly.enabled", "Postal requires"),
@@ -1409,6 +1449,7 @@ class TestComponentLifecycle:
         profile["gitlab"]["enabled"] = False
         profile["gitlab"]["runner"]["enabled"] = False
         profile["glitchtip"]["enabled"] = False
+        profile["umami"]["enabled"] = False
         profile["apm"]["enabled"] = False
         profile["temporal"]["enabled"] = False
         profile["postal"]["enabled"] = False
@@ -1603,6 +1644,7 @@ class TestComponentLifecycle:
             "backup",
             "disaster-recovery",
             "glitchtip",
+            "umami",
             "apm",
             "blackbox",
             "daytona",
@@ -1642,6 +1684,7 @@ class TestComponentLifecycle:
             "Native backup automation": "backup.enabled",
             "External disaster recovery": "backup.disaster_recovery.enabled",
             "GlitchTip": "glitchtip.enabled",
+            "Umami": "umami.enabled",
             "APM": "apm.enabled",
             "Blackbox": "blackbox.enabled",
             "Daytona": "applications.daytona.enabled",

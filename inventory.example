@@ -108,6 +108,7 @@ all:
     deploy_apm: true
     deploy_blackbox: true
     deploy_glitchtip: false
+    deploy_umami: false
 
     # This flat inventory surface is retained for direct-Ansible compatibility.
     # Prefer platform-orchestrator/platform.yaml for the complete lifecycle

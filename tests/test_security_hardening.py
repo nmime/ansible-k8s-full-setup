@@ -1750,3 +1750,16 @@ def test_argocd_reaches_private_gitlab_without_public_exposure():
     assert "name: allow-repo-server-to-gitlab-shell" in gitops
     assert "k8s:app: gitlab-shell" in gitops
     assert "sectionName: cluster-https" in gitlab
+
+
+def test_orchestrator_serializes_project_mutations_across_worktrees():
+    orchestrator = read("platform-orchestrator/platform.sh")
+
+    assert 'lock_root="${TMPDIR:-/tmp}/ansible-k8s-platform-locks"' in orchestrator
+    assert 'lock_dir="${lock_root}/${PROJECT}.lock"' in orchestrator
+    assert 'kill -0 "$owner_pid"' in orchestrator
+    assert "trap release_mutation_lock EXIT" in orchestrator
+    assert (
+        'deploy)       load_config; acquire_mutation_lock; '
+        'deploy_component "${1:-all}"'
+    ) in orchestrator

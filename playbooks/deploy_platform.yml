@@ -25,6 +25,22 @@
           - '!env'
       tags: [always]
 
+    - name: Normalize the platform identity from the profile
+      ansible.builtin.set_fact:
+        project_name: >-
+          {{ (global | default({})).project |
+             default(project_name, true) }}
+        domain: >-
+          {{ (global | default({})).domain |
+             default(domain | default(''), true) }}
+        email: >-
+          {{ (global | default({})).email |
+             default(email | default(''), true) }}
+        platform_secrets_file: >-
+          {{ (secrets | default({})).file |
+             default(platform_secrets_file | default(''), true) }}
+      tags: [always]
+
     - name: Check for persisted infrastructure facts
       ansible.builtin.stat:
         path: "{{ playbook_dir }}/{{ project_name }}-infra-facts.yml"
@@ -118,6 +134,11 @@
       when:
         - platform_backup_enabled | bool
         - backup_dr_enabled | bool
+        - >-
+          'all' in ansible_run_tags or
+          (ansible_run_tags |
+           intersect(['backup', 'disaster-recovery', 'velero-bootstrap']) |
+           length) > 0
       tags: [always]
 
     - name: Pre-flight check - hcloud CLI installed
@@ -190,6 +211,12 @@
       ansible.builtin.import_role:
         name: network-security
       tags: [network, security]
+
+    - name: Deploy static HA egress gateways
+      ansible.builtin.import_role:
+        name: ha-egress
+      when: ((network.egress | default({})).enabled | default(false)) | bool
+      tags: [egress, network, infrastructure]
 
     - name: Deploy Kubernetes Cluster
       ansible.builtin.import_role:
@@ -290,6 +317,12 @@
         name: glitchtip
       when: deploy_glitchtip | default(false) | bool
       tags: [glitchtip, monitoring, error-tracking]
+
+    - name: Deploy Umami web analytics
+      ansible.builtin.import_role:
+        name: umami
+      when: deploy_umami | default(false) | bool
+      tags: [umami, analytics]
 
     - name: Deploy Daytona workspace platform
       ansible.builtin.import_role:

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -41,6 +42,28 @@ def test_cilium_chart_and_reconciliation_bound_operator_and_envoy() -> None:
         containers = workload_resources(task_named(tasks, name))
         assert len(containers) == 1
         assert_complete_resources(containers[0]["resources"])
+
+
+def test_kubespray_group_vars_preserve_kubelet_oom_headroom() -> None:
+    tasks = load_tasks("roles/k8s-cluster-management/tasks/main.yml")
+    group_vars = task_named(tasks, "Generate Kubespray group_vars")["copy"][
+        "content"
+    ]
+
+    assert 'kube_memory_reserved: "{{ kubernetes.kubelet.kube_memory_reserved' in group_vars
+    assert (
+        'system_memory_reserved: "{{ kubernetes.kubelet.system_memory_reserved'
+        in group_vars
+    )
+    assert "eviction_hard:" in group_vars
+    for threshold in (
+        "memory.available",
+        "nodefs.available",
+        "nodefs.inodesFree",
+        "imagefs.available",
+        "imagefs.inodesFree",
+    ):
+        assert f"'{threshold}'" in group_vars
 
 
 def test_nodelocal_ccm_and_every_csi_container_have_complete_bounds() -> None:
@@ -150,5 +173,5 @@ def test_gitlab_vendor_init_sidecars_jobs_and_runner_have_limits() -> None:
 
     runner = task_named(tasks, "Install GitLab Runner with Helm")
     runner_config = runner["kubernetes.core.helm"]["values"]["runners"]["config"]
-    assert runner_config.count("cpu_limit") == 3
-    assert runner_config.count("memory_limit") == 3
+    assert len(re.findall(r"(?m)^\s+(?:service_|helper_)?cpu_limit\s*=", runner_config)) == 3
+    assert len(re.findall(r"(?m)^\s+(?:service_|helper_)?memory_limit\s*=", runner_config)) == 3

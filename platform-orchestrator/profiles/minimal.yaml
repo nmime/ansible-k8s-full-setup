@@ -190,6 +190,10 @@ backup:
 glitchtip:
   enabled: false
 
+# Privacy-focused web analytics (opt-in)
+umami:
+  enabled: false
+
 # ---------------------------------------------
 # APM Server (distributed tracing via Elasticsearch)
 # ---------------------------------------------

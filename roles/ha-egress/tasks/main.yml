@@ -1,0 +1,546 @@
+---
+- name: Set HA egress provider identities
+  ansible.builtin.set_fact:
+    ha_egress_project: "{{ project_name | default('k8s') }}"
+    ha_egress_network_name: "{{ project_name | default('k8s') }}-network"
+    ha_egress_active_name: "{{ ha_egress_provider_prefix }}-bastion"
+    ha_egress_firewall_name: "{{ project_name | default('k8s') }}-fw-bastion"
+    ha_egress_known_hosts_file: >-
+      {{ lookup('env', 'HOME') }}/.ssh/known_hosts-{{ project_name | default('k8s') }}
+    ha_egress_token: "{{ lookup('env', 'HCLOUD_TOKEN') }}"
+  no_log: true
+
+- name: Validate HA egress configuration
+  ansible.builtin.assert:
+    that:
+      - ha_egress_token | length > 20
+      - ha_egress_server_name is match('^[a-z0-9][a-z0-9-]*[a-z0-9]$')
+      - ha_egress_floating_ip_name is match('^[a-zA-Z0-9][a-zA-Z0-9._-]*$')
+      - ha_egress_location in ['hel1', 'fsn1', 'nbg1']
+      - ha_egress_floating_ip_home_location in ['hel1', 'fsn1', 'nbg1']
+      - ha_egress_private_ip is match('^10\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - ha_egress_health_port | int >= 1024
+      - ha_egress_health_port | int <= 65535
+      - ha_egress_failure_threshold | int >= 2
+      - ha_egress_failure_threshold | int <= 12
+      - ha_egress_watchdog_interval_seconds | int >= 5
+      - ha_egress_health_timeout_seconds | int >= 2
+      - ha_egress_health_timeout_seconds | int < ha_egress_watchdog_interval_seconds | int
+      - ha_egress_promotion_timeout_seconds | int >= 45
+      - ha_egress_promotion_timeout_seconds | int <= 180
+      - not (ha_egress_manage_mail_dns | bool) or ha_egress_activate | bool
+    fail_msg: >-
+      Invalid network.egress contract. HA requires a valid EU standby, fixed
+      private address, bounded watchdog timings, and a write-capable HCLOUD_TOKEN.
+      Mail DNS cannot be changed by a staging-only run.
+  no_log: true
+
+- name: Read HA egress provider dependencies
+  ansible.builtin.command:
+    argv: [hcloud, "{{ item.kind }}", describe, "{{ item.name }}", --output, json]
+  loop:
+    - {kind: network, name: "{{ ha_egress_network_name }}"}
+    - {kind: server, name: "{{ ha_egress_active_name }}"}
+    - {kind: firewall, name: "{{ ha_egress_firewall_name }}"}
+  loop_control:
+    label: "{{ item.kind }}={{ item.name }}"
+  register: ha_egress_dependencies
+  changed_when: false
+  retries: 5
+  delay: 5
+  until: ha_egress_dependencies is success
+
+- name: Normalize HA egress provider dependencies
+  ansible.builtin.set_fact:
+    ha_egress_network_document: "{{ ha_egress_dependencies.results[0].stdout | from_json }}"
+    ha_egress_active_document: "{{ ha_egress_dependencies.results[1].stdout | from_json }}"
+
+- name: Read the local deployment SSH key fingerprint
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -l
+      - -E
+      - md5
+      - -f
+      - "{{ infrastructure.ssh_key_path | default(ssh_key_path | default('~/.ssh/id_ed25519')) }}.pub"
+  register: ha_egress_local_ssh_fingerprint_raw
+  changed_when: false
+
+- name: Read provider SSH keys for fingerprint adoption
+  ansible.builtin.command:
+    argv: [hcloud, ssh-key, list, --output, json]
+  register: ha_egress_provider_ssh_keys_raw
+  changed_when: false
+
+- name: Resolve the exact provider SSH key by local fingerprint
+  ansible.builtin.set_fact:
+    ha_egress_matching_ssh_keys: >-
+      {{
+        ha_egress_provider_ssh_keys_raw.stdout | from_json |
+        selectattr(
+          'fingerprint', 'equalto',
+          ha_egress_local_ssh_fingerprint_raw.stdout.split()[1] | regex_replace('^MD5:', '')
+        ) | list
+      }}
+
+- name: Require one unambiguous provider SSH key match
+  ansible.builtin.assert:
+    that:
+      - ha_egress_matching_ssh_keys | length == 1
+    fail_msg: >-
+      The configured local SSH public key must match exactly one Hetzner SSH
+      key before the standby can be created.
+
+- name: Adopt the matched provider SSH key name
+  ansible.builtin.set_fact:
+    ha_egress_ssh_key_name: "{{ ha_egress_matching_ssh_keys[0].name }}"
+
+- name: Validate the active egress gateway and route
+  ansible.builtin.assert:
+    that:
+      - ha_egress_active_document.status == 'running'
+      - ha_egress_active_document.private_net | length == 1
+      - bastion_private_ip | default(ha_egress_active_document.private_net[0].ip) == ha_egress_active_document.private_net[0].ip
+      - >-
+        ha_egress_network_document.routes | default([]) |
+        selectattr('destination', 'equalto', '0.0.0.0/0') |
+        list | length == 1
+      - >-
+        (
+          ha_egress_network_document.routes | default([]) |
+          selectattr('destination', 'equalto', '0.0.0.0/0') |
+          map(attribute='gateway') | first
+        ) in [ha_egress_active_document.private_net[0].ip, ha_egress_private_ip]
+    fail_msg: >-
+      Refusing to stage HA against an ambiguous active gateway. The provider
+      Network must have one default route through the running bastion.
+
+- name: Read standby server state
+  ansible.builtin.command:
+    argv: [hcloud, server, describe, "{{ ha_egress_server_name }}", --output, json]
+  register: ha_egress_standby_check
+  changed_when: false
+  failed_when: >-
+    ha_egress_standby_check.rc != 0 and
+    'not found' not in (ha_egress_standby_check.stderr | default('') | lower)
+
+- name: Read standby server-type capacity
+  ansible.builtin.command:
+    argv: [hcloud, server-type, describe, "{{ ha_egress_server_type }}", --output, json]
+  register: ha_egress_server_type_document
+  changed_when: false
+  when: ha_egress_standby_check.rc != 0
+
+- name: Require standby capacity before creating a billable server
+  ansible.builtin.assert:
+    that:
+      - >-
+        ha_egress_server_type_document.stdout | from_json |
+        json_query('locations[?name==`' ~ ha_egress_location ~ '` && available==`true`]') |
+        length == 1
+    fail_msg: >-
+      {{ ha_egress_server_type }} is not currently orderable in
+      {{ ha_egress_location }}. No provider resource was created.
+  when: ha_egress_standby_check.rc != 0
+
+- name: Create the billable standby egress gateway
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - server
+      - create
+      - --name
+      - "{{ ha_egress_server_name }}"
+      - --type
+      - "{{ ha_egress_server_type }}"
+      - --image
+      - "{{ hetzner_image | default('ubuntu-24.04') }}"
+      - --location
+      - "{{ ha_egress_location }}"
+      - --ssh-key
+      - "{{ ha_egress_ssh_key_name }}"
+      - --firewall
+      - "{{ ha_egress_firewall_name }}"
+      - --label
+      - "project={{ ha_egress_project }},role=egress,ha=standby"
+  register: ha_egress_standby_create
+  changed_when: true
+  retries: 3
+  delay: 10
+  until: ha_egress_standby_create.rc == 0
+  when: ha_egress_standby_check.rc != 0
+
+- name: Re-read standby server state
+  ansible.builtin.command:
+    argv: [hcloud, server, describe, "{{ ha_egress_server_name }}", --output, json]
+  register: ha_egress_standby_document_raw
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: ha_egress_standby_document_raw.rc == 0
+
+- name: Normalize standby server state before network attachment
+  ansible.builtin.set_fact:
+    ha_egress_standby_document: "{{ ha_egress_standby_document_raw.stdout | from_json }}"
+
+- name: Refuse an unexpected standby private address
+  ansible.builtin.assert:
+    that:
+      - >-
+        ha_egress_standby_document.private_net | length == 0 or
+        ha_egress_standby_document.private_net |
+        selectattr('network', 'equalto', ha_egress_network_document.id) |
+        selectattr('ip', 'equalto', ha_egress_private_ip) |
+        list | length == 1
+    fail_msg: >-
+      Existing {{ ha_egress_server_name }} is attached with an address other
+      than {{ ha_egress_private_ip }}. Refusing a destructive detach/reattach.
+
+- name: Attach standby gateway to the private network at its stable address
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - server
+      - attach-to-network
+      - "{{ ha_egress_server_name }}"
+      - --network
+      - "{{ ha_egress_network_name }}"
+      - --ip
+      - "{{ ha_egress_private_ip }}"
+  register: ha_egress_standby_attach
+  changed_when: true
+  when: ha_egress_standby_document.private_net | length == 0
+
+- name: Re-read attached standby server state
+  ansible.builtin.command:
+    argv: [hcloud, server, describe, "{{ ha_egress_server_name }}", --output, json]
+  register: ha_egress_standby_attached_raw
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: >-
+    ha_egress_standby_attached_raw.rc == 0 and
+    (ha_egress_standby_attached_raw.stdout | from_json).private_net | length == 1
+
+- name: Normalize final gateway identities
+  ansible.builtin.set_fact:
+    ha_egress_standby_document: "{{ ha_egress_standby_attached_raw.stdout | from_json }}"
+    ha_egress_active_private_ip: "{{ ha_egress_active_document.private_net[0].ip }}"
+    ha_egress_active_public_ip: "{{ ha_egress_active_document.public_net.ipv4.ip }}"
+    ha_egress_standby_public_ip: "{{ (ha_egress_standby_attached_raw.stdout | from_json).public_net.ipv4.ip }}"
+    ha_egress_route_gateway: >-
+      {{
+        ha_egress_network_document.routes | default([]) |
+        selectattr('destination', 'equalto', '0.0.0.0/0') |
+        map(attribute='gateway') | first
+      }}
+
+- name: Resolve the provider-active gateway from the default route
+  ansible.builtin.set_fact:
+    ha_egress_provider_active_document: >-
+      {{
+        ha_egress_standby_document
+        if ha_egress_route_gateway == ha_egress_private_ip
+        else ha_egress_active_document
+      }}
+    ha_egress_provider_active_name: >-
+      {{
+        ha_egress_server_name
+        if ha_egress_route_gateway == ha_egress_private_ip
+        else ha_egress_active_name
+      }}
+
+- name: Read Floating IPv4 state
+  ansible.builtin.command:
+    argv: [hcloud, floating-ip, describe, "{{ ha_egress_floating_ip_name }}", --output, json]
+  register: ha_egress_floating_check
+  changed_when: false
+  failed_when: >-
+    ha_egress_floating_check.rc != 0 and
+    'not found' not in (ha_egress_floating_check.stderr | default('') | lower)
+
+- name: Create the protected billable Floating IPv4
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - floating-ip
+      - create
+      - --type
+      - ipv4
+      - --home-location
+      - "{{ ha_egress_floating_ip_home_location }}"
+      - --name
+      - "{{ ha_egress_floating_ip_name }}"
+      - --description
+      - "Static HA egress for {{ ha_egress_project }}"
+      - --label
+      - "project={{ ha_egress_project }},role=egress"
+      - --enable-protection
+      - delete
+  register: ha_egress_floating_create
+  changed_when: true
+  when: ha_egress_floating_check.rc != 0
+
+- name: Re-read Floating IPv4 state
+  ansible.builtin.command:
+    argv: [hcloud, floating-ip, describe, "{{ ha_egress_floating_ip_name }}", --output, json]
+  register: ha_egress_floating_document_raw
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: ha_egress_floating_document_raw.rc == 0
+
+- name: Normalize Floating IPv4 state
+  ansible.builtin.set_fact:
+    ha_egress_floating_document: "{{ ha_egress_floating_document_raw.stdout | from_json }}"
+    ha_egress_floating_ipv4: "{{ (ha_egress_floating_document_raw.stdout | from_json).ip }}"
+
+- name: Assign Floating IPv4 to the provider-active route gateway
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - floating-ip
+      - assign
+      - "{{ ha_egress_floating_ip_name }}"
+      - "{{ ha_egress_provider_active_name }}"
+  register: ha_egress_floating_assign
+  changed_when: true
+  when: ha_egress_floating_document.server != ha_egress_provider_active_document.id
+
+- name: Converge Floating IPv4 reverse DNS
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - floating-ip
+      - set-rdns
+      - --ip
+      - "{{ ha_egress_floating_ipv4 }}"
+      - --hostname
+      - "{{ ha_egress_ptr }}"
+      - "{{ ha_egress_floating_ip_name }}"
+  register: ha_egress_ptr_change
+  changed_when: true
+
+- name: Derive mail DNS records for activation
+  ansible.builtin.set_fact:
+    ha_egress_mail_helo_record: >-
+      {{ ha_egress_ptr | regex_replace('\.' ~ ha_egress_mail_dns_zone ~ '$', '') }}
+    ha_egress_mail_spf_value: >-
+      v=spf1 ip4:{{ ha_egress_floating_ipv4 }}{{
+      (' ip4:' ~ ha_egress_mail_legacy_ipv4)
+      if ha_egress_mail_include_legacy_ipv4 | bool and ha_egress_mail_legacy_ipv4 | length > 0
+      else '' }} -all
+  when: ha_egress_manage_mail_dns | bool
+
+- name: Publish mail HELO A record to the static Floating IPv4
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ ha_egress_floating_ipv4 }}"
+      - "{{ ha_egress_mail_dns_zone }}"
+      - "{{ ha_egress_mail_helo_record }}"
+      - A
+  register: ha_egress_mail_a_change
+  changed_when: true
+  when: ha_egress_manage_mail_dns | bool
+
+- name: Publish SPF for the SMTP HELO identity
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ ha_egress_mail_spf_value }}"
+      - "{{ ha_egress_mail_dns_zone }}"
+      - "{{ ha_egress_mail_helo_record }}"
+      - TXT
+  register: ha_egress_mail_helo_spf_change
+  changed_when: true
+  when: ha_egress_manage_mail_dns | bool
+
+- name: Publish transitional or final shared mail SPF
+  ansible.builtin.command:
+    argv:
+      - hcloud
+      - zone
+      - rrset
+      - set-records
+      - --record
+      - "{{ ha_egress_mail_spf_value }}"
+      - "{{ ha_egress_mail_dns_zone }}"
+      - "{{ ha_egress_mail_spf_name }}"
+      - TXT
+  register: ha_egress_mail_spf_change
+  changed_when: true
+  when: ha_egress_manage_mail_dns | bool
+
+- name: Wait for forward-confirmed reverse DNS before static SNAT activation
+  ansible.builtin.shell: |
+    set -euo pipefail
+    for resolver in 1.1.1.1 8.8.8.8; do
+      dig +short @"$resolver" A {{ ha_egress_ptr | quote }} | grep -Fqx {{ ha_egress_floating_ipv4 | quote }}
+      ptr=$(dig +short @"$resolver" -x {{ ha_egress_floating_ipv4 | quote }} | sed 's/\.$//')
+      test "$ptr" = {{ ha_egress_ptr | quote }}
+      dig +short @"$resolver" TXT {{ ha_egress_ptr | quote }} |
+        tr -d '"' | grep -Fq {{ ('ip4:' ~ ha_egress_floating_ipv4) | quote }}
+      dig +short @"$resolver" TXT {{ ha_egress_mail_spf_name ~ '.' ~ ha_egress_mail_dns_zone | quote }} |
+        tr -d '"' | grep -Fq {{ ('ip4:' ~ ha_egress_floating_ipv4) | quote }}
+    done
+  args:
+    executable: /bin/bash
+  register: ha_egress_dns_alignment
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: ha_egress_dns_alignment.rc == 0
+  when: ha_egress_manage_mail_dns | bool
+
+- name: Create controller staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: n0xeid-egress-
+  register: ha_egress_stage
+
+- name: Build HA gateway inventory
+  ansible.builtin.set_fact:
+    ha_egress_gateways:
+      - name: "{{ ha_egress_active_name }}"
+        server_id: "{{ ha_egress_active_document.id }}"
+        private_ip: "{{ ha_egress_active_private_ip }}"
+        public_ip: "{{ ha_egress_active_public_ip }}"
+      - name: "{{ ha_egress_server_name }}"
+        server_id: "{{ ha_egress_standby_document.id }}"
+        private_ip: "{{ ha_egress_private_ip }}"
+        public_ip: "{{ ha_egress_standby_public_ip }}"
+
+- name: Pause both watchdogs during the gateway update transaction
+  ansible.builtin.shell: |
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      root@{{ item.public_ip }} \
+      "systemctl stop n0xeid-egress-watchdog.timer 2>/dev/null || true"
+  args:
+    executable: /bin/bash
+  loop: "{{ ha_egress_gateways }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+- name: Configure both HA egress gateways
+  ansible.builtin.include_tasks: configure_gateway.yml
+  loop: "{{ ha_egress_gateways }}"
+  loop_control:
+    loop_var: ha_gateway
+    label: "{{ ha_gateway.name }}"
+
+- name: Require the provider-active gateway to pass full egress health
+  ansible.builtin.shell: |
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      root@{{ ha_egress_provider_active_document.public_net.ipv4.ip }} \
+      "curl --fail --silent --show-error --max-time 8 http://{{ ha_egress_route_gateway }}:{{ ha_egress_health_port }}/healthz"
+  args:
+    executable: /bin/bash
+  register: ha_egress_provider_active_health
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: ha_egress_provider_active_health.rc == 0
+  when: ha_egress_activate | bool
+
+- name: Start both watchdogs after the complete gateway transaction
+  ansible.builtin.shell: |
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      root@{{ item.public_ip }} \
+      "systemctl start n0xeid-egress-watchdog.timer"
+  args:
+    executable: /bin/bash
+  loop: "{{ ha_egress_gateways }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  when: ha_egress_activate | bool
+
+- name: Remove controller staging directory including token copy
+  ansible.builtin.file:
+    path: "{{ ha_egress_stage.path }}"
+    state: absent
+  no_log: true
+
+- name: Verify static egress identity from a private Kubernetes node
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      -o ProxyCommand='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ ha_egress_known_hosts_file }} -W %h:%p root@{{ ha_egress_active_public_ip }}' \
+      root@{{ first_master_ip }} \
+      "test \"\$(curl --fail --silent --show-error --max-time 10 https://api.ipify.org)\" = {{ ha_egress_floating_ipv4 | quote }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  retries: 6
+  delay: 5
+  when: ha_egress_activate | bool
+
+- name: Persist HA egress infrastructure facts
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/{{ ha_egress_project }}-infra-facts.yml"
+    mode: '0600'
+    content: >-
+      {{
+        {
+          'project': project | default(ha_egress_project),
+          'domain': domain,
+          'hetzner_dns_zone': hetzner_dns_zone | default(domain, true),
+          'region': region | default(infrastructure.region),
+          'tier': infra_tier | default(tier),
+          'bastion_public_ip': bastion_public_ip,
+          'bastion_private_ip': bastion_private_ip,
+          'lb_ip': lb_ip,
+          'lb_enabled': lb_enabled,
+          'cp_count': cp_count,
+          'cp_schedulable': cp_schedulable,
+          'worker_count': worker_count,
+          'master_ips': master_ips,
+          'worker_ips': worker_ips,
+          'first_master_ip': first_master_ip,
+          'ha_egress': {
+            'enabled': true,
+            'activated': ha_egress_activate | bool,
+            'active_name': ha_egress_provider_active_name,
+            'active_private_ip': ha_egress_route_gateway,
+            'gateway_1_name': ha_egress_active_name,
+            'gateway_1_private_ip': ha_egress_active_private_ip,
+            'gateway_2_name': ha_egress_server_name,
+            'gateway_2_private_ip': ha_egress_private_ip,
+            'standby_name': ha_egress_server_name,
+            'standby_public_ip': ha_egress_standby_public_ip,
+            'standby_private_ip': ha_egress_private_ip,
+            'floating_ipv4': ha_egress_floating_ipv4,
+            'floating_ip_id': ha_egress_floating_document.id,
+            'health_port': ha_egress_health_port
+          }
+        } | to_nice_yaml
+      }}
+
+- name: Reconcile HA egress metrics discovery and alerting
+  ansible.builtin.include_tasks: monitoring.yml
+  when:
+    - ha_egress_activate | bool
+    - ha_egress_monitoring_enabled | bool
+
+- name: Display HA egress summary
+  ansible.builtin.debug:
+    msg:
+      - "HA egress provider active: {{ ha_egress_provider_active_name }} ({{ ha_egress_route_gateway }})"
+      - "HA egress peer: {{ ha_egress_server_name if ha_egress_provider_active_name == ha_egress_active_name else ha_egress_active_name }}"
+      - "Static outbound IPv4: {{ ha_egress_floating_ipv4 }}"
+      - "Automatic failover enabled: {{ ha_egress_activate | bool }}"

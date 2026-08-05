@@ -81,7 +81,10 @@ def test_gitlab_and_argocd_domains_are_configurable_with_compatibility_aliases()
     assert "gitops.domain | default('argocd.' ~ domain, true)" in gitops
     assert "gitops.domain_aliases" in gitops
     assert "sectionName: cluster-https" in gitops
+    assert "gitlab.domain | default('git.' ~ domain, true)" in gitops
     assert "hostAliases: '{{ argocd_repo_host_aliases }}'" in gitops
+    assert "Discover the in-cluster GitLab Shell service for component-only runs" in gitops
+    assert "Record the in-cluster GitLab Shell address for Argo CD" in gitops
     assert "repoServer:\n        replicas:" in gitops
     assert "gitops.insecure_mode" in gitops
     assert "argocd_insecure_mode_effective" in gitops
@@ -99,7 +102,7 @@ def test_postgresql_extra_users_publish_tls_connection_secrets():
     assert "sslmode: verify-full" in databases
     assert "Create stable short PostgreSQL service alias" in databases
     assert "Issue hostname-verified PostgreSQL alias certificate" in databases
-    assert "Configure extra PostgreSQL role search paths" in databases
+    assert "Configure PostgreSQL role search paths" in databases
     assert "ALTER ROLE" in databases
     assert "item.search_path" in databases
     assert "argocd.argoproj.io/compare-options: IgnoreExtraneous" in databases
@@ -123,11 +126,22 @@ def test_medium_optimized_declares_scoped_application_database_users():
         "dadya-prod",
         "dadya-pp",
         "social-agents-owner",
+        "social-agents-production-owner",
+        "social-agents-preproduction-owner",
     }
-    assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS"
+    assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
+    assert users["social-agents-production-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
+    assert users["social-agents-preproduction-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
     assert {
         item["target_namespace"] for item in users.values()
-    } == {"fun", "dadya-production", "dadya-preproduction", "agents"}
+    } == {
+        "analytics",
+        "dadya-production",
+        "dadya-preproduction",
+        "agents",
+        "social-agents-production",
+        "social-agents-preproduction",
+    }
     for item in users.values():
         assert "target_namespace" not in item["operator"]
         assert "secret_name" not in item["operator"]

@@ -114,6 +114,34 @@ race. Do not set `CACHE_TTL_HOURS` or `CACHE_MAX_BYTES` on an S3-backed
 Changing the SeaweedFS chart version requires explicitly extending the audited
 version gate after verifying both the TTL hook and quota shell commands.
 
+## Database aliases and MongoDB TLS cutover
+
+Stable short database Services do not replace operator-owned objects. MongoDB
+keeps its operator-managed replica-set names and receives a separate headless
+alias for clients. The alias certificate is created only after the Percona
+cluster and its cert-manager Issuer are ready, and is signed by the active
+Percona CA. This same-CA requirement lets old and new replica certificates
+coexist during a one-pod-at-a-time rotation.
+
+MongoDB cutover is deliberately two-stage:
+
+1. Reconcile with `alias_tls_cutover_enabled: false`. Wait for the alias
+   certificate to be Ready and distribute `mongodb-client-ca` to every declared
+   consumer namespace.
+2. Mount that CA, use the short hostname with TLS and hostname verification,
+   and prove application plus replica-set health without changing the server
+   certificates.
+3. Set `alias_tls_cutover_enabled: true` and
+   `tls_cutover_confirmed: true`. The role refuses this step unless the staged
+   certificate exists and its `ca.crt` exactly matches the active Percona CA.
+4. Roll one MongoDB member at a time and verify primary election, all members,
+   application reads/writes, backups, and reconnects after every member.
+5. Set `tls_mode: requireTLS` only after no plaintext clients remain.
+
+Never bypass the same-CA assertion or replace the Percona CA and alias leaf in
+one operation. A fresh cluster must complete stage 1 before cutover can be
+enabled.
+
 ## Supply-chain maintenance
 
 When changing a pinned binary or manifest:

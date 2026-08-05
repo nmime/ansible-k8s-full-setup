@@ -6,6 +6,12 @@
 - name: Set cluster management variables
   set_fact:
     project: "{{ project_name | default('k8s') }}"
+    server_name_prefix: >-
+      {{ infrastructure.server_name_prefix |
+         default(project_name | default('k8s')) }}
+    load_balancer_name: >-
+      {{ (infrastructure.server_name_prefix |
+          default(project_name | default('k8s'))) + '-lb' }}
     k8s_ver: "{{ k8s_version | default('v1.35.4') }}"
     kubespray_version: "v2.31.0"
     cilium_ver: "{{ cilium_version | default('v1.19.5') }}"
@@ -49,6 +55,8 @@
       }}
     dedicated_docker_ci_worker_index: >-
       {{ gitlab_docker_host_runner_worker_index | default(0) | int }}
+    dedicated_postal_worker_index: >-
+      {{ postal.worker_index | default(0) | int }}
     dedicated_ci_worker_indices: >-
       {{
         [
@@ -77,6 +85,18 @@
       - local_api_port | int >= 1024
       - local_api_port | int <= 65535
     fail_msg: k8s_api_local_port must be an integer between 1024 and 65535.
+
+- name: Validate dedicated workload worker boundaries
+  ansible.builtin.assert:
+    that:
+      - dedicated_postal_worker_index | int >= 0
+      - dedicated_postal_worker_index | int <= worker_count | int
+      - >-
+        dedicated_postal_worker_index | int == 0
+        or dedicated_postal_worker_index | int not in dedicated_ci_worker_indices
+    fail_msg: >-
+      postal.worker_index must select an existing non-CI worker. Privileged CI,
+      protected builds, and the mail data plane must not share a dedicated node.
 
 - name: Validate the Kubespray execution boundary
   ansible.builtin.assert:
@@ -205,6 +225,7 @@
       {% if i == (dedicated_build_ci_worker_index | int) %}
             node_labels:
               workload.n0xeid.xyz/ci-build: "true"
+              workload.n0xeid.xyz/ci-general: "true"
             node_taints:
               - "workload.n0xeid.xyz/ci-build=true:NoSchedule"
       {% elif i == (dedicated_docker_ci_worker_index | int) %}
@@ -212,6 +233,11 @@
               workload.n0xeid.xyz/ci-docker: "true"
             node_taints:
               - "workload.n0xeid.xyz/ci-docker=true:NoSchedule"
+      {% elif i == (dedicated_postal_worker_index | int) %}
+            node_labels:
+              workload.n0xeid.xyz/mail: "true"
+            node_taints:
+              - "workload.n0xeid.xyz/mail=true:NoSchedule"
       {% endif %}
       {% endfor %}
         children:
@@ -270,6 +296,20 @@
       enable_nodelocaldns: true
       kubelet_max_pods: 110
       kubelet_rotate_certificates: true
+      # Keep the Kubespray defaults unless a compact schedulable-control-plane
+      # profile explicitly reserves more host memory. eviction_hard is rendered
+      # as a complete map because kubelet does not merge partial threshold maps.
+      kube_memory_reserved: "{{ kubernetes.kubelet.kube_memory_reserved | default('256Mi') }}"
+      system_memory_reserved: "{{ kubernetes.kubelet.system_memory_reserved | default('512Mi') }}"
+      eviction_hard:
+      {{ (kubernetes.kubelet.eviction_hard | default({
+           'memory.available': '100Mi',
+           'nodefs.available': '10%',
+           'nodefs.inodesFree': '5%',
+           'imagefs.available': '15%',
+           'imagefs.inodesFree': '5%'
+         })) | to_nice_yaml(indent=2) | indent(8, true) }}
+      kube_controller_terminated_pod_gc_threshold: {{ kube_controller_terminated_pod_gc_threshold | int }}
       # Kubelet must delegate cloud identity to the external provider. The CCM
       # itself is installed and pinned below instead of by Kubespray.
       cloud_provider: external
@@ -450,6 +490,63 @@
   delegate_to: localhost
   become: false
   changed_when: false
+
+- name: Resolve the selected scale worker private address
+  ansible.builtin.set_fact:
+    selected_scale_worker_ip: "{{ worker_ips[selected_kubespray_limit] | default('') }}"
+  when: selected_kubespray_playbook == 'scale.yml'
+
+- name: Require the selected scale worker in persisted infrastructure facts
+  ansible.builtin.assert:
+    that:
+      - selected_scale_worker_ip | length > 0
+    fail_msg: >-
+      {{ selected_kubespray_limit }} is missing from the persisted worker IP
+      map. Reconcile the infrastructure role before running scale.yml.
+  when: selected_kubespray_playbook == 'scale.yml'
+
+- name: Bootstrap outbound networking on the selected private scale worker
+  ansible.builtin.shell: |
+    ssh -i {{ controller_ssh_private_key_file | quote }} \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} \
+      -o ProxyCommand={{ ('ssh -i ' ~ controller_ssh_private_key_file ~
+        ' -o BatchMode=yes -o StrictHostKeyChecking=accept-new' ~
+        ' -o UserKnownHostsFile=' ~ controller_known_hosts_file ~
+        ' -W %h:%p root@' ~ bastion_public_ip) | quote }} \
+      root@{{ selected_scale_worker_ip }} 'bash -s' <<'REMOTECMD'
+    set -euo pipefail
+    private_if=$(ip -o link show | awk -F': ' '/enp7s0|ens10/{print $2}' | head -1)
+    private_if="${private_if:-enp7s0}"
+    ip route replace default via 10.0.0.1 dev "$private_if" mtu 1450
+    install -d -m 0755 /etc/systemd/resolved.conf.d /etc/cloud/cloud.cfg.d
+    printf '[Resolve]\nDNS=185.12.64.1 185.12.64.2\n' \
+      > /etc/systemd/resolved.conf.d/dns.conf
+    printf 'manage_resolv_conf: false\n' \
+      > /etc/cloud/cloud.cfg.d/99-disable-resolv.cfg
+    cat > /etc/netplan/60-private-routes.yaml <<NETPLAN
+    network:
+      version: 2
+      ethernets:
+        ${private_if}:
+          dhcp4: true
+          routes:
+            - to: default
+              via: 10.0.0.1
+              metric: 100
+              mtu: 1450
+    NETPLAN
+    systemctl restart systemd-resolved
+    getent ahostsv4 archive.ubuntu.com >/dev/null
+    REMOTECMD
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  no_log: true
+  when: selected_kubespray_playbook == 'scale.yml'
 
 - name: Run Kubespray cluster deployment without exposing remote secrets
   no_log: true
@@ -1350,13 +1447,18 @@
   ansible.builtin.shell: |
     set -euo pipefail
     nodes=$(kubectl get nodes -o json)
-    jq -e '
+    pool_nodes={{ (local_storage_control_plane_nodes_result.stdout_lines +
+      local_storage_worker_nodes_result.stdout_lines[0:3]) | to_json | quote }}
+    jq -e --argjson pool_nodes "$pool_nodes" '
       def capacity_kib:
         (.status.capacity["ephemeral-storage"]
           | capture("^(?<value>[0-9]+)Ki$").value
           | tonumber);
+      [.items[] |
+        select(.metadata.name as $name | $pool_nodes | index($name))] as $pool |
+      ($pool | length) == 6 and
       all(
-        .items[];
+        $pool[];
         if .metadata.labels["node-role.kubernetes.io/control-plane"] != null
         then capacity_kib >= (70 * 1024 * 1024)
         else capacity_kib >= (140 * 1024 * 1024)
@@ -1762,6 +1864,42 @@
       kubernetes.gateway.extra_https_listeners must contain unique names and
       must not duplicate the managed http or https listeners.
 
+- name: Validate extra Gateway certificate definitions
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | length > 0
+      - item.dns_names is defined
+      - item.dns_names | length > 0
+      - >-
+        (
+          gateway_extra_certificates | default([])
+          | map(attribute='name') | list
+        ) | length
+        ==
+        (
+          gateway_extra_certificates | default([])
+          | map(attribute='name') | unique | list
+        ) | length
+    fail_msg: >-
+      kubernetes.gateway.extra_certificates entries require a unique name and
+      at least one dns_names value.
+  loop: "{{ gateway_extra_certificates | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('unnamed-certificate') }}"
+
+- name: Reject overlapping certificates on a hostname-scoped Gateway listener
+  ansible.builtin.assert:
+    that:
+      - >-
+        gateway_https_hostname | default('') | length == 0
+        or gateway_extra_certificate_refs | default([]) | length == 0
+    fail_msg: >-
+      kubernetes.gateway.extra_certificate_refs cannot be combined with a
+      hostname-scoped primary HTTPS listener: Cilium/Envoy creates overlapping
+      filter chains and NACKs the complete Gateway update. Put every additional
+      domain and certificate in kubernetes.gateway.extra_https_listeners.
+
 - name: Create Cilium main Gateway
   kubernetes.core.k8s:
     state: present
@@ -1780,7 +1918,7 @@
                 'name': 'http',
                 'protocol': 'HTTP',
                 'port': 80,
-                'allowedRoutes': {'namespaces': {'from': 'All'}}
+                'allowedRoutes': gateway_http_allowed_routes
               },
               {
                 'name': 'https',
@@ -1790,9 +1928,13 @@
                   'mode': 'Terminate',
                   'certificateRefs':
                     [{'name': 'wildcard-tls', 'namespace': 'gateway-secrets'}]
-                    + (gateway_extra_certificate_refs | default([]))
+                    + (
+                      gateway_extra_certificate_refs | default([])
+                      if gateway_https_hostname | default('') | length == 0
+                      else []
+                    )
                 },
-                'allowedRoutes': {'namespaces': {'from': 'All'}}
+                'allowedRoutes': gateway_https_allowed_routes
               }
               | combine(
                   {'hostname': gateway_https_hostname}
@@ -1875,7 +2017,7 @@
 
 - name: Read the Hetzner load balancer before Gateway convergence
   ansible.builtin.command:
-    argv: [hcloud, load-balancer, describe, '{{ project }}-lb', -o, json]
+    argv: [hcloud, load-balancer, describe, '{{ load_balancer_name }}', -o, json]
   register: gateway_lb_config
   changed_when: false
   retries: 5
@@ -1917,7 +2059,7 @@
       - hcloud
       - load-balancer
       - update-service
-      - '{{ project }}-lb'
+      - '{{ load_balancer_name }}'
       - --listen-port
       - '80'
       - --protocol
@@ -1946,7 +2088,7 @@
       - hcloud
       - load-balancer
       - update-service
-      - '{{ project }}-lb'
+      - '{{ load_balancer_name }}'
       - --listen-port
       - '443'
       - --protocol
@@ -1972,7 +2114,7 @@
 - name: Require Hetzner Gateway service port readback to match Cilium
   ansible.builtin.shell: |
     set -euo pipefail
-    hcloud load-balancer describe {{ (project ~ '-lb') | quote }} -o json |
+    hcloud load-balancer describe {{ load_balancer_name | quote }} -o json |
       jq -e \
         --argjson http {{ gateway_http_node_port | quote }} \
         --argjson https {{ gateway_https_node_port | quote }} '
@@ -1999,7 +2141,7 @@
 - name: Wait for every Hetzner Gateway target to become healthy
   ansible.builtin.shell: |
     set -euo pipefail
-    hcloud load-balancer describe {{ (project ~ '-lb') | quote }} -o json |
+    hcloud load-balancer describe {{ load_balancer_name | quote }} -o json |
       jq -e --argjson expected {{
         (
           (
@@ -2527,6 +2669,51 @@
           'ge',
           wildcard_tls_certificate.resources[0].metadata.generation | default(1)
         )
+      | list | length == 1
+  when: k8s_create_external_tls | default(true) | bool
+
+- name: Create extra Gateway TLS certificates
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ item.name }}"
+        namespace: gateway-secrets
+      spec:
+        secretName: "{{ item.secret_name | default(item.name) }}"
+        issuerRef:
+          name: "{{ item.issuer_name | default(cert_manager_cluster_issuer) }}"
+          kind: ClusterIssuer
+        dnsNames: "{{ item.dns_names }}"
+  loop: "{{ gateway_extra_certificates | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: k8s_create_external_tls | default(true) | bool
+  register: _r_create_extra_gateway_tls_certificates
+  retries: 3
+  delay: 10
+  until: _r_create_extra_gateway_tls_certificates is not failed
+
+- name: Wait for extra Gateway TLS certificates to become ready
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: gateway-secrets
+    name: "{{ item.name }}"
+  loop: "{{ gateway_extra_certificates | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: extra_gateway_tls_certificate
+  retries: 60
+  delay: 10
+  until:
+    - extra_gateway_tls_certificate.resources | default([]) | length == 1
+    - >-
+      extra_gateway_tls_certificate.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
       | list | length == 1
   when: k8s_create_external_tls | default(true) | bool
 

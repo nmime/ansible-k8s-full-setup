@@ -154,6 +154,14 @@ export CLUSTER_BACKUP_PASSPHRASE='use-a-secret-manager-value'
   --secrets-file /state/cluster-a/.platform-secrets.yml \
   --vault-init-file /state/cluster-a/.vault-init-cluster-a.json \
   --ssh-known-hosts /state/cluster-a/ssh/known_hosts --force
+
+# Production controllers that must not retain a local recovery archive use
+# transient staging. The command succeeds only after the external archive,
+# checksum, and completion receipt have all passed download verification.
+./scripts/cluster-backup.sh --config /state/cluster-a/platform.yaml \
+  --secrets-file /state/cluster-a/.platform-secrets.yml \
+  --vault-init-file /state/cluster-a/.vault-init-cluster-a.json \
+  --ssh-known-hosts /state/cluster-a/ssh/known_hosts --remote-only --force
 ```
 
 `backup-all.sh` triggers an on-demand full `PerconaPGBackup`, a PBM MongoDB
@@ -173,6 +181,10 @@ and cloud recovery bundle. It then uploads the encrypted archive and checksum
 to independent DR storage, downloads the archive again, verifies its SHA-256,
 and uploads the JSON manifest last as the atomic completion receipt. A remote
 archive without that final receipt is interrupted and must not be restored.
+With `--remote-only`, the output directory is created inside the process cleanup
+tree and removed on success, failure, or a handled signal. Only the externally
+verified objects remain; `--remote-only` cannot be combined with
+`--skip-remote-publish`.
 Missing layers fail closed; skip options (including `--skip-remote-publish`)
 require the explicit `--allow-incomplete` marker, and such a bundle cannot be
 restored by `cluster-restore.sh`.

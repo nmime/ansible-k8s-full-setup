@@ -6,7 +6,7 @@
     _backup_ns: "{{ backup_namespace | default('backups') }}"
     _backup_retention: "{{ backup_retention_days | default(30) }}"
     _backup_schedule: "{{ backup_schedule | default('0 2 * * *') }}"
-  tags: [backup, backup-setup]
+  tags: [backup, backup-setup, backup-verify]
 
 - name: "Backup | Resolve enabled backup component set"
   ansible.builtin.set_fact:
@@ -29,7 +29,7 @@
       {%- set _ = ns.items.append('gitlab-secrets') -%}
       {%- endif -%}
       {{ ns.items }}
-  tags: [backup, backup-setup]
+  tags: [backup, backup-setup, backup-verify]
 
 - name: "Backup | Create backup metadata namespace"
   kubernetes.core.k8s:
@@ -75,6 +75,38 @@
         AWS_DEFAULT_REGION: "{{ backup_storage_region }}"
   no_log: true
   tags: [backup, backup-setup]
+
+- name: "Backup | Require scoped GitLab verification credentials"
+  ansible.builtin.assert:
+    that:
+      - backup_gitlab_verification_access_key | length >= 12
+      - backup_gitlab_verification_secret_key | length >= 24
+    fail_msg: >-
+      GitLab backup verification credentials are missing or insecure. Run the
+      generate-secrets role; do not broaden the general backup identity to the
+      GitLab buckets.
+  when: "'gitlab' in _backup_components"
+  no_log: true
+  tags: [backup, backup-setup, backup-verify]
+
+- name: "Backup | Create scoped GitLab verification credentials secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: backup-gitlab-verification-credentials
+        namespace: "{{ _backup_ns }}"
+        labels:
+          app.kubernetes.io/part-of: backup-restore
+      type: Opaque
+      stringData:
+        GITLAB_AWS_ACCESS_KEY_ID: "{{ backup_gitlab_verification_access_key }}"
+        GITLAB_AWS_SECRET_ACCESS_KEY: "{{ backup_gitlab_verification_secret_key }}"
+  when: "'gitlab' in _backup_components"
+  no_log: true
+  tags: [backup, backup-setup, backup-verify]
 
 - name: "Backup | Include PostgreSQL backup tasks"
   ansible.builtin.include_tasks: postgresql_pgbackrest.yml

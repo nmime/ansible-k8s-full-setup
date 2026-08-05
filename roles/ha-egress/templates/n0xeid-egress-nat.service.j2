@@ -1,0 +1,13 @@
+[Unit]
+Description=n0xeid static Floating-IP SNAT gateway
+After=network-online.target
+Wants=network-online.target
+Before=n0xeid-egress-health.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/n0xeid-egress-nat {{ 'activate' if ha_egress_activate | bool else 'prepare' }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

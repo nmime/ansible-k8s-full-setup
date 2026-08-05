@@ -52,7 +52,7 @@ profile rather than a fifth tier: it sets `tier: medium` for the medium
 foundation and `resource_tier: small` for the compact resource envelope, then
 explicitly removes overlapping optional observability backends.
 GitLab/Runner and PostgreSQL are mandatory from `small` upward;
-MongoDB, Temporal, Postal, and GlitchTip remain explicit opt-ins.
+MongoDB, Temporal, Postal, GlitchTip, and Umami remain explicit opt-ins.
 Do not rename it to `medium_optimized` or change its tier to `small`; both would
 break the explicit profile contract and are rejected before provisioning.
 
@@ -76,15 +76,15 @@ maintenance is required. Production backups must also be copied to storage
 outside this cluster.
 
 At the authenticated Hetzner API prices audited on 2026-07-30, the complete
-currently placeable balanced shape is €358.556/month net (€358.56 rounded),
+currently placeable balanced shape is €359.128/month net (€359.13 rounded),
 including isolated `cpx32` Docker and `cpx42` general/image-build workers,
 bastion IPv4, 300 GiB of active
 replication-qualified local claims in a
-450 GiB expandable static pool, and 230 GiB
+450 GiB expandable static pool, and 240 GiB
 of billable CSI volumes. Its six-node platform base without the CI worker is
-€253.58/month. GitLab backup staging uses transient node SSD before its immediate
+€254.15/month. GitLab backup staging uses transient node SSD before its immediate
 object-storage upload. The intermittent CX cost-optimized platform base is
-€100.08/month whenever all required shapes are
+€100.65/month whenever all required shapes are
 placeable: three `cx33` control planes retain economical quorum capacity while
 three `cx43` workers provide 24 vCPU, 48 GiB RAM, and 480 GiB worker-local SSD.
 It was temporarily unavailable for new `hel1`
@@ -96,7 +96,7 @@ see [the cost model](docs/COST_MODEL.md) and
 
 The current live deployment uses the CX platform base plus isolated `cpx32`
 Docker and `cpx42` general/image-build workers. At the current authenticated
-prices, the resulting footprint is **€205.06/month net**, including 230 GiB of
+prices, the resulting footprint is **€205.63/month net**, including 240 GiB of
 provider volumes. Both workers are private, tainted, excluded from ingress and
 local PVs, and required to keep CI disk pressure away from production.
 
@@ -118,6 +118,7 @@ Inspect and change the selected technologies through the orchestrator:
 ./platform.sh enable temporal     # optional; enables PostgreSQL
 ./platform.sh enable postal       # optional; enables Dragonfly
 ./platform.sh enable glitchtip    # optional; enables PostgreSQL + Dragonfly
+./platform.sh enable umami        # optional; enables PostgreSQL
 ./platform.sh disable daytona
 ./platform.sh validate
 ```
@@ -125,9 +126,9 @@ Inspect and change the selected technologies through the orchestrator:
 `enable` adds required dependencies. `disable` refuses when another enabled
 technology still depends on the target. The validated dependency graph also
 covers ESO -> secrets, database engines -> databases, Runner -> GitLab,
-GlitchTip -> PostgreSQL + Dragonfly, APM -> Elasticsearch, Temporal ->
-PostgreSQL, Postal -> Dragonfly, tracing -> observability + storage, Blackbox ->
-observability, and backup -> storage. Metrics, logging, and Grafana are
+GlitchTip -> PostgreSQL + Dragonfly, Umami -> PostgreSQL, APM -> Elasticsearch,
+Temporal -> PostgreSQL, Postal -> Dragonfly, tracing -> observability + storage,
+Blackbox -> observability, and backup -> storage. Metrics, logging, and Grafana are
 intentionally deployed as one observability core bundle. PMM is an independently
 selectable dependant of that bundle.
 Coroot -> observability is also enforced; HIPAA-oriented hardening requires
@@ -145,7 +146,44 @@ Postal deployment is schema-gated: a fresh MariaDB runs `postal initialize`,
 an existing database runs `postal update`, and web/worker/SMTP processes are
 not reconciled until that Job completes. This path runs only after Postal is
 explicitly enabled. SMTP stays public on ports 25/587 but uses unprivileged
-container port 2525.
+container port 2525. Postal is a transactional mail transport for applications,
+not an IMAP mailbox server.
+
+Direct delivery is deliberately fail-closed. Configure every sender under
+`postal.domains`, set `postal.outbound_ipv4`, publish
+`mailout.<global.domain>` to that address, and set the IPv4 PTR back to the same
+HELO hostname. Before MariaDB or Postal is created, the role verifies that
+forward/reverse alignment and proves that a pod can receive an SMTP banner over
+outbound TCP/25. This catches Hetzner's account-level mail-port block instead of
+leaving messages stuck in a healthy-looking queue.
+
+The role issues a cert-manager certificate for SMTP STARTTLS, persists Postal's
+required signing key in the encrypted platform secrets, and idempotently
+bootstraps the admin, organization, mail server, and all configured sender
+domains. It publishes the resulting public SPF/DKIM/return-path/DMARC plan in
+`ConfigMap/postal-dns-requirements`. Keep `smtp_credential_enabled: false` until
+those records resolve and Postal reports clean domain checks. Start DMARC at
+`p=none`, verify real traffic and alignment, then advance to quarantine/reject;
+no infrastructure setting can guarantee inbox placement or replace IP warm-up,
+bounce handling, consent, and content quality.
+
+Postal also creates explicit `postmaster`, `abuse`, and `dmarc-reports` inbound routes for each
+sender domain by default (`postal.inbound_accept_local_parts`). They accept mail
+into Postal with spam quarantine enabled; they are not IMAP mailboxes. The DMARC
+record sends aggregate reports to the domain-local `dmarc-reports` route. Configure
+an HTTP, SMTP, or address endpoint in Postal when an application or operator
+mailbox must receive forwarded copies. Catch-all routes are intentionally not
+created because they substantially increase unsolicited-mail processing.
+
+Umami is also entirely opt-in. Set `umami.enabled: true`, choose separate
+`dashboard_domain` and `ingest_domain` names, and declare stable UUIDs under
+`umami.websites`. The dashboard is attached only to the admin/VPN Gateway.
+The public Gateway accepts exactly `/script.js` and `/api/send`; it does not
+expose login, reporting, user, or website-management APIs. Umami receives a
+dedicated PostgreSQL database principal and connects through the stable short
+PgBouncer alias using `verify-full` TLS and the private database CA. The
+deployment rotates the upstream default admin password before it is considered
+ready and keeps that password only in `Secret/umami-runtime`.
 
 Validate the selected profile without contacting Hetzner or Kubernetes:
 
@@ -196,6 +234,7 @@ Component runs are available when recovery or maintenance requires them:
 ./platform.sh deploy backup
 ./platform.sh deploy disaster-recovery
 ./platform.sh deploy glitchtip
+./platform.sh deploy umami
 ./platform.sh deploy apm
 ./platform.sh deploy blackbox
 ./platform.sh deploy daytona

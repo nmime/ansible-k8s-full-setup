@@ -48,6 +48,43 @@
 - name: Docker smoke | Establish the fail-closed network boundary
   ansible.builtin.include_tasks: docker-host-network.yml
 
+- name: Docker smoke | Bound aggregate namespace resources
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: protected-docker-smoke-budget
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        hard:
+          requests.cpu: '3'
+          requests.memory: 6Gi
+          limits.cpu: '8'
+          limits.memory: 7Gi
+          pods: '10'
+          services: '8'
+          secrets: '20'
+          configmaps: '12'
+          persistentvolumeclaims: '0'
+
+- name: Docker smoke | Bound each container
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: protected-docker-smoke-containers
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            max: {cpu: '4', memory: 4Gi}
+            defaultRequest: {cpu: 100m, memory: 128Mi}
+            default: {cpu: 500m, memory: 512Mi}
+
 - name: Docker smoke | Read the persisted Runner authentication token
   no_log: true
   kubernetes.core.k8s_info:
@@ -240,18 +277,18 @@
               priority_class_name = "n0xeid-ci-maintenance"
               node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }
               node_tolerations = { "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
-              cpu_request = "500m"
-              cpu_limit = "2000m"
-              memory_request = "1Gi"
-              memory_limit = "2Gi"
-              service_cpu_request = "1000m"
-              service_cpu_limit = "4000m"
-              service_memory_request = "2Gi"
-              service_memory_limit = "4Gi"
-              helper_cpu_request = "100m"
-              helper_cpu_limit = "500m"
-              helper_memory_request = "256Mi"
-              helper_memory_limit = "512Mi"
+              cpu_request = "{{ gitlab_docker_host_runner_job_resources.cpu_request | default('500m') }}"
+              cpu_limit = "{{ gitlab_docker_host_runner_job_resources.cpu_limit | default('2000m') }}"
+              memory_request = "{{ gitlab_docker_host_runner_job_resources.memory_request | default('1Gi') }}"
+              memory_limit = "{{ gitlab_docker_host_runner_job_resources.memory_limit | default('2Gi') }}"
+              service_cpu_request = "{{ gitlab_docker_host_runner_job_resources.service_cpu_request | default('1000m') }}"
+              service_cpu_limit = "{{ gitlab_docker_host_runner_job_resources.service_cpu_limit | default('4000m') }}"
+              service_memory_request = "{{ gitlab_docker_host_runner_job_resources.service_memory_request | default('2Gi') }}"
+              service_memory_limit = "{{ gitlab_docker_host_runner_job_resources.service_memory_limit | default('6Gi') }}"
+              helper_cpu_request = "{{ gitlab_docker_host_runner_job_resources.helper_cpu_request | default('100m') }}"
+              helper_cpu_limit = "{{ gitlab_docker_host_runner_job_resources.helper_cpu_limit | default('500m') }}"
+              helper_memory_request = "{{ gitlab_docker_host_runner_job_resources.helper_memory_request | default('256Mi') }}"
+              helper_memory_limit = "{{ gitlab_docker_host_runner_job_resources.helper_memory_limit | default('512Mi') }}"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
@@ -289,6 +326,23 @@
                           drop: [NET_RAW]
                         seccompProfile:
                           type: Unconfined
+                '''
+                patch_type = "strategic"
+              [[runners.kubernetes.pod_spec]]
+                name = "separate-protected-docker-from-general-ci"
+                patch = '''
+                  affinity:
+                    podAntiAffinity:
+                      requiredDuringSchedulingIgnoredDuringExecution:
+                        - labelSelector:
+                            matchLabels:
+                              workload.n0xeid.xyz/class: ci-job
+                          # General jobs live outside this protected namespace.
+                          # Cross-namespace matching is required for the hard
+                          # anti-affinity to reserve the Docker worker in fact.
+                          namespaces:
+                            - "{{ gitlab_runner_namespace }}"
+                          topologyKey: kubernetes.io/hostname
                 '''
                 patch_type = "strategic"
         tags: docker-host

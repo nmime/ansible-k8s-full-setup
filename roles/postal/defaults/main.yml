@@ -4,10 +4,93 @@ postal_version: "3.3.7"
 postal_image: "ghcr.io/postalserver/postal"
 postal_web_hostname: "mail.{{ domain }}"
 postal_smtp_hostname: "smtp.{{ domain }}"
+postal_submission_hostname: "submission.{{ domain }}"
+postal_helo_hostname: "mailout.{{ domain }}"
 postal_track_domain: "track.{{ domain }}"
 postal_spf_domain: "spf.{{ domain }}"
 postal_return_path_domain: "rp.{{ domain }}"
 postal_route_domain: "routes.{{ domain }}"
+postal_domains: "{{ postal.domains | default([domain]) }}"
+postal_inbound_accept_local_parts: "{{ postal.inbound_accept_local_parts | default(['postmaster', 'abuse', 'dmarc-reports']) }}"
+postal_manage_sender_dns: "{{ postal.manage_sender_dns | default(false) }}"
+postal_sender_dns_default_provider: "{{ postal.sender_dns_default_provider | default('hetzner') }}"
+postal_sender_dns_providers: "{{ postal.sender_dns_providers | default({}) }}"
+postal_gcore_api_url: "{{ postal.gcore_api_url | default('https://api.gcore.com') }}"
+postal_gcore_api_key: "{{ gcore_api_key | default(lookup('env', 'GCORE_API_KEY'), true) }}"
+postal_dmarc_policy: "{{ postal.dmarc_policy | default('none') }}"
+postal_dmarc_subdomain_policy: "{{ postal.dmarc_subdomain_policy | default(postal_dmarc_policy) }}"
+postal_dmarc_dkim_alignment: "{{ postal.dmarc_dkim_alignment | default('r') }}"
+postal_dmarc_spf_alignment: "{{ postal.dmarc_spf_alignment | default('r') }}"
+postal_dmarc_pct: "{{ postal.dmarc_pct | default(100) | int }}"
+postal_dmarc_report_local_part: "{{ postal.dmarc_report_local_part | default('dmarc-reports') }}"
+postal_admin_email: "{{ postal.admin_email | default(email) }}"
+postal_admin_first_name: "{{ postal.admin_first_name | default('Platform') }}"
+postal_admin_last_name: "{{ postal.admin_last_name | default('Administrator') }}"
+postal_organization_name: "{{ postal.organization_name | default(project_name | default('Platform')) }}"
+postal_organization_permalink: "{{ postal.organization_permalink | default(project_name | default('platform')) }}"
+postal_server_name: "{{ postal.server_name | default('Transactional Mail') }}"
+postal_server_permalink: "{{ postal.server_permalink | default('transactional') }}"
+postal_send_limit_per_minute: "{{ postal.send_limit_per_minute | default(60) }}"
+postal_message_retention_days: "{{ postal.message_retention_days | default(30) }}"
+postal_raw_message_retention_days: "{{ postal.raw_message_retention_days | default(7) }}"
+postal_raw_message_retention_size: "{{ postal.raw_message_retention_size | default(2048) }}"
+postal_direct_delivery_enabled: "{{ postal.direct_delivery_enabled | default(true) }}"
+postal_outbound_ipv4: "{{ postal.outbound_ipv4 | default(bastion_public_ip | default('')) }}"
+postal_require_ptr_alignment: "{{ postal.require_ptr_alignment | default(true) }}"
+postal_port25_probe_host: "{{ postal.port25_probe_host | default('gmail-smtp-in.l.google.com') }}"
+postal_port25_probe_timeout_seconds: "{{ postal.port25_probe_timeout_seconds | default(10) }}"
+postal_dkim_identifier: "{{ postal.dkim_identifier | default('postal') }}"
+postal_custom_return_path_prefix: "{{ postal.custom_return_path_prefix | default('psrp') }}"
+postal_smtp_tls_secret: "{{ postal.smtp_tls_secret | default('postal-smtp-tls') }}"
+postal_smtp_tls_issuer: "{{ postal.smtp_tls_issuer | default(cert_manager_cluster_issuer | default('letsencrypt-prod')) }}"
+postal_smtp_tls_use_platform_wildcard: "{{ postal.smtp_tls_use_platform_wildcard | default(true) }}"
+postal_smtp_tls_source_namespace: "{{ postal.smtp_tls_source_namespace | default('gateway-secrets') }}"
+postal_smtp_tls_source_secret: "{{ postal.smtp_tls_source_secret | default('wildcard-tls') }}"
+postal_smtp_tls_sync_image: "{{ postal.smtp_tls_sync_image | default('docker.io/alpine/k8s:1.35.4') }}"
+postal_smtp_load_balancer_name: "{{ postal.smtp_load_balancer_name | default((project_name | default('k8s')) + '-postal-smtp') }}"
+postal_shared_load_balancer_name: >-
+  {{
+    postal.shared_load_balancer_name |
+    default(
+      (
+        infrastructure.server_name_prefix |
+        default(project | default(project_name | default('k8s')), true)
+      ) ~ '-lb',
+      true
+    )
+  }}
+postal_smtp_public_ipv4: "{{ postal.smtp_public_ipv4 | default(lb_ip | default('')) }}"
+postal_smtp_credential_enabled: "{{ postal.smtp_credential_enabled | default(false) }}"
+postal_smtp_client_names: >-
+  {{
+    postal.smtp_clients | default([
+      'platform-applications',
+      'alertmanager',
+      'argocd',
+      'gitlab',
+      'grafana',
+      'metabase',
+      'fun-uno-preproduction',
+      'fun-durak-preproduction',
+      'fun-uno-production',
+      'fun-durak-production'
+    ])
+  }}
+postal_smtp_client_namespaces: >-
+  {{
+    postal.smtp_client_namespaces | default([
+      'analytics',
+      'argocd',
+      'gitlab',
+      'monitoring',
+      'umami',
+      'glitchtip',
+      'fun-games-production',
+      'fun-games-preproduction'
+    ])
+  }}
+postal_worker_index: "{{ postal.worker_index | default(0) | int }}"
+postal_mail_node_label: "workload.n0xeid.xyz/mail"
 
 postal_web_replicas: "{{ postal.web_replicas | default(1) }}"
 postal_smtp_replicas: "{{ postal.smtp_replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"
