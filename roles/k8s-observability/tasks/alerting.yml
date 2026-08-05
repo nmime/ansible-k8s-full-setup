@@ -108,22 +108,6 @@
                   bot_token_file: /etc/vm/secrets/alert-secrets/telegram-bot-token
                   chat_id: {{ alert_telegram_chat_id | default(0) | int }}
                   parse_mode: HTML
-                  message: |
-                    {% raw %}<b>🚨 {{ .Status | toUpper }}{{ if eq .Status "firing" }} ({{ .Alerts.Firing | len }}){{ end }}</b>
-                    {{ range $index, $alert := .Alerts -}}
-                    {{ if lt $index 6 }}
-                    <b>{{ .Labels.alertname }}</b> [{{ .Labels.severity }}]
-                    <i>{{ .Annotations.summary }}</i>
-                    {{ .Annotations.description }}
-                    {{ with .Annotations.runbook_url }}Runbook: {{ . }}{{ end }}
-                    {{ with .Labels.namespace }}Namespace: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.deployment }}Deployment: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.pod }}Pod: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.runner }}Runner: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.runner_name }}Manager: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.system_id }}System ID: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.level }}Level: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.status }}HTTP status: <code>{{ . }}</code>{{ end }}
                   message: |-
                     {% raw %}<b>🚨 {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
                     {{ range $index, $alert := .Alerts -}}
@@ -142,22 +126,6 @@
                   bot_token_file: /etc/vm/secrets/alert-secrets/telegram-bot-token
                   chat_id: {{ alert_telegram_chat_id | default(0) | int }}
                   parse_mode: HTML
-                  message: |
-                    {% raw %}<b>⚠️ {{ .Status | toUpper }}</b>
-                    {{ range $index, $alert := .Alerts -}}
-                    {{ if lt $index 6 }}
-                    <b>{{ .Labels.alertname }}</b> [{{ .Labels.severity }}]
-                    <i>{{ .Annotations.summary }}</i>
-                    {{ .Annotations.description }}
-                    {{ with .Annotations.runbook_url }}Runbook: {{ . }}{{ end }}
-                    {{ with .Labels.namespace }}Namespace: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.deployment }}Deployment: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.pod }}Pod: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.runner }}Runner: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.runner_name }}Manager: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.system_id }}System ID: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.level }}Level: <code>{{ . }}</code>{{ end }}
-                    {{ with .Labels.status }}HTTP status: <code>{{ . }}</code>{{ end }}
                   message: |-
                     {% raw %}<b>⚠️ {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
                     {{ range $index, $alert := .Alerts -}}
@@ -469,7 +437,7 @@
                 annotations:
                   summary: 'HTTP 5xx ratio above 2% for {{ "{{ $labels.app_id }}" }}'
                   description: 'At least 20 requests were observed; the 5xx ratio has remained elevated for 10 minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: ServiceHttp5xxRatioCritical
                 expr: >-
                   100 * sum by (app_id) (rate(container_http_inbound_requests_total{status="5xx",app_id!=""}[5m]))
@@ -483,7 +451,7 @@
                 annotations:
                   summary: 'HTTP 5xx ratio above 10% for {{ "{{ $labels.app_id }}" }}'
                   description: 'The service is returning a sustained high rate of server errors.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: GitLabHttp5xxRatioHigh
                 expr: >-
                   100 * sum(rate(http_requests_total{namespace="gitlab",status="5xx"}[5m]))
@@ -494,7 +462,7 @@
                 annotations:
                   summary: GitLab HTTP 5xx ratio is elevated
                   description: GitLab has returned more than 2% server errors for 10 minutes.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
 
           - name: kubernetes-workloads
             interval: 30s
@@ -506,14 +474,14 @@
                 annotations:
                   summary: 'Pod restarted: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} restarted during the last 10 minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: PodRestartStorm
                 expr: increase(kube_pod_container_status_restarts_total[15m]) >= 3
                 labels: {severity: critical, owner: platform}
                 annotations:
                   summary: 'Restart storm: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} restarted at least three times in 15 minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: PodCrashLoopBackOffPersistent
                 expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
                 for: 5m
@@ -521,7 +489,7 @@
                 annotations:
                   summary: 'CrashLoopBackOff: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} has been crash-looping for five minutes.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: PodOOMKilledProduction
                 expr: >-
                   increase(kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace=~"agents|production|.*-production"}[10m]) > 0
@@ -529,7 +497,7 @@
                 annotations:
                   summary: 'Production OOMKill: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: 'Container {{ "{{ $labels.container }}" }} exceeded its memory boundary.'
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: PodPendingTooLong
                 expr: >-
                   kube_pod_status_phase{phase="Pending",namespace!~"gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds"} == 1
@@ -538,7 +506,7 @@
                 annotations:
                   summary: 'Pod pending for 10 minutes: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: Inspect scheduling events, resource quota, PVC binding, and image pulls.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: ProductionDeploymentUnavailable
                 expr: kube_deployment_status_replicas_unavailable{namespace=~"agents|production|.*-production"} > 0
                 for: 5m
@@ -546,7 +514,7 @@
                 annotations:
                   summary: 'Production deployment unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
                   description: One or more desired production replicas have been unavailable for five minutes.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: StatefulSetReplicaMismatch
                 expr: kube_statefulset_status_replicas_ready < kube_statefulset_replicas
                 for: 10m
@@ -554,7 +522,7 @@
                 annotations:
                   summary: 'StatefulSet replica mismatch: {{ "{{ $labels.namespace }}/{{ $labels.statefulset }}" }}'
                   description: Ready replicas have remained below desired replicas for 10 minutes.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: KubernetesJobFailed
                 expr: max by (namespace, job_name) (increase(kube_job_status_failed[10m])) > 0
                 for: 2m
@@ -562,7 +530,7 @@
                 annotations:
                   summary: 'Job failed: {{ "{{ $labels.namespace }}/{{ $labels.job_name }}" }}'
                   description: A Kubernetes Job has one or more failed pods.
-                  runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
 
           - name: node-capacity
             interval: 30s
@@ -611,8 +579,6 @@
                 labels: {severity: critical, owner: platform, service: gitlab-runner}
                 annotations:
                   summary: 'Runner managers unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
-                  description: '{{ "{{ printf \"%.0f\" $value }}" }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.'
-                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
                   description: >-
                     {{ '{{ printf "%.0f" $value }}' }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.
                   runbook_url: '{{ alert_runbook_url_resolved }}'
@@ -625,8 +591,6 @@
                 labels: {severity: warning, owner: platform, service: gitlab-runner}
                 annotations:
                   summary: 'Runner system errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
-                  description: '{{ "{{ printf \"%.0f\" $value }}" }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.'
-                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
                   description: >-
                     {{ '{{ printf "%.0f" $value }}' }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.
                   runbook_url: '{{ alert_runbook_url_resolved }}'
@@ -639,8 +603,6 @@
                 labels: {severity: critical, owner: platform, service: gitlab-runner}
                 annotations:
                   summary: 'Runner API errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
-                  description: '{{ "{{ printf \"%.0f\" $value }}" }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.'
-                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
                   description: >-
                     {{ '{{ printf "%.0f" $value }}' }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.
                   runbook_url: '{{ alert_runbook_url_resolved }}'
@@ -657,7 +619,7 @@
                 annotations:
                   summary: 'Runner queue slow: {{ "{{ $labels.namespace }}/{{ $labels.runner }}" }}'
                   description: 'Queue p95 is {{ "{{ humanizeDuration $value }}" }} over 15 minutes on manager {{ "{{ $labels.runner_name }}" }}. Check pending jobs, quota, node headroom, and runner concurrency.'
-                  runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
 
           - name: storage-and-alert-delivery
             interval: 30s
