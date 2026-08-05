@@ -20,6 +20,7 @@ FORCE=false
 RUN_APP_BACKUPS=true
 RUN_VELERO_BACKUP=true
 RUN_REMOTE_PUBLISH=true
+KEEP_LOCAL_COPY=true
 ALLOW_INCOMPLETE=false
 SKIP_CLOUD=false
 SKIP_CONTROL_PLANE=false
@@ -67,6 +68,8 @@ Options:
   --skip-app-backups         Do not trigger application-native backups
   --skip-velero              Do not trigger Velero resource/PVC backup
   --skip-remote-publish      Keep the encrypted bundle local only
+  --remote-only              Retain the verified bundle only in external DR;
+                             local files are transient and removed on exit
   --skip-cloud               Do not capture Hetzner state
   --skip-control-plane       Do not capture etcd and control-plane PKI
   --allow-incomplete         Permit an explicitly degraded bundle with skips
@@ -99,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     --skip-app-backups) RUN_APP_BACKUPS=false; shift ;;
     --skip-velero) RUN_VELERO_BACKUP=false; shift ;;
     --skip-remote-publish) RUN_REMOTE_PUBLISH=false; shift ;;
+    --remote-only) KEEP_LOCAL_COPY=false; shift ;;
     --skip-cloud) SKIP_CLOUD=true; shift ;;
     --skip-control-plane) SKIP_CONTROL_PLANE=true; shift ;;
     --allow-incomplete) ALLOW_INCOMPLETE=true; shift ;;
@@ -108,6 +112,10 @@ while [[ $# -gt 0 ]]; do
     *) fail "unknown option: $1" ;;
   esac
 done
+
+if [[ "$KEEP_LOCAL_COPY" != true && "$RUN_REMOTE_PUBLISH" != true ]]; then
+  fail "--remote-only cannot be combined with --skip-remote-publish"
+fi
 
 if [[ "$ALLOW_INCOMPLETE" != true ]] && {
   [[ "$RUN_APP_BACKUPS" != true ]] || [[ "$RUN_VELERO_BACKUP" != true ]] ||
@@ -121,6 +129,8 @@ fi
 [[ -n "$SECRETS_FILE" ]] || SECRETS_FILE="${PROJECT_ROOT}/playbooks/.platform-secrets.yml"
 [[ -f "$SECRETS_FILE" ]] || fail "generated secrets file not found: $SECRETS_FILE"
 PROJECT=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
+SERVER_NAME_PREFIX=$(yq -r '.infrastructure.server_name_prefix // .global.project // "k8s"' "$CONFIG_FILE")
+LOAD_BALANCER_NAME="${SERVER_NAME_PREFIX}-lb"
 VAULT_INIT_REQUIRED=$(yq -r '.secrets.enabled // false' "$CONFIG_FILE")
 [[ "$VAULT_INIT_REQUIRED" =~ ^(true|false)$ ]] \
   || fail "secrets.enabled must resolve to true or false"
@@ -165,6 +175,7 @@ else
 fi
 PROFILE=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 BASTION_SERVER_TYPE=$(yq -r '.network.bastion.server_type // ""' "$CONFIG_FILE")
+EGRESS_STANDBY_SERVER_TYPE=$(yq -r '.network.egress.standby_server_type // ""' "$CONFIG_FILE")
 CONTROL_PLANE_SERVER_TYPE=$(yq -r '.infrastructure.control_plane.type // ""' "$CONFIG_FILE")
 WORKER_SERVER_TYPE=$(yq -r '.infrastructure.workers.type // ""' "$CONFIG_FILE")
 [[ -n "$DR_ENDPOINT" ]] || DR_ENDPOINT=$(yq -r '.backup.disaster_recovery.endpoint // ""' "$CONFIG_FILE")
@@ -206,7 +217,11 @@ if [[ "$DRY_RUN" == true ]]; then
   dry "would capture etcd and control-plane PKI: $([[ "$SKIP_CONTROL_PLANE" == true ]] && echo false || echo true)"
   dry "would capture Hetzner state: $([[ "$SKIP_CLOUD" == true ]] && echo false || echo true)"
   dry "would include validated Ansible Vault-encrypted Vault initialization material: $VAULT_INIT_INCLUDED"
-  dry "would write encrypted bundle under: $OUTPUT_DIR"
+  if [[ "$KEEP_LOCAL_COPY" == true ]]; then
+    dry "would retain the encrypted bundle under: $OUTPUT_DIR"
+  else
+    dry "would stage the encrypted bundle transiently and remove it after remote verification"
+  fi
   exit 0
 fi
 
@@ -261,9 +276,13 @@ if [[ "$FORCE" != true ]]; then
 fi
 
 umask 077
+WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cluster-backup.XXXXXX")
+trap 'rm -rf "$WORK_DIR"' EXIT
+if [[ "$KEEP_LOCAL_COPY" != true ]]; then
+  OUTPUT_DIR="${WORK_DIR}/remote-only-output"
+fi
 mkdir -p "$OUTPUT_DIR"
 chmod 700 "$OUTPUT_DIR"
-WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cluster-backup.XXXXXX")
 STAGE_DIR="${WORK_DIR}/${BACKUP_ID}"
 PLAIN_ARCHIVE="${WORK_DIR}/${BACKUP_ID}.tar.gz"
 mkdir -p "$STAGE_DIR"/{config,cluster/resources/namespaced,cluster/resources/cluster,etcd,control-plane,helm,cloud,application-backups}
@@ -620,7 +639,8 @@ if [[ "$SKIP_CLOUD" != true ]]; then
   hcloud_safe version > "$STAGE_DIR/cloud/hcloud-version.txt"
   hcloud_safe server list --selector "project=${PROJECT}" -o json > "$STAGE_DIR/cloud/servers.json"
   for spec in "network:${PROJECT}-network" "firewall:${PROJECT}-fw-bastion" "firewall:${PROJECT}-fw-nodes" \
-    "load-balancer:${PROJECT}-lb" "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DNS_ZONE}"; do
+    "load-balancer:${LOAD_BALANCER_NAME}" "floating-ip:${SERVER_NAME_PREFIX}-egress-ipv4" \
+    "placement-group:${PROJECT}-spread" "ssh-key:${PROJECT}-key" "zone:${DNS_ZONE}"; do
     kind=${spec%%:*}; name=${spec#*:}; safe_name=${name//[^[:alnum:]._-]/_}
     file="${kind//-/_}-${safe_name}"
     # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
@@ -787,7 +807,7 @@ jq -n \
   --arg id "$BACKUP_ID" --arg timestamp "$TIMESTAMP" --arg project "$PROJECT" \
   --arg domain "$DOMAIN" --arg profile "$PROFILE" --arg context "$CONTEXT" \
   --arg bastionType "$BASTION_SERVER_TYPE" --arg controlPlaneType "$CONTROL_PLANE_SERVER_TYPE" \
-  --arg workerType "$WORKER_SERVER_TYPE" \
+  --arg workerType "$WORKER_SERVER_TYPE" --arg egressStandbyType "$EGRESS_STANDBY_SERVER_TYPE" \
   --arg sourceClusterUid "$SOURCE_CLUSTER_UID" \
   --arg completeness "$COMPLETENESS" --arg app "$APP_BACKUP_RESULT" \
   --arg velero "$VELERO_BACKUP_RESULT" --arg veleroName "$VELERO_BACKUP_NAME" \
@@ -806,7 +826,7 @@ jq -n \
   '{schema_version:2,backup_id:$id,created_at:$timestamp,project:$project,domain:$domain,
     profile:$profile,source_context:$context,source_cluster_uid:$sourceClusterUid,
     provider_machine_types:{bastion:$bastionType,control_plane:$controlPlaneType,
-      worker:$workerType},
+      worker:$workerType,egress_standby:$egressStandbyType},
     completeness:$completeness,
     application_backups:$app,velero_backup:$velero,velero_backup_name:$veleroName,
     velero_storage_prefix:$veleroPrefix,
@@ -950,8 +970,12 @@ else
   write_completion_receipt "$RECEIPT_PATH" false false not_requested
 fi
 
-log "backup complete: $FINAL_ARCHIVE"
-log "checksum: ${FINAL_ARCHIVE}.sha256"
+if [[ "$KEEP_LOCAL_COPY" == true ]]; then
+  log "backup complete: $FINAL_ARCHIVE"
+  log "checksum: ${FINAL_ARCHIVE}.sha256"
+else
+  log "backup complete: external DR only; transient local artifacts will be removed on exit"
+fi
 log "remote publication: $REMOTE_PUBLISH_RESULT"
 if [[ "$REMOTE_PUBLISH_RESULT" == completed ]]; then
   log "remote receipt: s3://${DR_BUCKET}/${REMOTE_RECEIPT_KEY}"

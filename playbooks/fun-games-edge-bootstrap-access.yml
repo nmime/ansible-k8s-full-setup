@@ -1,0 +1,85 @@
+---
+- name: Bootstrap a dedicated audited automation identity on the Fun Games edge
+  hosts: fun_games_edge
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    fun_games_edge_admin_user: fun-edge-admin
+    fun_games_edge_admin_public_key: >-
+      {{ lookup('env', 'FUN_GAMES_EDGE_ADMIN_PUBLIC_KEY') | trim }}
+    fun_games_edge_disable_root_ssh: false
+  pre_tasks:
+    - name: Require an explicit supported automation public key
+      ansible.builtin.assert:
+        that:
+          - >-
+            fun_games_edge_admin_public_key is match(
+              '^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+'
+            )
+        fail_msg: >-
+          Set FUN_GAMES_EDGE_ADMIN_PUBLIC_KEY to a dedicated Ed25519 or ECDSA
+          public key. Reusing a personal/root key is not supported.
+
+  tasks:
+    - name: Create the dedicated edge automation account
+      ansible.builtin.user:
+        name: "{{ fun_games_edge_admin_user }}"
+        create_home: true
+        home: "/home/{{ fun_games_edge_admin_user }}"
+        shell: /bin/bash
+        password_lock: true
+        state: present
+
+    - name: Create the automation SSH directory
+      ansible.builtin.file:
+        path: "/home/{{ fun_games_edge_admin_user }}/.ssh"
+        state: directory
+        owner: "{{ fun_games_edge_admin_user }}"
+        group: "{{ fun_games_edge_admin_user }}"
+        mode: "0700"
+
+    - name: Install only the dedicated automation public key
+      ansible.builtin.copy:
+        content: "{{ fun_games_edge_admin_public_key }}\n"
+        dest: "/home/{{ fun_games_edge_admin_user }}/.ssh/authorized_keys"
+        owner: "{{ fun_games_edge_admin_user }}"
+        group: "{{ fun_games_edge_admin_user }}"
+        mode: "0600"
+
+    - name: Grant audited non-interactive configuration elevation
+      ansible.builtin.copy:
+        content: >-
+          {{ fun_games_edge_admin_user }} ALL=(root) NOPASSWD: ALL
+        dest: "/etc/sudoers.d/{{ fun_games_edge_admin_user }}"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+
+    - name: Require verified dedicated access before disabling root SSH
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_user | default(ansible_user_id)
+            == fun_games_edge_admin_user
+        fail_msg: >-
+          Reconnect as the dedicated automation identity and rerun before
+          disabling root SSH access.
+      when: fun_games_edge_disable_root_ssh | bool
+
+    - name: Disable direct root SSH only after dedicated-access verification
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^\s*#?\s*PermitRootLogin\s+'
+        line: PermitRootLogin no
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload SSH
+      when: fun_games_edge_disable_root_ssh | bool
+
+  handlers:
+    - name: Reload SSH
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded

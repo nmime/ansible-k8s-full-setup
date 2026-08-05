@@ -1,0 +1,134 @@
+---
+- name: Wait for gateway SSH
+  ansible.builtin.wait_for:
+    host: "{{ ha_gateway.public_ip }}"
+    port: 22
+    timeout: 300
+  delegate_to: localhost
+  become: false
+
+- name: Prepare gateway operating-system dependencies
+  ansible.builtin.shell: |
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      root@{{ ha_gateway.public_ip }} 'bash -s' <<'REMOTE'
+    set -euo pipefail
+    apt-get -o DPkg::Lock::Timeout=300 update -q
+    apt-get -o DPkg::Lock::Timeout=300 install -y python3 curl iptables ufw
+    ufw allow from {{ ha_egress_network_cidr }} to {{ ha_gateway.private_ip }} port {{ ha_egress_health_port }} proto tcp
+    {% if ha_egress_monitoring_enabled | bool %}
+    ufw allow from {{ ha_egress_monitoring_pod_cidr }} to {{ ha_gateway.private_ip }} port {{ ha_egress_health_port }} proto tcp
+    {% endif %}
+    REMOTE
+  args:
+    executable: /bin/bash
+  register: ha_egress_gateway_packages
+  retries: 3
+  delay: 10
+  until: ha_egress_gateway_packages.rc == 0
+
+- name: Render gateway configuration
+  ansible.builtin.copy:
+    dest: "{{ ha_egress_stage.path }}/{{ ha_gateway.name }}-config.json"
+    mode: '0600'
+    content: >-
+      {{
+        {
+          'api_endpoint': ha_egress_api_endpoint,
+          'token_file': '/etc/n0xeid-hcloud-token',
+          'network_id': ha_egress_network_document.id,
+          'floating_ip_id': ha_egress_floating_document.id,
+          'floating_ip': ha_egress_floating_ipv4,
+          'local_private_ip': ha_gateway.private_ip,
+          'gateways': ha_egress_gateways,
+          'health_port': ha_egress_health_port,
+          'health_timeout_seconds': ha_egress_health_timeout_seconds,
+          'failure_threshold': ha_egress_failure_threshold,
+          'promotion_timeout_seconds': ha_egress_promotion_timeout_seconds,
+          'state_file': '/var/lib/n0xeid-egress/watchdog-state.json'
+        } | to_nice_json
+      }}
+
+- name: Render gateway token
+  ansible.builtin.copy:
+    dest: "{{ ha_egress_stage.path }}/{{ ha_gateway.name }}-token"
+    mode: '0600'
+    content: "{{ ha_egress_token }}\n"
+  no_log: true
+
+- name: Render HA egress executables and units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ ha_egress_stage.path }}/{{ ha_gateway.name }}-{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  vars:
+    ha_egress_config_local_private_ip: "{{ ha_gateway.private_ip }}"
+  loop:
+    - {src: n0xeid-egress-nat.sh.j2, dest: n0xeid-egress-nat, mode: '0755'}
+    - {src: n0xeid-egress-health.py.j2, dest: n0xeid-egress-health, mode: '0755'}
+    - {src: n0xeid-egressctl.py.j2, dest: n0xeid-egressctl, mode: '0755'}
+    - {src: n0xeid-egress-nat.service.j2, dest: n0xeid-egress-nat.service, mode: '0644'}
+    - {src: n0xeid-egress-health.service.j2, dest: n0xeid-egress-health.service, mode: '0644'}
+    - {src: n0xeid-egress-watchdog.service.j2, dest: n0xeid-egress-watchdog.service, mode: '0644'}
+    - {src: n0xeid-egress-watchdog.timer.j2, dest: n0xeid-egress-watchdog.timer, mode: '0644'}
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Install HA egress configuration on gateway
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ssh_options=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }})
+    prefix={{ ha_egress_stage.path | quote }}/{{ ha_gateway.name | quote }}-
+    scp "${ssh_options[@]}" "${prefix}config.json" root@{{ ha_gateway.public_ip }}:/tmp/n0xeid-egress.json
+    scp "${ssh_options[@]}" "${prefix}token" root@{{ ha_gateway.public_ip }}:/tmp/n0xeid-hcloud-token
+    for file in n0xeid-egress-nat n0xeid-egress-health n0xeid-egressctl; do
+      scp "${ssh_options[@]}" "${prefix}${file}" root@{{ ha_gateway.public_ip }}:/tmp/${file}
+    done
+    for file in n0xeid-egress-nat.service n0xeid-egress-health.service n0xeid-egress-watchdog.service n0xeid-egress-watchdog.timer; do
+      scp "${ssh_options[@]}" "${prefix}${file}" root@{{ ha_gateway.public_ip }}:/tmp/${file}
+    done
+    ssh "${ssh_options[@]}" root@{{ ha_gateway.public_ip }} 'bash -s' <<'REMOTE'
+    set -euo pipefail
+    install -o root -g root -m 0600 /tmp/n0xeid-egress.json /etc/n0xeid-egress.json
+    install -o root -g root -m 0600 /tmp/n0xeid-hcloud-token /etc/n0xeid-hcloud-token
+    install -o root -g root -m 0755 /tmp/n0xeid-egress-nat /usr/local/sbin/n0xeid-egress-nat
+    install -o root -g root -m 0755 /tmp/n0xeid-egress-health /usr/local/sbin/n0xeid-egress-health
+    install -o root -g root -m 0755 /tmp/n0xeid-egressctl /usr/local/sbin/n0xeid-egressctl
+    install -o root -g root -m 0644 /tmp/n0xeid-egress-nat.service /etc/systemd/system/n0xeid-egress-nat.service
+    install -o root -g root -m 0644 /tmp/n0xeid-egress-health.service /etc/systemd/system/n0xeid-egress-health.service
+    install -o root -g root -m 0644 /tmp/n0xeid-egress-watchdog.service /etc/systemd/system/n0xeid-egress-watchdog.service
+    install -o root -g root -m 0644 /tmp/n0xeid-egress-watchdog.timer /etc/systemd/system/n0xeid-egress-watchdog.timer
+    rm -f /tmp/n0xeid-egress.json /tmp/n0xeid-hcloud-token /tmp/n0xeid-egress-nat \
+      /tmp/n0xeid-egress-health /tmp/n0xeid-egressctl /tmp/n0xeid-egress-*.service /tmp/n0xeid-egress-*.timer
+    systemctl daemon-reload
+    systemctl enable n0xeid-egress-nat.service n0xeid-egress-health.service
+    systemctl restart n0xeid-egress-nat.service
+    systemctl restart n0xeid-egress-health.service
+    REMOTE
+  args:
+    executable: /bin/bash
+  no_log: true
+
+- name: Converge automatic watchdog state
+  ansible.builtin.shell: |
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      root@{{ ha_gateway.public_ip }} \
+      "systemctl {{ 'enable' if ha_egress_activate | bool else 'disable --now' }} n0xeid-egress-watchdog.timer"
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Require gateway readiness
+  ansible.builtin.shell: |
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
+      root@{{ ha_gateway.public_ip }} \
+      "curl --fail --silent --show-error --max-time 5 http://{{ ha_gateway.private_ip }}:{{ ha_egress_health_port }}/readyz"
+  args:
+    executable: /bin/bash
+  register: ha_egress_gateway_ready
+  changed_when: false
+  retries: 12
+  delay: 2
+  until: ha_egress_gateway_ready.rc == 0

@@ -17,3 +17,8 @@ dragonfly_tls_proxy_image: "{{ dragonfly.tls_proxy_image | default('haproxy:3.2.
 dragonfly_tls_proxy_revision: "{{ dragonfly.tls_proxy_revision | default('3') }}"
 dragonfly_tls_client_namespaces: "{{ dragonfly.tls_client_namespaces | default([]) }}"
 dragonfly_allow_plaintext_clients: "{{ dragonfly.allow_plaintext_clients | default(true) }}"
+dragonfly_node_selector: >-
+  {{
+    dragonfly.node_selector |
+    default({'node-role.kubernetes.io/worker': 'true'})
+  }}

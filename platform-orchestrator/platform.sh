@@ -43,6 +43,44 @@ log() { echo -e "${GREEN}[$(date +'%H:%M:%S')]${NC} $1" | tee -a "${LOG_DIR}/pla
 error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "${LOG_DIR}/platform.log"; }
 
+MUTATION_LOCK_DIR=""
+
+release_mutation_lock() {
+  [[ -n "$MUTATION_LOCK_DIR" ]] || return 0
+  if [[ -f "${MUTATION_LOCK_DIR}/pid" ]] \
+    && [[ "$(cat "${MUTATION_LOCK_DIR}/pid")" == "$$" ]]; then
+    rm -f "${MUTATION_LOCK_DIR}/pid"
+    rmdir "$MUTATION_LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+acquire_mutation_lock() {
+  local lock_root lock_dir owner_pid
+  lock_root="${TMPDIR:-/tmp}/ansible-k8s-platform-locks"
+  lock_dir="${lock_root}/${PROJECT}.lock"
+  umask 077
+  mkdir -p "$lock_root"
+  chmod 700 "$lock_root"
+
+  for _ in 1 2; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' "$$" >"${lock_dir}/pid"
+      MUTATION_LOCK_DIR="$lock_dir"
+      trap release_mutation_lock EXIT
+      return 0
+    fi
+    owner_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+      error "Project ${PROJECT} already has an active mutation (PID ${owner_pid})"
+      return 1
+    fi
+    rm -f "${lock_dir}/pid"
+    rmdir "$lock_dir" 2>/dev/null || true
+  done
+  error "Cannot acquire the mutation lock for project ${PROJECT}"
+  return 1
+}
+
 check_env() {
   if [[ -z "${HCLOUD_TOKEN:-}" ]]; then
     error "HCLOUD_TOKEN not set"
@@ -160,6 +198,7 @@ component_path() {
     backup) echo '.backup.enabled' ;;
     disaster-recovery) echo '.backup.disaster_recovery.enabled' ;;
     glitchtip) echo '.glitchtip.enabled' ;;
+    umami) echo '.umami.enabled' ;;
     apm) echo '.apm.enabled' ;;
     blackbox) echo '.blackbox.enabled' ;;
     daytona) echo '.applications.daytona.enabled' ;;
@@ -206,6 +245,7 @@ enable_paths() {
     backup) echo '.storage.enabled .backup.enabled' ;;
     disaster-recovery) echo '.storage.enabled .backup.enabled .backup.disaster_recovery.enabled' ;;
     glitchtip) echo '.databases.enabled .databases.postgresql.enabled .dragonfly.enabled .glitchtip.enabled' ;;
+    umami) echo '.databases.enabled .databases.postgresql.enabled .umami.enabled' ;;
     apm) echo '.elasticsearch.enabled .apm.enabled' ;;
     blackbox) echo '.observability.enabled .observability.metrics.enabled .observability.logging.enabled .observability.grafana.enabled .blackbox.enabled' ;;
     daytona) echo '.applications.daytona.enabled' ;;
@@ -238,7 +278,7 @@ show_components() {
   printf '%-18s %s\n' COMPONENT ENABLED
   printf '%-18s %s\n' '------------------' '-------'
   local component path value
-  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing tempo autoscaling temporal postal backup disaster-recovery glitchtip apm blackbox daytona hipaa; do
+  for component in object-storage secrets eso databases postgresql mongodb elasticsearch dragonfly gitlab gitlab-runner gitops observability pmm coroot tracing tempo autoscaling temporal postal backup disaster-recovery glitchtip umami apm blackbox daytona hipaa; do
     path=$(component_path "$component")
     if component_selected "$component"; then value=true; else value=false; fi
     printf '%-18s %s\n' "$component" "$value"
@@ -272,7 +312,7 @@ enabled_blockers() {
   local component="$1" blockers='' path label
   case "$component" in
     object-storage) blockers='.gitlab.enabled:gitlab .backup.enabled:backup' ;;
-    databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip' ;;
+    databases|postgresql) blockers='.gitlab.enabled:gitlab .temporal.enabled:temporal .glitchtip.enabled:glitchtip .umami.enabled:umami' ;;
     elasticsearch) blockers='.apm.enabled:apm' ;;
     dragonfly) blockers='.gitlab.enabled:gitlab .postal.enabled:postal .glitchtip.enabled:glitchtip' ;;
     gitlab) blockers='.gitlab.runner.enabled:gitlab-runner' ;;
@@ -280,7 +320,7 @@ enabled_blockers() {
     tracing) ;;
     secrets) blockers='.secrets.eso.enabled:eso .compliance.hipaa.enabled:hipaa' ;;
     backup) blockers='.backup.disaster_recovery.enabled:disaster-recovery' ;;
-    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tempo|autoscaling|temporal|postal|disaster-recovery|glitchtip|apm|blackbox|daytona|hipaa) ;;
+    eso|mongodb|gitlab-runner|gitops|pmm|coroot|tempo|autoscaling|temporal|postal|disaster-recovery|glitchtip|umami|apm|blackbox|daytona|hipaa) ;;
     *) return 1 ;;
   esac
   for label in $blockers; do
@@ -455,7 +495,7 @@ deploy_component() {
     elasticsearch) require_component_enabled "$component"; run_playbook --tags elasticsearch 2>&1 | tee -a "${LOG_DIR}/elasticsearch.log" ;;
     dragonfly)     require_component_enabled "$component"; run_playbook --tags dragonfly 2>&1 | tee -a "${LOG_DIR}/dragonfly.log" ;;
     gitlab)        require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab.log" ;;
-    gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
+    gitlab-runner) require_component_enabled "$component"; run_playbook --tags gitlab-runner 2>&1 | tee -a "${LOG_DIR}/gitlab-runner.log" ;;
     gitops)        require_component_enabled "$component"; run_playbook --tags gitops 2>&1 | tee -a "${LOG_DIR}/gitops.log" ;;
     observability) require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/observability.log" ;;
     pmm)           require_component_enabled "$component"; run_playbook --tags monitoring 2>&1 | tee -a "${LOG_DIR}/pmm.log" ;;
@@ -468,6 +508,7 @@ deploy_component() {
     backup)        require_component_enabled "$component"; run_playbook --tags databases,gitlab,backup 2>&1 | tee -a "${LOG_DIR}/backup.log" ;;
     disaster-recovery) require_component_enabled "$component"; run_playbook --tags databases,gitlab,backup 2>&1 | tee -a "${LOG_DIR}/disaster-recovery.log" ;;
     glitchtip)     require_component_enabled "$component"; run_playbook --tags glitchtip 2>&1 | tee -a "${LOG_DIR}/glitchtip.log" ;;
+    umami)         require_component_enabled "$component"; run_playbook --tags databases,umami 2>&1 | tee -a "${LOG_DIR}/umami.log" ;;
     apm)           require_component_enabled "$component"; run_playbook --tags apm 2>&1 | tee -a "${LOG_DIR}/apm.log" ;;
     blackbox)      require_component_enabled "$component"; run_playbook --tags blackbox 2>&1 | tee -a "${LOG_DIR}/blackbox.log" ;;
     daytona)       require_component_enabled "$component"; deploy_daytona ;;
@@ -478,14 +519,16 @@ deploy_component() {
 }
 
 deploy_all() {
-  local gt_flag apm_flag bb_flag daytona_flag
+  local gt_flag umami_flag apm_flag bb_flag daytona_flag
   gt_flag=$(flag_from_config '.glitchtip.enabled' false)
+  umami_flag=$(flag_from_config '.umami.enabled' false)
   apm_flag=$(flag_from_config '.apm.enabled' false)
   bb_flag=$(flag_from_config '.blackbox.enabled' true)
   daytona_flag=$(flag_from_config '.applications.daytona.enabled' false)
 
   run_playbook \
     -e "deploy_glitchtip=${gt_flag}" \
+    -e "deploy_umami=${umami_flag}" \
     -e "deploy_apm=${apm_flag}" \
     -e "deploy_blackbox=${bb_flag}" \
     -e "deploy_daytona=${daytona_flag}" \
@@ -558,14 +601,17 @@ app IN 3600 A ${ip}"
   is_enabled '.secrets.enabled' && records+=$'\n'"vault IN 3600 A ${ip}"
   is_enabled '.applications.daytona.enabled' && records+=$'\n'"daytona IN 3600 A ${ip}"$'\n'"*.daytona IN 3600 A ${ip}"
   is_enabled '.glitchtip.enabled' && records+=$'\n'"glitchtip IN 3600 A ${ip}"
+  is_enabled '.umami.enabled' && records+=$'\n'"analytics IN 3600 A ${ip}"
   echo "$records"
 }
 
 deploy_dns() {
   log "Setting up DNS record preview (preserves existing records)..."
   check_env
-  local bastion_name="${PROJECT}-bastion"
-  local lb_name="${PROJECT}-lb"
+  local server_name_prefix
+  server_name_prefix=$(yq -r '.infrastructure.server_name_prefix // .global.project // "k8s"' "$CONFIG_FILE")
+  local bastion_name="${server_name_prefix}-bastion"
+  local lb_name="${server_name_prefix}-lb"
   local bastion_ip lb_ip public_ip
   bastion_ip=$(hcloud server ip "$bastion_name" 2>/dev/null || echo "")
   lb_ip=$(hcloud load-balancer describe "$lb_name" -o json 2>/dev/null | jq -r '.public_net.ipv4.ip' || echo "")
@@ -621,6 +667,15 @@ show_credentials() {
   if is_enabled '.coroot.enabled'; then
     echo "Coroot (VPN/admin gateway): https://coroot.${DOMAIN}"
   fi
+  if is_enabled '.umami.enabled' && kubectl get secret umami-runtime -n umami \
+    --request-timeout=3s -o jsonpath='{.data.ADMIN_PASSWORD}' &>/dev/null; then
+    local umami_host
+    umami_host=$(yq -r '.umami.dashboard_domain // ""' "$CONFIG_FILE")
+    [[ -n "$umami_host" ]] || umami_host="umami.${DOMAIN}"
+    echo "Umami (VPN/admin gateway): https://${umami_host}"
+    echo "  User: admin"
+    echo "  Pass: $(kubectl get secret umami-runtime -n umami --request-timeout=3s -o jsonpath='{.data.ADMIN_PASSWORD}' | base64 -d)"
+  fi
 }
 
 show_help() {
@@ -661,7 +716,7 @@ main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
-    deploy)       load_config; deploy_component "${1:-all}" ;;
+    deploy)       load_config; acquire_mutation_lock; deploy_component "${1:-all}" ;;
     components)   show_components ;;
     enable)       enable_component "${1:-}" ;;
     disable)      disable_component "${1:-}" ;;

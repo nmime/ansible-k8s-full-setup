@@ -176,8 +176,19 @@ is_named_profile() {
 
 ACTIVE_PROFILE=$(yq -r '.platform_profile // .tier // "custom"' "$CONFIG_FILE")
 PROJECT=$(yq -r '.global.project // "k8s"' "$CONFIG_FILE")
+SERVER_NAME_PREFIX=$(yq -r '.infrastructure.server_name_prefix // .global.project // "k8s"' "$CONFIG_FILE")
 DOMAIN=$(yq -r '.global.domain // ""' "$CONFIG_FILE")
 EMAIL=$(yq -r '.global.email // ""' "$CONFIG_FILE")
+
+provider_server_name() {
+  local node="$1"
+  case "$node" in
+    "${PROJECT}-bastion") printf '%s-bastion\n' "$SERVER_NAME_PREFIX" ;;
+    "${PROJECT}-master-"*) printf '%s-master-%s\n' "$SERVER_NAME_PREFIX" "${node#"${PROJECT}-master-"}" ;;
+    "${PROJECT}-worker-"*) printf '%s-worker-%s\n' "$SERVER_NAME_PREFIX" "${node#"${PROJECT}-worker-"}" ;;
+    *) printf '%s\n' "$node" ;;
+  esac
+}
 [[ -n "$DR_PREFIX" ]] || DR_PREFIX="${PROJECT}/velero"
 
 absolute_existing_parent_path() {
@@ -619,7 +630,7 @@ enforce_target_dependency_closure() {
   fi
   if ! component_enabled "$TARGET_CONFIG" postgresql; then
     yq -i '.gitlab.enabled = false | .gitlab.runner.enabled = false |
-      .temporal.enabled = false | .glitchtip.enabled = false' "$TARGET_CONFIG"
+      .temporal.enabled = false | .glitchtip.enabled = false | .umami.enabled = false' "$TARGET_CONFIG"
   fi
   if ! component_enabled "$TARGET_CONFIG" elasticsearch; then
     yq -i '.apm.enabled = false' "$TARGET_CONFIG"
@@ -671,7 +682,7 @@ enforce_target_dependency_closure() {
 
 components_to_remove() {
   local component
-  for component in daytona blackbox apm glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm umami glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     if component_enabled "$SOURCE_CONFIG" "$component" && ! component_enabled "$TARGET_CONFIG" "$component"; then printf '%s\n' "$component"; fi
   done
 }
@@ -1390,7 +1401,7 @@ wait_for_csi_detach() {
   while (( SECONDS < deadline )); do
     attachments=$(kubectl get volumeattachments.storage.k8s.io -o json \
       | jq --arg node "$node" '[.items[] | select(.spec.nodeName == $node)] | length')
-    provider_volumes=$(hcloud server describe "$node" -o json | jq '.volumes | length')
+    provider_volumes=$(hcloud server describe "$(provider_server_name "$node")" -o json | jq '.volumes | length')
     if [[ "$attachments" == 0 && "$provider_volumes" == 0 ]]; then return 0; fi
     warn "$attachments CSI attachment object(s) and $provider_volumes provider volume(s) remain on drained node $node; waiting for detach"
     sleep 10
@@ -1430,7 +1441,7 @@ retry_gate() {
 }
 
 server_status() {
-  hcloud server describe "$1" -o json | jq -r '.status'
+  hcloud server describe "$(provider_server_name "$1")" -o json | jq -r '.status'
 }
 
 wait_for_server_settled() {
@@ -1449,7 +1460,7 @@ ensure_server_stopped() {
   local node="$1" status deadline
   status=$(wait_for_server_settled "$node")
   if [[ "$status" == running ]]; then
-    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server poweroff "$node"; then
+    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server poweroff "$(provider_server_name "$node")"; then
       status=$(server_status "$node" 2>/dev/null || echo unknown)
       [[ "$status" == stopping || "$status" == off ]] \
         || fail "failed to power off $node (provider status: $status)"
@@ -1467,7 +1478,7 @@ ensure_server_stopped() {
 
 server_type_available_for_node() {
   local node="$1" server_type="$2" location
-  location=$(hcloud server describe "$node" -o json | jq -r '.location.name // ""')
+  location=$(hcloud server describe "$(provider_server_name "$node")" -o json | jq -r '.location.name // ""')
   [[ -n "$location" ]] || return 1
   hcloud server-type describe "$server_type" -o json \
     | jq -e --arg location "$location" 'any(.locations[]?; .name == $location and .available == true)' >/dev/null
@@ -1520,7 +1531,7 @@ select_equivalent_fallback_type() {
 change_server_type_with_retry() {
   local node="$1" target_type="$2" target_disk="$3" keep_disk="${4:-false}"
   local attempt server_json current_type current_disk delay
-  local -a change_args=(server change-type "$node" "$target_type")
+  local -a change_args=(server change-type "$(provider_server_name "$node")" "$target_type")
   [[ "$keep_disk" != true ]] || change_args+=(--keep-disk)
   for ((attempt=1; attempt<=HCLOUD_CAPACITY_RETRY_ATTEMPTS; attempt++)); do
     # Capacity placement can fail transiently, and a failed action may leave the
@@ -1528,7 +1539,7 @@ change_server_type_with_retry() {
     # before every retry and trust only the authoritative post-action shape.
     ensure_server_stopped "$node"
     run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud "${change_args[@]}" || true
-    server_json=$(hcloud server describe "$node" -o json)
+    server_json=$(hcloud server describe "$(provider_server_name "$node")" -o json)
     current_type=$(jq -r '.server_type.name' <<<"$server_json")
     current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
     if [[ "$current_type" == "$target_type" ]] && (( current_disk >= target_disk )); then
@@ -1549,7 +1560,7 @@ ensure_server_running() {
   local node="$1" status deadline
   status=$(wait_for_server_settled "$node")
   if [[ "$status" == off ]]; then
-    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server poweron "$node"; then
+    if ! run_with_timeout "$HCLOUD_CLIENT_TIMEOUT" hcloud server poweron "$(provider_server_name "$node")"; then
       status=$(server_status "$node" 2>/dev/null || echo unknown)
       [[ "$status" == starting || "$status" == running ]] \
         || fail "failed to power on $node (provider status: $status)"
@@ -1756,7 +1767,7 @@ capture_live_bastion_type() {
     "$BACKUP_CONFIG" "$ROLLBACK_CONFIG" "$POST_BACKUP_CONFIG"
   )
   [[ $(yq -r '.network.bastion.enabled // false' "$SOURCE_CONFIG") == true ]] || return 0
-  server_json=$(hcloud server describe "${PROJECT}-bastion" -o json) \
+  server_json=$(hcloud server describe "$(provider_server_name "${PROJECT}-bastion")" -o json) \
     || fail "could not read the retained bastion before migration"
   live_type=$(jq -r '.server_type.name // ""' <<<"$server_json")
   [[ -n "$live_type" ]] || fail "Hetzner returned no server type for ${PROJECT}-bastion"
@@ -1796,7 +1807,7 @@ preserve_non_shrinking_node_types() {
   for role in control_plane workers; do
     path=".infrastructure.${role}.type"
     if [[ "$role" == control_plane ]]; then node="${PROJECT}-master-1"; else node="${PROJECT}-worker-1"; fi
-    server_json=$(hcloud server describe "$node" -o json)
+    server_json=$(hcloud server describe "$(provider_server_name "$node")" -o json)
     current_type=$(jq -r '.server_type.name' <<<"$server_json")
     current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
     current_cores=$(jq -r '.server_type.cores' <<<"$server_json")
@@ -1902,7 +1913,7 @@ stage_preflight() {
   [[ "$actual" == "$expected" ]] || fail "source profile declares $expected nodes but cluster has $actual"
   wait_for_platform_convergence "$SOURCE_CONFIG" "source platform preflight"
   check_etcd_health
-  hcloud server describe "${PROJECT}-master-1" >/dev/null
+  hcloud server describe "$(provider_server_name "${PROJECT}-master-1")" >/dev/null
 }
 
 stage_backup() {
@@ -2236,7 +2247,7 @@ resize_node() {
   mkdir -p "$node_state_dir"
   in_progress="${node_state_dir}/${node}.in-progress"
   done_marker="${node_state_dir}/${node}.done"
-  server_json=$(hcloud server describe "$node" -o json)
+  server_json=$(hcloud server describe "$(provider_server_name "$node")" -o json)
   current_type=$(jq -r '.server_type.name' <<<"$server_json")
   current_disk=$(jq -r '.primary_disk_size' <<<"$server_json")
   configured_override=$(NODE="$node" yq -r '.infrastructure.node_type_overrides[strenv(NODE)] // ""' "$TARGET_CONFIG")
@@ -2311,7 +2322,7 @@ resize_node() {
     log "skipping completed pre-drain work for interrupted node $node"
   fi
   current_status=$(server_status "$node")
-  provider_volumes=$(hcloud server describe "$node" -o json | jq '.volumes | length')
+  provider_volumes=$(hcloud server describe "$(provider_server_name "$node")" -o json | jq '.volumes | length')
   if [[ "$current_status" == off && "$provider_volumes" != 0 ]]; then
     warn "$node resumed while off with provider volumes attached; starting it so CSI can reconcile detachment"
     ensure_server_running "$node"
@@ -2339,10 +2350,10 @@ resize_node() {
     fi
   fi
   if [[ -n "$target_placement" && "$placement" != "$target_placement" ]]; then
-    [[ -z "$placement" ]] || hcloud server remove-from-placement-group "$node"
-    hcloud server add-to-placement-group --placement-group "$target_placement" "$node"
+    [[ -z "$placement" ]] || hcloud server remove-from-placement-group "$(provider_server_name "$node")"
+    hcloud server add-to-placement-group --placement-group "$target_placement" "$(provider_server_name "$node")"
   elif [[ -z "$target_placement" && -n "$placement" ]]; then
-    hcloud server remove-from-placement-group "$node"
+    hcloud server remove-from-placement-group "$(provider_server_name "$node")"
   fi
   if [[ "$current_type" != "$target_type" ]] || (( current_disk < target_disk )); then
     # Recheck after placement mutations: Hetzner may return the server to a
@@ -2816,7 +2827,7 @@ rollback_components_to_remove() {
   # Remove dependants before their shared services. Backup/DR are included
   # when the migration installed their temporary control plane for its backup
   # gates, even if the named target does not normally select them.
-  for component in daytona blackbox apm glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
+  for component in daytona blackbox apm umami glitchtip temporal postal tempo tracing coroot gitlab-runner gitlab mongodb eso elasticsearch dragonfly disaster-recovery backup autoscaling gitops observability postgresql databases secrets object-storage; do
     component_enabled "$SOURCE_CONFIG" "$component" && continue
     if component_enabled "$TARGET_CONFIG" "$component" \
       || { [[ "$component" == backup || "$component" == disaster-recovery ]] \
@@ -3037,7 +3048,7 @@ remove_cluster_node() {
   local node="$1" role="$2" inventory kubespray_dir drain_status
   inventory=$(kubespray_inventory); kubespray_dir="${PROJECT_ROOT}/playbooks/kubespray"
   [[ -f "$inventory" && -x "$kubespray_dir/.venv/bin/ansible-playbook" ]] || fail "Kubespray runtime or inventory is unavailable"
-  if ! hcloud server describe "$node" >/dev/null 2>&1; then
+  if ! hcloud server describe "$(provider_server_name "$node")" >/dev/null 2>&1; then
     remove_inventory_node "$inventory" "$node"
     kubectl delete node "$node" --ignore-not-found
     warn "$node server was already absent; inventory was reconciled"
@@ -3057,7 +3068,7 @@ remove_cluster_node() {
   ANSIBLE_CONFIG="$kubespray_dir/ansible.cfg" "$kubespray_dir/.venv/bin/ansible-playbook" \
     -i "$inventory" --become --become-user=root "$kubespray_dir/remove-node.yml" \
     -e "node=$node" -e "skip_confirmation=true"
-  hcloud server delete "$node"
+  hcloud server delete "$(provider_server_name "$node")"
   kubectl delete node "$node" --ignore-not-found
   remove_inventory_node "$inventory" "$node"
   [[ "$role" != master ]] || check_etcd_health

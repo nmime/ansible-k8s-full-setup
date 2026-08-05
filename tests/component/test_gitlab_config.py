@@ -1311,3 +1311,19 @@ class TestNoDeprecatedKeys:
                 s = line.strip()
                 if not s.startswith("#") and re.match(r'install:', s):
                     pytest.fail(f"Deprecated redis.install: {s}")
+
+
+class TestPostalSmtpIntegration:
+    @pytest.fixture(autouse=True)
+    def _content(self):
+        self.content = read(GITLAB_TASKS_PATH)
+
+    @pytest.mark.component
+    def test_gitlab_rails_has_narrow_postal_submission_egress(self):
+        assert "name: allow-gitlab-postal-submission" in self.content
+        assert "values: [webservice, sidekiq, toolbox]" in self.content
+        assert "k8s:io.kubernetes.pod.namespace: postal" in self.content
+        assert "k8s:component: smtp" in self.content
+        assert "port: '587'" in self.content
+        assert "port: '2525'" in self.content
+        assert "platform_postal_enabled" in self.content

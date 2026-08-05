@@ -1,0 +1,285 @@
+---
+- name: General Runner | Create the isolated namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ gitlab_runner_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          workload.n0xeid.xyz/trust-boundary: general-ci
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+
+- name: General Runner | Bound aggregate namespace resources
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: general-ci-budget
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        hard:
+          requests.cpu: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_cpu |
+               default('5') }}
+          requests.memory: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_memory |
+               default('8Gi') }}
+          limits.cpu: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_cpu |
+               default('10') }}
+          limits.memory: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_memory |
+               default('18Gi') }}
+          pods: '16'
+          services: '10'
+          secrets: '30'
+          configmaps: '20'
+          persistentvolumeclaims: '0'
+
+- name: General Runner | Bound each container
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: general-ci-containers
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            defaultRequest: {cpu: 100m, memory: 128Mi}
+            default: {cpu: 500m, memory: 512Mi}
+            max:
+              cpu: >-
+                {{ gitlab_runner_job_resources.cpu_limit |
+                   default(gitlab_runner_cpu_limit) }}
+              memory: >-
+                {{ gitlab_runner_job_resources.memory_limit |
+                   default(gitlab_runner_memory_limit) }}
+
+- name: General Runner | Apply the fail-closed network boundary
+  kubernetes.core.k8s:
+    state: present
+    definition: '{{ item }}'
+  loop:
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Ingress, Egress]
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-dns-api-gitlab-and-cache
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - {protocol: UDP, port: 53}
+              - {protocol: TCP, port: 53}
+          - to:
+              - ipBlock:
+                  cidr: '{{ k8s_service_cidr }}'
+            ports:
+              - {protocol: TCP, port: 443}
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_namespace }}'
+                podSelector:
+                  matchLabels:
+                    app: webservice
+            ports:
+              - {protocol: TCP, port: 8181}
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: storage
+            ports:
+              - {protocol: TCP, port: 8333}
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-public-dependency-egress
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - ipBlock:
+                  cidr: 0.0.0.0/0
+                  except:
+                    - 10.0.0.0/8
+                    - 172.16.0.0/12
+                    - 192.168.0.0/16
+            ports:
+              - {protocol: TCP, port: 80}
+              - {protocol: TCP, port: 443}
+    - apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-nodelocal-dns
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: kube-system
+                  k8s:k8s-app: kube-dns
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - {matchPattern: '*'}
+          - toCIDR:
+              - 169.254.25.10/32
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - {matchPattern: '*'}
+          - toEntities: [host]
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - {matchPattern: '*'}
+    - apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-manager-kube-api
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: gitlab-runner
+        egress:
+          - toEntities: [kube-apiserver]
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-monitoring-scrape
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        podSelector:
+          matchLabels:
+            app: gitlab-runner
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+            ports:
+              - {protocol: TCP, port: 9252}
+  loop_control:
+    label: '{{ item.metadata.name }}'
+
+- name: General Runner | Allow all isolated Runner pools into the SeaweedFS cache
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-gitlab-runners-s3
+        namespace: storage
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: seaweedfs
+            app.kubernetes.io/instance: seaweedfs
+            app.kubernetes.io/component: filer
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_runner_namespace }}'
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_image_builder_runner_namespace }}'
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_docker_host_runner_namespace }}'
+            ports:
+              - {port: 8333, protocol: TCP}
+
+- name: General Runner | Allow all isolated Runner pools into the Cilium-protected SeaweedFS cache
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-from-gitlab-runners-s3
+        namespace: storage
+      spec:
+        endpointSelector:
+          matchLabels:
+            app.kubernetes.io/name: seaweedfs
+            app.kubernetes.io/instance: seaweedfs
+            app.kubernetes.io/component: filer
+        ingress:
+          - fromEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ gitlab_runner_namespace }}'
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ gitlab_image_builder_runner_namespace }}'
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: '{{ gitlab_docker_host_runner_namespace }}'
+            toPorts:
+              - ports:
+                  - {port: '8333', protocol: TCP}
+
+- name: General Runner | Allow GitLab webservice ingress from CI
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-general-ci-runner
+        namespace: '{{ gitlab_namespace }}'
+      spec:
+        podSelector:
+          matchLabels:
+            app: webservice
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    workload.n0xeid.xyz/trust-boundary: general-ci
+            ports:
+              - {protocol: TCP, port: 8181}

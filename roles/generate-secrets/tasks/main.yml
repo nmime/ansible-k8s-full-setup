@@ -63,6 +63,26 @@
     saved_secrets: "{{ saved_secrets | default({}) }}"
   no_log: true
 
+- name: Preserve the persisted Postal SMTP credential map
+  ansible.builtin.set_fact:
+    persisted_postal_smtp_credentials: >-
+      {{ saved_secrets.get('postal_smtp_credentials', {}) }}
+  no_log: true
+
+- name: Refuse a malformed persisted Postal SMTP credential map
+  ansible.builtin.assert:
+    that:
+      - persisted_postal_smtp_credentials is mapping
+      - >-
+        persisted_postal_smtp_credentials.values() |
+        reject('match', '^.{24,}$') | list | length == 0
+    fail_msg: >-
+      Existing Postal SMTP credentials must remain a mapping of credentials
+      with at least 24 characters. Refusing implicit regeneration.
+    quiet: true
+  when: persisted_postal_smtp_credentials | length > 0
+  no_log: true
+
 - name: Generate object storage credentials
   set_fact:
     generated_object_storage_access_key: "{{ lookup('env', 'OBJECT_STORAGE_ACCESS_KEY') | default(saved_secrets.object_storage_access_key | default(lookup('password', '/dev/null chars=ascii_lowercase,digits length=16')), true) }}"
@@ -123,7 +143,9 @@
     generated_es_logging_ingest_password: "{{ saved_secrets.es_logging_ingest_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')) }}"
     generated_postal_db_password: "{{ saved_secrets.postal_db_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
     generated_postal_rails_secret: "{{ saved_secrets.postal_rails_secret | default(lookup('password', '/dev/null chars=hex_digits length=64') | lower) }}"
-    generated_postal_admin_password: "{{ saved_secrets.postal_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=16')) }}"
+    generated_postal_admin_password: "{{ saved_secrets.postal_admin_password | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+    generated_postal_smtp_credential: "{{ saved_secrets.postal_smtp_credential | default(lookup('password', '/dev/null chars=ascii_letters,digits length=24')) }}"
+    generated_postal_signing_key: "{{ (saved_secrets.postal_signing_key | default(lookup('pipe', 'openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null'))) | regex_replace('(?m)^[ \\t]+', '') | regex_replace('(?m)[ \\t]+$', '') }}"
   no_log: true
 
 - name: Resolve alert notification credentials (Telegram + email)
@@ -139,11 +161,81 @@
     generated_alert_email_to: "{{ lookup('env', 'ALERT_EMAIL_TO') | default(saved_secrets.alert_email_to | default('alerts@' + domain), true) }}"
   no_log: true
 
+- name: Initialize persisted Postal SMTP client credentials
+  ansible.builtin.set_fact:
+    generated_postal_smtp_credentials: >-
+      {{
+        persisted_postal_smtp_credentials
+        if persisted_postal_smtp_credentials | length > 0
+        else {'platform-applications': generated_postal_smtp_credential}
+      }}
+  no_log: true
+
+- name: Generate missing Postal SMTP client credentials
+  ansible.builtin.set_fact:
+    generated_postal_smtp_credentials: >-
+      {{
+        generated_postal_smtp_credentials | combine({
+          item: (
+            generated_postal_smtp_credentials[item]
+            if item in generated_postal_smtp_credentials
+            else lookup('password', '/dev/null chars=ascii_letters,digits length=32')
+          )
+        })
+      }}
+  loop: "{{ postal_smtp_client_names | default(['platform-applications']) }}"
+  no_log: true
+
+- name: Refuse implicit replacement of persisted Postal SMTP credentials
+  ansible.builtin.assert:
+    that:
+      - >-
+        generated_postal_smtp_credentials |
+        combine(persisted_postal_smtp_credentials) ==
+        generated_postal_smtp_credentials
+    fail_msg: >-
+      Persisted Postal SMTP credentials changed without an explicit rotation.
+      Refusing to write secret state.
+    quiet: true
+  when: persisted_postal_smtp_credentials | length > 0
+  no_log: true
+
+- name: Validate an explicitly requested Postal SMTP credential rotation
+  ansible.builtin.assert:
+    that:
+      - lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | length > 0
+      - lookup('env', 'POSTAL_SMTP_ROTATE_CREDENTIAL') | length >= 24
+      - lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') in postal_smtp_client_names
+    fail_msg: >-
+      POSTAL_SMTP_ROTATE_CLIENT and a credential of at least 24 characters
+      must be supplied together, and the client must be managed by this
+      profile.
+    quiet: true
+  when: >-
+    lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | length > 0 or
+    lookup('env', 'POSTAL_SMTP_ROTATE_CREDENTIAL') | length > 0
+  no_log: true
+
+- name: Apply an explicitly requested Postal SMTP credential rotation
+  ansible.builtin.set_fact:
+    generated_postal_smtp_credentials: >-
+      {{
+        generated_postal_smtp_credentials | combine({
+          lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT'):
+            lookup('env', 'POSTAL_SMTP_ROTATE_CREDENTIAL')
+        })
+      }}
+  when: lookup('env', 'POSTAL_SMTP_ROTATE_CLIENT') | length > 0
+  no_log: true
+
 - name: Resolve GitLab Runner authentication token
   ansible.builtin.set_fact:
     generated_gitlab_runner_token: >-
-      {{ lookup('env', 'GITLAB_RUNNER_TOKEN') |
-         default(saved_secrets.gitlab_runner_token | default(''), true) }}
+      {{ gitlab_runner_token_override | default(
+           lookup('env', 'GITLAB_RUNNER_TOKEN') |
+           default(saved_secrets.gitlab_runner_token | default(''), true),
+           true
+         ) }}
     generated_gitlab_image_builder_runner_token: >-
       {{ lookup('env', 'GITLAB_IMAGE_BUILDER_RUNNER_TOKEN') |
          default(
@@ -156,6 +248,19 @@
            saved_secrets.gitlab_docker_host_runner_token | default(''),
            true
          ) }}
+  no_log: true
+
+- name: Refuse an undeclared GitLab Runner authentication-token rotation
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_token_rotation_enabled | default(false) | bool
+      - generated_gitlab_runner_token | string | trim !=
+        saved_secrets.gitlab_runner_token | default('') | string | trim
+    fail_msg: >-
+      gitlab_runner_token_override is accepted only by the explicit rotation
+      workflow and must differ from the persisted credential.
+    quiet: true
+  when: gitlab_runner_token_override | default('') | string | trim | length > 0
   no_log: true
 
 - name: Require encrypted persistence for the GitLab Runner token
@@ -252,6 +357,16 @@
     postal_db_password: "{{ generated_postal_db_password }}"
     postal_rails_secret: "{{ generated_postal_rails_secret }}"
     postal_admin_password: "{{ generated_postal_admin_password }}"
+    postal_smtp_credential: >-
+      {{ generated_postal_smtp_credentials['platform-applications'] }}
+    postal_smtp_credentials: "{{ generated_postal_smtp_credentials }}"
+    postal_smtp_auth_username: >-
+      {{
+        (postal.organization_permalink | default(project_name | default('platform')))
+        ~ '/'
+        ~ (postal.server_permalink | default('transactional'))
+      }}
+    postal_signing_key: "{{ generated_postal_signing_key }}"
     gitlab_runner_token: "{{ generated_gitlab_runner_token }}"
     gitlab_image_builder_runner_token: >-
       {{ generated_gitlab_image_builder_runner_token }}
@@ -345,6 +460,9 @@
       postal_db_password: "{{ postal_db_password }}"
       postal_rails_secret: "{{ postal_rails_secret }}"
       postal_admin_password: "{{ postal_admin_password }}"
+      postal_smtp_credential: "{{ postal_smtp_credential }}"
+      postal_smtp_credentials: {{ postal_smtp_credentials | to_json }}
+      postal_signing_key: {{ postal_signing_key | to_json }}
       gitlab_runner_token: "{{ gitlab_runner_token }}"
       gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"
       gitlab_docker_host_runner_token: "{{ gitlab_docker_host_runner_token }}"
@@ -402,6 +520,9 @@
           postal_db_password: "{{ postal_db_password }}"
           postal_rails_secret: "{{ postal_rails_secret }}"
           postal_admin_password: "{{ postal_admin_password }}"
+          postal_smtp_credential: "{{ postal_smtp_credential }}"
+          postal_smtp_credentials: {{ postal_smtp_credentials | to_json }}
+          postal_signing_key: {{ postal_signing_key | to_json }}
           gitlab_runner_token: "{{ gitlab_runner_token }}"
           gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"
           gitlab_docker_host_runner_token: "{{ gitlab_docker_host_runner_token }}"

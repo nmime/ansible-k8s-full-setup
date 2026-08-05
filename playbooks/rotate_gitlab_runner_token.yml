@@ -1,0 +1,127 @@
+---
+- name: Rotate an exposed general GitLab Runner authentication token
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  any_errors_fatal: true
+  environment:
+    KUBECONFIG: >-
+      {{ lookup('env', 'K8S_AUTH_KUBECONFIG') |
+         default(lookup('env', 'KUBECONFIG'), true) }}
+
+  vars_files:
+    - ../defaults/main.yml
+
+  pre_tasks:
+    - name: Normalize the platform identity from the profile
+      ansible.builtin.set_fact:
+        project_name: >-
+          {{ (global | default({})).project |
+             default(project_name | default('k8s'), true) }}
+        domain: >-
+          {{ (global | default({})).domain |
+             default(domain | default(''), true) }}
+        email: >-
+          {{ (global | default({})).email |
+             default(email | default(''), true) }}
+        platform_secrets_file: >-
+          {{ (secrets | default({})).file |
+             default(platform_secrets_file | default(''), true) }}
+
+    - name: Normalize the selected platform profile
+      ansible.builtin.include_tasks: tasks/normalize_profile.yml
+
+  tasks:
+    - name: Read the current general Runner authentication token
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        namespace: >-
+          {{ gitlab.runner.namespace | default('gitlab-ci-general', true) }}
+        name: platform-gitlab-runner-auth
+      register: _runner_auth_secret
+      no_log: true
+
+    - name: Require exactly one current general Runner credential
+      ansible.builtin.assert:
+        that:
+          - _runner_auth_secret.resources | default([]) | length == 1
+          - >-
+            ((_runner_auth_secret.resources | first).data['runner-token'] |
+             default('') | b64decode | length) > 20
+        fail_msg: >-
+          The isolated general Runner credential is missing; refusing to reset
+          an ambiguous identity.
+        quiet: true
+      no_log: true
+
+    - name: Reset the general Runner authentication token through GitLab
+      ansible.builtin.shell: |
+        set -euo pipefail
+        printf '%s' "$CURRENT_RUNNER_TOKEN" |
+          kubectl exec -i --namespace gitlab deployment/gitlab-toolbox \
+            -c toolbox -- sh -ec '
+              token=$(cat)
+              curl -fsS --request POST \
+                --data-urlencode "token=$token" \
+                http://gitlab-webservice-default.gitlab.svc:8181/api/v4/runners/reset_authentication_token
+            '
+      args:
+        executable: /bin/bash
+      environment:
+        CURRENT_RUNNER_TOKEN: >-
+          {{ (_runner_auth_secret.resources | first).data['runner-token'] |
+             b64decode }}
+      register: _runner_token_reset
+      changed_when: true
+      no_log: true
+
+    - name: Resolve and validate the rotated general Runner credential
+      ansible.builtin.set_fact:
+        _rotated_runner_token: >-
+          {{ (_runner_token_reset.stdout | from_json).token | default('') }}
+      no_log: true
+
+    - name: Require a new GitLab-issued Runner authentication token
+      ansible.builtin.assert:
+        that:
+          - _rotated_runner_token | length > 20
+          - _rotated_runner_token is match(
+              '^glrt-[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$')
+          - _rotated_runner_token !=
+            ((_runner_auth_secret.resources | first).data['runner-token'] |
+             b64decode)
+        fail_msg: >-
+          GitLab did not return a distinct modern Runner authentication token;
+          refusing to alter the encrypted campaign state.
+        quiet: true
+      no_log: true
+
+    - name: Persist the rotated credential in the encrypted campaign state
+      ansible.builtin.include_role:
+        name: generate-secrets
+      vars:
+        gitlab_runner_token_override: '{{ _rotated_runner_token }}'
+        gitlab_runner_token_rotation_enabled: true
+
+    - name: Confirm the old general Runner credential is revoked
+      ansible.builtin.shell: |
+        set -euo pipefail
+        status=$(printf '%s' "$CURRENT_RUNNER_TOKEN" |
+          kubectl exec -i --namespace gitlab deployment/gitlab-toolbox \
+            -c toolbox -- sh -ec '
+              token=$(cat)
+              curl -sS -o /dev/null -w "%{http_code}" \
+                --request POST --data-urlencode "token=$token" \
+                --data-urlencode "system_id=s_rotation_audit" \
+                http://gitlab-webservice-default.gitlab.svc:8181/api/v4/runners/verify
+            ')
+        test "$status" = 403
+      args:
+        executable: /bin/bash
+      environment:
+        CURRENT_RUNNER_TOKEN: >-
+          {{ (_runner_auth_secret.resources | first).data['runner-token'] |
+             b64decode }}
+      changed_when: false
+      no_log: true

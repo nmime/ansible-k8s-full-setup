@@ -1,0 +1,53 @@
+---
+# Umami privacy-focused web analytics.
+#
+# The image is pinned to the immutable multi-architecture manifest published
+# for the upstream 3.2.0 release.
+umami_namespace: umami
+umami_image: >-
+  ghcr.io/umami-software/umami:3.2.0@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec
+umami_replicas: >-
+  {{ umami.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}
+umami_hpa_enabled: >-
+  {{ umami.hpa_enabled | default(resource_tier in ['medium', 'production']) }}
+umami_hpa_min_replicas: "{{ umami.hpa_min_replicas | default(umami_replicas) }}"
+umami_hpa_max_replicas: "{{ umami.hpa_max_replicas | default(4) }}"
+umami_hpa_cpu_target: "{{ umami.hpa_cpu_target | default(70) }}"
+
+umami_cpu_request: 100m
+umami_cpu_limit: 750m
+umami_memory_request: 256Mi
+umami_memory_limit: 768Mi
+
+umami_database_namespace: databases
+umami_database_name: umami
+umami_database_user: umami
+umami_database_cluster: "{{ project_name | default('k8s') }}-pg"
+umami_database_service_alias: >-
+  {{ databases.postgresql.service_alias | default('') }}
+umami_database_sslmode: verify-full
+
+umami_runtime_secret_name: umami-runtime
+umami_manage_runtime_secret: true
+umami_disable_telemetry: true
+# Increment when the bootstrap Job template or API workflow changes. The
+# revision participates in the immutable Job name, making interrupted upgrades
+# resumable without a manual Job delete.
+umami_bootstrap_revision: "2"
+
+# Keep the dashboard on the VPN/admin gateway. Only the tracker and collection
+# endpoint are attached to the public main gateway.
+umami_dashboard_domain: "{{ umami.dashboard_domain | default('umami.' + domain) }}"
+umami_ingest_domain: "{{ umami.ingest_domain | default('analytics.' + domain) }}"
+umami_admin_gateway_name: admin-gateway
+umami_main_gateway_name: main-gateway
+umami_gateway_namespace: cilium-system
+
+# Optional deterministic websites. Supplying IDs makes frontend configuration
+# reproducible and lets the bootstrap job remain idempotent.
+#
+# umami_websites:
+#   - id: 00000000-0000-4000-8000-000000000001
+#     name: Example
+#     domain: example.com
+umami_websites: "{{ umami.websites | default([]) }}"

@@ -730,6 +730,22 @@ def test_encrypted_bundle_is_remote_verified_before_manifest_last_receipt():
     assert 'cmp -s "$FINAL_RECEIPT" "$REMOTE_RECEIPT_VERIFY"' in content
 
 
+def test_remote_only_backup_never_retains_output_outside_the_cleanup_tree():
+    content = BACKUP.read_text(encoding="utf-8")
+    assert 'KEEP_LOCAL_COPY=true' in content
+    assert '--remote-only) KEEP_LOCAL_COPY=false' in content
+    assert '--remote-only cannot be combined with --skip-remote-publish' in content
+    assert 'OUTPUT_DIR="${WORK_DIR}/remote-only-output"' in content
+    assert 'trap \'rm -rf "$WORK_DIR"\' EXIT' in content
+    assert 'rm -rf "$WORK_DIR"' in content
+    assert 'external DR only; transient local artifacts will be removed on exit' in content
+
+    work_dir = content.index('WORK_DIR=$(mktemp -d')
+    remote_output = content.index('OUTPUT_DIR="${WORK_DIR}/remote-only-output"')
+    output_create = content.index('mkdir -p "$OUTPUT_DIR"')
+    assert work_dir < remote_output < output_create
+
+
 def test_controller_can_publish_through_a_distinct_route_to_the_same_dr_store():
     content = BACKUP.read_text(encoding="utf-8")
     assert 'DR_CLIENT_ENDPOINT="${BACKUP_DR_CLIENT_ENDPOINT:-}"' in content
@@ -904,7 +920,17 @@ def test_migration_recovers_from_an_accepted_hcloud_action_after_client_failure(
     assert "run_with_timeout" in content
     assert "wait_for_server_settled" in content
     assert "authoritative post-action shape" in content
-    assert 'server_json=$(hcloud server describe "$node" -o json)' in content
+    assert 'server_json=$(hcloud server describe "$(provider_server_name "$node")" -o json)' in content
+
+
+def test_migration_maps_stable_kubernetes_names_to_provider_server_names():
+    content = MIGRATE.read_text(encoding="utf-8")
+    assert "SERVER_NAME_PREFIX=$(yq -r '.infrastructure.server_name_prefix" in content
+    assert "provider_server_name()" in content
+    assert '"${PROJECT}-master-"*' in content
+    assert '"${PROJECT}-worker-"*' in content
+    assert 'hcloud server delete "$(provider_server_name "$node")"' in content
+    assert 'hcloud server describe "$node"' not in content
 
 
 def test_migration_waits_for_etcd_after_a_control_plane_restart():
@@ -973,7 +999,7 @@ def test_migration_waits_for_csi_detach_after_drain_before_poweroff():
     assert "PROFILE_MIGRATION_CSI_DETACH_TIMEOUT_SECONDS" in content
     assert "volumeattachments.storage.k8s.io" in detach
     assert ".spec.nodeName == $node" in detach
-    assert 'hcloud server describe "$node" -o json' in detach
+    assert 'hcloud server describe "$(provider_server_name "$node")" -o json' in detach
     assert ".volumes | length" in detach
     assert resize.index('kubectl drain "$node"') < resize.index(
         'wait_for_csi_detach "$node"'
@@ -1040,7 +1066,7 @@ def test_scale_in_reuses_checkpointed_gitaly_pdb_override_before_node_removal():
     drain = remove.index('kubectl drain "$node"')
     restore = remove.index("restore_gitaly_pdb_override")
     remove_node = remove.index('"$kubespray_dir/remove-node.yml"')
-    delete_server = remove.index('hcloud server delete "$node"')
+    delete_server = remove.index('hcloud server delete "$(provider_server_name "$node")"')
     assert prepare < drain < restore < remove_node < delete_server
     assert "drain_status=0" in remove
     assert "drain_status=$?" in remove
@@ -2044,24 +2070,24 @@ def test_migration_plan_generates_valid_target_and_expansion_configs(tmp_path):
     )
     capacity = json.loads((state / "volume-capacity-plan.json").read_text())
     assert capacity["source"]["persistent_total_gib"] == 250
-    assert capacity["target"]["persistent_total_gib"] == 1360
+    assert capacity["target"]["persistent_total_gib"] == 1380
     # Migration delta is claim-by-claim: the 30 GiB source Loki/VMSingle
     # claims remain retained during cutover rather than offsetting new claims.
-    assert capacity["target_delta_gib"] == 1140
+    assert capacity["target_delta_gib"] == 1160
     assert capacity["migration_scratch_gib"] == 50
-    assert capacity["required_additional_gib"] == 1190
+    assert capacity["required_additional_gib"] == 1210
     assert capacity["planning_inputs"] == {
         "configured_account_quota_gib": None,
         "safety_margin_gib": 100,
         "live_account_usage_required": True,
     }
-    assert capacity["minimum_required_headroom_gib"] == 1290
+    assert capacity["minimum_required_headroom_gib"] == 1310
     assert capacity["offline_result"] == (
         "replacement-restore-required"
         if capacity["storage_class_changes"]
         else "quota-required-before-execute"
     )
-    assert "Required additional capacity before safety margin: 1190 GiB" in result.stdout
+    assert "Required additional capacity before safety margin: 1210 GiB" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -2592,7 +2618,7 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     capture_bastion = content.split("capture_live_bastion_type()", 1)[1].split(
         "preserve_non_shrinking_node_types()", 1
     )[0]
-    assert 'hcloud server describe "${PROJECT}-bastion" -o json' in capture_bastion
+    assert 'hcloud server describe "$(provider_server_name "${PROJECT}-bastion")" -o json' in capture_bastion
     assert 'set_yaml_string "$config" \'.network.bastion.server_type\' "$live_type"' in capture_bastion
     assert '.bastion={server:$server' in capture_bastion
     assert "resize_supported:false" in capture_bastion
@@ -2600,7 +2626,7 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert 'for config in "$TARGET_CONFIG" "$STEADY_CONFIG" "$ROLLBACK_CONFIG"' in content
     assert 'current_cores" != "$target_cores' in content
     assert "ensure_server_stopped" in content
-    assert 'change_args=(server change-type "$node" "$target_type")' in content
+    assert 'change_args=(server change-type "$(provider_server_name "$node")" "$target_type")' in content
     assert 'change_args+=(--keep-disk)' in content
     assert 'growpart "/dev/$parent" "$partnum"' in content
     assert 'resize2fs "$root_source"' in content
@@ -2628,7 +2654,9 @@ def test_migration_is_checkpointed_backup_gated_and_destructive_only_at_finalize
     assert 'persist_active_config "$TARGET_CONFIG"' in content
     assert 'persist_active_config "$ROLLBACK_CONFIG"' in content
     assert "remove-node.yml" in content
-    assert content.index("remove-node.yml") < content.index('hcloud server delete "$node"')
+    assert content.index("remove-node.yml") < content.index(
+        'hcloud server delete "$(provider_server_name "$node")"'
+    )
     assert "hetzner_allow_destructive_reconcile=true" in content
     placement_group = content.split("ensure_spread_placement_group()", 1)[1].split(
         "stage_expand()", 1
@@ -2860,7 +2888,7 @@ def test_migration_retries_transient_provider_capacity_before_failing():
     assert "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_ATTEMPTS" in content
     assert "PROFILE_MIGRATION_HCLOUD_CAPACITY_RETRY_INTERVAL_SECONDS" in content
     assert 'ensure_server_stopped "$node"' in helper
-    assert 'change_args=(server change-type "$node" "$target_type")' in helper
+    assert 'change_args=(server change-type "$(provider_server_name "$node")" "$target_type")' in helper
     assert 'hcloud "${change_args[@]}"' in helper
     assert helper.index('ensure_server_stopped "$node"') < helper.index(
         'hcloud "${change_args[@]}"'
@@ -3044,7 +3072,7 @@ def test_migration_rollback_removes_target_only_components_fail_closed():
         "restore_helm_baseline_without_vault()", 1
     )[0]
     expected_order = (
-        "daytona blackbox apm glitchtip temporal postal tempo tracing coroot "
+        "daytona blackbox apm umami glitchtip temporal postal tempo tracing coroot "
         "gitlab-runner gitlab mongodb eso elasticsearch dragonfly "
         "disaster-recovery backup autoscaling gitops observability "
         "postgresql databases secrets object-storage"
@@ -3173,6 +3201,7 @@ def test_deployment_fails_before_provisioning_without_external_dr_contract():
     assert "Fail early when external disaster-recovery storage is incomplete" in content
     assert "BACKUP_DR_ACCESS_KEY/BACKUP_DR_SECRET_KEY before provisioning" in content
     assert "backup_dr_enabled | bool" in content
+    assert "intersect(['backup', 'disaster-recovery', 'velero-bootstrap'])" in content
 
 
 def test_project_env_dr_location_is_used_as_blank_profile_fallback_without_secret_argv():
@@ -3336,6 +3365,9 @@ def test_profile_scale_in_refuses_bound_node_local_data():
 def test_cluster_backup_cloud_capture_is_fail_closed_and_uses_managed_dns_zone():
     content = (ROOT / "scripts" / "cluster-backup.sh").read_text(encoding="utf-8")
 
+    assert "SERVER_NAME_PREFIX=$(yq -r '.infrastructure.server_name_prefix" in content
+    assert 'LOAD_BALANCER_NAME="${SERVER_NAME_PREFIX}-lb"' in content
+    assert '"load-balancer:${LOAD_BALANCER_NAME}"' in content
     assert '"zone:${DNS_ZONE}"' in content
     assert '"zone:${DOMAIN}"' not in content
     assert "if grep -qi 'not found'" in content

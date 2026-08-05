@@ -61,6 +61,7 @@
     platform_postal_enabled: '{{ (postal.enabled | default(deploy_postal)) | bool }}'
     platform_backup_enabled: '{{ (backup.enabled | default(backup_enabled)) | bool }}'
     platform_glitchtip_enabled: '{{ (glitchtip.enabled | default(deploy_glitchtip | default(false))) | bool }}'
+    platform_umami_enabled: '{{ (umami.enabled | default(deploy_umami | default(false))) | bool }}'
     platform_apm_enabled: '{{ (apm.enabled | default(deploy_apm | default(false))) | bool }}'
     platform_blackbox_enabled: '{{ (blackbox.enabled | default(deploy_blackbox | default(false))) | bool }}'
     platform_daytona_enabled: '{{ (applications.daytona.enabled | default(deploy_daytona)) | bool }}'
@@ -84,12 +85,21 @@
     gateway_extra_certificate_refs: >-
       {{ (kubernetes.gateway | default({})).extra_certificate_refs |
          default(gateway_extra_certificate_refs) }}
+    gateway_extra_certificates: >-
+      {{ (kubernetes.gateway | default({})).extra_certificates |
+         default(gateway_extra_certificates) }}
     gateway_https_hostname: >-
       {{ (kubernetes.gateway | default({})).https_hostname |
          default(gateway_https_hostname) }}
     gateway_extra_https_listeners: >-
       {{ (kubernetes.gateway | default({})).extra_https_listeners |
          default(gateway_extra_https_listeners) }}
+    gateway_http_allowed_routes: >-
+      {{ (kubernetes.gateway | default({})).http_allowed_routes |
+         default(gateway_http_allowed_routes) }}
+    gateway_https_allowed_routes: >-
+      {{ (kubernetes.gateway | default({})).https_allowed_routes |
+         default(gateway_https_allowed_routes) }}
     storage_class: '{{ storage.storage_class | default(storage_class) }}'
     local_storage_enabled: '{{ local_storage.enabled | default(local_storage_enabled) | bool }}'
     local_storage_class: '{{ local_storage.storage_class | default(local_storage_class) }}'
@@ -117,6 +127,8 @@
       {{ storage.volume_replicas | default(object_storage_volume_replicas | default(object_storage_replicas | default(1))) }}
     object_storage_filer_replicas: >-
       {{ storage.filer_replicas | default(object_storage_filer_replicas | default(1)) }}
+    object_storage_filer_node_selector: >-
+      {{ storage.filer_node_selector | default(object_storage_filer_node_selector | default({})) }}
     object_storage_replication_placement: >-
       {{ storage.replication_placement | default(object_storage_replication_placement | default('000')) }}
     object_storage_master_size: '{{ storage.master_size | default(object_storage_master_size) }}'
@@ -373,6 +385,7 @@
     deploy_apm: '{{ platform_apm_enabled }}'
     deploy_blackbox: '{{ platform_blackbox_enabled }}'
     deploy_glitchtip: '{{ platform_glitchtip_enabled }}'
+    deploy_umami: '{{ platform_umami_enabled }}'
     deploy_daytona: '{{ platform_daytona_enabled }}'
     deploy_observability: '{{ platform_observability_enabled }}'
     daytona_namespace: '{{ applications.daytona.namespace | default(daytona_namespace) }}'
@@ -519,6 +532,30 @@
       Cilium, Gateway API, Hubble, Kubernetes secret encryption, and network
       policies. These are foundations rather than optional platform services.
 
+- name: Validate the optional static HA egress contract
+  ansible.builtin.assert:
+    that:
+      - (network.egress.standby_location | default('fsn1')) in ['hel1', 'fsn1', 'nbg1']
+      - (network.egress.floating_ip_home_location | default(infrastructure.region)) in ['hel1', 'fsn1', 'nbg1']
+      - network.egress.standby_private_ip | default('10.0.2.12') is match('^10\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - network.egress.standby_server_type | default('cpx22') | length > 0
+      - network.egress.failure_threshold | default(3) | int >= 2
+      - network.egress.watchdog_interval_seconds | default(10) | int >= 5
+      - network.egress.health_timeout_seconds | default(4) | int >= 2
+      - network.egress.promotion_timeout_seconds | default(90) | int >= 45
+      - network.egress.promotion_timeout_seconds | default(90) | int <= 180
+      - >-
+        network.egress.health_timeout_seconds | default(4) | int <
+        network.egress.watchdog_interval_seconds | default(10) | int
+      - >-
+        not (network.egress.manage_mail_dns | default(false) | bool) or
+        network.egress.activate | default(false) | bool
+    fail_msg: >-
+      network.egress must use a valid eu-central standby, a stable RFC1918
+      address, bounded health timings, and may manage mail DNS only during
+      activation.
+  when: network.egress.enabled | default(false) | bool
+
 - name: Validate parent and bundled component selections
   ansible.builtin.assert:
     that:
@@ -583,6 +620,15 @@
       databases.postgresql and dragonfly in the selected platform profile.
   when: platform_glitchtip_enabled | bool
 
+- name: Validate Umami external service dependency
+  ansible.builtin.assert:
+    that:
+      - platform_postgresql_enabled | bool
+    fail_msg: >-
+      Umami requires PostgreSQL. Enable databases.postgresql in the selected
+      platform profile.
+  when: platform_umami_enabled | bool
+
 - name: Validate APM external service dependency
   ansible.builtin.assert:
     that:
@@ -605,10 +651,32 @@
   ansible.builtin.assert:
     that:
       - platform_dragonfly_enabled | bool
+      - postal.send_limit_per_minute | default(60) | int > 0
+      - postal.send_limit_per_minute | default(60) | int <= 1000
     fail_msg: >-
-      Postal requires Dragonfly for its queue. Enable dragonfly in the
-      selected platform profile.
+      Postal requires Dragonfly and a send limit between 1 and 1000 messages
+      per minute.
   when: platform_postal_enabled | bool
+
+- name: Validate Postal sender domains
+  ansible.builtin.assert:
+    that:
+      - postal_profile_domains is sequence
+      - postal_profile_domains is not string
+      - postal_profile_domains | length > 0
+      - postal_profile_domains | unique | list | length == postal_profile_domains | length
+      - >-
+        postal_profile_domains |
+        reject('match', '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$') |
+        list | length == 0
+    fail_msg: >-
+      Postal sender domains must be a non-empty, unique list of valid DNS
+      names.
+  vars:
+    postal_profile_domains: "{{ postal.domains | default([global.domain]) }}"
+  when:
+    - platform_postal_enabled | bool
+    - postal.domains is defined or (global.domain | default('') | length > 0)
 
 - name: Validate the tracing backend selection
   ansible.builtin.assert:

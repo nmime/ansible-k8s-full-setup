@@ -23,11 +23,7 @@
 - name: Set stable database endpoint variables
   set_fact:
     database_alias_ca_name: database-client-ca
-    database_alias_tls_enabled: >-
-      {{
-        (pg_service_alias | length > 0)
-        or (mongo_service_alias | length > 0)
-      }}
+    database_alias_ca_enabled: '{{ pg_service_alias | length > 0 }}'
     pg_connection_host: >-
       {{
         (pg_service_alias ~ '.databases.svc.cluster.local')
@@ -61,6 +57,11 @@
       during SmartUpdate. Prove that intermediate rollout, mount the published
       mongodb-client-ca in every consumer, then move clients. requireTLS is a
       separate final gate after plaintext usage reaches zero.
+      First deploy the short Service and alias certificate without changing the
+      operator-managed MongoDB TLS Secrets. Mount mongodb-client-ca in every
+      consumer, prove every client against the operator-CA-signed alias
+      certificate, then set alias_tls_cutover_enabled=true and
+      tls_cutover_confirmed=true. requireTLS additionally requires both gates.
   when: mongo_service_alias | length > 0
 - name: Validate the staged PostgreSQL TLS cutover gate
   ansible.builtin.assert:
@@ -89,6 +90,20 @@
       target_namespace.
   loop: '{{ databases.postgresql.extra_users | default([]) }}'
   when: platform_postgresql_enabled | default(true) | bool
+- name: Validate MongoDB TLS client consumer declarations
+  ansible.builtin.assert:
+    that:
+    - item.name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.namespace is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.secret_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    - item.namespace in (databases.mongodb.tls_consumer_namespaces | default([]))
+    fail_msg: >-
+      Each databases.mongodb.tls_client_consumers entry requires DNS-safe
+      name, namespace, and secret_name fields. Its namespace must also be in
+      tls_consumer_namespaces so the server CA and client identity are
+      published together.
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when: platform_mongodb_enabled | default(true) | bool
 - name: Create databases namespace
   kubernetes.core.k8s:
     state: present
@@ -159,7 +174,7 @@
           app.kubernetes.io/part-of: databases
       spec:
         selfSigned: {}
-  when: database_alias_tls_enabled | bool
+  when: database_alias_ca_enabled | bool
 - name: Create database alias client CA
   kubernetes.core.k8s:
     state: present
@@ -186,7 +201,7 @@
           name: database-client-selfsigned
           kind: Issuer
           group: cert-manager.io
-  when: database_alias_tls_enabled | bool
+  when: database_alias_ca_enabled | bool
 - name: Wait for database alias client CA
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
@@ -207,7 +222,7 @@
     ) == 1
   retries: 60
   delay: 5
-  when: database_alias_tls_enabled | bool
+  when: database_alias_ca_enabled | bool
 - name: Create database alias CA issuer
   kubernetes.core.k8s:
     state: present
@@ -223,7 +238,7 @@
       spec:
         ca:
           secretName: '{{ database_alias_ca_name }}'
-  when: database_alias_tls_enabled | bool
+  when: database_alias_ca_enabled | bool
 - name: Issue hostname-verified PostgreSQL alias certificate
   kubernetes.core.k8s:
     state: present
@@ -365,23 +380,13 @@
   - platform_mongodb_enabled | default(true) | bool
   - mongo_service_alias | length > 0
 - name: Wait for database alias leaf certificates
+- name: Wait for PostgreSQL alias certificate
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
     kind: Certificate
     namespace: '{{ db_ns }}'
     name: '{{ item }}'
-  loop: >-
-    {{
-      ([pg_alias_tls_secret]
-       if (platform_postgresql_enabled | default(true) | bool)
-       and (pg_service_alias | length > 0)
-       else [])
-      +
-      ([mongo_alias_tls_secret]
-       if (platform_mongodb_enabled | default(true) | bool)
-       and (mongo_service_alias | length > 0)
-       else [])
-    }}
+  loop: '{{ [pg_alias_tls_secret] }}'
   register: _database_alias_leaf_certificates
   until: >-
     (_database_alias_leaf_certificates.resources | default([])) | length == 1
@@ -411,7 +416,9 @@
     ) == 1
   retries: 60
   delay: 5
-  when: database_alias_tls_enabled | bool
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - pg_service_alias | length > 0
 - name: Bound operator-created database helper containers at admission
   kubernetes.core.k8s:
     state: present
@@ -565,7 +572,6 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: monitoring
-              k8s:app: pmm-server
           toPorts:
           - ports:
             - port: '443'
@@ -683,7 +689,26 @@
         instances:
         - name: instance1
           replicas: '{{ pg_replicas | int }}'
-          tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
+          # Local-PV replicas can be physically pinned to a control-plane node.
+          # Preserve only that case when a grown compact cluster dedicates its
+          # control plane; ordinary workloads remain blocked by NoSchedule.
+          tolerations: >-
+            {{
+              [{
+                'key': 'node-role.kubernetes.io/control-plane',
+                'operator': 'Exists',
+                'effect': 'NoSchedule'
+              }]
+              if (
+                tier == 'production'
+                or (
+                  local_storage_enabled | default(false) | bool
+                  and pg_data_storage_class == local_storage_class
+                  and not (cp_schedulable | default(false) | bool)
+                )
+              )
+              else []
+            }}
           dataVolumeClaimSpec:
             accessModes:
             - ReadWriteOnce
@@ -832,6 +857,16 @@
                'databases': ['temporal', 'temporal_visibility']},
               {'name': 'glitchtip', 'databases': ['glitchtip']}
             ] + (
+              [
+                {
+                  'name': 'umami',
+                  'databases': ['umami'],
+                  'grantPublicSchemaAccess': true
+                }
+              ]
+              if platform_umami_enabled | default(false) | bool
+              else []
+            ) + (
               databases.postgresql.extra_users | default([]) |
               map(attribute='operator') | list
             )
@@ -919,7 +954,26 @@
   retries: 60
   delay: 15
   when: platform_postgresql_enabled | default(true) | bool
-- name: Validate extra PostgreSQL role search paths
+- name: Build PostgreSQL role search path settings
+  ansible.builtin.set_fact:
+    _pg_role_search_paths: >-
+      {{
+        (
+          databases.postgresql.extra_users | default([]) |
+          selectattr('search_path', 'defined') | list
+        ) + (
+          [
+            {
+              'operator': {'name': 'umami'},
+              'search_path': 'public'
+            }
+          ]
+          if platform_umami_enabled | default(false) | bool
+          else []
+        )
+      }}
+  when: platform_postgresql_enabled | default(true) | bool
+- name: Validate PostgreSQL role search paths
   ansible.builtin.assert:
     that:
     - item.operator.name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
@@ -927,39 +981,33 @@
     fail_msg: >-
       PostgreSQL extra-user names must be DNS-compatible operator identities,
       and search_path values must be lowercase SQL identifiers.
-  loop: '{{ databases.postgresql.extra_users | default([]) }}'
-  when:
-  - platform_postgresql_enabled | default(true) | bool
-  - item.search_path is defined
-- name: Discover the PostgreSQL primary for extra role settings
+  loop: '{{ _pg_role_search_paths | default([]) }}'
+  when: platform_postgresql_enabled | default(true) | bool
+- name: Discover the PostgreSQL primary for role settings
   kubernetes.core.k8s_info:
     kind: Pod
     namespace: '{{ db_ns }}'
     label_selectors:
     - postgres-operator.crunchydata.com/cluster={{ project_name | default('k8s') }}-pg
     - postgres-operator.crunchydata.com/role=primary
-  register: _extra_pg_primary
-  until: (_extra_pg_primary.resources | default([])) | length == 1
+  register: _pg_role_primary
+  until: (_pg_role_primary.resources | default([])) | length == 1
   retries: 30
   delay: 5
   when:
   - platform_postgresql_enabled | default(true) | bool
-  - >-
-    databases.postgresql.extra_users | default([]) |
-    selectattr('search_path', 'defined') | list | length > 0
-- name: Configure extra PostgreSQL role search paths
+  - (_pg_role_search_paths | default([]) | length) > 0
+- name: Configure PostgreSQL role search paths
   kubernetes.core.k8s_exec:
     namespace: '{{ db_ns }}'
-    pod: '{{ _extra_pg_primary.resources[0].metadata.name }}'
+    pod: '{{ _pg_role_primary.resources[0].metadata.name }}'
     container: database
     command: >-
       psql -v ON_ERROR_STOP=1 -d postgres
       -c 'ALTER ROLE "{{ item.operator.name }}" SET search_path TO
       "{{ item.search_path }}", pg_catalog;'
-  loop: '{{ databases.postgresql.extra_users | default([]) }}'
-  when:
-  - platform_postgresql_enabled | default(true) | bool
-  - item.search_path is defined
+  loop: '{{ _pg_role_search_paths | default([]) }}'
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Check MongoDB Operator Helm release status
   ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
   register: _mongo_operator_helm_status
@@ -1073,6 +1121,44 @@
   delay: 10
   until: _r_create_mongodb_backup_credentials_for_mi is not failed
   when: platform_mongodb_enabled | default(true) | bool
+- name: Read the staged MongoDB alias certificate before cutover
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ mongo_alias_tls_secret }}'
+  register: _mongo_cutover_alias_tls_secret
+  no_log: true
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_alias_tls_cutover_enabled | bool
+- name: Read the active MongoDB operator CA before cutover
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-mongo-ca-cert'
+  register: _mongo_cutover_operator_ca_secret
+  no_log: true
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_alias_tls_cutover_enabled | bool
+- name: Reject a MongoDB alias certificate signed by a different CA
+  ansible.builtin.assert:
+    that:
+    - (_mongo_cutover_alias_tls_secret.resources | default([])) | length == 1
+    - (_mongo_cutover_operator_ca_secret.resources | default([])) | length == 1
+    - >-
+      _mongo_cutover_alias_tls_secret.resources[0].data["ca.crt"]
+      == _mongo_cutover_operator_ca_secret.resources[0].data["ca.crt"]
+    fail_msg: >-
+      Refusing the MongoDB TLS cutover: the staged short-alias certificate is
+      missing or is not signed by the active Percona operator CA. Reconcile
+      once with alias_tls_cutover_enabled=false, wait for the alias certificate
+      to become Ready, prove clients with mongodb-client-ca, then confirm the
+      cutover explicitly.
+  no_log: true
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_alias_tls_cutover_enabled | bool
 - name: Create MongoDB cluster
   kubernetes.core.k8s:
     state: present
@@ -1277,6 +1363,212 @@
   retries: 60
   delay: 15
   when: platform_mongodb_enabled | default(true) | bool
+- name: Wait for the MongoDB operator CA issuer
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Issuer
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-mongo-psmdb-issuer'
+  register: _mongo_operator_ca_issuer
+  until: >-
+    (_mongo_operator_ca_issuer.resources | default([])) | length == 1
+    and
+    (
+      _mongo_operator_ca_issuer.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) == 1
+  retries: 60
+  delay: 5
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Issue hostname-verified MongoDB alias certificate
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: '{{ mongo_alias_tls_secret }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        secretName: '{{ mongo_alias_tls_secret }}'
+        commonName: '{{ project_name | default(''k8s'') }}-mongo'
+        subject:
+          organizations:
+          - PSMDB
+        duration: 2160h
+        renewBefore: 360h
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+          rotationPolicy: Always
+        usages:
+        - server auth
+        - client auth
+        dnsNames:
+        - localhost
+        - '{{ mongo_service_alias }}'
+        - '{{ mongo_service_alias }}.{{ db_ns }}'
+        - '{{ mongo_service_alias }}.{{ db_ns }}.svc'
+        - '{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local'
+        - '*.{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc'
+        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc.cluster.local'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc'
+        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc.cluster.local'
+        issuerRef:
+          name: '{{ project_name | default(''k8s'') }}-mongo-psmdb-issuer'
+          kind: Issuer
+          group: cert-manager.io
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Wait for the MongoDB alias certificate
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: '{{ db_ns }}'
+    name: '{{ mongo_alias_tls_secret }}'
+  register: _mongo_alias_certificate
+  until: >-
+    (_mongo_alias_certificate.resources | default([])) | length == 1
+    and
+    (
+      _mongo_alias_certificate.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) == 1
+  retries: 60
+  delay: 5
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Retrieve the active MongoDB operator CA
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ project_name | default(''k8s'') }}-mongo-ca-cert'
+  register: _mongo_cluster_ca_secret
+  no_log: true
+  until: >-
+    (_mongo_cluster_ca_secret.resources | default([])) | length == 1
+    and
+    (_mongo_cluster_ca_secret.resources[0].data["ca.crt"] | default('') | length) > 0
+  retries: 30
+  delay: 5
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Issue dedicated MongoDB client certificates
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: 'mongodb-client-{{ item.name }}'
+        namespace: '{{ db_ns }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      spec:
+        secretName: 'mongodb-client-{{ item.name }}'
+        commonName: '{{ item.common_name | default(item.name) }}'
+        duration: 2160h
+        renewBefore: 360h
+        privateKey:
+          algorithm: RSA
+          encoding: PKCS8
+          size: 2048
+          rotationPolicy: Always
+        usages:
+        - client auth
+        issuerRef:
+          name: '{{ project_name | default(''k8s'') }}-mongo-psmdb-issuer'
+          kind: Issuer
+          group: cert-manager.io
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Wait for dedicated MongoDB client certificates
+  no_log: true
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    namespace: '{{ db_ns }}'
+    name: 'mongodb-client-{{ item.name }}'
+  register: _mongo_client_certificates
+  until: >-
+    (_mongo_client_certificates.resources | default([])) | length == 1
+    and
+    (
+      _mongo_client_certificates.resources[0].status.conditions
+      | default([])
+      | selectattr('type', 'equalto', 'Ready')
+      | selectattr('status', 'equalto', 'True')
+      | list
+      | length
+    ) == 1
+  retries: 60
+  delay: 5
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Retrieve dedicated MongoDB client identities
+  no_log: true
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: 'mongodb-client-{{ item.name }}'
+  register: _mongo_client_tls_secret_results
+  until: >-
+    (_mongo_client_tls_secret_results.resources | default([])) | length == 1
+    and
+    (_mongo_client_tls_secret_results.resources[0].data["ca.crt"] | default('') | length) > 0
+    and
+    (_mongo_client_tls_secret_results.resources[0].data["tls.crt"] | default('') | length) > 0
+    and
+    (_mongo_client_tls_secret_results.resources[0].data["tls.key"] | default('') | length) > 0
+  retries: 30
+  delay: 5
+  loop: '{{ databases.mongodb.tls_client_consumers | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Wait for the MongoDB alias certificate to use the active operator CA
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: '{{ db_ns }}'
+    name: '{{ mongo_alias_tls_secret }}'
+  register: _mongo_alias_tls_secret
+  no_log: true
+  until: >-
+    (_mongo_alias_tls_secret.resources | default([])) | length == 1
+    and
+    _mongo_alias_tls_secret.resources[0].data["ca.crt"]
+    == _mongo_cluster_ca_secret.resources[0].data["ca.crt"]
+  retries: 60
+  delay: 5
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
 - name: Retrieve the database alias client CA
   no_log: true
   kubernetes.core.k8s_info:
@@ -1307,6 +1599,9 @@
   when:
   - platform_mongodb_enabled | default(true) | bool
   - mongo_service_alias | length > 0
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - pg_service_alias | length > 0
 - name: Retrieve the operator PostgreSQL client CA
   no_log: true
   kubernetes.core.k8s_info:
@@ -1353,7 +1648,32 @@
           argocd.argoproj.io/compare-options: IgnoreExtraneous
       stringData:
         ca.crt: '{{ _mongo_alias_tls_secret_resource.resources[0].data["ca.crt"] | b64decode }}'
+        ca.crt: '{{ _mongo_cluster_ca_secret.resources[0].data["ca.crt"] | b64decode }}'
   loop: '{{ databases.mongodb.tls_consumer_namespaces | default([]) }}'
+  when:
+  - platform_mongodb_enabled | default(true) | bool
+  - mongo_service_alias | length > 0
+- name: Publish dedicated MongoDB client identities
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: '{{ item.item.secret_name }}'
+        namespace: '{{ item.item.namespace }}'
+        annotations:
+          argocd.argoproj.io/compare-options: IgnoreExtraneous
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: databases
+      type: kubernetes.io/tls
+      data:
+        ca.crt: '{{ item.resources[0].data["ca.crt"] }}'
+        tls.crt: '{{ item.resources[0].data["tls.crt"] }}'
+        tls.key: '{{ item.resources[0].data["tls.key"] }}'
+  loop: '{{ _mongo_client_tls_secret_results.results | default([]) }}'
   when:
   - platform_mongodb_enabled | default(true) | bool
   - mongo_service_alias | length > 0
@@ -1646,6 +1966,59 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
+- name: Allow SocialAgents migration and runtime workloads to reach PostgreSQL
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-social-agents-postgres
+        namespace: agents
+      spec:
+        endpointSelector:
+          matchLabels:
+            k8s:app.kubernetes.io/name: social-agents
+        egress:
+        - toServices:
+          - k8sService:
+              serviceName: '{{ project_name | default(''k8s'') }}-pg-primary'
+              namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+        - toServices:
+          - k8sService:
+              serviceName: '{{ project_name | default(''k8s'') }}-pg-pgbouncer'
+              namespace: databases
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+              k8s:app.kubernetes.io/component: pg
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+        - toEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: databases
+              k8s:postgres-operator.crunchydata.com/role: pgbouncer
+          toPorts:
+          - ports:
+            - port: '5432'
+              protocol: TCP
+  when:
+  - platform_postgresql_enabled | default(true) | bool
+  - >-
+    'agents' in (
+      databases.postgresql.extra_users | default([]) |
+      map(attribute='target_namespace') | list
+    )
 - name: Allow database egress (replication + backups)
   kubernetes.core.k8s:
     state: present

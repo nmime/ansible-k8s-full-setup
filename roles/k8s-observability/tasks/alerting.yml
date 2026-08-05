@@ -8,6 +8,11 @@
     # Resolve the stable namespace locally so alert reconciliation is a safe,
     # independently runnable operation.
     monitoring_namespace: '{{ monitoring_namespace | default("monitoring") }}'
+    alert_runbook_url_resolved: >-
+      {{
+        alert_runbook_url |
+        default('https://github.com/nmime/ansible-k8s-full-setup/blob/main/RUNBOOK.md')
+      }}
     alert_telegram_configured: >-
       {{
         alert_telegram_enabled | default(false) | bool
@@ -30,7 +35,8 @@
       stringData:
         telegram-bot-token: '{{ alert_telegram_bot_token | default("") }}'
         telegram-chat-id: '{{ alert_telegram_chat_id | default("") }}'
-        smtp-password: ''  # Postal internal SMTP has no auth from in-cluster services
+        smtp-username: '{{ postal_smtp_auth_username }}'
+        smtp-password: "{{ postal_smtp_credentials['alertmanager'] if platform_postal_enabled | default(false) | bool else '' }}"
   register: _r_alert_secrets
   retries: 3
   delay: 10
@@ -53,8 +59,10 @@
             resolve_timeout: 5m
           {% if alert_email_configured | bool %}
             smtp_from: 'alerts@{{ domain }}'
-            smtp_smarthost: 'postal-smtp.postal.svc.cluster.local:25'
-            smtp_require_tls: false
+            smtp_smarthost: '{{ postal_submission_hostname }}:587'
+            smtp_auth_username: '{{ postal_smtp_auth_username }}'
+            smtp_auth_password_file: '/etc/vm/secrets/alert-secrets/smtp-password'
+            smtp_require_tls: true
             smtp_hello: '{{ domain }}'
           {% endif %}
 
@@ -116,6 +124,14 @@
                     {{ with .Labels.system_id }}System ID: <code>{{ . }}</code>{{ end }}
                     {{ with .Labels.level }}Level: <code>{{ . }}</code>{{ end }}
                     {{ with .Labels.status }}HTTP status: <code>{{ . }}</code>{{ end }}
+                  message: |-
+                    {% raw %}<b>🚨 {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
+                    {{ range $index, $alert := .Alerts -}}
+                    {{ if lt $index 6 }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
+                    <i>{{ .Annotations.summary }}</i>
+                    {{ .Annotations.description }}
+                    <b>Context:</b> <code>{{ if .Labels.namespace }}{{ .Labels.namespace }}{{ else }}cluster{{ end }}{{ with .Labels.pod }}/{{ . }}{{ end }}</code>{{ with .Labels.deployment }} · deployment <code>{{ . }}</code>{{ end }}{{ with .Labels.runner_name }} · runner <code>{{ . }}</code>{{ end }}{{ with .Labels.runner }} · id <code>{{ . }}</code>{{ end }}{{ with .Labels.status }} · HTTP <code>{{ . }}</code>{{ end }}{{ with .Labels.level }} · level <code>{{ . }}</code>{{ end }}
+                    {{ if .Annotations.runbook_url }}📘 <a href="{{ .Annotations.runbook_url }}">Runbook</a>{{ end }}
                     {{ end }}
                     {{ end -}}
                     {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
@@ -142,6 +158,14 @@
                     {{ with .Labels.system_id }}System ID: <code>{{ . }}</code>{{ end }}
                     {{ with .Labels.level }}Level: <code>{{ . }}</code>{{ end }}
                     {{ with .Labels.status }}HTTP status: <code>{{ . }}</code>{{ end }}
+                  message: |-
+                    {% raw %}<b>⚠️ {{ .Status | toUpper }}</b>{{ if eq .Status "firing" }} · {{ .Alerts.Firing | len }} firing{{ end }}
+                    {{ range $index, $alert := .Alerts -}}
+                    {{ if lt $index 6 }}<b>{{ .Labels.alertname }}</b> · <code>{{ .Labels.severity }}</code>
+                    <i>{{ .Annotations.summary }}</i>
+                    {{ .Annotations.description }}
+                    <b>Context:</b> <code>{{ if .Labels.namespace }}{{ .Labels.namespace }}{{ else }}cluster{{ end }}{{ with .Labels.pod }}/{{ . }}{{ end }}</code>{{ with .Labels.deployment }} · deployment <code>{{ . }}</code>{{ end }}{{ with .Labels.runner_name }} · runner <code>{{ . }}</code>{{ end }}{{ with .Labels.runner }} · id <code>{{ . }}</code>{{ end }}{{ with .Labels.status }} · HTTP <code>{{ . }}</code>{{ end }}{{ with .Labels.level }} · level <code>{{ . }}</code>{{ end }}
+                    {{ if .Annotations.runbook_url }}📘 <a href="{{ .Annotations.runbook_url }}">Runbook</a>{{ end }}
                     {{ end }}
                     {{ end -}}
                     {{ if gt (len .Alerts) 6 }}Additional alerts are grouped; open Alertmanager for the complete set.{{ end }}{% endraw %}
@@ -202,6 +226,27 @@
       spec:
         replicaCount: "{{ alerting.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"
         configSecret: platform-alertmanager-config
+        podDisruptionBudget:
+          minAvailable: 1
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: vmalertmanager
+                    app.kubernetes.io/instance: platform
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          fsGroupChangePolicy: OnRootMismatch
+          containerSecurityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
         configReloaderResources:
           requests: { cpu: 10m, memory: 25Mi }
           limits:
@@ -511,7 +556,7 @@
                   description: Ready replicas have remained below desired replicas for 10 minutes.
                   runbook_url: 'https://git.n0xeid.xyz/agents/argocd/ansible-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
               - alert: KubernetesJobFailed
-                expr: increase(kube_job_status_failed[10m]) > 0
+                expr: max by (namespace, job_name) (increase(kube_job_status_failed[10m])) > 0
                 for: 2m
                 labels: {severity: warning, owner: platform}
                 annotations:
@@ -568,6 +613,9 @@
                   summary: 'Runner managers unavailable: {{ "{{ $labels.namespace }}/{{ $labels.deployment }}" }}'
                   description: '{{ "{{ printf \"%.0f\" $value }}" }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.'
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} desired manager replica(s) are unavailable for 10 minutes. Intentional scale-to-zero is excluded.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: GitLabRunnerSystemErrors
                 expr: >-
                   sum by (namespace, pod, job, level) (
@@ -579,6 +627,9 @@
                   summary: 'Runner system errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: '{{ "{{ printf \"%.0f\" $value }}" }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.'
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} {{ "{{ $labels.level }}" }} manager errors in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Inspect this manager log and its Kubernetes executor events.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: GitLabRunnerApiErrors
                 expr: >-
                   sum by (namespace, pod, job, status) (
@@ -590,6 +641,9 @@
                   summary: 'Runner API errors: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
                   description: '{{ "{{ printf \"%.0f\" $value }}" }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.'
                   runbook_url: 'https://git.n0xeid.xyz/fun/argocd/ansbile-k8s-full-setup-n0xeid/-/blob/main/RUNBOOK.md'
+                  description: >-
+                    {{ '{{ printf "%.0f" $value }}' }} HTTP {{ "{{ $labels.status }}" }} responses in 15 minutes for scrape job {{ "{{ $labels.job }}" }}. Check runner identity, token validity, DNS, and GitLab availability.
+                  runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: GitLabRunnerQueueSlow
                 expr: >-
                   histogram_quantile(

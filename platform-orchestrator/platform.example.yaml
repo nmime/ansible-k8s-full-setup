@@ -27,6 +27,25 @@ network:
   bastion:
     enabled: true
     server_type: cpx22
+  # Active/passive egress uses a second billable server and Floating IPv4.
+  # Stage with activate=false; publish forward/PTR/SPF, then activate=true.
+  egress:
+    enabled: false
+    activate: false
+    standby_server_type: cpx22
+    standby_location: fsn1
+    standby_private_ip: 10.0.2.12
+    floating_ip_home_location: hel1
+    ptr: ""                 # Defaults to mailout.<global.domain>
+    failure_threshold: 3
+    watchdog_interval_seconds: 10
+    health_timeout_seconds: 4
+    promotion_timeout_seconds: 90
+    manage_mail_dns: false
+    mail_dns_zone: ""       # Defaults to hetzner_dns_zone/global.domain
+    mail_spf_name: spf
+    mail_legacy_ipv4: ""
+    mail_include_legacy_ipv4: false
   load_balancer:
     enabled: true
     type: lb11
@@ -36,6 +55,9 @@ network:
     domain: ""             # Defaults to vpn.<global.domain>
 
 infrastructure:
+  # Optional short Hetzner server display prefix. Kubernetes node names and
+  # project labels remain stable when this differs from project_name.
+  server_name_prefix: ""
   provider: hetzner
   region: hel1
   ssh_key_path: ~/.ssh/id_ed25519
@@ -91,6 +113,9 @@ storage:
 
 secrets:
   enabled: true
+  # Set this explicitly for long-lived/component-only environments so every
+  # reconciliation reads and rewrites the same encrypted campaign state.
+  file: ""
   vault:
     replicas: 1
     storage_size: 20Gi
@@ -147,6 +172,9 @@ databases:
     tls_mode: preferTLS
     tls_cutover_confirmed: false
     tls_consumer_namespaces: []
+    # Optional mTLS identities issued by the MongoDB operator CA and copied to
+    # consumer namespaces. Each namespace must also be listed above.
+    tls_client_consumers: []
     version: "8.0"
     replicas: 1
     storage_size: 30Gi
@@ -167,11 +195,21 @@ gitlab:
   sidekiq_replicas: 1
   runner:
     enabled: true
+    namespace: gitlab-ci-general  # keep untrusted jobs outside the GitLab namespace
     concurrent_jobs: 5
+    # Optional scheduler envelope for each general CI job. Raising the memory
+    # request can intentionally prevent two different Runner classes from
+    # overlapping on the same compact, tainted worker.
+    # job_resources:
+    #   memory_request: 3Gi
+    #   memory_limit: 4Gi
     image_builder:
       enabled: false
       replicas: 1
       concurrent_jobs: 1
+      # job_resources:
+      #   memory_request: 4Gi
+      #   memory_limit: 6Gi
     docker_host:
       enabled: false
       replicas: 1
@@ -215,6 +253,18 @@ temporal:
 
 postal:
   enabled: false      # Requires Dragonfly
+  # Postal is a transactional mail transport, not an IMAP mailbox service.
+  # domains: [example.com, example.net]
+  # outbound_ipv4: 203.0.113.10
+  # The HELO A record and IPv4 PTR must both use mailout.<global.domain>.
+  # Direct delivery also fails closed when cluster egress cannot reach TCP/25.
+  # smtp_credential_enabled: false  # enable only after SPF/DKIM/DMARC verify
+  # manage_sender_dns: false        # manage MX/SPF/DKIM/return-path/DMARC in every sender zone
+  # sender_dns_providers:           # authoritative provider for each sender zone
+  #   example.com: hetzner
+  #   example.net: gcore            # requires a scoped GCORE_API_KEY
+  # dmarc_policy: none              # progress to quarantine/reject after aggregate reports are clean
+  # worker_index: 0  # dedicate and taint one non-CI worker for mail when > 0
 
 coroot:
   enabled: false      # Requires observability; eBPF node agent is privileged
@@ -254,6 +304,20 @@ applications:
 
 glitchtip:
   enabled: false
+
+umami:
+  enabled: false
+  # Dashboard is attached to the VPN/admin gateway. The ingest hostname is
+  # public, but only exact /script.js and /api/send paths are routed.
+  dashboard_domain: umami.example.com
+  ingest_domain: analytics.example.com
+  replicas: 2
+  hpa_min_replicas: 2
+  hpa_max_replicas: 4
+  websites: []
+  # - id: 00000000-0000-4000-8000-000000000001
+  #   name: Example
+  #   domain: app.example.com
 
 apm:
   enabled: false

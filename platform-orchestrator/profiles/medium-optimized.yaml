@@ -2,8 +2,8 @@
 # MEDIUM-OPTIMIZED PROFILE - medium foundation, small resource envelope
 # ============================================
 # Best for: Medium base platform on a constrained current-generation x86 shape
-# Nodes: 3 x cpx32 control plane + 3 x cpx32 application workers
-#        + 2 isolated CI workers + 1 x cpx22 bastion + lb11
+# Nodes: 3 x cx33 control plane + 3 x cx43 application workers
+#        + 2 isolated CI workers + 1 x cx33 mail worker + 1 x cpx22 bastion + lb11
 # HA: Critical quorum services remain replicated; recoverable stateless
 # services use one replica and conservative autoscaling limits. Control planes
 # are schedulable, so resource requests/limits are mandatory for every component.
@@ -13,10 +13,10 @@ platform_profile: medium-optimized
 tier: medium
 resource_tier: small
 cost_estimate: >-
-  Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
+  Current balanced tariff: 3 x cx33 control plane, 3 x cx43 application
   workers, one isolated cpx32 Docker worker, one isolated cpx42 general/image
-  worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
-  replication-qualified local claims, and 230 GiB provider-billable persistent
+  worker, one cx33 mail worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
+  replication-qualified local claims, and 250 GiB provider-billable persistent
   volumes. GitLab backup staging is transient node-local scratch. See
   docs/COST_MODEL.md.
 
@@ -35,7 +35,7 @@ hetzner_tier_specs:
     cp_min_cores: 4
     cp_min_memory: 8
     cp_schedulable: true
-    worker_count: 5
+    worker_count: 6
     worker_min_cores: 4
     worker_min_memory: 8
     lb_enabled: true
@@ -46,13 +46,15 @@ infrastructure:
   region: hel1
   control_plane:
     count: 3
-    type: cpx32
+    type: cx33
     schedulable: true
   workers:
-    count: 5
-    type: cpx32
+    count: 6
+    type: cx43
     type_overrides:
-      5: cpx42
+      4: cx43
+      5: cx43
+      6: cx33
 
 # ---------------------------------------------
 # Network
@@ -62,6 +64,17 @@ network:
   bastion:
     enabled: true
     server_type: cpx22
+
+  # Billable opt-in. The live n0xeid profile enables this with a cross-location
+  # standby and activates it only after Floating-IP mail DNS is aligned.
+  egress:
+    enabled: false
+    activate: false
+    standby_server_type: cpx22
+    standby_location: fsn1
+    standby_private_ip: 10.0.2.12
+    floating_ip_home_location: hel1
+    manage_mail_dns: false
 
   load_balancer:
     enabled: true
@@ -77,6 +90,23 @@ kubernetes:
   version: v1.35.4
   cni: cilium
   ha_control_plane: true
+  # Succeeded Deployment Pods still match HPA selectors and count as missing
+  # metrics. Retain at most one terminal Pod cluster-wide so scale-up is never
+  # blocked by a growing tombstone set; centralized logs preserve the history.
+  terminated_pod_gc_threshold: 1
+  # The control planes are intentionally schedulable in this compact profile,
+  # so kubelet must preserve enough host headroom to evict a low-priority
+  # workload before Linux reaches a global OOM. The defaults leave only 100Mi,
+  # which is too small for an 8Gi control plane running etcd and the API server.
+  kubelet:
+    kube_memory_reserved: 512Mi
+    system_memory_reserved: 1Gi
+    eviction_hard:
+      memory.available: 1Gi
+      nodefs.available: 10%
+      nodefs.inodesFree: 5%
+      imagefs.available: 15%
+      imagefs.inodesFree: 5%
   features:
     gateway_api: true
     hubble: true
@@ -111,17 +141,43 @@ storage:
   size_per_replica: 40Gi
   index_size: 2Gi
   index_persistent: true
-  volume_resources:
-    cpu_request: 100m
-    cpu_limit: "1"
-    memory_request: 512Mi
-    memory_limit: 2Gi
   filer_size: 5Gi
+  # The CSI-backed filer can move between application workers. Keeping its
+  # burstable cache off the 8Gi schedulable control planes removes the largest
+  # workload spike observed during the control-plane OOM incident.
+  filer_node_selector:
+    node-role.kubernetes.io/worker: "true"
   filer_resources:
     cpu_request: 100m
     cpu_limit: "1"
     memory_request: 512Mi
     memory_limit: 2Gi
+  # Hetzner CSI provisions provider objects as pvc-UUID. Reconcile these
+  # display names after provisioning; Kubernetes continues to bind by volume
+  # ID, so renaming does not detach, recreate, or interrupt a claim.
+  provider_volume_names:
+    vault/audit-vault-0: vault-audit-0
+    vault/audit-vault-1: vault-audit-1
+    vault/audit-vault-2: vault-audit-2
+    storage/data-filer-seaweedfs-filer-0: storage-filer-0
+    monitoring/vmstorage-db-vmstorage-vmcluster-0: monitoring-vmstorage-0
+    monitoring/storage-loki-0: monitoring-loki-0
+    monitoring/grafana: monitoring-grafana
+    monitoring/vmalertmanager-platform-db-vmalertmanager-platform-0: monitoring-alertmanager-0
+    monitoring/vmalertmanager-platform-db-vmalertmanager-platform-1: monitoring-alertmanager-1
+    coroot/data-coroot-coroot-0: coroot-data-0
+    coroot/data-coroot-clickhouse-shard-0-0: coroot-clickhouse-0
+    coroot/data-coroot-clickhouse-keeper-0: coroot-keeper-0
+    coroot/data-coroot-clickhouse-keeper-1: coroot-keeper-1
+    coroot/data-coroot-clickhouse-keeper-2: coroot-keeper-2
+    databases/n0xeid-medium-optimized-cx-pg-repo1: databases-pgbackrest-0
+    dragonfly/df-dragonfly-0: dragonfly-shared-0
+    gitlab/repo-data-gitlab-gitaly-0: gitlab-gitaly-0
+    postal/data-postal-mariadb-0: postal-mariadb-0
+    fun-games-preproduction/df-fun-games-cache-0: fun-preprod-cache-0
+    fun-games-preproduction/df-fun-games-cache-1: fun-preprod-cache-1
+    fun-games-production/df-fun-games-cache-0: fun-production-cache-0
+    fun-games-production/df-fun-games-cache-1: fun-production-cache-1
 
 # ---------------------------------------------
 # Secrets
@@ -133,32 +189,9 @@ secrets:
     storage_size: 10Gi
     data_storage_class: platform-local
     audit_storage_class: hcloud-volumes
-    seed_generated_credentials: true
-    generated_credentials_path: clusters/k8s/platform/generated
   eso:
     enabled: true
     replicas: 1
-    # Exact KV-v2 paths currently consumed by this profile. Keep this list in
-    # lockstep with ExternalSecret manifests; wildcard paths are rejected.
-    read_paths:
-      - social-agents/production/runtime
-      - social-agents/production/steel
-      - shared/analytics/metabase
-      - shared/analytics/metabase-sources
-      - fun-games/preproduction
-      - fun-games/production
-      - fun-games/registry
-      - shared/nx-cache/development
-      - shared/nx-cache/protected
-      - shared/nx-cache/proxy
-    allowed_namespaces:
-      - agents
-      - analytics
-      - fun-games-preproduction
-      - fun-games-production
-      - nx-cache
-    token_audience: external-secrets
-    token_ttl: 15m
 
 # ---------------------------------------------
 # Databases
@@ -167,10 +200,8 @@ databases:
   enabled: true
   postgresql:
     enabled: true
-    tls_mode: requireTLS
-    tls_cutover_confirmed: true
     replicas: 3
-    proxy_replicas: 1
+    proxy_replicas: 2
     storage_size: 30Gi
     data_storage_class: platform-local
     repo_storage_class: hcloud-volumes
@@ -181,7 +212,7 @@ databases:
           name: metabase
           databases: [metabase]
           grantPublicSchemaAccess: true
-        target_namespace: fun
+        target_namespace: analytics
         secret_name: metabase-postgresql
       - operator:
           name: dadya-prod
@@ -198,20 +229,32 @@ databases:
       - operator:
           name: social-agents-owner
           databases: [social_agents]
-          options: BYPASSRLS
+          # Used only by the one-shot migration and role-bootstrap hooks. The
+          # runtime API and worker use separate restricted login roles.
+          options: BYPASSRLS CREATEROLE
           grantPublicSchemaAccess: true
         target_namespace: agents
+        secret_name: social-agents-owner-postgresql
+      - operator:
+          name: social-agents-production-owner
+          databases: [social_agents_production]
+          options: BYPASSRLS CREATEROLE
+          grantPublicSchemaAccess: true
+        target_namespace: social-agents-production
+        secret_name: social-agents-owner-postgresql
+      - operator:
+          name: social-agents-preproduction-owner
+          databases: [social_agents_preproduction]
+          options: BYPASSRLS CREATEROLE
+          grantPublicSchemaAccess: true
+        target_namespace: social-agents-preproduction
         secret_name: social-agents-owner-postgresql
   mongodb:
     enabled: false
     service_alias: n0xeid-mongo
-    tls_mode: requireTLS
-    alias_tls_cutover_enabled: true
-    tls_cutover_confirmed: true
     replicas: 3
     storage_size: 20Gi
     data_storage_class: platform-local
-    priority_class_name: n0xeid-platform-critical
     # A real 8M-document restore OOM-killed all three members at the generic
     # small-tier 1Gi limit. Keep a bounded 2Gi ceiling and reserve the majority
     # of it for index builders, connections, and non-WiredTiger allocations.
@@ -249,24 +292,50 @@ gitlab:
   sidekiq_replicas: 1
   sidekiq_max_replicas: 2
   registry_max_replicas: 2
-  registry_replicas: 2
   gitaly_storage_size: 30Gi
   # Registry compression and the final GitLab archive coexist temporarily.
   # Keep this off provider CSI: every backup is uploaded to object storage,
   # while the 40 GiB/node free-space gate protects local scratch headroom.
   backup_persistence_enabled: false
   backup_persistence_size: 30Gi
+  # The retained verified archives currently exceed the 50 GiB safety quota.
+  # Keep backup execution suspended without disabling the chart or deleting
+  # another recovery point. Resume only after an explicit retention decision.
+  toolbox_backup_suspended: true
   runner:
     enabled: true
+    # General non-privileged jobs spread across workers 4 and 5. Protected
+    # rootless image builds remain on worker 5 and DinD remains on worker 4.
+    general_pool_enabled: true
     replicas: 2
     namespace: gitlab-ci-general
-    # General jobs form a shared pool across ordinary workers. Workload
-    # PriorityClasses keep production services ahead of CI, and quota bounds
-    # the pool independently of node placement.
-    # Two managers with two slots each give the shared pool four bounded jobs.
-    # Namespace quota and negative CI priority preserve service headroom.
-    concurrent_jobs: 2
-    dedicated_worker_index: 0
+    # One job per manager preserves two-job aggregate concurrency without a
+    # rollout surge becoming an unintended third execution slot.
+    concurrent_jobs: 1
+    cleanup_grace_period_seconds: 5
+    pod_termination_grace_period_seconds: 5
+    cleanup_resources_timeout: 30s
+    dedicated_worker_index: 5
+    job_resources:
+      cpu_request: 750m
+      cpu_limit: '3'
+      memory_request: 2Gi
+      memory_limit: 6Gi
+      service_cpu_request: 200m
+      service_cpu_limit: 750m
+      service_memory_request: 512Mi
+      service_memory_limit: 1Gi
+      helper_cpu_request: 100m
+      helper_cpu_limit: '1'
+      helper_memory_request: 256Mi
+      helper_memory_limit: 1Gi
+    # The quota is an admission ceiling, not a reservation. It covers two
+    # active jobs plus bounded overlap while completed executor pods terminate.
+    general_pool_quota:
+      requests_cpu: '5'
+      requests_memory: 12Gi
+      limits_cpu: '20'
+      limits_memory: 34Gi
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.
@@ -274,7 +343,15 @@ gitlab:
       enabled: true
       replicas: 1
       concurrent_jobs: 1
-      dedicated_worker_index: 5
+      job_resources:
+        cpu_request: 1000m
+        cpu_limit: 2500m
+        memory_request: 2Gi
+        memory_limit: 4Gi
+        helper_cpu_request: 100m
+        helper_cpu_limit: 500m
+        helper_memory_request: 256Mi
+        helper_memory_limit: 512Mi
     # Backward-compatible docker-host tag without Docker access on bastion:
     # only the digest-pinned DinD service is privileged in its own namespace.
     docker_host:
@@ -389,24 +466,15 @@ backup:
 # ---------------------------------------------
 dragonfly:
   enabled: true
-  replicas: 2
+  # GitLab and the games share this Redis-compatible control plane. Keep one
+  # replica on each application worker so any single node can fail without
+  # taking cache-backed sessions, queues, and CI orchestration down together.
+  replicas: 3
   cpu_request: 100m
   cpu_limit: 500m
   memory_request: 256Mi
   memory_limit: 512Mi
   snapshot_storage: 10Gi
-  tls_mode: proxy
-  tls_port: 6380
-  # Flip to false only after the live remote socket count on 6379 reaches zero.
-  allow_plaintext_clients: false
-  tls_client_namespaces:
-    - agents
-    - fun-games-production
-    - fun-games-preproduction
-    - gitlab
-    - monitoring
-    - social-agents-preproduction
-    - social-agents-production
 
 temporal:
   enabled: false
@@ -419,6 +487,12 @@ temporal:
 
 postal:
   enabled: false
+  # Keep inbound delivery explicit. These aliases are managed for every
+  # configured Postal domain; arbitrary recipients remain rejected.
+  inbound_accept_local_parts: [postmaster, abuse, admin, alerts, dmarc-reports, unsubscribe]
+  manage_sender_dns: false
+  sender_dns_providers: {}
+  dmarc_policy: none
   web_replicas: 1
   smtp_replicas: 1
   worker_replicas: 1
@@ -474,6 +548,12 @@ glitchtip:
   worker_replicas: 1
   events_retention_days: 30
 
+umami:
+  enabled: false
+  replicas: 2
+  hpa_min_replicas: 2
+  hpa_max_replicas: 4
+
 apm:
   enabled: false
   replicas: 1
@@ -494,6 +574,7 @@ blackbox:
   memory_limit: 128Mi
 
 alerting:
+  replicas: 2
   telegram:
     enabled: false
   email:

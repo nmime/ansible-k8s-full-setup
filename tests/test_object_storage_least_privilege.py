@@ -109,6 +109,37 @@ def test_storage_default_deny_is_enabled_with_explicit_callers():
         assert f"pod.namespace: {namespace}" in policy
     assert "pod.namespace: \"{{ object_storage_namespace_resolved }}\"" in policy
 
+    agents_policy = tasks.split(
+        "name: Allow agents namespace to use the SeaweedFS S3 gateway", 1
+    )[1].split("name: Display object storage summary", 1)[0]
+    assert "name: allow-from-agents-s3" in agents_policy
+    assert "app.kubernetes.io/component: filer" in agents_policy
+    assert "kubernetes.io/metadata.name: agents" in agents_policy
+    assert "port: 8333" in agents_policy
+    assert "name: allow-agents-seaweedfs-s3" in agents_policy
+    assert "toEntities: [host]" in agents_policy
+    assert "toCIDR: [169.254.25.10/32]" in agents_policy
+    assert "serviceName: seaweedfs-s3" in agents_policy
+    assert "k8s:app.kubernetes.io/component: filer" in agents_policy
+
+
+def test_backup_verification_reaches_only_the_s3_gateway():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    tasks = read("roles/object-storage/tasks/main.yml")
+    policy = tasks.split(
+        "name: Allow backup verification to reach only the SeaweedFS S3 gateway",
+        1,
+    )[1].split("name: Display object storage summary", 1)[0]
+
+    assert defaults["object_storage_backup_verification_namespace"] == "backups"
+    assert "name: allow-backup-verification-to-seaweedfs" in policy
+    assert "app.kubernetes.io/component: filer" in policy
+    assert "pod.namespace: >-" in policy
+    assert "object_storage_backup_verification_namespace" in policy
+    assert "port: '8333'" in policy
+    for forbidden_port in ("8888", "9333", "8080", "19333"):
+        assert f"port: '{forbidden_port}'" not in policy
+
 
 def test_declared_buckets_have_bounded_credential_groups():
     defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
@@ -152,3 +183,19 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "@sha256:" in defaults["object_storage_policy_image"]
     assert "CACHE_TTL_HOURS" not in tasks
     assert "CACHE_MAX_BYTES" not in tasks
+
+
+def test_gitlab_backup_growth_is_bounded_without_automatic_deletion():
+    defaults = yaml.safe_load(read("roles/object-storage/defaults/main.yml"))
+    tasks = read("roles/object-storage/tasks/main.yml")
+    quotas = {
+        item["name"]: item
+        for item in defaults["object_storage_additional_bucket_quotas"]
+    }
+
+    assert "gitlab-backups" in quotas
+    assert "51200" in quotas["gitlab-backups"]["quota_mib"]
+    assert "object_storage_additional_bucket_quotas" in tasks
+    assert "s3.bucket.quota.enforce -apply" in tasks
+    assert "s3.rm" not in tasks
+    assert "s3.bucket.delete" not in tasks
