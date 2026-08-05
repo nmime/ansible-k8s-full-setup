@@ -28,34 +28,14 @@ scripts/bootstrap-gitlab-runner-token.py \
 For an isolated campaign, pass its operator-state secrets path. The default is
 `playbooks/.platform-secrets.yml`. The helper prints only the GitLab version
 and whether it reused or created a credential; it never prints token values.
-Plaintext `.env` synchronization is disabled unless `--sync-env` is explicitly
-requested.
-
-If a still-valid active runner Secret differs from encrypted recovery state,
-adopt that exact runtime identity with one explicit recovery run:
-
-```bash
-scripts/bootstrap-gitlab-runner-token.py \
-  --kubeconfig /absolute/path/to/kubeconfig \
-  --secrets-file /absolute/path/to/.platform-secrets.yml \
-  --vault-password-file /absolute/path/to/vault-password \
-  --runner-kind standard \
-  --adopt-runtime-secret
-```
-
-The runner kind selects a fixed namespace, Secret, key, and encrypted YAML key.
-The helper validates the exact Kubernetes object, requires a canonical `glrt-`
-token, and verifies it live with GitLab before replacing encrypted recovery
-state. Runtime adoption is never automatic, so ordinary reconciliation cannot
-form a credential recovery loop.
 
 The idempotent workflow is:
 
 1. Atomically acquire the `ansible-k8s-runner-bootstrap` Kubernetes Lease in
    the GitLab namespace. Its holder is a random, non-secret UUID, it is renewed
    every 60 seconds, and it expires after 15 minutes without renewal.
-2. Decrypt the platform secrets into controller memory and, only with
-   `--sync-env`, compare the token with the ignored `.env` value.
+2. Decrypt the platform secrets into controller memory and compare the token
+   with the ignored `.env` value.
 3. Verify each candidate through `POST /api/v4/runners/verify`, including the
    system ID required for `glrt-` tokens. A valid single candidate is reused.
 4. If no candidate is live, run the documented Rails token operation inside
@@ -65,8 +45,8 @@ The idempotent workflow is:
    Toolbox Pod to create an auditable instance runner and receive its one-time
    authentication token.
 6. Revoke the short-lived personal access token in an unconditional cleanup
-   step, then atomically update the Ansible Vault-encrypted secrets file and,
-   only when requested, Git-ignored `.env`.
+   step, then atomically update the Ansible Vault-encrypted secrets file and
+   Git-ignored `.env`.
 
 The Lease covers recovery, creation, verification, and both persistence
 targets. A concurrent helper fails before inspecting or creating runners. A

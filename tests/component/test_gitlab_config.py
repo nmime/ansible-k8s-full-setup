@@ -35,6 +35,13 @@ DOCKER_HOST_NETWORK_PATH = os.path.join(
     "tasks",
     "docker-host-network.yml",
 )
+GENERAL_RUNNER_BOUNDARY_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "general-runner-boundary.yml",
+)
 
 def read(path):
     with open(path) as f:
@@ -75,7 +82,6 @@ class TestChart10ValuesStructure:
         for variable in (
             "gitlab_webservice_max_replicas",
             "gitlab_sidekiq_max_replicas",
-            "gitlab_registry_replicas",
             "gitlab_registry_max_replicas",
         ):
             assert variable in self.content
@@ -83,7 +89,6 @@ class TestChart10ValuesStructure:
         assert "maxReplicas: '{{ gitlab_webservice_max_replicas | int }}'" in self.content
         assert "maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'" in self.content
         assert "maxReplicas: '{{ gitlab_registry_max_replicas | int }}'" in self.content
-        assert "minReplicas: '{{ gitlab_registry_replicas | int }}'" in self.content
 
     def test_heavy_rails_workloads_require_safe_cross_node_spread(self):
         tasks = yaml.safe_load(self.content)
@@ -176,23 +181,21 @@ class TestChart10ValuesStructure:
             == "Disable public GitLab self-registration before publishing the webservice"
         )
         assert disable_signup["when"] == "gitlab_public_webservice_enabled | bool"
-        assert disable_signup["ansible.builtin.command"]["argv"][4] == (
-            "pod/{{ _gitlab_toolbox_pod_name }}"
-        )
         assert "signup_enabled: false" in (
             disable_signup["ansible.builtin.command"]["argv"][-1]
         )
-        toolbox_discovery = next(
+        assert tasks.index(disable_signup) < tasks.index(public_route)
+        root_email = next(
             task
             for task in tasks
             if task.get("name")
-            == "Discover the ready Deployment-owned GitLab toolbox pod"
+            == "Replace the generated GitLab root email placeholder"
         )
-        assert "pod-template-hash" in toolbox_discovery["kubernetes.core.k8s_info"][
-            "label_selectors"
-        ]
-        assert tasks.index(toolbox_discovery) < tasks.index(disable_signup)
-        assert tasks.index(disable_signup) < tasks.index(public_route)
+        root_email_script = root_email["ansible.builtin.command"]["argv"][-1]
+        assert 'end_with?("@example.com")' in root_email_script
+        assert "user.skip_reconfirmation!" in root_email_script
+        assert "gitlab_admin_email | to_json" in root_email_script
+        assert tasks.index(disable_signup) < tasks.index(root_email)
         private_spec = private_route["kubernetes.core.k8s"]["definition"]["spec"]
         assert {parent["name"] for parent in private_spec["parentRefs"]} == {
             "admin-gateway"
@@ -225,41 +228,24 @@ class TestChart10ValuesStructure:
             if task.get("name") == "Install GitLab Runner with Helm"
         )
         values = install["kubernetes.core.helm"]["values"]
-        assert install["kubernetes.core.helm"]["release_namespace"] == (
-            "{{ gitlab_runner_release_namespace }}"
-        )
-        assert install["kubernetes.core.helm"]["timeout"] == "15m0s"
         internal = (
             "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
         )
         assert values["gitlabUrl"] == internal
-        assert values["unregisterRunners"] is False
-        assert values["runners"]["cache"] == {
-            "secretName": "gitlab-runner-s3-cache"
-        }
         assert f'clone_url = "{internal}"' in values["runners"]["config"]
         assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
         assert values["metrics"] == {"enabled": True}
         assert values["serviceAccount"] == {"create": True}
-        assert "gitlab_runner_general_pool_enabled" in values["nodeSelector"]
-        assert "node-role.kubernetes.io/worker" in values["nodeSelector"]
-        assert "workload.n0xeid.xyz/ci-build" in values["nodeSelector"]
+        assert "workload.n0xeid.xyz/ci-general" in values["nodeSelector"]
         assert "gitlab_runner_worker_index" in values["nodeSelector"]
         assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
-        assert values["runners"]["tags"] == "kubernetes,k8s,ci-shared"
-        assert "gitlab_runner_job_namespace" in self.content
-        assert values["priorityClassName"] == "n0xeid-ci-control"
-        assert 'namespace = "{{ gitlab_runner_job_namespace }}"' in values[
-            "runners"
-        ]["config"]
-        assert 'priority_class_name = "n0xeid-ci-review"' in values["runners"][
-            "config"
-        ]
-
+        assert "workload.n0xeid.xyz/ci-docker" in values["tolerations"]
+        assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
-            "request_concurrency = {{ gitlab_runner_concurrent | int }}"
+            "request_concurrency = {{ [gitlab_runner_concurrent | int, 2] | max }}"
             in values["runners"]["config"]
         )
+        assert "limit = {{ gitlab_runner_concurrent | int }}" in values["runners"]["config"]
         assert (
             'node_selector = { "node-role.kubernetes.io/worker" = "true" }'
             in values["runners"]["config"]
@@ -285,64 +271,12 @@ class TestChart10ValuesStructure:
         )
         scrape_definition = scrape["kubernetes.core.k8s"]["definition"]
         assert scrape_definition["kind"] == "VMPodScrape"
-        assert scrape_definition["metadata"]["namespace"] == (
-            "{{ gitlab_runner_release_namespace }}"
-        )
         assert scrape_definition["spec"]["selector"]["matchLabels"] == {
             "app": "gitlab-runner"
         }
         assert scrape_definition["spec"]["podMetricsEndpoints"] == [
             {"port": "metrics", "interval": "30s", "path": "/metrics"}
         ]
-
-    def test_shared_runner_namespace_is_restricted_and_private_egress_denied(self):
-        boundary = yaml.safe_load(
-            read(
-                os.path.join(
-                    REPO_ROOT,
-                    "roles/gitlab-selfhosted/tasks/shared-runner-boundary.yml",
-                )
-            )
-        )
-        rendered = str(boundary)
-        assert "pod-security.kubernetes.io/enforce" in rendered
-        assert "restricted" in rendered
-        assert "ResourceQuota" in rendered
-        assert "LimitRange" in rendered
-        assert "default-deny" in rendered
-        assert "169.254.25.10/32" in rendered
-        assert "allow-manager-kube-api" in rendered
-        assert "allow-nodelocal-dns" in rendered
-        role_binding = next(
-            item
-            for task in boundary
-            for item in task.get("loop", [])
-            if item.get("kind") == "RoleBinding"
-        )
-        assert role_binding["subjects"] == [
-            {
-                "kind": "ServiceAccount",
-                "name": "gitlab-runner",
-                "namespace": "{{ gitlab_runner_release_namespace }}",
-            }
-        ]
-        auth_check = next(
-            task
-            for task in boundary
-            if task.get("name")
-            == "General CI | Verify the manager can create jobs in the pool"
-        )
-        assert (
-            "--as=system:serviceaccount:{{ gitlab_runner_release_namespace }}:gitlab-runner"
-            in auth_check["ansible.builtin.command"]["argv"]
-        )
-        assert not any(
-            "--as=system:serviceaccount:{{ gitlab_namespace }}:gitlab-runner"
-            in argument
-            for argument in auth_check["ansible.builtin.command"]["argv"]
-        )
-        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
-            assert cidr in rendered
 
     def test_runner_toml_uses_supported_flat_resources_and_job_spread(self):
         from jinja2 import Environment
@@ -353,31 +287,36 @@ class TestChart10ValuesStructure:
             for task in tasks
             if task.get("name") == "Install GitLab Runner with Helm"
         )
-        environment = Environment()
-        environment.filters["bool"] = bool
-        rendered = environment.from_string(
+        rendered = Environment().from_string(
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
         ).render(
             gitlab_namespace="gitlab",
-            gitlab_runner_job_namespace="gitlab-ci-general",
+            gitlab_runner_namespace="gitlab-ci-general",
             gitlab_runner_concurrent=1,
-            gitlab_runner_general_pool_enabled=True,
+            gitlab_general_runner_pool_enabled=False,
             gitlab_runner_worker_index=0,
+            gitlab_runner_cleanup_grace_period_seconds=5,
+            gitlab_runner_pod_termination_grace_period_seconds=5,
+            gitlab_runner_cleanup_resources_timeout="30s",
+            gitlab_runner_job_resources={},
+            gitlab_runner_cpu_request="500m",
+            gitlab_runner_cpu_limit="2000m",
+            gitlab_runner_memory_request="1Gi",
+            gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_service_cpu_request="200m",
+            gitlab_runner_service_cpu_limit="1000m",
+            gitlab_runner_service_memory_request="512Mi",
+            gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_helper_cpu_request="100m",
+            gitlab_runner_helper_cpu_limit="500m",
+            gitlab_runner_helper_memory_request="256Mi",
+            gitlab_runner_helper_memory_limit="512Mi",
         )
         runner = tomllib.loads(rendered)["runners"][0]
         kubernetes = runner["kubernetes"]
-        assert runner["cache"] == {
-            "Type": "s3",
-            "Path": "gitlab-runner",
-            "Shared": True,
-            "s3": {
-                "ServerAddress": "seaweedfs-s3.storage.svc.cluster.local:8333",
-                "BucketName": "gitlab-runner-cache",
-                "Insecure": True,
-            },
-        }
 
-        assert runner["request_concurrency"] == 1
+        assert runner["request_concurrency"] == 2
+        assert runner["limit"] == 1
         assert kubernetes["node_selector"] == {
             "node-role.kubernetes.io/worker": "true"
         }
@@ -388,11 +327,103 @@ class TestChart10ValuesStructure:
         assert kubernetes["pod_labels"] == {
             "workload.n0xeid.xyz/class": "ci-job"
         }
-        assert len(kubernetes["pod_spec"]) == 1
-        pod_spec = kubernetes["pod_spec"][0]
+
+        compact_rendered = Environment().from_string(
+            install["kubernetes.core.helm"]["values"]["runners"]["config"]
+        ).render(
+            gitlab_namespace="gitlab",
+            gitlab_runner_namespace="gitlab-ci-general",
+            gitlab_runner_concurrent=1,
+            gitlab_general_runner_pool_enabled=False,
+            gitlab_runner_worker_index=0,
+            gitlab_runner_cleanup_grace_period_seconds=5,
+            gitlab_runner_pod_termination_grace_period_seconds=5,
+            gitlab_runner_cleanup_resources_timeout="30s",
+            gitlab_runner_job_resources={"memory_request": "3Gi"},
+            gitlab_runner_cpu_request="500m",
+            gitlab_runner_cpu_limit="2000m",
+            gitlab_runner_memory_request="1Gi",
+            gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_service_cpu_request="200m",
+            gitlab_runner_service_cpu_limit="1000m",
+            gitlab_runner_service_memory_request="512Mi",
+            gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_helper_cpu_request="100m",
+            gitlab_runner_helper_cpu_limit="500m",
+            gitlab_runner_helper_memory_request="256Mi",
+            gitlab_runner_helper_memory_limit="512Mi",
+        )
+        compact_runner = tomllib.loads(compact_rendered)["runners"][0]
+        assert compact_runner["kubernetes"]["memory_request"] == "3Gi"
+
+        pooled_rendered = Environment().from_string(
+            install["kubernetes.core.helm"]["values"]["runners"]["config"]
+        ).render(
+            gitlab_namespace="gitlab",
+            gitlab_runner_namespace="gitlab-ci-general",
+            gitlab_docker_host_runner_namespace="gitlab-docker-builds",
+            gitlab_general_runner_pool_enabled=True,
+            gitlab_runner_worker_index=5,
+            gitlab_runner_concurrent=1,
+            gitlab_runner_cleanup_grace_period_seconds=5,
+            gitlab_runner_pod_termination_grace_period_seconds=5,
+            gitlab_runner_cleanup_resources_timeout="30s",
+            gitlab_runner_job_resources={
+                "cpu_request": "750m",
+                "cpu_limit": "3",
+                "memory_request": "2Gi",
+                "memory_limit": "6Gi",
+            },
+            gitlab_runner_cpu_request="500m",
+            gitlab_runner_cpu_limit="2000m",
+            gitlab_runner_memory_request="1Gi",
+            gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_service_cpu_request="200m",
+            gitlab_runner_service_cpu_limit="1000m",
+            gitlab_runner_service_memory_request="512Mi",
+            gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_helper_cpu_request="100m",
+            gitlab_runner_helper_cpu_limit="500m",
+            gitlab_runner_helper_memory_request="256Mi",
+            gitlab_runner_helper_memory_limit="512Mi",
+        )
+        pooled_runner = tomllib.loads(pooled_rendered)["runners"][0]
+        pooled_kubernetes = pooled_runner["kubernetes"]
+        assert pooled_runner["request_concurrency"] == 2
+        assert pooled_runner["limit"] == 1
+        assert pooled_runner["cache_dir"] == "/tmp/cache"
+        assert pooled_kubernetes["namespace"] == "gitlab-ci-general"
+        assert pooled_kubernetes["node_selector"] == {
+            "workload.n0xeid.xyz/ci-general": "true"
+        }
+        assert pooled_kubernetes["node_tolerations"] == {
+            "workload.n0xeid.xyz/ci-build=true": "NoSchedule",
+            "workload.n0xeid.xyz/ci-docker=true": "NoSchedule",
+        }
+        assert pooled_kubernetes["cpu_request"] == "750m"
+        assert pooled_kubernetes["cpu_limit"] == "3"
+        assert pooled_kubernetes["memory_request"] == "2Gi"
+        assert pooled_kubernetes["memory_limit"] == "6Gi"
+        assert len(pooled_kubernetes["pod_spec"]) == 1
+        pod_spec = pooled_kubernetes["pod_spec"][0]
         assert pod_spec["name"] == "spread-ci-jobs-across-workers"
         assert pod_spec["patch_type"] == "strategic"
-        spread = yaml.safe_load(pod_spec["patch"])["topologySpreadConstraints"]
+        pod_patch = yaml.safe_load(pod_spec["patch"])
+        anti_affinity = pod_patch["affinity"]["podAntiAffinity"][
+            "requiredDuringSchedulingIgnoredDuringExecution"
+        ]
+        assert anti_affinity == [
+            {
+                "labelSelector": {
+                    "matchLabels": {
+                        "workload.n0xeid.xyz/class": "protected-docker-smoke-job"
+                    }
+                },
+                "namespaces": ["gitlab-docker-builds"],
+                "topologyKey": "kubernetes.io/hostname",
+            }
+        ]
+        spread = pod_patch["topologySpreadConstraints"]
         assert spread == [
             {
                 "maxSkew": 1,
@@ -471,15 +502,17 @@ class TestChart10ValuesStructure:
         assert "gitlab_runner_concurrent | int > 0" in gate
         assert "gitlab_runner_replicas | int > 0" in gate
         assert "gitlab_runner_worker_index | int <= worker_count | int" in gate
+        assert "gitlab_runner_namespace != gitlab_namespace" in gate
+        assert "gitlab_runner_namespace != gitlab_image_builder_runner_namespace" in gate
+        assert "gitlab_runner_namespace != gitlab_docker_host_runner_namespace" in gate
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
-        assert "unregisterRunners: false" in install
         assert "replicas: '{{ gitlab_runner_replicas | int }}'" in install
-        assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
+        assert "concurrent: '{{ [gitlab_runner_concurrent | int, 2] | max }}'" in install
         assert "chart_version: 0.91.0" in install
-        assert "maxSurge: 1" in install
-        assert "maxUnavailable: 0" in install
+        assert "maxSurge: 0" in install
+        assert "maxUnavailable: 1" in install
         assert "topologySpreadConstraints:" in install
         assert "topologyKey: kubernetes.io/hostname" in install
         assert "whenUnsatisfiable: ScheduleAnyway" in install
@@ -490,28 +523,34 @@ class TestChart10ValuesStructure:
         assert 'cap_drop = ["ALL"]' in install
         assert "automount_service_account_token = false" in install
         assert (
-            'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
+            'node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }'
             in install
         )
-        assert (
-            'node_tolerations = { '
-            '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }'
-            in install
-        )
+        assert '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule"' in install
+        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' in install
+        assert "cleanup_grace_period_seconds" in install
+        assert "pod_termination_grace_period_seconds" in install
+        assert "cleanup_resources_timeout" in install
+        assert 'cache_dir = "/tmp/cache"' in install
+        assert 'logs_base_dir = "/tmp"' in install
+        assert 'scripts_base_dir = "/tmp"' in install
+        assert "gitlab_runner_namespace" in install
+        assert 'BucketName = "gitlab-runner-cache"' in install
+        assert "secretName: gitlab-runner-s3-cache" in install
         assert 'environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]' in install
         for resource_setting in (
-            'cpu_request = "500m"',
-            'cpu_limit = "2000m"',
-            'memory_request = "1Gi"',
-            'memory_limit = "4Gi"',
-            'service_cpu_request = "200m"',
-            'service_cpu_limit = "1000m"',
-            'service_memory_request = "512Mi"',
-            'service_memory_limit = "2Gi"',
-            'helper_cpu_request = "100m"',
-            'helper_cpu_limit = "500m"',
-            'helper_memory_request = "256Mi"',
-            'helper_memory_limit = "512Mi"',
+            "gitlab_runner_job_resources.cpu_request",
+            "gitlab_runner_job_resources.cpu_limit",
+            "gitlab_runner_job_resources.memory_request",
+            "gitlab_runner_job_resources.memory_limit",
+            "gitlab_runner_job_resources.service_cpu_request",
+            "gitlab_runner_job_resources.service_cpu_limit",
+            "gitlab_runner_job_resources.service_memory_request",
+            "gitlab_runner_job_resources.service_memory_limit",
+            "gitlab_runner_job_resources.helper_cpu_request",
+            "gitlab_runner_job_resources.helper_cpu_limit",
+            "gitlab_runner_job_resources.helper_memory_request",
+            "gitlab_runner_job_resources.helper_memory_limit",
         ):
             assert resource_setting in install
         assert "[runners.kubernetes.build_container_resources]" not in install
@@ -531,7 +570,6 @@ class TestChart10ValuesStructure:
             "- name: Read the persisted GitLab Runner authentication token", 1
         )[1].split("- name: Add GitLab Runner Helm repository", 1)[0]
         assert "platform-gitlab-runner-auth" in bootstrap
-        assert bootstrap.count("{{ gitlab_runner_release_namespace }}") >= 3
         assert "/api/v4/runners/verify" in bootstrap
         assert "s_ansible_k8s_reconcile" in bootstrap
         assert "Verify the declared GitLab Runner identity after persisted-token drift" in bootstrap
@@ -540,11 +578,128 @@ class TestChart10ValuesStructure:
         assert "legacy registration-token bootstrap" in bootstrap
         assert "gitlab-gitlab-runner-secret" not in bootstrap
         assert "GITLAB_RUNNER_REGISTRATION_TOKEN" not in bootstrap
-        assert "pod/{{ _gitlab_toolbox_pod_name }} -c toolbox" in bootstrap
+        assert "deployment/gitlab-toolbox -c toolbox" in bootstrap
         assert "runner-token: '{{ _gitlab_runner_auth_token }}'" in bootstrap
-        assert "_gitlab_runner_auth_candidate ==" in bootstrap
-        assert "(_gitlab_runner_auth_candidate | trim)" in bootstrap
         assert bootstrap.count("no_log: true") >= 6
+
+        migration = self.content.split(
+            "- name: Check for active jobs on the legacy general Runner", 1
+        )[1].split("- name: Remove legacy invalid Cilium default-deny", 1)[0]
+        assert "workload.n0xeid.xyz/class=ci-job" in migration
+        assert "status.phase!=Succeeded" in migration
+        assert "status.phase!=Failed" in migration
+        assert "Refuse to interrupt active jobs" in migration
+        assert "release_state: absent" in migration
+
+    def test_general_runner_has_a_bounded_fail_closed_namespace(self):
+        role_tasks = yaml.safe_load(self.content)
+        build_discovery = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Discover the dedicated build CI node for the general Runner pool"
+        )
+        docker_discovery = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Discover the dedicated Docker CI node for the general Runner pool"
+        )
+        pool_gate = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Require two distinct dedicated nodes for the general Runner pool"
+        )
+        pool_reconcile = next(
+            task
+            for task in role_tasks
+            if task.get("name") == "Reconcile the two-node general Runner pool label"
+        )
+        stale_reconcile = next(
+            task
+            for task in role_tasks
+            if task.get("name")
+            == "Remove stale general Runner pool labels from all other nodes"
+        )
+        assert build_discovery["kubernetes.core.k8s_info"]["label_selectors"] == [
+            "workload.n0xeid.xyz/ci-build=true"
+        ]
+        assert docker_discovery["kubernetes.core.k8s_info"]["label_selectors"] == [
+            "workload.n0xeid.xyz/ci-docker=true"
+        ]
+        assert "metadata.name !=" in " ".join(
+            pool_gate["ansible.builtin.assert"]["that"]
+        )
+        assert pool_gate["ansible.builtin.assert"]["quiet"] is True
+        assert pool_reconcile["kubernetes.core.k8s"]["definition"]["metadata"][
+            "labels"
+        ]["workload.n0xeid.xyz/ci-general"] == "true"
+        assert stale_reconcile["kubernetes.core.k8s"]["definition"]["metadata"][
+            "labels"
+        ]["workload.n0xeid.xyz/ci-general"] is None
+        assert "not in _gitlab_general_pool_node_names" in " ".join(
+            stale_reconcile["when"]
+        )
+
+        tasks = yaml.safe_load(read(GENERAL_RUNNER_BOUNDARY_PATH))
+        namespace = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Create the isolated namespace"
+        )["kubernetes.core.k8s"]["definition"]
+        assert namespace["metadata"]["labels"][
+            "pod-security.kubernetes.io/enforce"
+        ] == "restricted"
+
+        quota = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Bound aggregate namespace resources"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert "general_pool_quota" in quota["requests.cpu"]
+        assert "general_pool_quota" in quota["requests.memory"]
+        assert "general_pool_quota" in quota["limits.cpu"]
+        assert "general_pool_quota" in quota["limits.memory"]
+        assert quota["persistentvolumeclaims"] == "0"
+
+        limit_range = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Bound each container"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["limits"][0]
+        assert "gitlab_runner_job_resources.cpu_limit" in limit_range["max"]["cpu"]
+        assert "gitlab_runner_job_resources.memory_limit" in limit_range["max"]["memory"]
+
+        policies = next(
+            task for task in tasks
+            if task.get("name") == "General Runner | Apply the fail-closed network boundary"
+        )["loop"]
+        names = {policy["metadata"]["name"] for policy in policies}
+        assert "default-deny" in names
+        assert "allow-dns-api-gitlab-and-cache" in names
+        public = next(
+            policy for policy in policies
+            if policy["metadata"]["name"] == "allow-public-dependency-egress"
+        )
+        assert public["spec"]["egress"][0]["ports"] == [
+            {"protocol": "TCP", "port": 80},
+            {"protocol": "TCP", "port": 443},
+        ]
+
+        storage_ingress = next(
+            task for task in tasks
+            if task.get("name")
+            == "General Runner | Allow all isolated Runner pools into the SeaweedFS cache"
+        )["kubernetes.core.k8s"]["definition"]
+        assert storage_ingress["metadata"]["namespace"] == "storage"
+        assert storage_ingress["spec"]["ingress"][0]["ports"] == [
+            {"port": 8333, "protocol": "TCP"}
+        ]
+        cilium_storage_ingress = next(
+            task for task in tasks
+            if task.get("name")
+            == "General Runner | Allow all isolated Runner pools into the Cilium-protected SeaweedFS cache"
+        )["kubernetes.core.k8s"]["definition"]
+        assert cilium_storage_ingress["kind"] == "CiliumNetworkPolicy"
+        assert cilium_storage_ingress["metadata"]["namespace"] == "storage"
 
         secrets = read(GENERATE_SECRETS_PATH)
         resolution = secrets.split("- name: Resolve GitLab Runner authentication token", 1)[
@@ -553,9 +708,7 @@ class TestChart10ValuesStructure:
         assert "lookup('env', 'GITLAB_RUNNER_TOKEN')" in resolution
         assert "saved_secrets.gitlab_runner_token" in resolution
         assert "no_log: true" in resolution
-        # Plaintext/encrypted persistence templates plus the in-memory Vault
-        # mirror bundle must all use the resolved stable token.
-        assert secrets.count('gitlab_runner_token: "{{ gitlab_runner_token }}"') == 3
+        assert secrets.count('gitlab_runner_token: "{{ gitlab_runner_token }}"') == 2
         assert "requires vault_encrypt_secrets=true" in secrets
         assert "Require a modern authentication token when GitLab Runner is selected" in secrets
         assert "the Runner will not be silently omitted" in secrets
@@ -576,11 +729,41 @@ class TestChart10ValuesStructure:
         assert install["kubernetes.core.helm"]["wait"] is True
         assert install["kubernetes.core.helm"]["force_conflicts"] is True
         assert install["kubernetes.core.helm"]["values"]["concurrent"] == (
-            "{{ gitlab_runner_concurrent | int }}"
+            "{{ [gitlab_runner_concurrent | int, 2] | max }}"
         )
         assert install["kubernetes.core.helm"]["values"]["replicas"] == (
             "{{ gitlab_runner_replicas | int }}"
         )
+        values = install["kubernetes.core.helm"]["values"]
+        assert values["strategy"]["type"] == "RollingUpdate"
+        assert values["strategy"]["rollingUpdate"] == {
+            "maxSurge": 0,
+            "maxUnavailable": 1,
+        }
+        assert values["terminationGracePeriodSeconds"] == 3600
+        assert values["shutdown_timeout"] == 3300
+        manager_label = "workload.n0xeid.xyz/component"
+        assert values["podLabels"][manager_label] == "gitlab-runner-manager"
+        anti_affinity = values["affinity"]["podAntiAffinity"]
+        assert "requiredDuringSchedulingIgnoredDuringExecution" not in anti_affinity
+        preferred = anti_affinity["preferredDuringSchedulingIgnoredDuringExecution"]
+        assert preferred[0]["weight"] == 100
+        term = preferred[0]["podAffinityTerm"]
+        assert term["topologyKey"] == "kubernetes.io/hostname"
+        assert term["labelSelector"]["matchLabels"][manager_label] == (
+            "gitlab-runner-manager"
+        )
+        spread = values["topologySpreadConstraints"][0]
+        assert spread["maxSkew"] == 1
+        assert spread["minDomains"] == 2
+        assert spread["topologyKey"] == "kubernetes.io/hostname"
+        assert spread["whenUnsatisfiable"] == "DoNotSchedule"
+        assert spread["nodeAffinityPolicy"] == "Honor"
+        assert spread["nodeTaintsPolicy"] == "Honor"
+        assert spread["labelSelector"]["matchLabels"][manager_label] == (
+            "gitlab-runner-manager"
+        )
+        assert values["podDisruptionBudget"] == {"maxUnavailable": 1}
         assert converge["kubernetes.core.k8s_info"]["name"] == "gitlab-runner"
         assert converge["when"] == "gitlab_runner_enabled | bool"
         assert converge["retries"] == 60
@@ -588,8 +771,28 @@ class TestChart10ValuesStructure:
         assert "availableReplicas" in converge["until"]
         assert "updatedReplicas" in converge["until"]
 
+        pool_gate = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Require the converged general Runner to remain on the isolated two-node pool"
+        )
+        assertions = "\n".join(pool_gate["ansible.builtin.assert"]["that"])
+        assert "spec.replicas | int) == 2" in assertions
+        assert "maxSurge" in assertions
+        assert "maxUnavailable" in assertions
+        assert "workload.n0xeid.xyz/ci-general" in assertions
+        assert "workload.n0xeid.xyz/ci-build" in assertions
+        assert "workload.n0xeid.xyz/ci-docker" in assertions
+        assert "_gitlab_general_pool_node_names" in assertions
+        assert "limit = 1" in assertions
+        assert pool_gate["when"] == [
+            "gitlab_runner_enabled | bool",
+            "gitlab_general_runner_pool_enabled | bool",
+        ]
+
     def test_image_builder_exception_is_isolated_and_fail_closed(self):
-        assert "include_tasks: image-builder-runner.yml" in self.content
+        assert "file: image-builder-runner.yml" in self.content
         assert "when: gitlab_image_builder_runner_enabled | bool" in self.content
         gate = self.content.split(
             "- name: Require a dedicated protected image-builder Runner identity",
@@ -601,8 +804,6 @@ class TestChart10ValuesStructure:
         assert "no_log: true" in gate
 
         builder = read(IMAGE_BUILDER_TASKS_PATH)
-        assert "_gitlab_image_builder_auth_candidate ==" in builder
-        assert "(_gitlab_image_builder_auth_candidate | trim)" in builder
         assert (
             'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
             in builder
@@ -626,7 +827,6 @@ class TestChart10ValuesStructure:
         assert values["concurrent"] == (
             "{{ gitlab_image_builder_runner_concurrent | int }}"
         )
-        assert values["unregisterRunners"] is False
         assert values["runners"]["tags"] == "image-build"
         assert values["runners"]["runUntagged"] is False
         assert values["rbac"]["clusterWideAccess"] is False
@@ -637,6 +837,8 @@ class TestChart10ValuesStructure:
         assert "app" not in values["podLabels"]
         assert 'privileged = false' in config
         assert 'automount_service_account_token = false' in config
+        assert "gitlab.runner.image_builder.job_resources" in config
+        assert "gitlab_image_builder_memory_request" in config
         assert (
             "[runners.kubernetes.build_container_security_context]" in config
         )
@@ -672,6 +874,13 @@ class TestChart10ValuesStructure:
         assert labels["pod-security.kubernetes.io/enforce"] == "privileged"
         assert labels["pod-security.kubernetes.io/audit"] == "restricted"
         assert labels["pod-security.kubernetes.io/warn"] == "restricted"
+        quota = next(
+            task for task in tasks
+            if task.get("name") == "Image builder | Bound aggregate namespace resources"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert quota["limits.cpu"] == "4"
+        assert quota["limits.memory"] == "5Gi"
+        assert quota["persistentvolumeclaims"] == "0"
 
         network = read(IMAGE_BUILDER_NETWORK_PATH)
         assert (
@@ -733,10 +942,10 @@ class TestChart10ValuesStructure:
         assert secrets.count(
             'gitlab_image_builder_runner_token: '
             '"{{ gitlab_image_builder_runner_token }}"'
-        ) == 3
+        ) == 2
 
     def test_docker_smoke_privilege_is_service_only_and_digest_pinned(self):
-        assert "include_tasks: docker-host-runner.yml" in self.content
+        assert "file: docker-host-runner.yml" in self.content
         assert "when: gitlab_docker_host_runner_enabled | bool" in self.content
         gate = self.content.split(
             "- name: Require a dedicated protected Docker-smoke Runner identity",
@@ -750,10 +959,50 @@ class TestChart10ValuesStructure:
         assert "no_log: true" in gate
 
         runner = read(DOCKER_HOST_TASKS_PATH)
-        assert "_gitlab_docker_host_auth_candidate ==" in runner
-        assert "(_gitlab_docker_host_auth_candidate | trim)" in runner
         network = read(DOCKER_HOST_NETWORK_PATH)
         tasks = yaml.safe_load(runner)
+        network_tasks = yaml.safe_load(network)
+        limit_range = next(
+            task
+            for task in network_tasks
+            if task.get("name")
+            == "Docker smoke | Bound per-container resources"
+        )["kubernetes.core.k8s"]["definition"]
+        assert limit_range["metadata"]["name"] == (
+            "protected-docker-smoke-containers"
+        )
+        assert limit_range["metadata"]["labels"] == {
+            "app.kubernetes.io/managed-by": "ansible",
+            "workload.n0xeid.xyz/trust-boundary": "protected-docker-smoke",
+        }
+        container_limits = limit_range["spec"]["limits"][0]
+        assert container_limits["type"] == "Container"
+        assert "helper_cpu_request" in container_limits["defaultRequest"]["cpu"]
+        assert "helper_memory_request" in container_limits["defaultRequest"][
+            "memory"
+        ]
+        assert "helper_cpu_limit" in container_limits["default"]["cpu"]
+        assert "helper_memory_limit" in container_limits["default"]["memory"]
+        assert "service_cpu_limit" in container_limits["max"]["cpu"]
+        assert "default('4000m')" in container_limits["max"]["cpu"]
+        assert "service_memory_limit" in container_limits["max"]["memory"]
+        assert "default('6Gi')" in container_limits["max"]["memory"]
+        quota = next(
+            task
+            for task in network_tasks
+            if task.get("name")
+            == "Docker smoke | Bound protected Runner admission with cleanup headroom"
+        )["kubernetes.core.k8s"]["definition"]
+        assert quota["metadata"]["name"] == "protected-docker-smoke-budget"
+        assert quota["spec"]["hard"]["requests.cpu"] == (
+            "{{ gitlab_docker_host_runner_quota.requests_cpu | default('4') }}"
+        )
+        assert quota["spec"]["hard"]["limits.cpu"] == (
+            "{{ gitlab_docker_host_runner_quota.limits_cpu | default('14') }}"
+        )
+        assert quota["spec"]["hard"]["limits.memory"] == (
+            "{{ gitlab_docker_host_runner_quota.limits_memory | default('18Gi') }}"
+        )
         install = next(
             task
             for task in tasks
@@ -784,7 +1033,6 @@ class TestChart10ValuesStructure:
         assert values["concurrent"] == (
             "{{ gitlab_docker_host_runner_concurrent | int }}"
         )
-        assert values["unregisterRunners"] is False
         assert values["runners"]["tags"] == "docker-host"
         assert values["runners"]["runUntagged"] is False
         assert values["rbac"]["clusterWideAccess"] is False
@@ -794,6 +1042,12 @@ class TestChart10ValuesStructure:
         assert "allowed_privileged_services" not in config
         assert f'allowed_services = ["{dind}"]' in config
         assert f'allowed_images = ["{node}"]' in config
+        assert (
+            'service_memory_limit = "{{ '
+            "gitlab_docker_host_runner_job_resources.service_memory_limit "
+            "| default('6Gi') }}\""
+            in config
+        )
         assert (
             'node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }'
             in config
@@ -811,6 +1065,9 @@ class TestChart10ValuesStructure:
         assert "privileged: true" in config
         assert "allowPrivilegeEscalation: true" in config
         assert "type: Unconfined" in config
+        assert 'name = "separate-protected-docker-from-general-ci"' in config
+        assert "namespaces:" in config
+        assert '"{{ gitlab_runner_namespace }}"' in config
         assert config.count("type: RuntimeDefault") == 2
         assert config.count("privileged: true") == 1
         assert install["no_log"] is True
@@ -843,6 +1100,13 @@ class TestChart10ValuesStructure:
             ]
             == "privileged"
         )
+        quota = next(
+            task for task in tasks
+            if task.get("name") == "Docker smoke | Bound aggregate namespace resources"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert quota["limits.cpu"] == "8"
+        assert quota["limits.memory"] == "7Gi"
+        assert quota["persistentvolumeclaims"] == "0"
         assert (
             "Establish the fail-closed network boundary" in runner
             and runner.index("Establish the fail-closed network boundary")
@@ -873,6 +1137,17 @@ class TestChart10ValuesStructure:
             ]
         assert "workload.n0xeid.xyz/class: protected-docker-smoke-job" in network
         assert "port: '443'" in network
+        assert "matchName: codeload.github.com" in network
+        assert "matchName: production.cloudfront.docker.com" in network
+        assert "matchName: nx-cache.n0xeid.xyz" in network
+        assert "matchName: release-assets.githubusercontent.com" in network
+        assert "matchName: unofficial-builds.nodejs.org" in network
+        cache_policy = docker_policies[
+            "Docker smoke | Allow runner cache traffic to SeaweedFS"
+        ]["kubernetes.core.k8s"]["definition"]
+        assert cache_policy["spec"]["egress"][0]["ports"] == [
+            {"port": 8333, "protocol": "TCP"}
+        ]
 
         secrets = read(GENERATE_SECRETS_PATH)
         assert "GITLAB_DOCKER_HOST_RUNNER_TOKEN" in secrets
@@ -880,7 +1155,7 @@ class TestChart10ValuesStructure:
         assert secrets.count(
             'gitlab_docker_host_runner_token: '
             '"{{ gitlab_docker_host_runner_token }}"'
-        ) == 3
+        ) == 2
 
     @pytest.mark.component
     def test_gitlab_shell_configured(self):
@@ -1208,6 +1483,24 @@ class TestDefaultsTasksConsistency:
         assert "name: gitlab-toolbox-backup-tmp" in self.tasks_raw
         assert "platform.n0xeid.xyz/backup-scratch: 'true'" in self.tasks_raw
         assert "state: patched" in self.tasks_raw
+
+    @pytest.mark.component
+    def test_toolbox_backup_can_be_suspended_without_disabling_the_chart(self):
+        assert "gitlab_toolbox_backup_suspended:" in self.tasks_raw
+        assert "gitlab.toolbox_backup_suspended | default(false)" in self.tasks_raw
+        assert "name: gitlab-toolbox-backup" in self.tasks_raw
+        assert "suspend: '{{ gitlab_toolbox_backup_suspended | bool }}'" in self.tasks_raw
+        medium = yaml.safe_load(
+            read(
+                os.path.join(
+                    REPO_ROOT,
+                    "platform-orchestrator",
+                    "profiles",
+                    "medium-optimized.yaml",
+                )
+            )
+        )
+        assert medium["gitlab"]["toolbox_backup_suspended"] is True
 
     @pytest.mark.component
     def test_every_toolbox_backup_bucket_is_bootstrapped(self):

@@ -7,12 +7,6 @@
   set_fact:
     gitlab_chart_version: 10.1.2
     gitlab_namespace: gitlab
-    gitlab_runner_job_namespace: >-
-      {{ gitlab.runner.namespace | default(gitlab_runner_job_namespace | default('gitlab-ci-general')) }}
-    gitlab_runner_release_namespace: >-
-      {{ gitlab.runner.namespace | default(gitlab_runner_job_namespace | default('gitlab-ci-general')) }}
-    gitlab_runner_general_pool_enabled: >-
-      {{ gitlab.runner.general_pool_enabled | default(true) | bool }}
     gitlab_domain: "{{ gitlab.domain | default('git.' ~ domain, true) }}"
     gitlab_admin_email: "{{ email }}"
     registry_domain: registry.{{ domain }}
@@ -20,6 +14,13 @@
     gitlab_mode: '{{ gitlab.mode | default(''light'' if resource_tier in [''minimal'', ''small''] or tier == ''medium'' else ''full'') }}'
     gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
     gitlab_webservice_max_replicas: '{{ gitlab.webservice_max_replicas | default(10) }}'
+    _gitlab_registry_pullthrough_env: >-
+      {{
+        [
+          {'name': 'REGISTRY_PROXY_REMOTEURL', 'value': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io')},
+          {'name': 'REGISTRY_PROXY_TTL', 'value': gitlab_registry_pullthrough_ttl | default('720h')}
+        ] if (gitlab_registry_pullthrough_enabled | default(false)) | bool else []
+      }}
     gitlab_webservice_worker_processes: '{{ gitlab.worker_processes | default(2) }}'
     gitlab_webservice_memory_request: '{{ gitlab.webservice_memory_request | default("1Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "2.5Gi") }}'
     gitlab_webservice_memory_limit: '{{ gitlab.webservice_memory_limit | default("2Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "5Gi") }}'
@@ -32,15 +33,6 @@
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1 if resource_tier in [''minimal'', ''small''] else 2) }}'
     gitlab_sidekiq_max_replicas: '{{ gitlab.sidekiq_max_replicas | default(10) }}'
     gitlab_registry_max_replicas: '{{ gitlab.registry_max_replicas | default(5) }}'
-    gitlab_registry_replicas: >-
-      {{ gitlab.registry_replicas | default(gitlab_registry_replicas | default(2)) }}
-    _gitlab_registry_pullthrough_env: >-
-      {{
-        [
-          {'name': 'REGISTRY_PROXY_REMOTEURL', 'value': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io')},
-          {'name': 'REGISTRY_PROXY_TTL', 'value': gitlab_registry_pullthrough_ttl | default('720h')}
-        ] if (gitlab_registry_pullthrough_enabled | default(false)) | bool else []
-      }}
     gitlab_gitaly_storage_size: '{{ gitlab.gitaly_storage_size | default(''10Gi'' if resource_tier == ''minimal'' else ''20Gi'' if resource_tier == ''small'' else ''50Gi'') }}'
     gitlab_backup_persistence_enabled: '{{ gitlab.backup_persistence_enabled | default(true) | bool }}'
     gitlab_backup_persistence_size: '{{ gitlab.backup_persistence_size | default(''50Gi'') }}'
@@ -84,9 +76,6 @@
     gitlab_image_builder_runner_concurrent: >-
       {{ (gitlab.runner.image_builder | default({})).concurrent_jobs |
          default(gitlab_image_builder_runner_concurrent_jobs | default(1)) }}
-    gitlab_image_builder_runner_worker_index: >-
-      {{ (gitlab.runner.image_builder | default({})).dedicated_worker_index |
-         default(gitlab_image_builder_runner_worker_index | default(0)) }}
     gitlab_image_builder_runner_namespace: >-
       {{ gitlab_image_builder_runner_namespace | default('gitlab-image-builds') }}
     gitlab_docker_host_runner_enabled: >-
@@ -923,13 +912,8 @@
             key: postgresql-password
           preparedStatements: false
         redis:
-          host: dragonfly-tls.dragonfly.svc.cluster.local
-          port: 6380
-          scheme: rediss
-          redisTLS:
-            caFile:
-              secret: datastore-client-ca
-              key: ca.crt
+          host: dragonfly.dragonfly.svc.cluster.local
+          port: 6379
           auth:
             enabled: true
             secret: gitlab-redis
@@ -1181,15 +1165,14 @@
           resources:
             requests: {cpu: 10m, memory: 16Mi}
             limits: {cpu: 100m, memory: 64Mi}
-        replicaCount: '{{ gitlab_registry_replicas | int }}'
+        replicaCount: '{{ gitlab_webservice_replicas | int }}'
         hpa:
-          minReplicas: '{{ gitlab_registry_replicas | int }}'
+          minReplicas: '{{ gitlab_webservice_replicas | int }}'
           maxReplicas: '{{ gitlab_registry_max_replicas | int }}'
         storage:
           secret: gitlab-registry-storage
           key: config
-        # Pull-through cache for docker.io to cut external egress (traffic budget 20TB/server/month).
-        # Enabled via gitlab_registry_pullthrough_enabled; backend stays the same S3 bucket.
+        # Pull-through cache for docker.io to cut external egress (20TB/server/month budget).
         extraEnv: "{{ _gitlab_registry_pullthrough_env }}"
         maintenance:
           gc:
@@ -1683,45 +1666,6 @@
 
           Warning events (last timestamp, reason, object kind, object name, count):
           {{ _gitlab_readiness_warning_events.stdout | default('none', true) }}
-- name: Discover the ready Deployment-owned GitLab toolbox pod
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Pod
-    namespace: '{{ gitlab_namespace }}'
-    label_selectors:
-      - release=gitlab
-      - app=toolbox
-      - pod-template-hash
-  register: _gitlab_deployment_toolbox_pods
-  retries: 30
-  delay: 5
-  until:
-    - >-
-      (_gitlab_deployment_toolbox_pods.resources | default([]) |
-       rejectattr('metadata.deletionTimestamp', 'defined') |
-       selectattr('status.phase', 'defined') |
-       selectattr('status.phase', 'equalto', 'Running') | list | length) == 1
-- name: Resolve ready Deployment-owned GitLab toolbox candidates
-  ansible.builtin.set_fact:
-    _gitlab_ready_toolbox_pods: >-
-      {{ _gitlab_deployment_toolbox_pods.resources | default([]) |
-         rejectattr('metadata.deletionTimestamp', 'defined') |
-         selectattr('status.phase', 'defined') |
-         selectattr('status.phase', 'equalto', 'Running') | list }}
-- name: Require exactly one ready Deployment-owned GitLab toolbox pod
-  ansible.builtin.assert:
-    that:
-      - _gitlab_ready_toolbox_pods | length == 1
-      - >-
-        ((_gitlab_ready_toolbox_pods | first).status.containerStatuses |
-         default([]) | selectattr('name', 'equalto', 'toolbox') |
-         selectattr('ready', 'equalto', true) | list | length) == 1
-    fail_msg: >-
-      Expected exactly one ready ReplicaSet-owned GitLab toolbox pod; refusing
-      to select a backup Job pod for administrative commands.
-- name: Resolve the exact ready GitLab toolbox pod
-  ansible.builtin.set_fact:
-    _gitlab_toolbox_pod_name: '{{ (_gitlab_ready_toolbox_pods | first).metadata.name }}'
 - name: Discover the in-cluster GitLab Shell service
   kubernetes.core.k8s_info:
     api_version: v1
@@ -1780,6 +1724,7 @@
           - fromEndpoints:
               - matchLabels:
                   k8s:io.kubernetes.pod.namespace: argocd
+                  k8s:app.kubernetes.io/name: argocd-repo-server
             toPorts:
               - ports:
                   - port: '2222'
@@ -1791,7 +1736,7 @@
       - exec
       - --namespace
       - '{{ gitlab_namespace }}'
-      - 'pod/{{ _gitlab_toolbox_pod_name }}'
+      - deployment/gitlab-toolbox
       - --container
       - toolbox
       - --
@@ -2109,7 +2054,7 @@
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
-    namespace: '{{ gitlab_runner_release_namespace }}'
+    namespace: '{{ gitlab_namespace }}'
     name: platform-gitlab-runner-auth
   register: _gitlab_runner_legacy_auth_secret
   when:
@@ -2143,7 +2088,7 @@
     set -euo pipefail
     status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
-        pod/{{ _gitlab_toolbox_pod_name }} -c toolbox -- sh -ec '
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
           payload=$(printf \
             "{\"token\":\"%s\",\"system_id\":\"s_ansible_k8s_reconcile\"}" \
@@ -2164,9 +2109,6 @@
   when:
     - gitlab_runner_enabled | bool
     - _gitlab_runner_auth_candidate | length > 0
-    - >-
-      _gitlab_runner_auth_candidate ==
-      (_gitlab_runner_auth_candidate | trim)
 - name: Verify the declared GitLab Runner identity after persisted-token drift
   tags: [gitlab-runner, gitlab-general-runner]
   no_log: true
@@ -2174,7 +2116,7 @@
     set -euo pipefail
     status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
-        pod/{{ _gitlab_toolbox_pod_name }} -c toolbox -- sh -ec '
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
           payload=$(printf \
             "{\"token\":\"%s\",\"system_id\":\"s_ansible_k8s_reconcile\"}" \
@@ -2232,33 +2174,13 @@
       kind: Secret
       metadata:
         name: platform-gitlab-runner-auth
-        namespace: '{{ gitlab_runner_release_namespace }}'
+        namespace: '{{ gitlab_runner_namespace }}'
         labels:
           app.kubernetes.io/managed-by: ansible
       type: Opaque
       stringData:
         runner-token: '{{ _gitlab_runner_auth_token }}'
   when: gitlab_runner_enabled | bool
-- name: Create S3 cache secret for GitLab Runner
-  no_log: true
-  when:
-    - gitlab_runner_enabled | bool
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: gitlab-runner-s3-cache
-        namespace: '{{ gitlab_runner_release_namespace }}'
-      type: Opaque
-      stringData:
-        accesskey: '{{ object_storage_ci_cache_access_key }}'
-        secretkey: '{{ object_storage_ci_cache_secret_key }}'
-  register: _r_create_s3_cache_secret_for_gitlab_runner
-  retries: 3
-  delay: 10
-  until: _r_create_s3_cache_secret_for_gitlab_runner is not failed
 - name: Add GitLab Runner Helm repository
   tags:
     - gitlab-runner
@@ -2272,9 +2194,6 @@
   retries: 3
   delay: 10
   until: _r_add_gitlab_runner_helm_repository is not failed
-  when: gitlab_runner_enabled | bool
-- name: Establish the shared general-CI namespace boundary
-  ansible.builtin.include_tasks: shared-runner-boundary.yml
   when: gitlab_runner_enabled | bool
 - name: Create S3 cache secret for GitLab Runner
   tags: [gitlab-runner, gitlab-general-runner]
@@ -2305,26 +2224,17 @@
     name: gitlab-runner
     chart_ref: gitlab/gitlab-runner
     chart_version: 0.91.0
-    release_namespace: '{{ gitlab_runner_release_namespace }}'
+    release_namespace: '{{ gitlab_runner_namespace }}'
     create_namespace: false
     release_state: present
     force_conflicts: true
     wait: true
-    # The chart's manager readiness delay plus maxUnavailable=0 makes a safe
-    # two-replica rollout exceed Helm's five-minute default in this cluster.
-    # Keep the wait bounded, but long enough to avoid rolling back healthy
-    # registrations and creating needless token/recovery churn.
-    timeout: 15m0s
     values:
       # The public Gateway is VPN-only, so in-cluster runners must register and
       # clone through the namespace-local Webservice instead of hairpinning
       # through the external load balancer (which intentionally returns 404).
       gitlabUrl: http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
       runnerToken: '{{ _gitlab_runner_auth_token }}'
-      # The glrt- token is the durable runner identity. Unregistering it from
-      # an old manager pod's preStop hook invalidates the replacement during a
-      # normal rollout and creates a token-recovery loop.
-      unregisterRunners: false
       replicas: '{{ gitlab_runner_replicas | int }}'
       # Each manager may long-poll concurrently, while the per-runner TOML
       # limit below preserves exactly one active job per manager.
@@ -2360,7 +2270,6 @@
           minDomains: 2
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
-          minDomains: 2
           nodeAffinityPolicy: Honor
           nodeTaintsPolicy: Honor
           labelSelector:
@@ -2375,27 +2284,8 @@
         clusterWideAccess: false
       serviceAccount:
         create: true
-      priorityClassName: n0xeid-ci-control
       nodeSelector: >-
         {{
-          {'workload.n0xeid.xyz/ci-build': 'true'}
-          if (not gitlab_runner_general_pool_enabled | bool) and
-             gitlab_runner_worker_index | default(0) | int > 0
-          else {'node-role.kubernetes.io/worker': 'true'}
-        }}
-      tolerations: >-
-        {{
-          [
-            {
-              'key': 'workload.n0xeid.xyz/ci-build',
-              'operator': 'Equal',
-              'value': 'true',
-              'effect': 'NoSchedule'
-            }
-          ]
-          if (not gitlab_runner_general_pool_enabled | bool) and
-             gitlab_runner_worker_index | default(0) | int > 0
-          else []
           {'workload.n0xeid.xyz/ci-general': 'true'}
           if gitlab_general_runner_pool_enabled | bool
           else (
@@ -2442,8 +2332,6 @@
         seccompProfile:
           type: RuntimeDefault
       runners:
-        cache:
-          secretName: gitlab-runner-s3-cache
         config: |
           [[runners]]
             clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
@@ -2454,18 +2342,7 @@
             # image passwd database. Give Git and the helper a writable HOME
             # so source checkout never falls back to the read-only root path.
             environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
-            [runners.cache]
-              Type = "s3"
-              Path = "gitlab-runner"
-              Shared = true
-              [runners.cache.s3]
-                ServerAddress = "seaweedfs-s3.storage.svc.cluster.local:8333"
-                BucketName = "gitlab-runner-cache"
-                Insecure = true
             [runners.kubernetes]
-              namespace = "{{ gitlab_runner_job_namespace }}"
-              image = "ubuntu:22.04"
-          {% if not gitlab_runner_general_pool_enabled | bool and gitlab_runner_worker_index | default(0) | int > 0 %}
               namespace = "{{ gitlab_runner_namespace }}"
               image = "ubuntu:22.04"
               cleanup_grace_period_seconds = {{ gitlab_runner_cleanup_grace_period_seconds | int }}
@@ -2486,24 +2363,6 @@
               allow_privilege_escalation = false
               cap_drop = ["ALL"]
               automount_service_account_token = false
-              priority_class_name = "n0xeid-ci-review"
-              priority_class_name_overwrite_allowed = "^n0xeid-ci-(production|environment|review|maintenance)$"
-              cpu_request = "500m"
-              cpu_limit = "2000m"
-              memory_request = "1Gi"
-              memory_limit = "4Gi"
-              ephemeral_storage_request = "2Gi"
-              ephemeral_storage_limit = "12Gi"
-              service_cpu_request = "200m"
-              service_cpu_limit = "1000m"
-              service_memory_request = "512Mi"
-              service_memory_limit = "2Gi"
-              helper_cpu_request = "100m"
-              helper_cpu_limit = "500m"
-              helper_memory_request = "256Mi"
-              helper_memory_limit = "512Mi"
-              helper_ephemeral_storage_request = "256Mi"
-              helper_ephemeral_storage_limit = "2Gi"
               logs_base_dir = "/tmp"
               scripts_base_dir = "/tmp"
               cpu_request = "{{ gitlab_runner_job_resources.cpu_request | default(gitlab_runner_cpu_request) }}"
@@ -2519,27 +2378,8 @@
               helper_memory_request = "{{ gitlab_runner_job_resources.helper_memory_request | default(gitlab_runner_helper_memory_request) }}"
               helper_memory_limit = "{{ gitlab_runner_job_resources.helper_memory_limit | default(gitlab_runner_helper_memory_limit) }}"
               [runners.kubernetes.pod_security_context]
-                run_as_non_root = true
-                run_as_user = 1000
-                run_as_group = 1000
-                fs_group = 1000
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
-              [runners.kubernetes.build_container_security_context]
-                run_as_non_root = true
-                run_as_user = 1000
-                run_as_group = 1000
-                allow_privilege_escalation = false
-              [runners.kubernetes.helper_container_security_context]
-                run_as_non_root = true
-                run_as_user = 1000
-                run_as_group = 1000
-                allow_privilege_escalation = false
-              [runners.kubernetes.service_container_security_context]
-                run_as_non_root = true
-                run_as_user = 1000
-                run_as_group = 1000
-                allow_privilege_escalation = false
               [runners.kubernetes.pod_labels]
                 "workload.n0xeid.xyz/class" = "ci-job"
               [[runners.kubernetes.pod_spec]]
@@ -2572,7 +2412,6 @@
                           workload.n0xeid.xyz/class: ci-job
                 '''
                 patch_type = "strategic"
-        tags: kubernetes,k8s,ci-shared
             [runners.cache]
               Type = "s3"
               Path = "gitlab-runner"
@@ -2609,7 +2448,7 @@
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    namespace: '{{ gitlab_runner_release_namespace }}'
+    namespace: '{{ gitlab_runner_namespace }}'
     name: gitlab-runner
   register: _gitlab_runner_deployment
   until: >-
@@ -2629,12 +2468,6 @@
   retries: 60
   delay: 10
   when: gitlab_runner_enabled | bool
-- name: Deploy the isolated protected image-builder Runner
-  ansible.builtin.include_tasks: image-builder-runner.yml
-  when: gitlab_image_builder_runner_enabled | bool
-- name: Deploy the isolated protected Docker-smoke Runner
-  ansible.builtin.include_tasks: docker-host-runner.yml
-  when: gitlab_docker_host_runner_enabled | bool
 
 - name: Read the converged general Runner manager pods
   tags: [gitlab-runner, gitlab-general-runner]
@@ -2865,7 +2698,7 @@
       kind: CiliumNetworkPolicy
       metadata:
         name: allow-gitlab-runner-metrics
-        namespace: '{{ gitlab_runner_release_namespace }}'
+        namespace: '{{ gitlab_runner_namespace }}'
       spec:
         endpointSelector:
           matchLabels:
@@ -2941,7 +2774,7 @@
           - ports:
             - port: '8150'
               protocol: TCP
-- name: Allow GitLab egress to PostgreSQL, Dragonfly TLS, and object storage
+- name: Allow GitLab egress to PostgreSQL and object storage
   kubernetes.core.k8s:
     state: present
     definition:
@@ -2965,7 +2798,7 @@
               k8s:io.kubernetes.pod.namespace: dragonfly
           toPorts:
           - ports:
-            - port: "{{ dragonfly_tls_port | default(6380) | string }}"
+            - port: '6379'
               protocol: TCP
         - toEndpoints:
           - matchLabels:
@@ -3004,6 +2837,7 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: postal
+              k8s:component: smtp
           toPorts:
           - ports:
             - port: '587'
@@ -3039,7 +2873,7 @@
       kind: VMPodScrape
       metadata:
         name: gitlab-runner
-        namespace: '{{ gitlab_runner_release_namespace }}'
+        namespace: '{{ gitlab_runner_namespace }}'
         labels:
           release: prometheus
       spec:
