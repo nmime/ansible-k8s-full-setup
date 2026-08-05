@@ -109,6 +109,31 @@
     name: vmware-tanzu
     repo_url: https://vmware-tanzu.github.io/helm-charts
 
+# Velero consumes skipImmediately and then owns that field. Helm 4 uses
+# server-side apply, so a later upgrade otherwise conflicts with velero-server
+# and can leave the release failed. Scheduled backups do not use owner
+# references, so replacing this declarative schedule never removes backups.
+- name: "Backup-DR | Detect whether the Velero Schedule CRD is installed"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - crd
+      - schedules.velero.io
+  register: backup_dr_schedule_crd
+  changed_when: false
+  failed_when: false
+
+- name: "Backup-DR | Replace the controller-mutated Helm schedule safely"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: velero.io/v1
+    kind: Schedule
+    namespace: "{{ backup_dr_namespace }}"
+    name: velero-full-cluster
+    wait: true
+  when: backup_dr_schedule_crd.rc == 0
+
 - name: "Backup-DR | Deploy Velero with node-agent filesystem backups"
   kubernetes.core.helm:
     name: velero
@@ -205,12 +230,15 @@
           # the reservation tiny, but allow a bounded serialization burst.
           memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else backup_dr_velero_memory_limit }}"
       nodeAgent:
-        # A full-cluster filesystem backup must cover every schedulable node,
-        # including control-plane and dedicated CI/mail workers. Tolerate any
-        # intentional NoSchedule partition while retaining the readiness gate
-        # below, so an unhealthy or missing node agent still fails closed.
+        # Medium-optimized deliberately schedules stateful workloads on the
+        # tainted control plane. A node agent must therefore run there too or
+        # an otherwise healthy full-cluster backup silently skips those PVCs.
         tolerations:
-          - operator: Exists
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+          - key: node-role.kubernetes.io/master
+            operator: Exists
             effect: NoSchedule
         resources:
           requests:
@@ -219,70 +247,22 @@
           limits:
             cpu: "{{ '500m' if resource_tier != 'production' else backup_dr_node_agent_cpu_limit }}"
             memory: "{{ '512Mi' if resource_tier != 'production' else backup_dr_node_agent_memory_limit }}"
-      # The Schedule controller consumes and mutates skipImmediately. Keep the
-      # Schedule outside Helm ownership so a no-op Helm upgrade can never leave
-      # it deleted, and so Helm 4 server-side apply never fights the controller.
-      schedules: {}
+      schedules:
+        full-cluster:
+          disabled: false
+          paused: false
+          skipImmediately: true
+          schedule: "{{ backup_dr_schedule }}"
+          useOwnerReferencesInBackup: false
+          template:
+            ttl: "{{ backup_dr_retention_hours }}h"
+            storageLocation: default
+            includeClusterResources: true
+            defaultVolumesToFsBackup: true
   register: backup_dr_velero_helm
   until: backup_dr_velero_helm is succeeded
   retries: 3
   delay: 10
-
-- name: "Backup-DR | Discover the independently managed full-cluster schedule"
-  kubernetes.core.k8s_info:
-    api_version: velero.io/v1
-    kind: Schedule
-    namespace: "{{ backup_dr_namespace }}"
-    name: velero-full-cluster
-  register: backup_dr_full_cluster_schedule
-
-- name: "Backup-DR | Create the full-cluster schedule without an immediate backup"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: velero.io/v1
-      kind: Schedule
-      metadata:
-        name: velero-full-cluster
-        namespace: "{{ backup_dr_namespace }}"
-        labels:
-          app.kubernetes.io/managed-by: ansible
-      spec:
-        paused: false
-        schedule: "{{ backup_dr_schedule }}"
-        skipImmediately: true
-        useOwnerReferencesInBackup: false
-        template:
-          ttl: "{{ backup_dr_retention_hours }}h"
-          storageLocation: default
-          includeClusterResources: true
-          excludedNamespaces: "{{ backup_dr_excluded_namespaces }}"
-          defaultVolumesToFsBackup: true
-  when: (backup_dr_full_cluster_schedule.resources | length) == 0
-
-- name: "Backup-DR | Reconcile stable full-cluster schedule fields"
-  kubernetes.core.k8s:
-    state: present
-    merge_type:
-      - merge
-    definition:
-      apiVersion: velero.io/v1
-      kind: Schedule
-      metadata:
-        name: velero-full-cluster
-        namespace: "{{ backup_dr_namespace }}"
-        labels:
-          app.kubernetes.io/managed-by: ansible
-      spec:
-        paused: false
-        schedule: "{{ backup_dr_schedule }}"
-        useOwnerReferencesInBackup: false
-        template:
-          ttl: "{{ backup_dr_retention_hours }}h"
-          storageLocation: default
-          includeClusterResources: true
-          excludedNamespaces: "{{ backup_dr_excluded_namespaces }}"
-          defaultVolumesToFsBackup: true
 
 - name: "Backup-DR | Remove legacy invalid Cilium default-deny"
   kubernetes.core.k8s:

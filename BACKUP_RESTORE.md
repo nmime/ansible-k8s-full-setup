@@ -82,25 +82,25 @@ backup:
     retention_hours: 720
 ```
 
-Store independent credentials in the Ansible-Vault-encrypted project recovery
-bundle. The writer prompts without echo and never places values in arguments,
-stdout, or plaintext files:
+Store independent credentials in the gitignored, mode-`0600` project `.env`:
 
-```bash
-scripts/store-dr-credentials.py \
-  --file ".campaign-state/$PROJECT/.platform-secrets.yml" \
-  --vault-password-file "$ANSIBLE_VAULT_PASSWORD_FILE" \
-  --endpoint https://s3.example-provider.com \
-  --region us-east-1 \
-  --bucket company-platform-dr
+```dotenv
+BACKUP_DR_ENDPOINT=https://s3.example-provider.com
+BACKUP_DR_BUCKET=company-platform-dr
+BACKUP_DR_ACCESS_KEY=...
+BACKUP_DR_SECRET_KEY=...
+# Optional; default is a sibling of the Velero prefix:
+# <Velero parent>/cluster-bundles/<project>.
+CLUSTER_BACKUP_DR_PREFIX=k8s/cluster-bundles/production
 ```
 
-Run reconciliations through `scripts/with-encrypted-dr-credentials.py`; it
-decrypts the pair only in process memory and injects it into the child process.
-Endpoint, region, bucket, schedule, and prefix remain non-secret profile
-configuration. `CLUSTER_BACKUP_DR_PREFIX` may still override the default
-cluster-bundle prefix. Access and secret keys are never appended to the
-Ansible command line or written into `platform.yaml` or `.env`.
+Backup, restore, orchestration, and migration commands load `.env`
+automatically. Explicitly exported variables still take precedence.
+Blank `endpoint` and `bucket` fields in a named profile fall back to
+`BACKUP_DR_ENDPOINT` and `BACKUP_DR_BUCKET`; region and prefix also have
+environment fallbacks when omitted. Access and secret keys are resolved only
+from the process environment and are never appended to the Ansible command
+line or written into `platform.yaml`.
 Cluster bundles are deliberately stored outside the Velero prefix. Velero
 rejects unknown top-level directories inside its own backup store, so an
 explicit `CLUSTER_BACKUP_DR_PREFIX` equal to or nested below the configured
