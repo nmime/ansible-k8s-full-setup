@@ -1303,6 +1303,8 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
     mongo_spec = mongo_task["kubernetes.core.k8s"]["definition"]["spec"]
     mongo_replset = mongo_spec["replsets"][0]
     assert mongo_replset["resources"] == "{{ mongodb_replset_resources }}"
+    assert mongo_replset["priorityClassName"] == "{{ mongodb_priority_class_name }}"
+    assert defaults["mongodb_priority_class_name"] == "n0xeid-platform-critical"
     assert mongo_replset["storage"]["engine"] == "wiredTiger"
     assert mongo_replset["storage"]["wiredTiger"]["engineConfig"] == {
         "cacheSizeRatio": "{{ mongodb_wiredtiger_cache_size_ratio }}"
@@ -1528,6 +1530,22 @@ def test_configurable_platform_addons_are_not_best_effort():
         assert seaweed[component]["resources"]["requests"]["memory"]
         assert seaweed[component]["resources"]["limits"]["cpu"]
         assert seaweed[component]["resources"]["limits"]["memory"]
+        pod_security = seaweed[component]["podSecurityContext"]
+        assert pod_security["enabled"] is True
+        assert pod_security["runAsNonRoot"] is True
+        assert pod_security["runAsUser"] == 1000
+        assert pod_security["runAsGroup"] == 1000
+        assert pod_security["fsGroup"] == 1000
+        assert pod_security["fsGroupChangePolicy"] == "OnRootMismatch"
+        assert pod_security["seccompProfile"]["type"] == "RuntimeDefault"
+        container_security = seaweed[component]["containerSecurityContext"]
+        assert container_security["enabled"] is True
+        assert container_security["allowPrivilegeEscalation"] is False
+        assert container_security["runAsNonRoot"] is True
+        assert container_security["runAsUser"] == 1000
+        assert container_security["runAsGroup"] == 1000
+        assert container_security["capabilities"]["drop"] == ["ALL"]
+        assert container_security["seccompProfile"]["type"] == "RuntimeDefault"
 
     coroot_tasks = yaml.safe_load(read("roles/k8s-observability/tasks/coroot.yml"))
     coroot = next(
