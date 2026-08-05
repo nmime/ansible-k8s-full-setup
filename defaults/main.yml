@@ -161,6 +161,28 @@ vault_chart_version: "0.34.0"
 vault_replicas: "{{ 3 if resource_tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 20Gi
 eso_enabled: true
+# Vault access is deny-by-default. Each environment must enumerate the exact
+# KV-v2 remote paths consumed by ExternalSecrets and the namespaces allowed to
+# reference the shared ClusterSecretStore.
+eso_vault_read_paths: []
+eso_vault_allowed_namespaces:
+  - default
+eso_vault_token_audience: external-secrets
+eso_vault_token_ttl: 15m
+# Generated platform credentials are mirrored into Vault once, then checked
+# for exact drift. The encrypted local bundle remains an out-of-band recovery
+# seed; neither side silently overwrites the other.
+vault_platform_generated_seed_enabled: true
+vault_platform_generated_secret_path: >-
+  clusters/{{ project_name | default('k8s') }}/platform/generated
+# A provider-side DR key rotation must be an explicit, one-run CAS update. It
+# never defaults on and permits changes only to the two external DR fields.
+vault_platform_generated_dr_rotation_allowed: false
+vault_platform_generated_alert_destination_rotation_allowed: false
+vault_platform_generated_gitlab_runner_rotation_allowed: false
+vault_platform_generated_gitlab_runner_secret_namespace: gitlab-ci-general
+vault_platform_generated_gitlab_runner_secret_name: platform-gitlab-runner-auth
+vault_platform_generated_gitlab_runner_secret_key: runner-token
 # The `default/example-secret` ExternalSecret is only a demonstration fixture.
 # Production reconciliation removes it unless an operator explicitly enables
 # the fixture and points it at an existing Vault KV-v2 key/property.

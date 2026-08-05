@@ -366,7 +366,27 @@ class TestVaultTLS:
         assert "failed_when: false" not in reconcile
         assert reconcile.count("no_log: true") >= 8
 
+    def test_vault_snapshot_role_uses_bounded_batch_tokens(self):
+        reconcile = self.content.split(
+            "- name: Create Vault Kubernetes auth role for snapshot backups", 1
+        )[1].split("- name: Create Vault TLS certificate", 1)[0]
+
+        assert "audience=vault-backup" in reconcile
+        assert "policies=snapshot-backup" in reconcile
+        assert "token_no_default_policy=true" in reconcile
+        assert "token_ttl=15m" in reconcile
+        assert "token_explicit_max_ttl=15m" in reconcile
+        assert "token_type=batch" in reconcile
+        assert "policies=default" not in reconcile
+        assert "no_log: true" in reconcile
+
     def test_vault_eso_policy_and_role_reconcile_fail_closed(self):
+        defaults = yaml.safe_load(read("defaults/main.yml"))
+        assert defaults["eso_vault_read_paths"] == []
+        assert defaults["eso_vault_allowed_namespaces"] == ["default"]
+        assert defaults["eso_vault_token_audience"] == "external-secrets"
+        assert defaults["eso_vault_token_ttl"] == "15m"
+
         reconcile = self.content.split("- name: Create Vault policy for ESO", 1)[1]
         reconcile = reconcile.split(
             "- name: Create ClusterSecretStore for Vault", 1
@@ -376,11 +396,84 @@ class TestVaultTLS:
         assert "auth/kubernetes/role/external-secrets" in reconcile
         assert "vault policy read external-secrets" in reconcile
         assert "Prove the Vault ESO auth role is reconciled" in reconcile
-        assert ".data.token_ttl | int == 3600" in reconcile
+        assert "policies=external-secrets" in reconcile
+        assert "token_no_default_policy=true" in reconcile
+        assert "token_explicit_max_ttl=\"$4\"" in reconcile
+        assert "token_type=batch" in reconcile
+        assert "audience=\"$3\"" in reconcile
+        assert 'path "auth/token/lookup-self"' in self.content
+        assert 'capabilities = ["read"]' in self.content
+        assert "secret/data/*" not in reconcile
+        assert "capabilities = [\"read\", \"list\"]" not in reconcile
+        assert "eso_vault_token_ttl_seconds" in reconcile
         assert reconcile.count("vault_init_data is defined") >= 6
         assert "vault_init is changed" not in reconcile
         assert "failed_when: false" not in reconcile
         assert reconcile.count("no_log: true") >= 6
+
+        store = self.content.split(
+            "- name: Create ClusterSecretStore for Vault", 1
+        )[1].split("- name: Validate the opt-in example ExternalSecret contract", 1)[0]
+        assert "conditions:" in store
+        assert "eso_vault_allowed_namespaces" in store
+        assert "audiences:" in store
+        assert "eso_vault_token_audience" in store
+        assert "Wait for the restricted Vault ClusterSecretStore" in store
+
+    def test_generated_credentials_are_seeded_once_and_drift_checked(self):
+        defaults = yaml.safe_load(read("defaults/main.yml"))
+        assert defaults["vault_platform_generated_seed_enabled"] is True
+        assert "clusters/" in defaults["vault_platform_generated_secret_path"]
+        assert defaults["vault_platform_generated_dr_rotation_allowed"] is False
+        assert (
+            defaults["vault_platform_generated_alert_destination_rotation_allowed"]
+            is False
+        )
+        assert defaults["vault_platform_generated_gitlab_runner_rotation_allowed"] is False
+        assert (
+            defaults["vault_platform_generated_gitlab_runner_secret_namespace"]
+            == "gitlab-ci-general"
+        )
+
+        generate = read("roles/generate-secrets/tasks/main.yml")
+        assert "Build the generated platform credential recovery bundle" in generate
+        assert "platform_generated_secret_bundle:" in generate
+        assert "no_log: true" in generate
+
+        reconcile = self.content
+        assert "Read the generated platform credential mirror from Vault" in reconcile
+        assert "Identify generated credential drift keys without exposing values" in reconcile
+        assert "_vault_platform_generated_drift_keys" in reconcile
+        assert "Refuse divergent generated credentials in Vault" in reconcile
+        assert "Classify the one-time alert credential bootstrap" in reconcile
+        assert "Classify an explicitly authorized Telegram destination rotation" in reconcile
+        assert "_vault_platform_generated_alert_destination_rotation" in reconcile
+        assert "vault_platform_generated_alert_destination_rotation_allowed" in reconcile
+        assert "['alert_telegram_chat_id']" in reconcile
+        assert "Classify the authorized alert bootstrap plus live Runner adoption" in reconcile
+        assert "Classify the explicitly authorized live GitLab Runner rotation" in reconcile
+        assert "_vault_platform_generated_gitlab_runner_rotation" in reconcile
+        assert "Require the authorized GitLab Runner token to match the live runtime" in reconcile
+        assert "vault_platform_generated_gitlab_runner_rotation_allowed" in reconcile
+        assert "vault_platform_generated_gitlab_runner_secret_key" in reconcile
+        assert "Classify an explicitly authorized DR credential rotation" in reconcile
+        assert "vault_platform_generated_dr_rotation_allowed" in reconcile
+        assert "Seed or one-time-bootstrap the generated credential mirror" in reconcile
+        assert "vault kv put \"secret/$3\" @\"$2\"" in reconcile
+        assert 'vault kv put -cas="$4"' in reconcile
+        assert "vault kv get -format=json \"secret/$2\"" in reconcile
+        assert "every other overwrite is" in reconcile
+        assert '>-' + '\n      "\'..\' not in' not in reconcile
+
+        cleanup = read("roles/k8s-secrets/tasks/main.yml")
+        assert "Remove the transient generated credential file from the pod" in cleanup
+        assert "Remove the transient generated credential file from the controller" in cleanup
+
+
+    def test_kubernetes_secret_encryption_uses_authenticated_secretbox(self):
+        tasks = read("roles/k8s-cluster-management/tasks/main.yml")
+        assert "kube_encryption_algorithm: secretbox" in tasks
+        assert "kube_encryption_algorithm: aescbc" not in tasks
 
     def test_example_externalsecret_is_opt_in_and_removed_when_disabled(self):
         defaults = yaml.safe_load(read("defaults/main.yml"))

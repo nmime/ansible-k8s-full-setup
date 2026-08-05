@@ -310,4 +310,4 @@ def test_logging_ingest_password_is_stable_and_vault_persisted():
     secrets = (ROOT / "roles" / "generate-secrets" / "tasks" / "main.yml").read_text()
     assert "saved_secrets.es_logging_ingest_password" in secrets
     assert "generated_es_logging_ingest_password" in secrets
-    assert secrets.count('es_logging_ingest_password: "{{ es_logging_ingest_password }}"') == 2
+    assert secrets.count('es_logging_ingest_password: "{{ es_logging_ingest_password }}"') == 3
