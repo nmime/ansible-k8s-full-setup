@@ -1023,11 +1023,18 @@
           metadata:
             name: object-storage-api
             namespace: "{{ object_storage_namespace_resolved }}"
+            annotations:
+              security.n0xeid.xyz/reason: >-
+                moved from public main-gateway to VPN-only admin-gateway
+                (splox security stream 2026-08-05)
           spec:
             parentRefs:
-              - name: main-gateway
+              - name: admin-gateway
                 namespace: cilium-system
                 sectionName: https
+              - name: admin-gateway
+                namespace: cilium-system
+                sectionName: cluster-https
             hostnames:
               - "{{ object_storage_api_domain_resolved }}"
             rules:
