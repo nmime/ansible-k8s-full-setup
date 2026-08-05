@@ -312,6 +312,7 @@ class TestNamedProfileContract:
         assert profile["gitlab"]["sidekiq_replicas"] == 2
         assert profile["gitlab"]["sidekiq_max_replicas"] == 4
         assert profile["gitlab"]["registry_max_replicas"] == 3
+        assert profile["gitlab"]["registry_replicas"] == 3
         assert profile["gitlab"]["runner"]["concurrent_jobs"] == 4
         assert profile["gitlab"]["webservice_memory_request"] == "2Gi"
         assert profile["gitlab"]["webservice_memory_limit"] == "3Gi"
@@ -393,7 +394,13 @@ class TestMediumOptimizedContract:
         assert self.profile["infrastructure"]["control_plane"]["type"] == "cpx32"
         assert self.profile["infrastructure"]["workers"]["count"] == 5
         assert self.profile["infrastructure"]["workers"]["type"] == "cpx32"
-        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
+        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 0
+        assert (
+            self.profile["gitlab"]["runner"]["image_builder"][
+                "dedicated_worker_index"
+            ]
+            == 5
+        )
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][
                 "dedicated_worker_index"
@@ -445,11 +452,17 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["toolbox_memory_limit"] == "3Gi"
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
-        assert self.profile["gitlab"]["runner"]["replicas"] == 1
-        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
-        # One bounded general job and one protected image job may share only
-        # the isolated CI-build worker, never an application node.
-        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
+        assert self.profile["gitlab"]["runner"]["replicas"] == 2
+        assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 0
+        assert (
+            self.profile["gitlab"]["runner"]["image_builder"][
+                "dedicated_worker_index"
+            ]
+            == 5
+        )
+        # General jobs share ordinary workers; the security-exception image
+        # build remains isolated on its tainted node.
+        assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 2
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
         assert self.profile["storage"]["size_per_replica"] == "40Gi"
