@@ -4,25 +4,6 @@
     - name: Run the secrets platform reconciliation
       ansible.builtin.include_tasks: reconcile.yml
   always:
-    - name: Remove the transient generated credential file from the pod
-      kubernetes.core.k8s_exec:
-        namespace: "{{ vault_ns | default('vault') }}"
-        pod: vault-0
-        command: >-
-          rm -f -- {{ vault_platform_generated_remote_file }}
-      changed_when: false
-      failed_when: false
-      no_log: true
-      when: vault_platform_generated_remote_file is defined
-
-    - name: Remove the transient generated credential file from the controller
-      ansible.builtin.file:
-        path: '{{ vault_platform_generated_controller_file }}'
-        state: absent
-      changed_when: false
-      no_log: true
-      when: vault_platform_generated_controller_file is defined
-
     - name: Remove the transient Vault token file from the pod
       kubernetes.core.k8s_exec:
         namespace: "{{ vault_ns | default('vault') }}"

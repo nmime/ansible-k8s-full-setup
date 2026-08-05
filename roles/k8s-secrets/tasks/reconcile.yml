@@ -666,363 +666,6 @@
   changed_when: false
   no_log: true
   when: vault_init_data is defined
-- name: Validate the generated credential Vault mirror boundary
-  ansible.builtin.assert:
-    that:
-    - platform_generated_secret_bundle is defined
-    - (platform_generated_secret_bundle | length) > 0
-    - >-
-      vault_platform_generated_secret_path | string is
-      match('^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$')
-    - >-
-      '..' not in (vault_platform_generated_secret_path | string).split('/')
-    - >-
-      '*' not in (vault_platform_generated_secret_path | string)
-    fail_msg: >-
-      The generated credential mirror requires the protected local recovery
-      bundle and one exact Vault KV-v2 path.
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-- name: Read the generated platform credential mirror from Vault
-  kubernetes.core.k8s_exec:
-    namespace: '{{ vault_ns }}'
-    pod: vault-0
-    command: >-
-      sh -ec 'VAULT_TOKEN=$(cat "$1"); export VAULT_TOKEN;
-      exec vault kv get -format=json "secret/$2"' --
-      {{ vault_token_remote_file }} {{ vault_platform_generated_secret_path }}
-  register: _vault_platform_generated_read
-  changed_when: false
-  failed_when: false
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-- name: Reject errors while reading the generated credential mirror
-  ansible.builtin.assert:
-    that:
-    - >-
-      (_vault_platform_generated_read.rc | int) == 0 or
-      ((_vault_platform_generated_read.rc | int) == 2 and
-      'No value found at' in
-      ((_vault_platform_generated_read.stdout | default('')) ~
-      (_vault_platform_generated_read.stderr | default(''))))
-    fail_msg: >-
-      Vault credential mirror discovery failed for a reason other than a
-      missing key; refusing to overwrite it.
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-- name: Capture the existing generated credential mirror revision
-  ansible.builtin.set_fact:
-    _vault_platform_generated_existing_bundle: >-
-      {{ (_vault_platform_generated_read.stdout | from_json).data.data }}
-    _vault_platform_generated_existing_version: >-
-      {{ (_vault_platform_generated_read.stdout | from_json).data.metadata.version
-      | int }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-- name: Identify generated credential drift keys without exposing values
-  ansible.builtin.set_fact:
-    _vault_platform_generated_drift_keys: >-
-      {%- set drift = [] -%}
-      {%- set all_keys =
-        ((_vault_platform_generated_existing_bundle.keys() | list) +
-         (platform_generated_secret_bundle.keys() | list)) | unique -%}
-      {%- for key in all_keys | sort -%}
-      {%-   if key not in _vault_platform_generated_existing_bundle or
-              key not in platform_generated_secret_bundle or
-              _vault_platform_generated_existing_bundle[key] !=
-                platform_generated_secret_bundle[key] -%}
-      {%-     set _ = drift.append(key) -%}
-      {%-   endif -%}
-      {%- endfor -%}
-      {{ drift }}
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-- name: Read the live GitLab Runner token for an authorized Vault adoption
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: '{{ vault_platform_generated_gitlab_runner_secret_namespace }}'
-    name: '{{ vault_platform_generated_gitlab_runner_secret_name }}'
-  register: _vault_platform_generated_gitlab_runner_secret
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-  - vault_platform_generated_gitlab_runner_rotation_allowed | bool
-- name: Require the authorized GitLab Runner token to match the live runtime
-  ansible.builtin.assert:
-    that:
-    - _vault_platform_generated_gitlab_runner_secret.resources | length == 1
-    - >-
-      vault_platform_generated_gitlab_runner_secret_key in
-      (_vault_platform_generated_gitlab_runner_secret.resources[0].data |
-       default({}))
-    - >-
-      ((_vault_platform_generated_gitlab_runner_secret.resources[0].data[
-        vault_platform_generated_gitlab_runner_secret_key] | b64decode) ==
-       platform_generated_secret_bundle['gitlab_runner_token'])
-    fail_msg: >-
-      Refusing GitLab Runner token adoption because the encrypted recovery
-      token does not exactly match the active Kubernetes runtime Secret.
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-  - vault_platform_generated_gitlab_runner_rotation_allowed | bool
-- name: Classify the authorized alert bootstrap plus live Runner adoption
-  ansible.builtin.set_fact:
-    _vault_platform_generated_alert_and_gitlab_runner_bootstrap: >-
-      {{
-        (vault_platform_generated_gitlab_runner_rotation_allowed | bool) and
-        ((_vault_platform_generated_existing_bundle[
-          'alert_telegram_bot_token'] | default('') | length) == 0) and
-        ((_vault_platform_generated_existing_bundle[
-          'alert_telegram_chat_id'] | default('') | length) == 0) and
-        ((platform_generated_secret_bundle['alert_telegram_bot_token']
-          | default('') | length) > 0) and
-        ((platform_generated_secret_bundle['alert_telegram_chat_id']
-          | default('') | length) > 0) and
-        ((_vault_platform_generated_existing_bundle | combine({
-          'alert_telegram_bot_token':
-            platform_generated_secret_bundle['alert_telegram_bot_token'],
-          'alert_telegram_chat_id':
-            platform_generated_secret_bundle['alert_telegram_chat_id'],
-          'gitlab_runner_token':
-            platform_generated_secret_bundle['gitlab_runner_token']
-        })) == platform_generated_secret_bundle)
-      }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-  - vault_platform_generated_gitlab_runner_rotation_allowed | bool
-- name: Classify the explicitly authorized live GitLab Runner rotation
-  ansible.builtin.set_fact:
-    _vault_platform_generated_gitlab_runner_rotation: >-
-      {{
-        (vault_platform_generated_gitlab_runner_rotation_allowed | bool) and
-        ((_vault_platform_generated_existing_bundle | combine({
-          'gitlab_runner_token':
-            platform_generated_secret_bundle['gitlab_runner_token']
-        })) == platform_generated_secret_bundle)
-      }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-  - vault_platform_generated_gitlab_runner_rotation_allowed | bool
-- name: Classify the one-time alert credential bootstrap
-  ansible.builtin.set_fact:
-    _vault_platform_generated_alert_bootstrap: >-
-      {{
-        ((_vault_platform_generated_existing_bundle[
-          'alert_telegram_bot_token'] | default('') | length) == 0) and
-        ((_vault_platform_generated_existing_bundle[
-          'alert_telegram_chat_id'] | default('') | length) == 0) and
-        ((platform_generated_secret_bundle['alert_telegram_bot_token']
-          | default('') | length) > 0) and
-        ((platform_generated_secret_bundle['alert_telegram_chat_id']
-          | default('') | length) > 0) and
-        ((_vault_platform_generated_existing_bundle | combine({
-          'alert_telegram_bot_token':
-            platform_generated_secret_bundle['alert_telegram_bot_token'],
-          'alert_telegram_chat_id':
-            platform_generated_secret_bundle['alert_telegram_chat_id']
-        })) == platform_generated_secret_bundle)
-      }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-- name: Classify an explicitly authorized Telegram destination rotation
-  ansible.builtin.set_fact:
-    _vault_platform_generated_alert_destination_rotation: >-
-      {{
-        (vault_platform_generated_alert_destination_rotation_allowed | bool) and
-        ((_vault_platform_generated_existing_bundle[
-          'alert_telegram_bot_token'] | default('')) ==
-         (platform_generated_secret_bundle[
-          'alert_telegram_bot_token'] | default(''))) and
-        ((platform_generated_secret_bundle[
-          'alert_telegram_chat_id'] | default('') | length) > 0) and
-        ((_vault_platform_generated_existing_bundle[
-          'alert_telegram_chat_id'] | default('')) !=
-         (platform_generated_secret_bundle[
-          'alert_telegram_chat_id'] | default(''))) and
-        ((_vault_platform_generated_drift_keys | default([])) ==
-         ['alert_telegram_chat_id']) and
-        ((_vault_platform_generated_existing_bundle | combine({
-          'alert_telegram_chat_id':
-            platform_generated_secret_bundle['alert_telegram_chat_id']
-        })) == platform_generated_secret_bundle)
-      }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-  - vault_platform_generated_alert_destination_rotation_allowed | bool
-- name: Classify an explicitly authorized DR credential rotation
-  ansible.builtin.set_fact:
-    _vault_platform_generated_dr_rotation: >-
-      {{
-        (vault_platform_generated_dr_rotation_allowed | bool) and
-        ((platform_generated_secret_bundle['backup_dr_access_key']
-          | default('') | length) >= 8) and
-        ((platform_generated_secret_bundle['backup_dr_secret_key']
-          | default('') | length) >= 16) and
-        ((_vault_platform_generated_existing_bundle | combine({
-          'backup_dr_access_key':
-            platform_generated_secret_bundle['backup_dr_access_key'],
-          'backup_dr_secret_key':
-            platform_generated_secret_bundle['backup_dr_secret_key']
-        })) == platform_generated_secret_bundle)
-      }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-- name: Refuse divergent generated credentials in Vault
-  ansible.builtin.assert:
-    that:
-    - >-
-      (_vault_platform_generated_existing_bundle ==
-      platform_generated_secret_bundle) or
-      (_vault_platform_generated_alert_bootstrap | default(false) | bool) or
-      (_vault_platform_generated_alert_and_gitlab_runner_bootstrap |
-       default(false) | bool) or
-      (_vault_platform_generated_gitlab_runner_rotation |
-       default(false) | bool) or
-      (_vault_platform_generated_alert_destination_rotation |
-       default(false) | bool) or
-      (_vault_platform_generated_dr_rotation | default(false) | bool)
-    fail_msg: >-
-      Generated credentials differ between the encrypted recovery bundle and
-      Vault. Only the compare-and-set transition from empty to configured
-      Telegram alert credentials is automatic. DR credential rotation requires
-      the explicit one-run authorization. GitLab Runner token adoption also
-      requires an explicit one-run authorization and an exact match with the
-      active runtime Secret. Telegram destination rotation requires its own
-      one-run authorization and permits only the chat ID to differ; every other overwrite is
-      forbidden.
-      Drifted key names={{ _vault_platform_generated_drift_keys | default([]) }}
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - (_vault_platform_generated_read.rc | int) == 0
-- name: Allocate a transient generated credential mirror file
-  ansible.builtin.tempfile:
-    state: file
-    prefix: ansible-vault-platform-generated-
-  register: _vault_platform_generated_tempfile
-  delegate_to: localhost
-  become: false
-  no_log: true
-  when:
-  - vault_init_data is defined
-  - vault_platform_generated_seed_enabled | bool
-  - >-
-    (_vault_platform_generated_read.rc | int) == 2 or
-    (_vault_platform_generated_alert_bootstrap | default(false) | bool) or
-    (_vault_platform_generated_alert_and_gitlab_runner_bootstrap |
-     default(false) | bool) or
-    (_vault_platform_generated_gitlab_runner_rotation |
-     default(false) | bool) or
-    (_vault_platform_generated_alert_destination_rotation |
-     default(false) | bool) or
-    (_vault_platform_generated_dr_rotation | default(false) | bool)
-- name: Record generated credential mirror paths for guaranteed cleanup
-  ansible.builtin.set_fact:
-    vault_platform_generated_controller_file: >-
-      {{ _vault_platform_generated_tempfile.path }}
-    vault_platform_generated_remote_file: >-
-      /tmp/{{ _vault_platform_generated_tempfile.path | basename }}
-  no_log: true
-  when:
-  - _vault_platform_generated_tempfile is not skipped
-- name: Stage generated credentials in the transient controller file
-  ansible.builtin.copy:
-    content: '{{ platform_generated_secret_bundle | to_nice_json }}'
-    dest: '{{ vault_platform_generated_controller_file }}'
-    mode: '0600'
-  delegate_to: localhost
-  become: false
-  no_log: true
-  when:
-  - vault_platform_generated_controller_file is defined
-- name: Copy the generated credential mirror file into the Vault pod
-  kubernetes.core.k8s_cp:
-    namespace: '{{ vault_ns }}'
-    pod: vault-0
-    container: vault
-    local_path: '{{ vault_platform_generated_controller_file }}'
-    remote_path: '{{ vault_platform_generated_remote_file }}'
-    state: to_pod
-  no_log: true
-  when:
-  - vault_platform_generated_remote_file is defined
-- name: Seed or one-time-bootstrap the generated credential mirror
-  kubernetes.core.k8s_exec:
-    namespace: '{{ vault_ns }}'
-    pod: vault-0
-    command: >-
-      sh -ec 'chmod 0600 "$2";
-      VAULT_TOKEN=$(cat "$1"); export VAULT_TOKEN;
-      if [ "$4" = "0" ]; then
-        exec vault kv put "secret/$3" @"$2";
-      fi;
-      exec vault kv put -cas="$4" "secret/$3" @"$2"' --
-      {{ vault_token_remote_file }} {{ vault_platform_generated_remote_file }}
-      {{ vault_platform_generated_secret_path }}
-      {{ _vault_platform_generated_existing_version | default(0) }}
-  no_log: true
-  register: _vault_platform_generated_seed
-  retries: 3
-  delay: 5
-  until: _vault_platform_generated_seed is not failed
-  when:
-  - vault_platform_generated_remote_file is defined
-- name: Verify the generated platform credential mirror after seeding
-  kubernetes.core.k8s_exec:
-    namespace: '{{ vault_ns }}'
-    pod: vault-0
-    command: >-
-      sh -ec 'VAULT_TOKEN=$(cat "$1"); export VAULT_TOKEN;
-      exec vault kv get -format=json "secret/$2"' --
-      {{ vault_token_remote_file }} {{ vault_platform_generated_secret_path }}
-  register: _vault_platform_generated_verified
-  changed_when: false
-  no_log: true
-  when:
-  - vault_platform_generated_remote_file is defined
-- name: Prove the generated credential mirror was seeded exactly
-  ansible.builtin.assert:
-    that:
-    - >-
-      ((_vault_platform_generated_verified.stdout | from_json).data.data) ==
-      platform_generated_secret_bundle
-    fail_msg: Vault did not persist the generated credential mirror exactly.
-  no_log: true
-  when:
-  - vault_platform_generated_remote_file is defined
 - name: Read Vault raft membership from the leader
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
@@ -1317,12 +960,7 @@
       vault write auth/kubernetes/role/vault-backup
       bound_service_account_names=vault-backup
       bound_service_account_namespaces={{ vault_ns }}
-      audience=vault-backup
-      policies=snapshot-backup
-      token_no_default_policy=true
-      token_ttl=15m
-      token_explicit_max_ttl=15m
-      token_type=batch' -- {{ vault_token_remote_file }}
+      policies=snapshot-backup ttl=15m' -- {{ vault_token_remote_file }}
   when: vault_init_data is defined
   no_log: true
   register: _vault_snapshot_auth_role
@@ -1791,59 +1429,19 @@
   delay: 15
   until: _r_create_vault_eso_service_account is not failed
   when: eso_enabled | bool
-- name: Validate the fail-closed Vault ESO access boundary
-  ansible.builtin.assert:
-    that:
-    - (eso_vault_allowed_namespaces | length) > 0
-    - >-
-      (eso_vault_allowed_namespaces |
-      select('match', '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$') |
-      list | length) == (eso_vault_allowed_namespaces | length)
-    - >-
-      (eso_vault_read_paths |
-      select('match', '^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$') |
-      list | length) == (eso_vault_read_paths | length)
-    - >-
-      (eso_vault_read_paths |
-      reject('search', '(^|/)\.\.(/|$)') |
-      list | length) == (eso_vault_read_paths | length)
-    - "'*' not in (eso_vault_read_paths | join(''))"
-    - eso_vault_token_audience | string is match('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')
-    - eso_vault_token_ttl | string is match('^[1-9][0-9]*[smh]$')
-    fail_msg: >-
-      ESO Vault access must use exact KV-v2 paths, explicit Kubernetes
-      namespaces, a bounded audience, and a finite token TTL. Wildcards and
-      parent traversal are rejected.
-  when: eso_enabled | bool
-- name: Build the exact Vault policy for ESO
-  ansible.builtin.set_fact:
-    vault_eso_policy_hcl: |-
-      # Managed by ansible-k8s-full-setup. Empty means deny all KV reads.
-      # ESO validates each Vault login token before reading secret data.
-      path "auth/token/lookup-self" {
-        capabilities = ["read"]
-      }
-      {% for remote_path in (eso_vault_read_paths | unique | sort) %}
-      path "secret/data/{{ remote_path }}" {
-        capabilities = ["read"]
-      }
-      path "secret/metadata/{{ remote_path }}" {
-        capabilities = ["read"]
-      }
-      {% endfor %}
-    eso_vault_token_ttl_seconds: >-
-      {{ (eso_vault_token_ttl | regex_replace('[smh]$', '') | int) *
-         (1 if (eso_vault_token_ttl | string).endswith('s') else
-          60 if (eso_vault_token_ttl | string).endswith('m') else 3600) }}
-  when: eso_enabled | bool
 - name: Create Vault policy for ESO
   kubernetes.core.k8s_exec:
     namespace: '{{ vault_ns }}'
     pod: vault-0
     command: >-
       sh -ec 'VAULT_TOKEN=$(cat "$1"); export VAULT_TOKEN;
-      printf %s "$2" | base64 -d | vault policy write external-secrets -' --
-      {{ vault_token_remote_file }} {{ vault_eso_policy_hcl | b64encode }}
+      printf %s "path \"secret/data/*\" {
+      capabilities = [\"read\", \"list\"]
+      }
+      path \"secret/metadata/*\" {
+      capabilities = [\"read\", \"list\"]
+      }" | vault policy write external-secrets -' --
+      {{ vault_token_remote_file }}
   when:
   - eso_enabled | bool
   - vault_init_data is defined
@@ -1864,14 +1462,8 @@
       auth/kubernetes/role/external-secrets
       bound_service_account_names=external-secrets-vault
       bound_service_account_namespaces="$2"
-      audience="$3"
-      policies=external-secrets
-      token_no_default_policy=true
-      token_ttl="$4"
-      token_explicit_max_ttl="$4"
-      token_type=batch' --
+      policies=default,external-secrets ttl=1h' --
       {{ vault_token_remote_file }} {{ eso_ns }}
-      {{ eso_vault_token_audience }} {{ eso_vault_token_ttl }}
   when:
   - eso_enabled | bool
   - vault_init_data is defined
@@ -1904,14 +1496,11 @@
 - name: Prove the Vault policy for ESO grants the required KV-v2 reads
   ansible.builtin.assert:
     that:
-    - >-
-      (_vault_eso_policy_verified.stdout | trim) ==
-      (vault_eso_policy_hcl | trim)
-    - "'*' not in _vault_eso_policy_verified.stdout"
-    - "'list' not in _vault_eso_policy_verified.stdout"
-    fail_msg: >-
-      Vault policy external-secrets differs from the exact, read-only KV-v2
-      allowlist plus the required token self-validation capability.
+    - "'secret/data/*' in _vault_eso_policy_verified.stdout"
+    - "'secret/metadata/*' in _vault_eso_policy_verified.stdout"
+    - "'read' in _vault_eso_policy_verified.stdout"
+    - "'list' in _vault_eso_policy_verified.stdout"
+    fail_msg: Vault policy external-secrets does not contain the required KV-v2 permissions.
   when:
   - eso_enabled | bool
   - vault_init_data is defined
@@ -1949,24 +1538,10 @@
     - >-
       ((_vault_eso_role_verified_raw.stdout |
       from_json).data.token_policies | sort | list) ==
-      ['external-secrets']
+      ['default', 'external-secrets']
     - >-
       (_vault_eso_role_verified_raw.stdout |
-      from_json).data.token_no_default_policy | bool
-    - >-
-      (_vault_eso_role_verified_raw.stdout |
-      from_json).data.token_ttl | int ==
-      (eso_vault_token_ttl_seconds | int)
-    - >-
-      (_vault_eso_role_verified_raw.stdout |
-      from_json).data.token_explicit_max_ttl | int ==
-      (eso_vault_token_ttl_seconds | int)
-    - >-
-      (_vault_eso_role_verified_raw.stdout |
-      from_json).data.token_type == 'batch'
-    - >-
-      (_vault_eso_role_verified_raw.stdout |
-      from_json).data.audience == eso_vault_token_audience
+      from_json).data.token_ttl | int == 3600
     fail_msg: Vault Kubernetes auth role external-secrets is not reconciled.
   when:
   - eso_enabled | bool
@@ -1981,8 +1556,6 @@
       metadata:
         name: vault-backend
       spec:
-        conditions:
-        - namespaces: '{{ eso_vault_allowed_namespaces | unique | sort }}'
         provider:
           vault:
             server: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault.{{ vault_ns }}.svc.cluster.local:8200"
@@ -1996,27 +1569,10 @@
                 serviceAccountRef:
                   name: external-secrets-vault
                   namespace: '{{ eso_ns }}'
-                  audiences:
-                  - '{{ eso_vault_token_audience }}'
   register: _r_create_clustersecretstore_for_vault
   retries: 3
   delay: 15
   until: _r_create_clustersecretstore_for_vault is not failed
-  when: eso_enabled | bool
-- name: Wait for the restricted Vault ClusterSecretStore
-  kubernetes.core.k8s_info:
-    api_version: external-secrets.io/v1
-    kind: ClusterSecretStore
-    name: vault-backend
-  register: _vault_clustersecretstore_status
-  changed_when: false
-  retries: 24
-  delay: 5
-  until: >-
-    (_vault_clustersecretstore_status.resources | default([]) | length) == 1 and
-    ((_vault_clustersecretstore_status.resources[0].status.conditions |
-    default([]) | selectattr('type', 'equalto', 'Ready') |
-    selectattr('status', 'equalto', 'True') | list | length) == 1)
   when: eso_enabled | bool
 - name: Validate the opt-in example ExternalSecret contract
   ansible.builtin.assert:
