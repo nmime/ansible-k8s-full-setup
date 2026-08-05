@@ -11,7 +11,10 @@ never command arguments or terminal output.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from datetime import datetime, timedelta, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -36,6 +39,27 @@ SIMPLE_YAML_SCALAR_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 class BootstrapError(RuntimeError):
     """Expected, safely reportable bootstrap failure."""
+
+
+class LocalSecretsFileLock:
+    """Serialize encrypted recovery-state readers and atomic writers."""
+
+    def __init__(self, secrets_file: Path):
+        self.path = secrets_file.with_suffix(secrets_file.suffix + ".lock")
+        self.handle = None
+
+    def __enter__(self) -> "LocalSecretsFileLock":
+        self.path.touch(mode=0o600, exist_ok=True)
+        os.chmod(self.path, 0o600)
+        self.handle = self.path.open("r+")
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        if self.handle is not None:
+            fcntl.flock(self.handle, fcntl.LOCK_UN)
+            self.handle.close()
+            self.handle = None
 
 
 def utc_now() -> datetime:
@@ -91,6 +115,63 @@ def require_secure_regular_file(path: Path, label: str) -> None:
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
         raise BootstrapError(f"{label} must have mode 0600 or stricter: {path}")
+
+
+def read_runtime_secret_token(
+    kubeconfig: Path,
+    namespace: str,
+    name: str,
+    key: str,
+) -> str:
+    """Read one exact runtime token without writing it to argv or stdout."""
+
+    result = run_command(
+        [
+            "kubectl",
+            "--kubeconfig",
+            str(kubeconfig),
+            "--namespace",
+            namespace,
+            "get",
+            "secret",
+            name,
+            "--output=json",
+        ],
+        sensitive=True,
+        label="active GitLab Runner runtime Secret read",
+    )
+    try:
+        payload = json.loads(result.stdout)
+        metadata = payload["metadata"]
+        if metadata["name"] != name or metadata["namespace"] != namespace:
+            raise KeyError("metadata")
+        encoded = payload["data"][key]
+        if not isinstance(encoded, str):
+            raise TypeError("secret value")
+        token = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        binascii.Error,
+    ) as error:
+        raise BootstrapError(
+            "active GitLab Runner runtime Secret returned invalid metadata"
+        ) from error
+    if token.endswith("\r\n"):
+        canonical_token = token[:-2]
+    elif token.endswith("\n"):
+        canonical_token = token[:-1]
+    else:
+        canonical_token = token
+    if canonical_token != canonical_token.strip() or not TOKEN_RE.fullmatch(
+        canonical_token
+    ):
+        raise BootstrapError(
+            "active GitLab Runner runtime Secret has no canonical glrt token"
+        )
+    return canonical_token
 
 
 def env_assignment_re(env_name: str) -> re.Pattern[str]:
@@ -494,7 +575,11 @@ STDOUT.write(JSON.generate({{'status' => response.code.to_i}}))
             raise BootstrapError("GitLab Runner token verification returned invalid metadata") from error
         if status == 200:
             return True
-        if status == 403:
+        # GitLab 19.1 returns 404 for a deleted or otherwise unknown runner
+        # authentication token, while older supported releases return 403.
+        # Both responses prove that the credential is invalid; 5xx and other
+        # unexpected statuses must still stop bootstrap as transport failures.
+        if status in {403, 404}:
             return False
         raise BootstrapError(f"GitLab Runner token verification returned unexpected HTTP {status}")
 
@@ -719,6 +804,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", default="gitlab")
     parser.add_argument("--env-file", type=Path, default=REPO_ROOT / ".env")
     parser.add_argument(
+        "--sync-env",
+        action="store_true",
+        help="also write the token to the ignored mode-0600 environment file",
+    )
+    parser.add_argument(
+        "--adopt-runtime-secret",
+        action="store_true",
+        help=(
+            "one-run recovery: adopt the active Kubernetes runner Secret only after "
+            "live GitLab verification"
+        ),
+    )
+    parser.add_argument("--runtime-secret-namespace")
+    parser.add_argument("--runtime-secret-name")
+    parser.add_argument("--runtime-secret-key", default="runner-token")
+    parser.add_argument(
         "--secrets-file", type=Path, default=REPO_ROOT / "playbooks/.platform-secrets.yml"
     )
     parser.add_argument(
@@ -750,6 +851,12 @@ def parse_args() -> argparse.Namespace:
         args.access_level = "ref_protected"
         args.token_env_name = "GITLAB_IMAGE_BUILDER_RUNNER_TOKEN"
         args.token_yaml_key = "gitlab_image_builder_runner_token"
+        args.runtime_secret_namespace = (
+            args.runtime_secret_namespace or "gitlab-image-builds"
+        )
+        args.runtime_secret_name = (
+            args.runtime_secret_name or "platform-gitlab-image-builder-runner-auth"
+        )
     elif args.runner_kind == "docker-host":
         args.runner_description = (
             args.runner_description or "ansible-k8s-protected-docker-host"
@@ -759,6 +866,12 @@ def parse_args() -> argparse.Namespace:
         args.access_level = "ref_protected"
         args.token_env_name = "GITLAB_DOCKER_HOST_RUNNER_TOKEN"
         args.token_yaml_key = "gitlab_docker_host_runner_token"
+        args.runtime_secret_namespace = (
+            args.runtime_secret_namespace or "gitlab-docker-builds"
+        )
+        args.runtime_secret_name = (
+            args.runtime_secret_name or "platform-gitlab-docker-host-runner-auth"
+        )
     else:
         args.runner_description = (
             args.runner_description or "ansible-k8s-platform-runner"
@@ -768,6 +881,10 @@ def parse_args() -> argparse.Namespace:
         args.access_level = "not_protected"
         args.token_env_name = "GITLAB_RUNNER_TOKEN"
         args.token_yaml_key = "gitlab_runner_token"
+        args.runtime_secret_namespace = args.runtime_secret_namespace or args.namespace
+        args.runtime_secret_name = (
+            args.runtime_secret_name or "platform-gitlab-runner-auth"
+        )
     return args
 
 
@@ -781,9 +898,10 @@ def main() -> int:
             )
         require_secure_regular_file(args.vault_password_file, "Ansible Vault password file")
         require_secure_regular_file(args.secrets_file, "encrypted platform secrets file")
-        require_ignored_env(args.env_file)
-        if args.env_file.exists():
-            require_secure_regular_file(args.env_file, "repository environment file")
+        if args.sync_env:
+            require_ignored_env(args.env_file)
+            if args.env_file.exists():
+                require_secure_regular_file(args.env_file, "repository environment file")
         parsed_url = urlparse(args.gitlab_internal_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
             raise BootstrapError("--gitlab-internal-url must be an HTTP(S) URL")
@@ -791,46 +909,73 @@ def main() -> int:
         bootstrapper = Bootstrapper(args)
         pod = bootstrapper.toolbox_pod()
         version = bootstrapper.require_compatible_version(pod)
-        with KubernetesLeaseLock(bootstrapper.kubectl) as bootstrap_lock:
+        with (
+            KubernetesLeaseLock(bootstrapper.kubectl) as bootstrap_lock,
+            LocalSecretsFileLock(args.secrets_file),
+        ):
             vault_plaintext = decrypt_secrets(args.secrets_file, args.vault_password_file)
-            env_content = (
-                args.env_file.read_text(encoding="utf-8") if args.env_file.exists() else ""
-            )
+            env_content = ""
+            if args.sync_env and args.env_file.exists():
+                env_content = args.env_file.read_text(encoding="utf-8")
             candidates = {
                 token
                 for token in (
                     parse_yaml_token(vault_plaintext, args.token_yaml_key),
-                    parse_env_token(env_content, args.token_env_name),
+                    (
+                        parse_env_token(env_content, args.token_env_name)
+                        if args.sync_env
+                        else None
+                    ),
                 )
                 if token and TOKEN_RE.fullmatch(token)
             }
 
-            managed_token = bootstrapper.recover_managed_runner_token(pod)
-            valid = {token for token in candidates if bootstrapper.verify_token(pod, token)}
-            if managed_token:
-                if not bootstrapper.verify_token(pod, managed_token):
+            if args.adopt_runtime_secret:
+                runtime_token = read_runtime_secret_token(
+                    args.kubeconfig,
+                    args.runtime_secret_namespace,
+                    args.runtime_secret_name,
+                    args.runtime_secret_key,
+                )
+                if not bootstrapper.verify_token(pod, runtime_token):
                     raise BootstrapError(
-                        "the single managed GitLab Runner token was recovered but failed live "
-                        "verification"
+                        "the active GitLab Runner runtime token failed live verification"
                     )
-                valid.add(managed_token)
-            if len(valid) > 1:
-                raise BootstrapError(
-                    "local state and the managed GitLab Runner resolve to different valid tokens"
-                )
-            if valid:
-                runner_token = next(iter(valid))
-                action = (
-                    "recovered and reused the managed live runner token"
-                    if managed_token
-                    else "reused the existing live runner token"
-                )
+                runner_token = runtime_token
+                action = "adopted the verified active runtime token"
             else:
-                bootstrap_lock.assert_held()
-                runner_token = bootstrapper.create_runner_token(pod)
-                if not bootstrapper.verify_token(pod, runner_token):
-                    raise BootstrapError("the newly created GitLab Runner token failed live verification")
-                action = "created a new instance runner token"
+                managed_token = bootstrapper.recover_managed_runner_token(pod)
+                valid = {
+                    token
+                    for token in candidates
+                    if bootstrapper.verify_token(pod, token)
+                }
+                if managed_token:
+                    if not bootstrapper.verify_token(pod, managed_token):
+                        raise BootstrapError(
+                            "the single managed GitLab Runner token was recovered but failed live "
+                            "verification"
+                        )
+                    valid.add(managed_token)
+                if len(valid) > 1:
+                    raise BootstrapError(
+                        "local state and the managed GitLab Runner resolve to different valid tokens"
+                    )
+                if valid:
+                    runner_token = next(iter(valid))
+                    action = (
+                        "recovered and reused the managed live runner token"
+                        if managed_token
+                        else "reused the existing live runner token"
+                    )
+                else:
+                    bootstrap_lock.assert_held()
+                    runner_token = bootstrapper.create_runner_token(pod)
+                    if not bootstrapper.verify_token(pod, runner_token):
+                        raise BootstrapError(
+                            "the newly created GitLab Runner token failed live verification"
+                        )
+                    action = "created a new instance runner token"
 
             bootstrap_lock.assert_held()
             encrypt_secrets(
@@ -840,14 +985,20 @@ def main() -> int:
                     vault_plaintext, runner_token, args.token_yaml_key
                 ),
             )
-            atomic_write(
-                args.env_file,
-                replace_env_token(
-                    env_content, runner_token, args.token_env_name
-                ),
-            )
+            if args.sync_env:
+                atomic_write(
+                    args.env_file,
+                    replace_env_token(
+                        env_content, runner_token, args.token_env_name
+                    ),
+                )
             bootstrap_lock.assert_held()
-        print(f"GitLab {version}: {action}; encrypted secrets and ignored .env are synchronized.")
+        persistence = (
+            "encrypted secrets and explicitly requested ignored .env are synchronized"
+            if args.sync_env
+            else "encrypted secrets are synchronized; plaintext .env was not written"
+        )
+        print(f"GitLab {version}: {action}; {persistence}.")
         print("The authentication token was not printed or passed in a command argument.")
         return 0
     except BootstrapError as error:

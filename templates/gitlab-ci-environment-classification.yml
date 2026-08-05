@@ -1,0 +1,59 @@
+# Shared GitLab CI classification for n0xeid projects.
+#
+# Consumer jobs extend `.n0xeid-ci-auto`. Deployment jobs additionally set a
+# GitLab `environment` with the canonical `deployment_tier`; the validation
+# guard below prevents a production declaration from running on an
+# unprotected ref. No branch is named "preproduction" here: default/protected
+# ref metadata is the policy source.
+
+.n0xeid-ci-auto:
+  tags:
+    - ci-shared
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"'
+      variables:
+        N0XEID_CI_CLASS: maintenance
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-maintenance
+    - if: '$CI_COMMIT_REF_PROTECTED == "true" && ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG)'
+      variables:
+        N0XEID_CI_CLASS: production
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-production
+    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+      variables:
+        N0XEID_CI_CLASS: environment
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-environment
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH'
+      variables:
+        N0XEID_CI_CLASS: review
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-review
+    - when: never
+
+.n0xeid-deploy-production:
+  extends: .n0xeid-ci-auto
+  before_script:
+    - >-
+      test "$N0XEID_CI_CLASS" = production ||
+      { echo 'Production deployment requires the default protected branch or a protected tag' >&2; exit 1; }
+    - >-
+      test "$CI_COMMIT_REF_PROTECTED" = true ||
+      { echo 'Production deployment requires a protected ref' >&2; exit 1; }
+    - >-
+      test "$CI_ENVIRONMENT_TIER" = production ||
+      { echo 'Production deployment must declare environment.deployment_tier=production' >&2; exit 1; }
+
+.n0xeid-deploy-environment:
+  extends: .n0xeid-ci-auto
+  before_script:
+    - >-
+      test "$N0XEID_CI_CLASS" = environment ||
+      { echo 'Environment deployment requires a protected environment branch' >&2; exit 1; }
+    - >-
+      case "$CI_ENVIRONMENT_TIER" in staging|testing|development|other) : ;; *)
+      echo 'Environment deployment must declare a non-production canonical deployment tier' >&2; exit 1;; esac
+
+.n0xeid-maintenance:
+  extends: .n0xeid-ci-auto
+  before_script:
+    - >-
+      test "$CI_PIPELINE_SOURCE" = schedule && test "$CI_COMMIT_REF_PROTECTED" = true ||
+      { echo 'Maintenance requires a protected scheduled pipeline' >&2; exit 1; }
