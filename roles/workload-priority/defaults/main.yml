@@ -1,0 +1,8 @@
+---
+# Variables are defined centrally in defaults/main.yml so PriorityClasses can
+# be created before workload charts and applied after all controllers exist.
+workload_priority_rollout_timeout: 10m
+# Exact namespace/kind/name keys may be deferred only for an active operation
+# whose controller must not roll (for example a Velero node-agent during a
+# full backup). The final production audit must run with this list empty.
+workload_priority_temporary_exclusions: []

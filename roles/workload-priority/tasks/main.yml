@@ -1,0 +1,133 @@
+---
+- name: Workload priority | Build namespace policy map
+  ansible.builtin.set_fact:
+    _workload_priority_namespace_map: >-
+      {{
+        dict(workload_priority_platform_namespaces |
+             zip(['n0xeid-platform-critical'] *
+                 (workload_priority_platform_namespaces | length))) |
+        combine(dict(workload_priority_production_namespaces |
+                     zip(['n0xeid-service-production'] *
+                         (workload_priority_production_namespaces | length)))) |
+        combine(dict(workload_priority_environment_namespaces |
+                     zip(['n0xeid-service-environment'] *
+                         (workload_priority_environment_namespaces | length)))) |
+        combine(dict(workload_priority_review_namespaces |
+                     zip(['n0xeid-service-review'] *
+                         (workload_priority_review_namespaces | length))))
+      }}
+
+- name: Workload priority | Label classified namespaces
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ item.key }}'
+        labels:
+          n0xeid.xyz/environment-tier: >-
+            {{
+              'platform' if item.value == 'n0xeid-platform-critical'
+              else 'production' if item.value == 'n0xeid-service-production'
+              else 'environment' if item.value == 'n0xeid-service-environment'
+              else 'review'
+            }}
+          n0xeid.xyz/priority-class: '{{ item.value }}'
+  loop: '{{ _workload_priority_namespace_map | dict2items }}'
+  loop_control:
+    label: '{{ item.key }} -> {{ item.value }}'
+
+- name: Workload priority | Discover Deployments
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+  register: _workload_priority_deployments
+
+- name: Workload priority | Discover StatefulSets
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+  register: _workload_priority_statefulsets
+
+- name: Workload priority | Discover DaemonSets
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+  register: _workload_priority_daemonsets
+
+- name: Workload priority | Build controller inventory
+  ansible.builtin.set_fact:
+    _workload_priority_controllers: >-
+      {{
+        (_workload_priority_deployments.resources | default([])) +
+        (_workload_priority_statefulsets.resources | default([])) +
+        (_workload_priority_daemonsets.resources | default([]))
+      }}
+
+- name: Workload priority | Apply and gate each controller serially
+  ansible.builtin.include_tasks: apply-controller.yml
+  loop: '{{ _workload_priority_controllers }}'
+  loop_control:
+    label: >-
+      {{ item.metadata.namespace }}/{{ item.kind }}/{{ item.metadata.name }}
+  when:
+    - item.metadata.namespace in _workload_priority_namespace_map
+    - >-
+      (item.metadata.namespace ~ '/' ~ item.kind ~ '/' ~ item.metadata.name)
+      not in workload_priority_temporary_exclusions
+    # Never downgrade Kubernetes system classes or replace an intentional
+    # component-specific class (for example a CI manager or cache). This role
+    # only closes the unsafe "no priority" gap.
+    - (item.spec.template.spec.priorityClassName | default('') | length) == 0
+
+- name: Workload priority | Verify no classified workload is left unprioritized
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - deployment,statefulset,daemonset
+      - --all-namespaces
+      - --output=json
+  register: _workload_priority_verification
+  changed_when: false
+
+- name: Workload priority | Resolve unprioritized controller keys
+  ansible.builtin.set_fact:
+    _workload_priority_unprioritized_keys: >-
+      {%- set missing = [] -%}
+      {%- for controller in
+            ((_workload_priority_verification.stdout | from_json)['items'] |
+             default([])) -%}
+      {%-   if controller.metadata.namespace in
+              (_workload_priority_namespace_map.keys() | list) and
+              not (controller.spec.template.spec.priorityClassName is defined) -%}
+      {%-     set _ = missing.append(
+                controller.metadata.namespace ~ '/' ~ controller.kind ~ '/' ~
+                controller.metadata.name) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ missing }}
+
+- name: Workload priority | Assert the reconciled service boundary
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_workload_priority_unprioritized_keys |
+         difference(workload_priority_temporary_exclusions) | length) == 0
+    fail_msg: >-
+      At least one non-deferred classified workload controller has no
+      PriorityClass after reconciliation; refusing to declare the shared
+      worker pool safe. Missing={{ _workload_priority_unprioritized_keys }}
+
+- name: Workload priority | Report explicitly deferred controllers
+  ansible.builtin.debug:
+    msg: >-
+      Priority reconciliation is temporarily deferred for
+      {{ _workload_priority_unprioritized_keys |
+         intersect(workload_priority_temporary_exclusions) }}. Run the final
+      audit with workload_priority_temporary_exclusions=[] after the active
+      operation completes.
+  when: >-
+    (_workload_priority_unprioritized_keys |
+     intersect(workload_priority_temporary_exclusions) | length) > 0
