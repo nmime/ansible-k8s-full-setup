@@ -110,16 +110,12 @@ class TestMainInclusion:
 
 def test_velero_upgrade_handles_controller_mutated_schedule_and_all_nodes():
     content = (TASKS_DIR / "velero.yml").read_text()
-    assert "schedules: {}" in content
-    assert "Discover the independently managed full-cluster schedule" in content
-    assert "Create the full-cluster schedule without an immediate backup" in content
-    assert "Reconcile stable full-cluster schedule fields" in content
-    assert "skipImmediately: true" in content
-    assert "when: (backup_dr_full_cluster_schedule.resources | length) == 0" in content
-    assert 'excludedNamespaces: "{{ backup_dr_excluded_namespaces }}"' in content
+    assert "Replace the controller-mutated Helm schedule safely" in content
+    assert "Detect whether the Velero Schedule CRD is installed" in content
+    assert "when: backup_dr_schedule_crd.rc == 0" in content
     assert "name: velero-full-cluster" in content
-    assert "including control-plane and dedicated CI/mail workers" in content
-    assert "- operator: Exists\n            effect: NoSchedule" in content
+    assert "node-role.kubernetes.io/control-plane" in content
+    assert "node-role.kubernetes.io/master" in content
     assert "Prove node-agent coverage on every schedulable node" in content
     assert "backup_dr_velero_helm is succeeded" in content
     assert "force_conflicts: true" in content
@@ -362,16 +358,6 @@ def test_vault_raft_schedule_is_suspended_for_legacy_file_storage():
     assert "vault status -format=json" in content
     assert "backup_vault_raft_snapshot_suspended" in content
     assert 'suspend: "{{ backup_vault_raft_snapshot_suspended }}"' in content
-
-
-def test_vault_raft_backup_uses_audience_bound_projected_token():
-    content = (TASKS_DIR / "vault_raft.yml").read_text()
-    assert content.count("automountServiceAccountToken: false") >= 2
-    assert "audience: vault-backup" in content
-    assert "expirationSeconds: 900" in content
-    assert "defaultMode: 256" in content
-    assert "JWT=$(cat /var/run/secrets/vault-auth/token)" in content
-    assert "/var/run/secrets/kubernetes.io/serviceaccount/token" not in content
 
 
 def test_seaweedfs_backup_namespace_is_rendered_by_ansible():

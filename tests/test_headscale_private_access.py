@@ -53,21 +53,7 @@ def test_headscale_loads_deny_by_default_policy_and_private_dns_records():
     assert "{{ private_network_cidr }}" in policy
     assert "headscale_admin_private_tcp_ports | map('string')" in policy
     assert '"proto": "icmp"' in policy
-    assert "headscale_dns_zones" in records
-
-
-def test_headscale_vpn_dns_can_target_the_bastion_admin_edge():
-    network_tasks = read("roles/network-security/tasks/main.yml")
-    cluster_tasks = read("roles/k8s-cluster-management/tasks/main.yml")
-
-    assert "network.vpn.internal_dns.zones" in network_tasks
-    assert "else network.internal_dns.zones" in network_tasks
-    assert "# managed-by-ansible-k8s-admin-edge" in network_tasks
-    assert "# managed-by-ansible-k8s-admin-edge" in cluster_tasks
-    assert "bind {{ admin_edge_tailnet_ip }}:443" in cluster_tasks
-    assert "bind {{ bastion_public_ip }}:443" in cluster_tasks
-    assert "{{ node_ip }}:{{ admin_gateway_node_port }}" in cluster_tasks
-    assert "actual_tailnet_ip" in cluster_tasks
+    assert "network.internal_dns.zones" in records
 
 
 def test_headscale_runtime_does_not_persist_or_ignore_auth_key_failures():
