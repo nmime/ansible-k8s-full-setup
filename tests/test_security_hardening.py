@@ -1002,6 +1002,8 @@ def test_promtail_is_isolated_in_a_privileged_agent_namespace():
     assert "pod-security.kubernetes.io/enforce: privileged" in observability
     promtail = observability.split("name: Install Promtail for log collection", 1)[1]
     assert "release_namespace: '{{ logging_agent_namespace }}'" in promtail
+    assert "tolerations:" in promtail
+    assert "- operator: Exists" in promtail
     assert "name: default-deny" in promtail
     assert "name: allow-logging-egress" in promtail
     assert "k8s:app.kubernetes.io/component: gateway" in promtail

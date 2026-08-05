@@ -287,6 +287,8 @@
       replicaCount: '{{ tracing.collector_replicas | default(2 if resource_tier in ["medium", "production"] else 1) | int }}'
       podSecurityContext:
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true

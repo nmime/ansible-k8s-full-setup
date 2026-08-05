@@ -536,6 +536,12 @@
         readOnlyRootFilesystem: true
         seccompProfile:
           type: RuntimeDefault
+      # Node-level log collection must cover dedicated and transiently tainted
+      # workers too. Promtail remains non-privileged and isolated by the
+      # logging-agents namespace/network boundary; this toleration changes only
+      # scheduling coverage.
+      tolerations:
+      - operator: Exists
   register: _r_install_promtail_for_log_collection
   retries: 3
   delay: 10
@@ -2095,6 +2101,7 @@
 
 - name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)
   ansible.builtin.import_tasks: alerting.yml
+  tags: [alerting, monitoring]
 
 - name: Include Coroot (auto-discovering application observability)
   ansible.builtin.import_tasks: coroot.yml

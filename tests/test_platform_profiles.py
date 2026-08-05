@@ -1173,6 +1173,7 @@ class TestComponentLifecycle:
                 receiver["name"] for receiver in parsed["receivers"]
             }
             assert ("telegram-critical" in receiver_names) is telegram_enabled
+            assert ("telegram-warning" in receiver_names) is telegram_enabled
             assert ("email-warning" in receiver_names) is email_enabled
 
     def test_orchestrator_exposes_every_selectable_component(self, tmp_path):

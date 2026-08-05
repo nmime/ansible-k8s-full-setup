@@ -116,6 +116,19 @@ class TestHealthChecksContent:
         assert "ignore_errors: true" not in content
         assert "failed_when: false" not in content
 
+    def test_otel_health_uses_controller_convergence_not_stale_terminal_pods(
+        self, content
+    ):
+        task = content.split("- name: Check OTel Collector health", 1)[1].split(
+            "- name: Display observability health summary", 1
+        )[0]
+        assert "kind: Deployment" in task
+        assert "name: otel-collector-opentelemetry-collector" in task
+        assert "status.updatedReplicas" in task
+        assert "status.readyReplicas" in task
+        assert "status.availableReplicas" in task
+        assert "status.phase" not in task
+
 class TestKedaFix:
     @pytest.fixture
     def content(self):
