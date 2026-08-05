@@ -637,12 +637,6 @@
         readOnlyRootFilesystem: true
         seccompProfile:
           type: RuntimeDefault
-      # Node-level log collection must cover dedicated and transiently tainted
-      # workers too. Promtail remains non-privileged and isolated by the
-      # logging-agents namespace/network boundary; this toleration changes only
-      # scheduling coverage.
-      tolerations:
-      - operator: Exists
       # Node-local log collection must cover dedicated CI and mail workers as
       # well as general workers. These tolerations do not weaken workload
       # isolation: Promtail remains a small, resource-bounded DaemonSet and
@@ -704,6 +698,7 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: kube-system
+              k8s:k8s-app: kube-dns
           toPorts:
           - ports:
             - port: '53'
@@ -743,7 +738,9 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: '{{ monitoring_namespace }}'
+              k8s:app.kubernetes.io/name: loki
               k8s:app.kubernetes.io/instance: loki
+              k8s:app.kubernetes.io/component: gateway
           toPorts:
           - ports:
             - port: '8080'
@@ -2275,7 +2272,7 @@
 
 - name: Include alerting (VMAlertmanager + VMAlert + VMRules + routing)
   ansible.builtin.import_tasks: alerting.yml
-  tags: [alerting, monitoring]
+  tags: [alerting]
 
 - name: Include Coroot (auto-discovering application observability)
   ansible.builtin.import_tasks: coroot.yml
