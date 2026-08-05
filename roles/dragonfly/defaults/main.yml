@@ -10,3 +10,10 @@ dragonfly_cpu_request: "{{ dragonfly.cpu_request | default('750m' if resource_ti
 dragonfly_cpu_limit: "{{ dragonfly.cpu_limit | default('1500m' if resource_tier in ['medium', 'production'] else '500m') }}"
 dragonfly_snapshot_storage: "{{ dragonfly.snapshot_storage | default('20Gi' if resource_tier in ['medium', 'production'] else '10Gi') }}"
 dragonfly_snapshot_cron: "*/30 * * * *"
+dragonfly_priority_class_name: n0xeid-platform-critical
+dragonfly_tls_mode: "{{ dragonfly.tls_mode | default('disabled') }}"
+dragonfly_tls_port: "{{ dragonfly.tls_port | default(6380) }}"
+dragonfly_tls_proxy_image: "{{ dragonfly.tls_proxy_image | default('haproxy:3.2.5-alpine') }}"
+dragonfly_tls_proxy_revision: "{{ dragonfly.tls_proxy_revision | default('3') }}"
+dragonfly_tls_client_namespaces: "{{ dragonfly.tls_client_namespaces | default([]) }}"
+dragonfly_allow_plaintext_clients: "{{ dragonfly.allow_plaintext_clients | default(true) }}"
