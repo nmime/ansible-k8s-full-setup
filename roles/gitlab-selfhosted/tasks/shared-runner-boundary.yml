@@ -1,0 +1,299 @@
+---
+# General CI is a shared worker pool, but not a shared trust boundary. Jobs run
+# in their own restricted namespace with a hard resource ceiling and explicit
+# egress. The Runner managers share this control boundary and receive only
+# namespace-scoped permissions here.
+
+- name: General CI | Create the restricted job namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ gitlab_runner_job_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          n0xeid.xyz/environment-tier: ci
+          n0xeid.xyz/priority-class: n0xeid-ci-review
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+
+- name: General CI | Bound aggregate job consumption
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: shared-ci-budget
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        hard:
+          count/pods: '12'
+          requests.cpu: '8'
+          requests.memory: 16Gi
+          requests.ephemeral-storage: 32Gi
+          limits.cpu: '16'
+          limits.memory: 32Gi
+          limits.ephemeral-storage: 96Gi
+
+- name: General CI | Supply fail-safe container defaults
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: shared-ci-defaults
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            defaultRequest:
+              cpu: 100m
+              memory: 128Mi
+              ephemeral-storage: 256Mi
+            default:
+              cpu: '1'
+              memory: 2Gi
+              ephemeral-storage: 4Gi
+            max:
+              cpu: '4'
+              memory: 8Gi
+              ephemeral-storage: 16Gi
+
+- name: General CI | Grant the manager only job-namespace permissions
+  kubernetes.core.k8s:
+    state: present
+    definition: '{{ item }}'
+  loop:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: gitlab-runner-job-manager
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      rules:
+        - apiGroups: ['']
+          resources: [pods, pods/attach, pods/exec, pods/log]
+          verbs: [create, delete, get, list, patch, watch]
+        - apiGroups: ['']
+          resources: [secrets, services]
+          verbs: [create, delete, get, list, patch, update]
+        - apiGroups: ['']
+          resources: [events]
+          verbs: [get, list, watch]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: gitlab-runner-job-manager
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: gitlab-runner-job-manager
+      subjects:
+        - kind: ServiceAccount
+          name: gitlab-runner
+          namespace: '{{ gitlab_runner_release_namespace }}'
+  loop_control:
+    label: '{{ item.kind }}/{{ item.metadata.name }}'
+
+- name: General CI | Enforce default-deny ingress and egress
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Ingress, Egress]
+
+- name: General CI | Allow DNS resolution
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-dns
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - {protocol: UDP, port: 53}
+              - {protocol: TCP, port: 53}
+          - to:
+              - ipBlock:
+                  cidr: 169.254.25.10/32
+            ports:
+              - {protocol: UDP, port: 53}
+              - {protocol: TCP, port: 53}
+
+- name: General CI | Allow GitLab clone, artifacts, and registry traffic
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-gitlab
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: '{{ gitlab_namespace }}'
+                podSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: [webservice, registry]
+            ports:
+              - {protocol: TCP, port: 8181}
+              - {protocol: TCP, port: 5000}
+
+- name: General CI | Allow the object-backed shared cache
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-object-cache
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: storage
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/component: filer
+            ports:
+              - {protocol: TCP, port: 8333}
+
+- name: General CI | Allow public package and source endpoints only
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-public-web
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - ipBlock:
+                  cidr: 0.0.0.0/0
+                  except:
+                    - 10.0.0.0/8
+                    - 100.64.0.0/10
+                    - 127.0.0.0/8
+                    - 169.254.0.0/16
+                    - 172.16.0.0/12
+                    - 192.168.0.0/16
+            ports:
+              - {protocol: TCP, port: 80}
+              - {protocol: TCP, port: 443}
+
+- name: General CI | Verify the manager can create jobs in the pool
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - auth
+      - can-i
+      - create
+      - pods
+      - --namespace={{ gitlab_runner_job_namespace }}
+      - --as=system:serviceaccount:{{ gitlab_runner_release_namespace }}:gitlab-runner
+  register: _gitlab_runner_job_namespace_auth
+  changed_when: false
+
+- name: General CI | Refuse a pool with incomplete RBAC
+  ansible.builtin.assert:
+    that:
+      - _gitlab_runner_job_namespace_auth.stdout | trim == 'yes'
+    fail_msg: >-
+      The GitLab Runner manager cannot create Pods in the shared CI namespace.
+
+- name: General CI | Allow only managers to reach the Kubernetes API
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-manager-kube-api
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: gitlab-runner
+        egress:
+          - toEntities:
+              - kube-apiserver
+
+- name: General CI | Allow NodeLocal DNS in the Cilium policy plane
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: allow-nodelocal-dns
+        namespace: '{{ gitlab_runner_job_namespace }}'
+      spec:
+        endpointSelector: {}
+        egress:
+          - toEndpoints:
+              - matchLabels:
+                  k8s:io.kubernetes.pod.namespace: kube-system
+                  k8s:k8s-app: kube-dns
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+          - toCIDR:
+              - 169.254.25.10/32
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'
+          - toEntities:
+              - host
+            toPorts:
+              - ports:
+                  - {port: '53', protocol: UDP}
+                  - {port: '53', protocol: TCP}
+                rules:
+                  dns:
+                    - matchPattern: '*'

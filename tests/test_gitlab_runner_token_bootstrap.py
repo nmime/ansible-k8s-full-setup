@@ -1,8 +1,10 @@
 """Contracts for the GitLab Runner token bootstrap helper."""
 
 import argparse
+import base64
 from importlib.util import module_from_spec, spec_from_file_location
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -69,6 +71,16 @@ def test_lease_timestamps_use_kubernetes_microtime_wire_format():
     assert MODULE.parse_kubernetes_timestamp(encoded) == moment
 
 
+def test_local_recovery_state_lock_is_project_scoped_and_mode_0600(tmp_path):
+    secrets_file = tmp_path / ".platform-secrets.yml"
+    lock = MODULE.LocalSecretsFileLock(secrets_file)
+    with lock:
+        assert lock.path == tmp_path / ".platform-secrets.yml.lock"
+        assert lock.handle is not None
+        assert os.stat(lock.path).st_mode & 0o777 == 0o600
+    assert lock.handle is None
+
+
 def test_lease_microtime_parser_preserves_fractional_seconds_and_offsets():
     encoded = "2026-07-22T13:42:09.123456+05:00"
     parsed = MODULE.parse_kubernetes_timestamp(encoded)
@@ -105,6 +117,108 @@ def test_env_assignment_is_added_and_replaced_without_duplicates():
     )
     assert updated.count("GITLAB_RUNNER_TOKEN=") == 1
     assert MODULE.parse_env_token(updated) == token
+
+
+def test_plaintext_env_sync_is_opt_in(monkeypatch):
+    monkeypatch.setattr(MODULE.sys, "argv", [str(SCRIPT)])
+    assert MODULE.parse_args().sync_env is False
+    monkeypatch.setattr(MODULE.sys, "argv", [str(SCRIPT), "--sync-env"])
+    assert MODULE.parse_args().sync_env is True
+
+
+def test_runtime_secret_adoption_is_explicit_and_has_scoped_defaults(monkeypatch):
+    monkeypatch.setattr(MODULE.sys, "argv", [str(SCRIPT)])
+    args = MODULE.parse_args()
+    assert args.adopt_runtime_secret is False
+    assert args.runtime_secret_namespace == "gitlab"
+    assert args.runtime_secret_name == "platform-gitlab-runner-auth"
+    assert args.runtime_secret_key == "runner-token"
+
+    monkeypatch.setattr(
+        MODULE.sys,
+        "argv",
+        [str(SCRIPT), "--runner-kind", "image-builder", "--adopt-runtime-secret"],
+    )
+    args = MODULE.parse_args()
+    assert args.adopt_runtime_secret is True
+    assert args.runtime_secret_namespace == "gitlab-image-builds"
+    assert args.runtime_secret_name == "platform-gitlab-image-builder-runner-auth"
+
+
+def test_runtime_secret_token_is_read_from_exact_object_without_secret_in_argv(monkeypatch):
+    token = DOTTED_TOKEN
+    observed = {}
+
+    def run(argv, **kwargs):
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        payload = {
+            "metadata": {"name": "runner-auth", "namespace": "gitlab"},
+            "data": {"runner-token": base64.b64encode(token.encode()).decode()},
+        }
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(MODULE, "run_command", run)
+    assert MODULE.read_runtime_secret_token(
+        Path("/secure/kubeconfig"), "gitlab", "runner-auth", "runner-token"
+    ) == token
+    assert token not in " ".join(observed["argv"])
+    assert observed["kwargs"]["sensitive"] is True
+
+
+def test_runtime_secret_adoption_canonicalizes_one_terminal_line_ending(monkeypatch):
+    token = DOTTED_TOKEN
+    documents = iter((token + "\n", token + "\r\n"))
+
+    def run(argv, **_kwargs):
+        value = next(documents)
+        payload = {
+            "metadata": {"name": "runner-auth", "namespace": "gitlab"},
+            "data": {"runner-token": base64.b64encode(value.encode()).decode()},
+        }
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(MODULE, "run_command", run)
+    for _line_ending in range(2):
+        assert MODULE.read_runtime_secret_token(
+            Path("/secure/kubeconfig"), "gitlab", "runner-auth", "runner-token"
+        ) == token
+
+
+def test_runtime_secret_token_rejects_wrong_object_and_noncanonical_value(monkeypatch):
+    documents = iter(
+        (
+            {
+                "metadata": {"name": "other", "namespace": "gitlab"},
+                "data": {
+                    "runner-token": base64.b64encode(DOTTED_TOKEN.encode()).decode()
+                },
+            },
+            {
+                "metadata": {"name": "runner-auth", "namespace": "gitlab"},
+                "data": {
+                    "runner-token": base64.b64encode(b"legacy-token").decode()
+                },
+            },
+        )
+    )
+
+    monkeypatch.setattr(
+        MODULE,
+        "run_command",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, json.dumps(next(documents)), ""
+        ),
+    )
+    for expected in ("invalid metadata", "no canonical glrt token"):
+        try:
+            MODULE.read_runtime_secret_token(
+                Path("/secure/kubeconfig"), "gitlab", "runner-auth", "runner-token"
+            )
+        except MODULE.BootstrapError as error:
+            assert expected in str(error)
+        else:
+            raise AssertionError("invalid runtime Secret state must fail closed")
 
 
 def test_image_builder_env_and_vault_keys_are_independent():
@@ -299,7 +413,7 @@ def test_single_managed_runner_token_is_recovered_from_captured_rails_output():
 
 def test_token_verification_distinguishes_invalid_token_from_transport_failure():
     helper = bootstrapper()
-    responses = iter((200, 403, 503))
+    responses = iter((200, 403, 404, 503))
 
     def rails(_pod, _source, *, stage, check=True):
         assert stage == "GitLab Runner token verification"
@@ -310,6 +424,7 @@ def test_token_verification_distinguishes_invalid_token_from_transport_failure()
 
     helper.rails = rails
     assert helper.verify_token("toolbox", DOTTED_TOKEN) is True
+    assert helper.verify_token("toolbox", DOTTED_TOKEN) is False
     assert helper.verify_token("toolbox", DOTTED_TOKEN) is False
     try:
         helper.verify_token("toolbox", DOTTED_TOKEN)
@@ -665,11 +780,13 @@ def test_lost_or_malformed_cluster_lease_fails_closed(monkeypatch):
 
 def test_main_protects_recovery_creation_and_both_persistence_targets_with_lease():
     source = SCRIPT.read_text(encoding="utf-8")
-    protected = source.split("with KubernetesLeaseLock(bootstrapper.kubectl)", 1)[1].split(
-        'print(f"GitLab {version}:', 1
-    )[0]
+    protected = source.split(
+        "KubernetesLeaseLock(bootstrapper.kubectl) as bootstrap_lock", 1
+    )[1].split('print(f"GitLab {version}:', 1)[0]
+    assert "LocalSecretsFileLock(args.secrets_file)" in protected
     for operation in (
         "recover_managed_runner_token",
+        "read_runtime_secret_token",
         "create_runner_token",
         "encrypt_secrets",
         "atomic_write",

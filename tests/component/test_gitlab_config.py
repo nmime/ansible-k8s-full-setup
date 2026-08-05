@@ -75,6 +75,7 @@ class TestChart10ValuesStructure:
         for variable in (
             "gitlab_webservice_max_replicas",
             "gitlab_sidekiq_max_replicas",
+            "gitlab_registry_replicas",
             "gitlab_registry_max_replicas",
         ):
             assert variable in self.content
@@ -82,6 +83,7 @@ class TestChart10ValuesStructure:
         assert "maxReplicas: '{{ gitlab_webservice_max_replicas | int }}'" in self.content
         assert "maxReplicas: '{{ gitlab_sidekiq_max_replicas | int }}'" in self.content
         assert "maxReplicas: '{{ gitlab_registry_max_replicas | int }}'" in self.content
+        assert "minReplicas: '{{ gitlab_registry_replicas | int }}'" in self.content
 
     def test_heavy_rails_workloads_require_safe_cross_node_spread(self):
         tasks = yaml.safe_load(self.content)
@@ -174,9 +176,22 @@ class TestChart10ValuesStructure:
             == "Disable public GitLab self-registration before publishing the webservice"
         )
         assert disable_signup["when"] == "gitlab_public_webservice_enabled | bool"
+        assert disable_signup["ansible.builtin.command"]["argv"][4] == (
+            "pod/{{ _gitlab_toolbox_pod_name }}"
+        )
         assert "signup_enabled: false" in (
             disable_signup["ansible.builtin.command"]["argv"][-1]
         )
+        toolbox_discovery = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Discover the ready Deployment-owned GitLab toolbox pod"
+        )
+        assert "pod-template-hash" in toolbox_discovery["kubernetes.core.k8s_info"][
+            "label_selectors"
+        ]
+        assert tasks.index(toolbox_discovery) < tasks.index(disable_signup)
         assert tasks.index(disable_signup) < tasks.index(public_route)
         private_spec = private_route["kubernetes.core.k8s"]["definition"]["spec"]
         assert {parent["name"] for parent in private_spec["parentRefs"]} == {
@@ -210,18 +225,37 @@ class TestChart10ValuesStructure:
             if task.get("name") == "Install GitLab Runner with Helm"
         )
         values = install["kubernetes.core.helm"]["values"]
+        assert install["kubernetes.core.helm"]["release_namespace"] == (
+            "{{ gitlab_runner_release_namespace }}"
+        )
+        assert install["kubernetes.core.helm"]["timeout"] == "15m0s"
         internal = (
             "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
         )
         assert values["gitlabUrl"] == internal
+        assert values["unregisterRunners"] is False
+        assert values["runners"]["cache"] == {
+            "secretName": "gitlab-runner-s3-cache"
+        }
         assert f'clone_url = "{internal}"' in values["runners"]["config"]
         assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
         assert values["metrics"] == {"enabled": True}
         assert values["serviceAccount"] == {"create": True}
+        assert "gitlab_runner_general_pool_enabled" in values["nodeSelector"]
+        assert "node-role.kubernetes.io/worker" in values["nodeSelector"]
         assert "workload.n0xeid.xyz/ci-build" in values["nodeSelector"]
         assert "gitlab_runner_worker_index" in values["nodeSelector"]
         assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
-        assert values["runners"]["tags"] == "kubernetes,k8s"
+        assert values["runners"]["tags"] == "kubernetes,k8s,ci-shared"
+        assert "gitlab_runner_job_namespace" in self.content
+        assert values["priorityClassName"] == "n0xeid-ci-control"
+        assert 'namespace = "{{ gitlab_runner_job_namespace }}"' in values[
+            "runners"
+        ]["config"]
+        assert 'priority_class_name = "n0xeid-ci-review"' in values["runners"][
+            "config"
+        ]
+
         assert (
             "request_concurrency = {{ gitlab_runner_concurrent | int }}"
             in values["runners"]["config"]
@@ -251,12 +285,64 @@ class TestChart10ValuesStructure:
         )
         scrape_definition = scrape["kubernetes.core.k8s"]["definition"]
         assert scrape_definition["kind"] == "VMPodScrape"
+        assert scrape_definition["metadata"]["namespace"] == (
+            "{{ gitlab_runner_release_namespace }}"
+        )
         assert scrape_definition["spec"]["selector"]["matchLabels"] == {
             "app": "gitlab-runner"
         }
         assert scrape_definition["spec"]["podMetricsEndpoints"] == [
             {"port": "metrics", "interval": "30s", "path": "/metrics"}
         ]
+
+    def test_shared_runner_namespace_is_restricted_and_private_egress_denied(self):
+        boundary = yaml.safe_load(
+            read(
+                os.path.join(
+                    REPO_ROOT,
+                    "roles/gitlab-selfhosted/tasks/shared-runner-boundary.yml",
+                )
+            )
+        )
+        rendered = str(boundary)
+        assert "pod-security.kubernetes.io/enforce" in rendered
+        assert "restricted" in rendered
+        assert "ResourceQuota" in rendered
+        assert "LimitRange" in rendered
+        assert "default-deny" in rendered
+        assert "169.254.25.10/32" in rendered
+        assert "allow-manager-kube-api" in rendered
+        assert "allow-nodelocal-dns" in rendered
+        role_binding = next(
+            item
+            for task in boundary
+            for item in task.get("loop", [])
+            if item.get("kind") == "RoleBinding"
+        )
+        assert role_binding["subjects"] == [
+            {
+                "kind": "ServiceAccount",
+                "name": "gitlab-runner",
+                "namespace": "{{ gitlab_runner_release_namespace }}",
+            }
+        ]
+        auth_check = next(
+            task
+            for task in boundary
+            if task.get("name")
+            == "General CI | Verify the manager can create jobs in the pool"
+        )
+        assert (
+            "--as=system:serviceaccount:{{ gitlab_runner_release_namespace }}:gitlab-runner"
+            in auth_check["ansible.builtin.command"]["argv"]
+        )
+        assert not any(
+            "--as=system:serviceaccount:{{ gitlab_namespace }}:gitlab-runner"
+            in argument
+            for argument in auth_check["ansible.builtin.command"]["argv"]
+        )
+        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+            assert cidr in rendered
 
     def test_runner_toml_uses_supported_flat_resources_and_job_spread(self):
         from jinja2 import Environment
@@ -267,11 +353,29 @@ class TestChart10ValuesStructure:
             for task in tasks
             if task.get("name") == "Install GitLab Runner with Helm"
         )
-        rendered = Environment().from_string(
+        environment = Environment()
+        environment.filters["bool"] = bool
+        rendered = environment.from_string(
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
-        ).render(gitlab_namespace="gitlab", gitlab_runner_concurrent=1)
+        ).render(
+            gitlab_namespace="gitlab",
+            gitlab_runner_job_namespace="gitlab-ci-general",
+            gitlab_runner_concurrent=1,
+            gitlab_runner_general_pool_enabled=True,
+            gitlab_runner_worker_index=0,
+        )
         runner = tomllib.loads(rendered)["runners"][0]
         kubernetes = runner["kubernetes"]
+        assert runner["cache"] == {
+            "Type": "s3",
+            "Path": "gitlab-runner",
+            "Shared": True,
+            "s3": {
+                "ServerAddress": "seaweedfs-s3.storage.svc.cluster.local:8333",
+                "BucketName": "gitlab-runner-cache",
+                "Insecure": True,
+            },
+        }
 
         assert runner["request_concurrency"] == 1
         assert kubernetes["node_selector"] == {
@@ -370,6 +474,7 @@ class TestChart10ValuesStructure:
         assert "when: gitlab_runner_enabled | bool" in gate
         assert "quiet: true" in gate
         assert "runnerToken: '{{ _gitlab_runner_auth_token }}'" in install
+        assert "unregisterRunners: false" in install
         assert "replicas: '{{ gitlab_runner_replicas | int }}'" in install
         assert "concurrent: '{{ gitlab_runner_concurrent | int }}'" in install
         assert "chart_version: 0.91.0" in install
@@ -426,6 +531,7 @@ class TestChart10ValuesStructure:
             "- name: Read the persisted GitLab Runner authentication token", 1
         )[1].split("- name: Add GitLab Runner Helm repository", 1)[0]
         assert "platform-gitlab-runner-auth" in bootstrap
+        assert bootstrap.count("{{ gitlab_runner_release_namespace }}") >= 3
         assert "/api/v4/runners/verify" in bootstrap
         assert "s_ansible_k8s_reconcile" in bootstrap
         assert "Verify the declared GitLab Runner identity after persisted-token drift" in bootstrap
@@ -434,8 +540,10 @@ class TestChart10ValuesStructure:
         assert "legacy registration-token bootstrap" in bootstrap
         assert "gitlab-gitlab-runner-secret" not in bootstrap
         assert "GITLAB_RUNNER_REGISTRATION_TOKEN" not in bootstrap
-        assert "deployment/gitlab-toolbox -c toolbox" in bootstrap
+        assert "pod/{{ _gitlab_toolbox_pod_name }} -c toolbox" in bootstrap
         assert "runner-token: '{{ _gitlab_runner_auth_token }}'" in bootstrap
+        assert "_gitlab_runner_auth_candidate ==" in bootstrap
+        assert "(_gitlab_runner_auth_candidate | trim)" in bootstrap
         assert bootstrap.count("no_log: true") >= 6
 
         secrets = read(GENERATE_SECRETS_PATH)
@@ -445,7 +553,9 @@ class TestChart10ValuesStructure:
         assert "lookup('env', 'GITLAB_RUNNER_TOKEN')" in resolution
         assert "saved_secrets.gitlab_runner_token" in resolution
         assert "no_log: true" in resolution
-        assert secrets.count('gitlab_runner_token: "{{ gitlab_runner_token }}"') == 2
+        # Plaintext/encrypted persistence templates plus the in-memory Vault
+        # mirror bundle must all use the resolved stable token.
+        assert secrets.count('gitlab_runner_token: "{{ gitlab_runner_token }}"') == 3
         assert "requires vault_encrypt_secrets=true" in secrets
         assert "Require a modern authentication token when GitLab Runner is selected" in secrets
         assert "the Runner will not be silently omitted" in secrets
@@ -491,6 +601,8 @@ class TestChart10ValuesStructure:
         assert "no_log: true" in gate
 
         builder = read(IMAGE_BUILDER_TASKS_PATH)
+        assert "_gitlab_image_builder_auth_candidate ==" in builder
+        assert "(_gitlab_image_builder_auth_candidate | trim)" in builder
         assert (
             'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
             in builder
@@ -514,6 +626,7 @@ class TestChart10ValuesStructure:
         assert values["concurrent"] == (
             "{{ gitlab_image_builder_runner_concurrent | int }}"
         )
+        assert values["unregisterRunners"] is False
         assert values["runners"]["tags"] == "image-build"
         assert values["runners"]["runUntagged"] is False
         assert values["rbac"]["clusterWideAccess"] is False
@@ -620,7 +733,7 @@ class TestChart10ValuesStructure:
         assert secrets.count(
             'gitlab_image_builder_runner_token: '
             '"{{ gitlab_image_builder_runner_token }}"'
-        ) == 2
+        ) == 3
 
     def test_docker_smoke_privilege_is_service_only_and_digest_pinned(self):
         assert "include_tasks: docker-host-runner.yml" in self.content
@@ -637,6 +750,8 @@ class TestChart10ValuesStructure:
         assert "no_log: true" in gate
 
         runner = read(DOCKER_HOST_TASKS_PATH)
+        assert "_gitlab_docker_host_auth_candidate ==" in runner
+        assert "(_gitlab_docker_host_auth_candidate | trim)" in runner
         network = read(DOCKER_HOST_NETWORK_PATH)
         tasks = yaml.safe_load(runner)
         install = next(
@@ -669,6 +784,7 @@ class TestChart10ValuesStructure:
         assert values["concurrent"] == (
             "{{ gitlab_docker_host_runner_concurrent | int }}"
         )
+        assert values["unregisterRunners"] is False
         assert values["runners"]["tags"] == "docker-host"
         assert values["runners"]["runUntagged"] is False
         assert values["rbac"]["clusterWideAccess"] is False
@@ -764,7 +880,7 @@ class TestChart10ValuesStructure:
         assert secrets.count(
             'gitlab_docker_host_runner_token: '
             '"{{ gitlab_docker_host_runner_token }}"'
-        ) == 2
+        ) == 3
 
     @pytest.mark.component
     def test_gitlab_shell_configured(self):
