@@ -4,26 +4,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_seaweedfs_volume_growth_is_tier_aware():
+def test_resource_efficient_seaweedfs_grows_one_logical_volume_at_a_time():
     tasks = (ROOT / "roles/object-storage/tasks/main.yml").read_text()
-    defaults = (ROOT / "roles/object-storage/defaults/main.yml").read_text()
 
     growth = tasks.split("[master.volume_growth]", 1)[1].split(
         "# HashiCorp Raft", 1
     )[0]
     for copies in ("copy_1", "copy_2", "copy_3", "copy_other"):
-        assert f"{copies} = {{{{ object_storage_volume_growth_{copies}" in growth
-    assert "threshold = {{ object_storage_volume_growth_threshold | float }}" in growth
+        assert f"{copies} = 1" in growth
+    assert "threshold = 0.9" in growth
     assert "disable = false" in growth
-
-    # Compact profiles retain one-at-a-time growth. Medium and production use
-    # the upstream replicated batch sizes and an earlier threshold so bursty
-    # Kopia maintenance cannot outrun just-in-time volume placement.
-    assert 'object_storage_volume_growth_copy_1: "{{ 7 if (object_storage_volume_replicas | int) > 1 else 1 }}"' in defaults
-    assert 'object_storage_volume_growth_copy_2: "{{ 6 if (object_storage_volume_replicas | int) > 1 else 1 }}"' in defaults
-    assert 'object_storage_volume_growth_copy_3: "{{ 3 if (object_storage_volume_replicas | int) > 1 else 1 }}"' in defaults
-    assert "object_storage_volume_growth_copy_other: 1" in defaults
-    assert 'object_storage_volume_growth_threshold: "{{ 0.8 if (object_storage_volume_replicas | int) > 1 else 0.9 }}"' in defaults
 
     reclaim = tasks.split(
         "Reclaim stale empty SeaweedFS volumes from the legacy growth policy", 1
