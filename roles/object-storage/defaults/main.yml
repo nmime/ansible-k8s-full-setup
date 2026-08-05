@@ -17,10 +17,6 @@ object_storage_master_size: 4Gi
 object_storage_volume_size: "{{ '20Gi' if resource_tier | default(tier) == 'minimal' else '40Gi' if resource_tier | default(tier) == 'small' else '100Gi' if resource_tier | default(tier) == 'medium' else '150Gi' }}"
 object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
-object_storage_volume_cpu_request: 100m
-object_storage_volume_cpu_limit: "1"
-object_storage_volume_memory_request: 256Mi
-object_storage_volume_memory_limit: 1Gi
 object_storage_filer_node_selector: {}
 object_storage_filer_cpu_request: 100m
 object_storage_filer_cpu_limit: "1"
@@ -33,15 +29,6 @@ object_storage_volume_size_limit_mb: 256
 object_storage_replicas: "{{ 3 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
 object_storage_volume_replicas: "{{ 3 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
 object_storage_filer_replicas: "{{ 2 if resource_tier | default(tier) in ['medium', 'production'] else 1 }}"
-# Compact profiles grow one logical volume at a time so a new collection cannot
-# exhaust their small slot inventory. Replicated service profiles retain the
-# upstream batch sizes and grow earlier: backup/Kopia maintenance can otherwise
-# fill a single 256 MiB replicated volume faster than the next volume is placed.
-object_storage_volume_growth_copy_1: "{{ 7 if (object_storage_volume_replicas | int) > 1 else 1 }}"
-object_storage_volume_growth_copy_2: "{{ 6 if (object_storage_volume_replicas | int) > 1 else 1 }}"
-object_storage_volume_growth_copy_3: "{{ 3 if (object_storage_volume_replicas | int) > 1 else 1 }}"
-object_storage_volume_growth_copy_other: 1
-object_storage_volume_growth_threshold: "{{ 0.8 if (object_storage_volume_replicas | int) > 1 else 0.9 }}"
 # Keep one additional copy on another volume server whenever the topology has
 # enough servers. SeaweedFS otherwise defaults to 000 even with three pods.
 object_storage_replication_placement: "{{ '001' if (object_storage_volume_replicas | int) > 1 else '000' }}"

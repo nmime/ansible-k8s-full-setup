@@ -396,25 +396,6 @@
           master:
             enabled: true
             replicas: "{{ object_storage_replicas | int }}"
-            podSecurityContext:
-              enabled: true
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              fsGroup: 1000
-              fsGroupChangePolicy: OnRootMismatch
-              seccompProfile:
-                type: RuntimeDefault
-            containerSecurityContext:
-              enabled: true
-              allowPrivilegeEscalation: false
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              capabilities:
-                drop: [ALL]
-              seccompProfile:
-                type: RuntimeDefault
             affinity: |
               podAntiAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:
@@ -433,16 +414,18 @@
                 memory: 512Mi
             defaultReplication: "{{ object_storage_replication_placement | default('000') }}"
             volumeSizeLimitMB: "{{ object_storage_volume_size_limit_mb | int }}"
-            # Compact profiles grow one volume at a time. Replicated service
-            # profiles keep a batch of writable volumes ahead of concurrent
-            # backup/Kopia writers so just-in-time growth is not outrun.
+            # The upstream default allocates seven logical volumes whenever a
+            # single-copy collection first writes. On resource-efficient 10Gi
+            # claims that can consume every available volume slot with one
+            # mostly-empty collection and make unrelated S3 writes fail. Grow
+            # one logical volume at a time for every replication topology.
             config: |-
               [master.volume_growth]
-              copy_1 = {{ object_storage_volume_growth_copy_1 | int }}
-              copy_2 = {{ object_storage_volume_growth_copy_2 | int }}
-              copy_3 = {{ object_storage_volume_growth_copy_3 | int }}
-              copy_other = {{ object_storage_volume_growth_copy_other | int }}
-              threshold = {{ object_storage_volume_growth_threshold | float }}
+              copy_1 = 1
+              copy_2 = 1
+              copy_3 = 1
+              copy_other = 1
+              threshold = 0.9
               disable = false
             # HashiCorp Raft supports explicit, observable membership changes
             # and reliable snapshots during Kubernetes rolling maintenance.
@@ -457,25 +440,6 @@
           volume:
             enabled: true
             replicas: "{{ object_storage_volume_replicas | int }}"
-            podSecurityContext:
-              enabled: true
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              fsGroup: 1000
-              fsGroupChangePolicy: OnRootMismatch
-              seccompProfile:
-                type: RuntimeDefault
-            containerSecurityContext:
-              enabled: true
-              allowPrivilegeEscalation: false
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              capabilities:
-                drop: [ALL]
-              seccompProfile:
-                type: RuntimeDefault
             affinity: |
               podAntiAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:
@@ -487,11 +451,11 @@
                     topologyKey: kubernetes.io/hostname
             resources:
               requests:
-                cpu: "{{ object_storage_volume_cpu_request | default('100m') }}"
-                memory: "{{ object_storage_volume_memory_request | default('256Mi') }}"
+                cpu: "{{ object_storage_filer_cpu_request | default('100m') }}"
+                memory: "{{ object_storage_filer_memory_request | default('256Mi') }}"
               limits:
-                cpu: "{{ object_storage_volume_cpu_limit | default('1') }}"
-                memory: "{{ object_storage_volume_memory_limit | default('1Gi') }}"
+                cpu: "{{ object_storage_filer_cpu_limit | default('1') }}"
+                memory: "{{ object_storage_filer_memory_limit | default('1Gi') }}"
             dataDirs:
               - name: data
                 type: persistentVolumeClaim
@@ -514,25 +478,6 @@
           filer:
             enabled: true
             replicas: "{{ object_storage_filer_replicas | int }}"
-            podSecurityContext:
-              enabled: true
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              fsGroup: 1000
-              fsGroupChangePolicy: OnRootMismatch
-              seccompProfile:
-                type: RuntimeDefault
-            containerSecurityContext:
-              enabled: true
-              allowPrivilegeEscalation: false
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              capabilities:
-                drop: [ALL]
-              seccompProfile:
-                type: RuntimeDefault
             nodeSelector: |
               {{ object_storage_filer_node_selector | default({}) | to_nice_yaml(indent=2) | indent(14) }}
             resources:
@@ -1028,18 +973,11 @@
           metadata:
             name: object-storage-api
             namespace: "{{ object_storage_namespace_resolved }}"
-            annotations:
-              security.n0xeid.xyz/reason: >-
-                moved from public main-gateway to VPN-only admin-gateway
-                (splox security stream 2026-08-05)
           spec:
             parentRefs:
-              - name: admin-gateway
+              - name: main-gateway
                 namespace: cilium-system
                 sectionName: https
-              - name: admin-gateway
-                namespace: cilium-system
-                sectionName: cluster-https
             hostnames:
               - "{{ object_storage_api_domain_resolved }}"
             rules:
@@ -1272,7 +1210,9 @@
               - toEndpoints:
                   - matchLabels:
                       k8s:io.kubernetes.pod.namespace: "{{ object_storage_namespace_resolved }}"
+                      k8s:app.kubernetes.io/name: seaweedfs
                       k8s:app.kubernetes.io/instance: seaweedfs
+                      k8s:app.kubernetes.io/component: filer
                 toPorts:
                   - ports:
                       - { port: '8333', protocol: TCP }

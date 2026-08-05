@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${PLATFORM_CONFIG_FILE:-${SCRIPT_DIR}/platform.yaml}"
+CONFIG_FILE="${SCRIPT_DIR}/platform.yaml"
 STATE_DIR="${SCRIPT_DIR}/.state"
 LOG_DIR="${SCRIPT_DIR}/logs"
 ANSIBLE_DIR="${SCRIPT_DIR}/.."
@@ -380,37 +380,20 @@ disable_component() {
 }
 
 run_playbook() {
-  local platform_secrets_file vault_init_output_file resolved_vault_password_file
-  local -a ansible_command
+  local platform_secrets_file
 
   check_env
   if [[ -n "${PLATFORM_SECRETS_FILE:-}" ]]; then
     platform_secrets_file="$PLATFORM_SECRETS_FILE"
-    vault_init_output_file="${VAULT_INIT_OUTPUT_FILE:-${ANSIBLE_DIR}/playbooks/.vault-init-${PROJECT}.json}"
   elif [[ -d "${ANSIBLE_DIR}/.campaign-state/${PROJECT}" ]]; then
     # Tier runners and resumable migrations persist credentials per cluster.
     # Reusing that project-scoped file prevents a later component-only deploy
     # from generating a second credential set and rotating live dependencies.
     platform_secrets_file="${ANSIBLE_DIR}/.campaign-state/${PROJECT}/.platform-secrets.yml"
-    vault_init_output_file="${ANSIBLE_DIR}/.campaign-state/${PROJECT}/.vault-init-${PROJECT}.json"
   else
     platform_secrets_file="${ANSIBLE_DIR}/playbooks/.platform-secrets.yml"
-    vault_init_output_file="${ANSIBLE_DIR}/playbooks/.vault-init-${PROJECT}.json"
   fi
-  ansible_command=(ansible-playbook)
-  resolved_vault_password_file="${ANSIBLE_VAULT_PASSWORD_FILE:-${HOME}/.vault_pass}"
-  if [[ -f "$platform_secrets_file" \
-    && -f "$resolved_vault_password_file" \
-    && $(head -c 15 "$platform_secrets_file") == '$ANSIBLE_VAULT;' ]]; then
-    ansible_command=(
-      "${ANSIBLE_DIR}/.venv/bin/python"
-      "${ANSIBLE_DIR}/scripts/with-encrypted-dr-credentials.py"
-      --file "$platform_secrets_file"
-      --vault-password-file "$resolved_vault_password_file"
-      -- ansible-playbook
-    )
-  fi
-  "${ansible_command[@]}" "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
+  ansible-playbook "${ANSIBLE_DIR}/playbooks/deploy_platform.yml" \
     -e "@${CONFIG_FILE}" \
     -e "platform_profile=${PROFILE}" \
     -e "tier=${TIER}" \
@@ -419,7 +402,6 @@ run_playbook() {
     -e "domain=${DOMAIN}" \
     -e "email=${EMAIL}" \
     -e "platform_secrets_file=${platform_secrets_file}" \
-    -e "vault_init_output_file=${vault_init_output_file}" \
     "$@"
 }
 

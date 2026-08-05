@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Check CX33/CX43 availability in Hetzner Helsinki (hel1), notify Telegram, and
-# acquire at most one CX33 plus two CX43 servers when local ordering is enabled.
+# Check the medium-optimized CX mapping in Hetzner Helsinki (hel1) and notify
+# Telegram when availability changes. This wrapper never provisions resources.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
