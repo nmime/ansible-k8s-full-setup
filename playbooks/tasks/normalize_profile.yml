@@ -137,14 +137,6 @@
     object_storage_idx_size: '{{ storage.index_size | default(object_storage_idx_size) }}'
     object_storage_index_persistent: '{{ storage.index_persistent | default(true) | bool }}'
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'
-    object_storage_volume_cpu_request: >-
-      {{ storage.volume_resources.cpu_request | default(object_storage_volume_cpu_request | default('100m')) }}
-    object_storage_volume_cpu_limit: >-
-      {{ storage.volume_resources.cpu_limit | default(object_storage_volume_cpu_limit | default('1')) }}
-    object_storage_volume_memory_request: >-
-      {{ storage.volume_resources.memory_request | default(object_storage_volume_memory_request | default('256Mi')) }}
-    object_storage_volume_memory_limit: >-
-      {{ storage.volume_resources.memory_limit | default(object_storage_volume_memory_limit | default('1Gi')) }}
     object_storage_filer_cpu_request: >-
       {{ storage.filer_resources.cpu_request | default(object_storage_filer_cpu_request | default('100m')) }}
     object_storage_filer_cpu_limit: >-
@@ -165,44 +157,6 @@
       {{ secrets.vault.audit_storage_size |
          default(secrets.vault.storage_size | default(vault_storage_size)) }}
     eso_enabled: '{{ platform_eso_enabled }}'
-    eso_vault_read_paths: >-
-      {{ secrets.eso.read_paths | default(eso_vault_read_paths) }}
-    eso_vault_allowed_namespaces: >-
-      {{ secrets.eso.allowed_namespaces | default(eso_vault_allowed_namespaces) }}
-    eso_vault_token_audience: >-
-      {{ secrets.eso.token_audience | default(eso_vault_token_audience) }}
-    eso_vault_token_ttl: >-
-      {{ secrets.eso.token_ttl | default(eso_vault_token_ttl) }}
-    vault_platform_generated_seed_enabled: >-
-      {{ (secrets.vault.seed_generated_credentials |
-          default(vault_platform_generated_seed_enabled)) | bool }}
-    vault_platform_generated_secret_path: >-
-      {{ secrets.vault.generated_credentials_path |
-         default(vault_platform_generated_secret_path) }}
-    vault_platform_generated_dr_rotation_allowed: >-
-      {{ vault_platform_generated_dr_rotation_allowed | bool }}
-    vault_platform_generated_alert_destination_rotation_allowed: >-
-      {{
-        lookup(
-          'env',
-          'VAULT_PLATFORM_GENERATED_ALERT_DESTINATION_ROTATION_ALLOWED'
-        ) | default(
-          vault_platform_generated_alert_destination_rotation_allowed |
-          default(false),
-          true
-        ) | bool
-      }}
-    vault_platform_generated_gitlab_runner_rotation_allowed: >-
-      {{
-        lookup(
-          'env',
-          'VAULT_PLATFORM_GENERATED_GITLAB_RUNNER_ROTATION_ALLOWED'
-        ) | default(
-          vault_platform_generated_gitlab_runner_rotation_allowed |
-          default(false),
-          true
-        ) | bool
-      }}
     eso_example_secret_enabled: >-
       {{ (secrets.eso.example_secret.enabled |
           default(eso_example_secret_enabled)) | bool }}
@@ -253,9 +207,6 @@
     mongodb_data_storage_class: >-
       {{ databases.mongodb.data_storage_class |
          default(storage.storage_class | default(storage_class)) }}
-    mongodb_priority_class_name: >-
-      {{ databases.mongodb.priority_class_name |
-         default(mongodb_priority_class_name) }}
     mongodb_replset_resources: >-
       {{ (databases.mongodb.resources | default({})).replset |
          default(mongodb_replset_resources) }}
@@ -270,15 +221,11 @@
          default(mongodb_pmm_resources) }}
     gitlab_webservice_replicas: '{{ gitlab.webservice_replicas | default(1) }}'
     gitlab_sidekiq_replicas: '{{ gitlab.sidekiq_replicas | default(1) }}'
-    gitlab_registry_replicas: >-
-      {{ gitlab.registry_replicas | default(gitlab_registry_replicas) }}
     gitlab_runner_concurrent_jobs: >-
       {{ gitlab.runner.concurrent_jobs | default(gitlab_runner_concurrent_jobs) }}
     gitlab_runner_worker_index: >-
       {{ gitlab.runner.dedicated_worker_index |
          default(gitlab_runner_worker_index) }}
-    gitlab_runner_job_namespace: >-
-      {{ gitlab.runner.namespace | default(gitlab_runner_job_namespace) }}
     gitlab_runner_enabled: '{{ platform_gitlab_runner_enabled }}'
     gitlab_image_builder_runner_enabled: >-
       {{ platform_gitlab_image_builder_runner_enabled }}
@@ -288,9 +235,6 @@
     gitlab_image_builder_runner_concurrent_jobs: >-
       {{ (gitlab.runner.image_builder | default({})).concurrent_jobs |
          default(gitlab_image_builder_runner_concurrent_jobs) }}
-    gitlab_image_builder_runner_worker_index: >-
-      {{ (gitlab.runner.image_builder | default({})).dedicated_worker_index |
-         default(gitlab_image_builder_runner_worker_index) }}
     gitlab_docker_host_runner_enabled: >-
       {{ platform_gitlab_docker_host_runner_enabled }}
     gitlab_docker_host_runner_replicas: >-
@@ -425,32 +369,6 @@
       jobs. A dedicated CI-build worker must differ from the protected
       Docker-smoke worker so concurrent CI classes cannot exhaust one node.
   when: platform_gitlab_runner_enabled | bool
-
-- name: Validate the shared CI job namespace
-  ansible.builtin.assert:
-    that:
-      - >-
-        gitlab_runner_job_namespace is match(
-          '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
-      - gitlab_runner_job_namespace | length <= 63
-      - gitlab_runner_job_namespace != 'gitlab'
-    fail_msg: >-
-      gitlab.runner.namespace must be a dedicated Kubernetes DNS-label
-      namespace and must not be the GitLab application namespace.
-  when: platform_gitlab_runner_enabled | bool
-
-- name: Validate the protected image-builder worker boundary
-  ansible.builtin.assert:
-    that:
-      - gitlab_image_builder_runner_worker_index | int > 0
-      - gitlab_image_builder_runner_worker_index | int <= worker_count | int
-      - >-
-        gitlab_image_builder_runner_worker_index | int !=
-        gitlab_docker_host_runner_worker_index | int
-    fail_msg: >-
-      The rootless image-builder security exception requires its own real,
-      NoSchedule-tainted worker, separate from privileged Docker smoke.
-  when: platform_gitlab_image_builder_runner_enabled | bool
 
 - name: Validate local SSD storage policy
   ansible.builtin.assert:

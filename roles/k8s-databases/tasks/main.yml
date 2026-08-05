@@ -51,12 +51,6 @@
     - mongo_tls_mode != 'requireTLS' or (mongo_alias_tls_cutover_enabled | bool and mongo_tls_cutover_confirmed | bool)
     fail_msg: >-
       MongoDB tls_mode=requireTLS is a final cutover, not a bootstrap setting.
-      First deploy the short Service without changing the operator-managed TLS
-      Secrets. The alias cutover reissues the hostname-verifying leaf from the
-      existing Percona cluster CA so old and new members share one trust chain
-      during SmartUpdate. Prove that intermediate rollout, mount the published
-      mongodb-client-ca in every consumer, then move clients. requireTLS is a
-      separate final gate after plaintext usage reaches zero.
       First deploy the short Service and alias certificate without changing the
       operator-managed MongoDB TLS Secrets. Mount mongodb-client-ca in every
       consumer, prove every client against the operator-CA-signed alias
@@ -279,107 +273,6 @@
   when:
   - platform_postgresql_enabled | default(true) | bool
   - pg_service_alias | length > 0
-- name: Read the existing Percona MongoDB cluster CA before alias cutover
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    namespace: '{{ db_ns }}'
-    name: '{{ project_name | default(''k8s'') }}-mongo-ca-cert'
-  register: _mongo_operator_ca_secret
-  no_log: true
-  when:
-  - platform_mongodb_enabled | default(true) | bool
-  - mongo_service_alias | length > 0
-  - mongo_alias_tls_cutover_enabled | bool
-- name: Require the existing Percona trust chain for MongoDB alias cutover
-  ansible.builtin.assert:
-    that:
-    - (_mongo_operator_ca_secret.resources | default([])) | length == 1
-    - (_mongo_operator_ca_secret.resources[0].data['tls.crt'] | default('') | length) > 0
-    - (_mongo_operator_ca_secret.resources[0].data['tls.key'] | default('') | length) > 0
-    fail_msg: >-
-      MongoDB alias TLS cutover requires the existing operator-generated cluster
-      CA. Bootstrap the cluster with alias_tls_cutover_enabled=false first; do
-      not introduce an unrelated CA during a running replica-set rollout.
-  no_log: true
-  when:
-  - platform_mongodb_enabled | default(true) | bool
-  - mongo_service_alias | length > 0
-  - mongo_alias_tls_cutover_enabled | bool
-- name: Create the MongoDB alias issuer from the existing Percona cluster CA
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Issuer
-      metadata:
-        name: mongodb-operator-ca
-        namespace: '{{ db_ns }}'
-        labels:
-          app.kubernetes.io/managed-by: ansible
-          app.kubernetes.io/part-of: databases
-      spec:
-        ca:
-          secretName: '{{ project_name | default(''k8s'') }}-mongo-ca-cert'
-  when:
-  - platform_mongodb_enabled | default(true) | bool
-  - mongo_service_alias | length > 0
-  - mongo_alias_tls_cutover_enabled | bool
-- name: Issue hostname-verified MongoDB alias certificate
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Certificate
-      metadata:
-        name: '{{ mongo_alias_tls_secret }}'
-        namespace: '{{ db_ns }}'
-        labels:
-          app.kubernetes.io/managed-by: ansible
-          app.kubernetes.io/part-of: databases
-      spec:
-        secretName: '{{ mongo_alias_tls_secret }}'
-        commonName: '{{ project_name | default(''k8s'') }}-mongo'
-        subject:
-          organizations:
-          - PSMDB
-        duration: 2160h
-        renewBefore: 360h
-        privateKey:
-          algorithm: ECDSA
-          size: 256
-          rotationPolicy: Always
-        usages:
-        - server auth
-        - client auth
-        dnsNames:
-        - localhost
-        - '{{ mongo_service_alias }}'
-        - '{{ mongo_service_alias }}.{{ db_ns }}'
-        - '{{ mongo_service_alias }}.{{ db_ns }}.svc'
-        - '{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local'
-        - '*.{{ mongo_service_alias }}.{{ db_ns }}.svc.cluster.local'
-        - '{{ project_name | default(''k8s'') }}-mongo-rs0'
-        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}'
-        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc'
-        - '{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc.cluster.local'
-        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0'
-        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}'
-        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc'
-        - '*.{{ project_name | default(''k8s'') }}-mongo-rs0.{{ db_ns }}.svc.cluster.local'
-        issuerRef:
-          name: >-
-            {{
-              'mongodb-operator-ca'
-              if (mongo_alias_tls_cutover_enabled | bool)
-              else 'database-client-ca'
-            }}
-          kind: Issuer
-          group: cert-manager.io
-  when:
-  - platform_mongodb_enabled | default(true) | bool
-  - mongo_service_alias | length > 0
-- name: Wait for database alias leaf certificates
 - name: Wait for PostgreSQL alias certificate
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
@@ -390,21 +283,6 @@
   register: _database_alias_leaf_certificates
   until: >-
     (_database_alias_leaf_certificates.resources | default([])) | length == 1
-    and
-    (
-      _database_alias_leaf_certificates.resources[0].status.conditions
-      | default([])
-      | selectattr('type', 'equalto', 'Ready')
-      | map(attribute='observedGeneration')
-      | first
-      | default(0)
-      | int
-    )
-    ==
-    (
-      _database_alias_leaf_certificates.resources[0].metadata.generation
-      | default(1) | int
-    )
     and
     (
       _database_alias_leaf_certificates.resources[0].status.conditions
@@ -572,6 +450,7 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: monitoring
+              k8s:app: pmm-server
           toPorts:
           - ports:
             - port: '443'
@@ -635,39 +514,6 @@
     (pmm_enabled | default(false) | bool)
     and ((platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool))
-- name: Detect an existing PostgreSQL cluster before a TLS-only cutover
-  kubernetes.core.k8s_info:
-    api_version: pgv2.percona.com/v2
-    kind: PerconaPGCluster
-    namespace: '{{ db_ns }}'
-    name: '{{ project_name | default(''k8s'') }}-pg'
-  register: _postgres_tls_cutover_cluster
-  when:
-  - platform_postgresql_enabled | default(true) | bool
-  - pg_tls_mode == 'requireTLS'
-- name: Prove no remote plaintext PostgreSQL sessions before enforcement
-  ansible.builtin.shell: |
-    set -euo pipefail
-    primary_pod="$(kubectl get pods -n {{ db_ns | quote }} \
-      -l postgres-operator.crunchydata.com/cluster={{ ((project_name | default('k8s')) ~ '-pg') | quote }},postgres-operator.crunchydata.com/role=primary \
-      -o jsonpath='{.items[0].metadata.name}')"
-    test -n "$primary_pod"
-    plaintext_sessions="$(kubectl exec -n {{ db_ns | quote }} "$primary_pod" \
-      -c database -- psql -Atqc \
-      "select count(*) from pg_stat_activity a left join pg_stat_ssl s using(pid) where a.backend_type='client backend' and a.client_addr is not null and not coalesce(s.ssl,false);")"
-    test "$plaintext_sessions" = 0
-  args:
-    executable: /bin/bash
-  changed_when: false
-  register: _postgres_tls_cutover_canary
-  retries: 3
-  delay: 10
-  until: _postgres_tls_cutover_canary.rc == 0
-  when:
-  - platform_postgresql_enabled | default(true) | bool
-  - pg_tls_mode == 'requireTLS'
-  - pg_tls_cutover_confirmed | bool
-  - (_postgres_tls_cutover_cluster.resources | default([])) | length == 1
 - name: Create PostgreSQL cluster (PG Operator 3.x — v2 API)
   kubernetes.core.k8s:
     state: present
@@ -1202,14 +1048,6 @@
         replsets:
         - name: rs0
           size: '{{ mongo_replicas }}'
-          priorityClassName: '{{ mongodb_priority_class_name }}'
-          configuration: |
-            net:
-              tls:
-                # Password-authenticated clients still require encrypted TLS,
-                # but do not need individual X.509 identities. Any client that
-                # presents a certificate is validated against the cluster CA.
-                allowConnectionsWithoutCertificates: true
           tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
           storage:
             engine: wiredTiger
@@ -1582,23 +1420,6 @@
     (_database_alias_ca_secret.resources[0].data["ca.crt"] | default('') | length) > 0
   retries: 30
   delay: 5
-  when: database_alias_tls_enabled | bool
-- name: Retrieve the active hostname-verifying MongoDB CA
-  no_log: true
-  kubernetes.core.k8s_info:
-    kind: Secret
-    namespace: '{{ db_ns }}'
-    name: '{{ mongo_alias_tls_secret }}'
-  register: _mongo_alias_tls_secret_resource
-  until: >-
-    (_mongo_alias_tls_secret_resource.resources | default([])) | length == 1
-    and
-    (_mongo_alias_tls_secret_resource.resources[0].data["ca.crt"] | default('') | length) > 0
-  retries: 30
-  delay: 5
-  when:
-  - platform_mongodb_enabled | default(true) | bool
-  - mongo_service_alias | length > 0
   when:
   - platform_postgresql_enabled | default(true) | bool
   - pg_service_alias | length > 0
@@ -1647,7 +1468,6 @@
         annotations:
           argocd.argoproj.io/compare-options: IgnoreExtraneous
       stringData:
-        ca.crt: '{{ _mongo_alias_tls_secret_resource.resources[0].data["ca.crt"] | b64decode }}'
         ca.crt: '{{ _mongo_cluster_ca_secret.resources[0].data["ca.crt"] | b64decode }}'
   loop: '{{ databases.mongodb.tls_consumer_namespaces | default([]) }}'
   when:
@@ -1999,6 +1819,7 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: databases
+              k8s:postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
               k8s:app.kubernetes.io/component: pg
           toPorts:
           - ports:
@@ -2007,6 +1828,7 @@
         - toEndpoints:
           - matchLabels:
               k8s:io.kubernetes.pod.namespace: databases
+              k8s:postgres-operator.crunchydata.com/cluster: '{{ project_name | default(''k8s'') }}-pg'
               k8s:postgres-operator.crunchydata.com/role: pgbouncer
           toPorts:
           - ports:

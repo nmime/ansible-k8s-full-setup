@@ -27,13 +27,6 @@
     headscale_developer_https_enabled: >-
       {{ network.vpn.developer_https_enabled |
          default(headscale_developer_https_enabled, true) | bool }}
-    headscale_bastion_tailnet_ip: >-
-      {{ network.vpn.router_ip | default('100.64.0.1', true) }}
-    headscale_dns_zones: >-
-      {{ network.vpn.internal_dns.zones
-         if (network.vpn.internal_dns is defined and
-             network.vpn.internal_dns.zones is defined)
-         else network.internal_dns.zones | default([]) }}
     bastion_host: '{{ bastion_public_ip | default(bastion_ip | default('''')) }}'
     network_control_plane_ips: '{{ master_ips | default({}) | dict2items | map(attribute=''value'') | list }}'
     network_worker_ips: '{{ worker_ips | default({}) | dict2items | map(attribute=''value'') | list }}'
@@ -476,12 +469,6 @@
     ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ controller_known_hosts_file | quote }} root@{{ bastion_host }} 'bash -s' <<'REMOTECMD'
     set -euo pipefail
     if [ '{{ lb_enabled | default(false) | bool | ternary("true", "false") }}' = true ] \
-      && grep -q '^# managed-by-ansible-k8s-admin-edge$' /etc/haproxy/haproxy.cfg 2>/dev/null; then
-      # The cluster role owns the completed VPN-to-admin-Gateway edge after it
-      # discovers the controller-assigned NodePort. Preserve it on later
-      # network-only reconciliations.
-      true
-    elif [ '{{ lb_enabled | default(false) | bool | ternary("true", "false") }}' = true ] \
       || ! grep -q '^# managed-by-ansible-k8s-minimal-edge$' /etc/haproxy/haproxy.cfg 2>/dev/null; then
       cat > /etc/haproxy/haproxy.cfg <<'HAPROXY'
     # managed-by-ansible-network-security

@@ -21,7 +21,7 @@ architecture depends on them.
 | Kubernetes | Kubespray, Kubernetes, containerd, five named-profile node topologies, encrypted secrets at rest, and schedulable-control-plane policy by profile | `deploy cluster` |
 | Networking | Cilium CNI, transparent pod-network encryption, Hubble Relay/UI, network policies, and Cilium Gateway API | `deploy cluster`, `deploy network` |
 | Traffic and TLS | Gateway API CRDs, public/admin Gateways, controller-owned NodePort discovery, Hetzner LB port/health convergence, minimal-tier bastion ingress, cert-manager, Hetzner DNS webhook, ClusterIssuers, Hetzner CCM/CSI, and MetalLB | `deploy cluster`, `deploy tls` |
-| Secret bootstrap | Strong generated credentials kept in Ansible-Vault-encrypted recovery state and seeded once into a drift-checked Vault KV-v2 mirror | every deployment (`always` tag) |
+| Secret bootstrap | Strong generated credentials persisted only in Ansible-Vault-encrypted local state | every deployment (`always` tag) |
 
 `deploy tls` currently reconciles the cluster add-on bundle because
 cert-manager, issuers, Gateway API, and their policies are coupled in that
@@ -73,14 +73,14 @@ Lifecycle component names: `object-storage`, `secrets`, `eso`, `databases`,
 | Object storage | `storage.enabled` | SeaweedFS S3/filer/master/volume | none | on | on | on | on | on |
 | Node-local replicated claims | `local_storage.enabled` | Kubernetes static local PVs, delayed binding, retained PVs, explicit slot map and capacity gate | application replication plus external DR | off | off | off | on | off |
 | Secrets | `secrets.enabled` | Vault Raft with internal TLS | none | on | on | on | on | on |
-| ESO | `secrets.eso.enabled` | External Secrets Operator, namespace-restricted Vault `ClusterSecretStore`, exact-path read policy, and audience-bound short-lived batch tokens | Secrets | off | off | on | on | on |
+| ESO | `secrets.eso.enabled` | External Secrets Operator, Vault `ClusterSecretStore` | Secrets | off | off | on | on | on |
 | Databases parent | `databases.enabled` | Percona operator bundle | at least one engine | on | on | on | on | on |
 | PostgreSQL | `databases.postgresql.enabled` | Percona PostgreSQL, PgBouncer, pgBackRest; optional PMM client when PMM is selected | Databases | on | on | on | on | on |
 | MongoDB | `databases.mongodb.enabled` | Percona Server for MongoDB and PBM; optional PMM client when PMM is selected | Databases | off | off | off | off | off |
 | Elasticsearch | `elasticsearch.enabled` | Elasticsearch Basic, Kibana, TLS, ILM | none | off | off | on | off | on |
 | Dragonfly | `dragonfly.enabled` | Dragonfly operator and Redis-compatible cache | none | off | on | on | on | on |
 | GitLab | `gitlab.enabled` | GitLab CE, Gitaly, Registry, KAS, Toolbox | PostgreSQL, Dragonfly, object storage | off | on | on | on | on |
-| GitLab Runner | `gitlab.runner.enabled` | Two-manager shared Kubernetes pool in a restricted, quota-limited namespace; S3 cache; negative non-preempting CI priorities; isolated protected image/DinD compatibility runners | GitLab plus `glrt-...` authentication tokens retained in encrypted recovery state and the drift-checked Vault mirror | off | on | on | on | on |
+| GitLab Runner | `gitlab.runner.enabled` | GitLab Runner with S3 cache | GitLab plus a `GITLAB_RUNNER_TOKEN` authentication token (`glrt-...`), persisted only with Ansible Vault encryption | off | on | on | on | on |
 | GitOps | `gitops.enabled` | Argo CD with scoped source/resource allowlists | none | on | on | on | on | on |
 | Observability core | `observability.enabled` | VictoriaMetrics, Grafana, Alertmanager/VMAlert/VMRules, and Loki+Promtail or Elasticsearch+Filebeat/Fluentd | metrics, logging, Grafana subflags stay together | on | on | on | on | on |
 | PMM | `observability.pmm.enabled` | Percona Monitoring and Management server plus database clients | Observability | off | off | on | off | on |

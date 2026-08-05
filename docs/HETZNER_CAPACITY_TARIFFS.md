@@ -18,11 +18,18 @@ monthly totals.
 ## Telegram capacity monitor
 
 The stateful monitor checks only Hetzner's Helsinki location (`hel1`). It tracks
-two requested shapes across three reservation slots: one `cx33` for a future
-Kubernetes control plane and two `cx43` servers for future Kubernetes workers.
-Each type is independent: `cx33` availability can fill only its one slot, while
-`cx43` availability can fill each missing worker slot up to the two-worker cap.
-Telegram reports each availability transition and successful acquisition.
+all three shapes required by the
+`medium-optimized` CX mapping: `cx23` for the bastion, `cx33` for three control
+planes, and `cx43` for three workers. Telegram reports partial availability,
+complete availability, and capacity loss. Each message lists the available and
+missing shapes plus the exact transition.
+
+The protected Docker-in-Docker runner is a separate fourth worker. It can use
+an `infrastructure.node_type_overrides` entry without changing the 3+3
+application topology. During a CX shortage, `cpx32` is the production-safe
+x86 fallback; it is tainted, excluded from the load balancer and local-PV
+discovery, and can later be replaced one node at a time when CX capacity
+returns.
 
 Add the bot credentials to the protected, gitignored `.env`. The monitor can
 reuse the Alertmanager destination:
@@ -46,8 +53,7 @@ capacity check:
 ```
 
 Use `--dry-run` to query and render a pending notification without sending it
-or modifying monitor state, and dry runs never order servers. Normal runs
-persist non-secret state at
+or modifying monitor state. Normal runs persist non-secret state at
 `platform-orchestrator/.state/cx-capacity-monitor.json`; that directory is
 gitignored and mode `0700`, while the state and lock files are mode `0600`.
 The state records successful delivery separately from observed capacity, so a
@@ -55,41 +61,13 @@ Telegram failure is retried and capacity that disappears and later returns
 notifies again. Partial and complete states are delivered once per transition;
 unchanged capacity is silent.
 
-Ordering remains explicit opt-in:
-
-```dotenv
-CX_CAPACITY_ORDER_ENABLED=true
-CX_CAPACITY_ORDER_PROJECT=n0xeid-medium-optimized-cx-reserve
-CX_CAPACITY_ORDER_CLUSTER=n0xeid-medium-optimized-cx
-CX_CAPACITY_ORDER_NETWORK=n0xeid-medium-optimized-cx-network
-CX_CAPACITY_ORDER_FIREWALL=n0xeid-medium-optimized-cx-fw-nodes
-CX_CAPACITY_ORDER_SSH_KEY=splox key 1
-CX_CAPACITY_ORDER_PLACEMENT_GROUP=n0xeid-medium-optimized-cx-spread
-CX_CAPACITY_ORDER_IMAGE=ubuntu-24.04
-CX_CAPACITY_HCLOUD_BIN=/opt/homebrew/bin/hcloud
-```
-
-The fixed targets are
-`n0xeid-medium-optimized-cx-reserve-master-1` (`cx33`),
-`n0xeid-medium-optimized-cx-reserve-worker-1` (`cx43`), and
-`n0xeid-medium-optimized-cx-reserve-worker-2` (`cx43`). All are private-only,
-use the existing Kubernetes network and node firewall, receive the reviewed
-SSH key and Ubuntu 24.04 image, and join the existing spread placement group.
-Their separate `project` label keeps ordinary cluster reconciliation from
-treating them as active members.
-
-Provider inventory is the primary duplicate guard. The monitor also records a
-lifetime acquisition receipt before sending Telegram, so deleting a reserved
-server does not silently authorize purchasing it again. It fails closed if
-more than three servers use the order-set label, if a fixed name is occupied by
-an unexpected resource, or if type/labels drift. Capacity can disappear between
-the list response and creation; Hetzner's unavailable-order response is treated
-as a retryable wait on the next scheduled run.
-
-This automation only acquires the three server resources. It never runs
-`run_tier.sh`, changes the active Kubernetes inventory, joins a node, drains a
-node, resizes a server, or deletes anything. Kubernetes adoption remains a
-separate reviewed operation.
+The message includes the exact 3+3 target, available and missing shapes,
+infrastructure and volume split, local-claim reservation, and current net
+monthly total. A partial report is informational and is not permission to
+deploy. The monitor is notification-only: it contains no provisioning path and
+never creates, resizes, or deletes resources. Re-run the `hel1` report before
+any separate manual provisioning because availability can disappear between
+the notification and server creation.
 
 ## Capacity tariff policy
 
