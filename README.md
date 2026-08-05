@@ -33,15 +33,15 @@ The runtime has four capability tiers and five named profiles:
 | `production` | production | small | 3 tainted control planes + 3 workers | Selective critical HA with explicit quorum/workload replicas, failover headroom, and grow-only storage defaults |
 
 The current deployable `medium-optimized` balanced tariff is approximately
-**€357.98/month net** at the authenticated 2026-07-30 prices: six `cpx32`
+**€358.56/month net** at the authenticated 2026-07-30 prices: six `cpx32`
 platform nodes, one isolated `cpx32` Docker worker, one isolated `cpx42`
 general/image-build worker, one `cpx22` bastion, `lb11`,
 one bastion IPv4, 300 GiB of active
-server-local application-replicated claims in a 450 GiB expandable pool, and 220 GiB of
+server-local application-replicated claims in a 450 GiB expandable pool, and 230 GiB of
 provider-billable CSI volumes. The six-node platform base without the isolated
-CI worker is **€253.00/month net**. GitLab backup staging uses transient node
+CI worker is **€253.58/month net**. GitLab backup staging uses transient node
 SSD and is uploaded to object storage. The intermittent CX cost-optimized
-platform base is **€99.50/month net**
+platform base is **€100.08/month net**
 whenever its required server types are placeable. It keeps three economical
 `cx33` control planes and three `cx43` workers, providing 36 vCPU, 72 GiB RAM,
 and 720 GiB aggregate Kubernetes node-local SSD. The
@@ -56,8 +56,8 @@ CAX, CPX, and CCX matrix in
 The live production cluster uses the CX platform base plus an isolated
 `cpx32` Docker worker and an isolated `cpx42` general/image-build worker
 because replacement CX placement is currently exhausted. With both workers
-and the actual 220 GiB of provider volumes, its footprint is
-**€204.48/month net**. The base workload cluster remains €99.50/month when CI
+and the actual 230 GiB of provider volumes, its footprint is
+**€205.06/month net**. The base workload cluster remains €100.08/month when CI
 capacity is omitted.
 
 `tier` controls which capabilities are installed. `resource_tier` controls
@@ -281,8 +281,9 @@ configured management ports plus optional ICMP. The `dev` user has no private
 access unless HTTPS is explicitly enabled in the selected profile. Router
 enrollment uses a one-use, one-hour pre-authentication key created and consumed
 on the bastion; the key is never copied to the controller or stored in Git.
-MagicDNS records are rendered from the same `network.internal_dns.zones` data
-used by cluster DNS, without overriding the client's global DNS resolver. See
+MagicDNS records use `network.vpn.internal_dns.zones` when present and fall
+back to `network.internal_dns.zones` only when the same addresses are routable
+from VPN clients. Headscale does not override the client's global resolver. See
 [`docs/DNS_AND_TRAFFIC_FLOW.md`](docs/DNS_AND_TRAFFIC_FLOW.md) for laptop
 enrollment and verification.
 
@@ -309,8 +310,8 @@ total directly from the authenticated provider APIs:
 ./scripts/hetzner-capacity-report.sh --location hel1 --format json
 ```
 
-Monitor the `medium-optimized` CX mapping only in Helsinki (`hel1`) and notify
-Telegram when partial or complete availability changes:
+Monitor one `CX33` control-plane reservation and two `CX43` worker reservations
+only in Helsinki (`hel1`):
 
 ```bash
 ./scripts/notify-cx-capacity-telegram.sh --test-telegram
@@ -320,7 +321,11 @@ Telegram when partial or complete availability changes:
 The monitor uses the protected `.env`, reuses `ALERT_TELEGRAM_*` by default,
 and supports dedicated `CX_CAPACITY_TELEGRAM_*` overrides. It is stateful,
 reports available and missing shapes, retries failed delivery, stays silent
-while availability is unchanged, and contains no provisioning path.
+while availability is unchanged, and can independently acquire each requested
+type when `CX_CAPACITY_ORDER_ENABLED=true`. Fixed names, provider labels, live
+inventory checks, and lifetime receipts enforce a hard three-server cap. The
+servers use the existing private Kubernetes network, node firewall, SSH key,
+spread group, and Ubuntu image; this does not join them to Kubernetes.
 Configuration and operating details are in
 [Hetzner capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md#telegram-capacity-monitor).
 
@@ -516,8 +521,10 @@ scripts/bootstrap-gitlab-runner-token.py \
 The command is idempotent: it verifies and reuses a live persisted token, or
 creates a new instance runner through GitLab's supported API and synchronizes
 the result into the ignored `.env` and encrypted secrets file. See
-[GitLab Runner token bootstrap](docs/GITLAB_RUNNER_BOOTSTRAP.md) for first-cluster
-sequencing, compatibility, and the no-disclosure guarantees.
+[GitLab Runner token bootstrap](docs/GITLAB_RUNNER_BOOTSTRAP.md) for
+first-cluster sequencing, compatibility, and no-disclosure guarantees. Use
+[GitLab CI classification](docs/GITLAB_CI_CLASSIFICATION.md) for
+protected/default branch, environment, review, and maintenance policy.
 
 ## Operations
 
@@ -644,6 +651,7 @@ requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 ## Documentation
 
 - [Deployment guide](DEPLOYMENT.md)
+- [Production access, credentials, and service exposure](docs/ACCESS_AND_CREDENTIALS.md)
 - [Technology catalog and profile matrix](docs/TECHNOLOGY_CATALOG.md)
 - [Operations runbook](RUNBOOK.md)
 - [Backup and restore](BACKUP_RESTORE.md)
