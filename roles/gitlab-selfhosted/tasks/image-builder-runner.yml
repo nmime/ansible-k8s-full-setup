@@ -89,7 +89,7 @@
     set -euo pipefail
     status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
-        pod/{{ _gitlab_toolbox_pod_name }} -c toolbox -- sh -ec '
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
           payload=$(printf \
             "{\"token\":\"%s\",\"system_id\":\"s_ansible_image_builder\"}" \
@@ -107,11 +107,7 @@
   register: _gitlab_image_builder_auth_verification
   changed_when: false
   failed_when: false
-  when:
-    - _gitlab_image_builder_auth_candidate | length > 0
-    - >-
-      _gitlab_image_builder_auth_candidate ==
-      (_gitlab_image_builder_auth_candidate | trim)
+  when: _gitlab_image_builder_auth_candidate | length > 0
 
 - name: Image builder | Verify the declared Runner identity after drift
   no_log: true
@@ -119,7 +115,7 @@
     set -euo pipefail
     status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
-        pod/{{ _gitlab_toolbox_pod_name }} -c toolbox -- sh -ec '
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
           payload=$(printf \
             "{\"token\":\"%s\",\"system_id\":\"s_ansible_image_builder\"}" \
@@ -198,10 +194,6 @@
       gitlabUrl: >-
         http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
       runnerToken: '{{ _gitlab_image_builder_auth_token }}'
-      # Authentication tokens are durable runner identities. Letting a
-      # terminating manager unregister the shared identity invalidates the
-      # replacement and creates a rollout/recovery loop.
-      unregisterRunners: false
       replicas: '{{ gitlab_image_builder_runner_replicas | int }}'
       concurrent: '{{ gitlab_image_builder_runner_concurrent | int }}'
       checkInterval: 3
@@ -225,11 +217,10 @@
         clusterWideAccess: false
       serviceAccount:
         create: true
-      priorityClassName: n0xeid-ci-control
       nodeSelector: >-
         {{
           {'workload.n0xeid.xyz/ci-build': 'true'}
-          if gitlab_image_builder_runner_worker_index | default(0) | int > 0
+          if gitlab_runner_worker_index | default(0) | int > 0
           else {'node-role.kubernetes.io/worker': 'true'}
         }}
       tolerations: >-
@@ -242,7 +233,7 @@
               'effect': 'NoSchedule'
             }
           ]
-          if gitlab_image_builder_runner_worker_index | default(0) | int > 0
+          if gitlab_runner_worker_index | default(0) | int > 0
           else []
         }}
       podSecurityContext:
@@ -268,7 +259,7 @@
             [runners.kubernetes]
               namespace = "{{ gitlab_image_builder_runner_namespace }}"
               image = "ubuntu:22.04"
-          {% if gitlab_image_builder_runner_worker_index | default(0) | int > 0 %}
+          {% if gitlab_runner_worker_index | default(0) | int > 0 %}
               node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
               node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
           {% else %}
@@ -278,15 +269,6 @@
               allow_privilege_escalation = false
               cap_drop = ["ALL"]
               automount_service_account_token = false
-              priority_class_name = "n0xeid-ci-maintenance"
-              cpu_request = "1000m"
-              cpu_limit = "4000m"
-              memory_request = "2Gi"
-              memory_limit = "8Gi"
-              helper_cpu_request = "100m"
-              helper_cpu_limit = "500m"
-              helper_memory_request = "256Mi"
-              helper_memory_limit = "512Mi"
               cpu_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_request | default(gitlab_image_builder_cpu_request) }}"
               cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_limit | default(gitlab_image_builder_cpu_limit) }}"
               memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_request | default(gitlab_image_builder_memory_request) }}"

@@ -112,7 +112,7 @@
     set -euo pipefail
     status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
-        pod/{{ _gitlab_toolbox_pod_name }} -c toolbox -- sh -ec '
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
           payload=$(printf \
             "{\"token\":\"%s\",\"system_id\":\"s_ansible_docker_smoke\"}" \
@@ -130,11 +130,7 @@
   register: _gitlab_docker_host_auth_verification
   changed_when: false
   failed_when: false
-  when:
-    - _gitlab_docker_host_auth_candidate | length > 0
-    - >-
-      _gitlab_docker_host_auth_candidate ==
-      (_gitlab_docker_host_auth_candidate | trim)
+  when: _gitlab_docker_host_auth_candidate | length > 0
 
 - name: Docker smoke | Verify the declared Runner identity after drift
   no_log: true
@@ -142,7 +138,7 @@
     set -euo pipefail
     status=$(printf '%s' "$GITLAB_RUNNER_TOKEN" |
       kubectl exec -i --namespace "{{ gitlab_namespace }}" \
-        pod/{{ _gitlab_toolbox_pod_name }} -c toolbox -- sh -ec '
+        deployment/gitlab-toolbox -c toolbox -- sh -ec '
           token=$(cat)
           payload=$(printf \
             "{\"token\":\"%s\",\"system_id\":\"s_ansible_docker_smoke\"}" \
@@ -220,10 +216,6 @@
       gitlabUrl: >-
         http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181
       runnerToken: '{{ _gitlab_docker_host_auth_token }}'
-      # Keep the glrt- identity registered across manager rollouts. The
-      # preStop unregister hook otherwise invalidates the replacement and
-      # forces a manual token recovery.
-      unregisterRunners: false
       replicas: '{{ gitlab_docker_host_runner_replicas | int }}'
       concurrent: '{{ gitlab_docker_host_runner_concurrent | int }}'
       checkInterval: 3
@@ -240,7 +232,6 @@
         clusterWideAccess: false
       serviceAccount:
         create: true
-      priorityClassName: n0xeid-ci-control
       nodeSelector:
         workload.n0xeid.xyz/ci-docker: 'true'
       tolerations:
@@ -274,7 +265,6 @@
               allowed_services = ["docker.io/library/docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"]
               privileged = false
               automount_service_account_token = false
-              priority_class_name = "n0xeid-ci-maintenance"
               node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }
               node_tolerations = { "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
               cpu_request = "{{ gitlab_docker_host_runner_job_resources.cpu_request | default('500m') }}"
