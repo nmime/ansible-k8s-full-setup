@@ -153,7 +153,7 @@ User in Japan requests cdn.example.com:
 | Certificate | Issuer | Domains | Used by |
 |-------------|--------|---------|--------|
 | Wildcard cert | Let's Encrypt (DNS01) | `*.example.com`, `example.com` | Cilium Gateway |
-| Internal CA certs | Self-signed CA | Service-specific | Internal mTLS (Vault, SeaweedFS object storage) |
+| Internal CA certs | Self-signed CA | Service-specific | Vault internal TLS |
 
 **How DNS01 validation works:**
 ```
@@ -276,14 +276,14 @@ certbot certonly --nginx \
    └─→ tailscale up --login-server=https://vpn.example.com
    └─→ Gets VPN IP: 100.64.x.x
 
-2. Admin resolves the private admin endpoint to a cluster node or private VIP
-   └─→ Do not publish the admin Gateway through the public application LB
+2. Split DNS resolves the private admin endpoint to the bastion tailnet IP
+   └─→ Example production address: 100.64.0.1
 
 3. The operator discovers the admin Gateway Service HTTPS NodePort
    └─→ Cilium owns this allocation; do not hard-code or patch it
 
-4. Admin connects through the VPN to that private endpoint and discovered port
-   └─→ The VPN overlay (100.64.0.0/10) has access to 10.0.0.0/16
+4. HAProxy listens only on the tailnet IP and TCP-passes TLS to that NodePort
+   └─→ Its public-IP listeners remain dedicated to Headscale
 
 5. Cilium admin-gateway terminates TLS
    └─→ HTTPRoute matches Host: gitlab.example.com
@@ -331,10 +331,15 @@ tailscale up \
 
 Confirm the client is registered under the expected user, the private route is
 accepted, and an allowed HTTPS endpoint resolves and connects. Also verify that
-a disallowed port is rejected. MagicDNS extra records are generated from
-`network.internal_dns.zones`, the same profile data used by cluster CoreDNS.
-Headscale does not replace the laptop's global resolver
+a disallowed port is rejected. MagicDNS extra records use
+`network.vpn.internal_dns.zones` when present, with
+`network.internal_dns.zones` as a compatibility fallback. This permits VPN
+clients and cluster pods to use different reachable addresses for the same
+private hostname. Headscale does not replace the laptop's global resolver
 (`override_local_dns: false`); it adds only managed tailnet/private records.
+The `dns.nameservers.split` forwarder map may remain empty: it is needed only
+when a private suffix must be delegated to a tailnet-reachable DNS server.
+Explicit `extra_records_path` entries do not require a split-zone resolver.
 
 For the load-balancer-free `minimal` tier, root and wildcard DNS point to the
 bastion. HAProxy listens on public ports 80/443, routes `vpn.<domain>` to the

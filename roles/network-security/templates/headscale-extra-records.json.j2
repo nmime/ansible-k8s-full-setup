@@ -1,6 +1,6 @@
 [
 {% set comma = joiner(",\n") %}
-{% for zone in network.internal_dns.zones | default([]) %}
+{% for zone in headscale_dns_zones | default([]) %}
 {% for record in zone.records | default([]) %}
 {% for name in record.names | default([]) %}
 {{ comma() }}  {
