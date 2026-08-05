@@ -416,7 +416,6 @@ class TestMediumOptimizedContract:
             "observability.metrics.replicas",
             "observability.grafana.replicas",
             "autoscaling.replicas",
-            "dragonfly.replicas",
             "temporal.frontend_replicas",
             "temporal.history_replicas",
             "temporal.matching_replicas",
@@ -429,6 +428,7 @@ class TestMediumOptimizedContract:
             "blackbox.replicas",
         )
         assert all(get_path(self.profile, path) == 1 for path in replica_paths)
+        assert self.profile["dragonfly"]["replicas"] == 2
         assert self.profile["autoscaling"]["defaults"] == {
             "min_replicas": 1,
             "max_replicas": 4,

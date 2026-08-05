@@ -814,8 +814,13 @@
             key: postgresql-password
           preparedStatements: false
         redis:
-          host: dragonfly.dragonfly.svc.cluster.local
-          port: 6379
+          host: dragonfly-tls.dragonfly.svc.cluster.local
+          port: 6380
+          scheme: rediss
+          redisTLS:
+            caFile:
+              secret: datastore-client-ca
+              key: ca.crt
           auth:
             enabled: true
             secret: gitlab-redis

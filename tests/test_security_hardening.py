@@ -630,12 +630,76 @@ class TestDragonflyPodSecurity:
         assert "allowPrivilegeEscalation: false" in content
         assert "drop: [ALL]" in content
 
-    def test_default_deny_consumers_receive_paired_egress_policy(self):
+    def test_dragonfly_does_not_impose_partial_namespace_wide_egress_isolation(self):
         content = read("roles/dragonfly/tasks/main.yml")
-        assert "Allow consumers to egress to Dragonfly" in content
+        assert "Remove partial namespace-wide Dragonfly egress policies" in content
         assert "allow-egress-to-dragonfly" in content
-        assert "kubernetes.io/metadata.name: \"{{ df_ns }}\"" in content
-        assert "port: 6379" in content
+        cleanup = content.split(
+            "- name: Remove partial namespace-wide Dragonfly egress policies", 1
+        )[1].split("- name: Allow the blackbox exporter", 1)[0]
+        assert "state: absent" in cleanup
+        assert "podSelector: {}" not in cleanup
+
+    def test_gitlab_owned_egress_policy_allows_only_dragonfly_tls(self):
+        content = read("roles/gitlab-selfhosted/tasks/main.yml")
+        policy = content.split(
+            "- name: Allow GitLab egress to PostgreSQL, Dragonfly TLS, and object storage", 1
+        )[1].split("- name: Create GitLab VMServiceScrape", 1)[0]
+        assert "k8s:io.kubernetes.pod.namespace: dragonfly" in policy
+        assert 'dragonfly_tls_port | default(6380)' in policy
+        assert "port: '6379'" not in policy
+
+    def test_blackbox_tcp_probe_has_matching_least_privilege_ingress(self):
+        content = read("roles/dragonfly/tasks/main.yml")
+        assert "Allow the blackbox exporter to probe verified Dragonfly TCP health" in content
+        assert "allow-from-monitoring-blackbox" in content
+        assert "kubernetes.io/metadata.name: \"{{ monitoring_namespace | default('monitoring') }}\"" in content
+        assert "app: dragonfly" in content
+        assert "df_tls_port if df_tls_mode == 'proxy' else 6379" in content
+
+    def test_parallel_tls_listener_is_hostname_verified_and_rotation_safe(self):
+        content = read("roles/dragonfly/tasks/main.yml")
+        assert "dragonfly-tls.{{ df_ns }}.svc.cluster.local" in content
+        assert "ssl-min-ver TLSv1.2" in content
+        assert "server dragonfly 127.0.0.1:6379 check" in content
+        assert "sha256sum /etc/dragonfly-tls/tls.crt" in content
+        assert "readOnlyRootFilesystem: true" in content
+        assert "name: dragonfly-tls" in content
+        assert "targetPort: redis-tls" in content
+        assert "pidof haproxy >/dev/null && nc -z 127.0.0.1 6379" in content
+        assert "tcpSocket:\n            port: redis-tls" not in content
+        assert "dragonfly_tls_proxy_revision" in content
+
+    def test_plaintext_client_policy_has_an_explicit_final_cutover_switch(self):
+        defaults = read("roles/dragonfly/defaults/main.yml")
+        content = read("roles/dragonfly/tasks/main.yml")
+        assert "dragonfly_allow_plaintext_clients" in defaults
+        assert "df_allow_plaintext_clients or df_tls_mode == 'proxy'" in content
+        assert "Plaintext compatibility endpoint: blocked by NetworkPolicy" in content
+
+    def test_verified_datastore_ca_bundle_contains_no_private_keys(self):
+        content = read("roles/dragonfly/tasks/main.yml")
+        publish = content.split(
+            "- name: Publish the verified PostgreSQL endpoint, MongoDB, and Dragonfly client CA bundle", 1
+        )[1].split("- name: Remove partial namespace-wide Dragonfly egress policies", 1)[0]
+        retrieve = content.split(
+            "- name: Retrieve the PostgreSQL endpoint, MongoDB, and Dragonfly client CAs", 1
+        )[1].split("- name: Build the combined verified datastore CA bundle", 1)[0]
+        build = content.split(
+            "- name: Build the combined verified datastore CA bundle", 1
+        )[1].split("- name: Publish the verified PostgreSQL endpoint, MongoDB, and Dragonfly client CA bundle", 1)[0]
+        assert 'name: "{{ databases.postgresql.service_alias }}-tls"' in retrieve
+        assert 'name: "{{ project_name | default(\'k8s\') }}-pg-cluster-ca-cert"' in retrieve
+        assert 'name: "{{ databases.mongodb.service_alias }}-tls"' in retrieve
+        assert "_dragonfly_datastore_client_ca_bundle: |" in build
+        assert ".results[0].resources[0].data['ca.crt']" in build
+        assert ".results[1].resources[0].data['ca.crt']" in build
+        assert ".results[2].resources[0].data['ca.crt']" in build
+        assert ".results[3].resources[0].data['tls.crt']" in build
+        assert "~ '\\n' ~" not in build
+        assert "name: datastore-client-ca" in publish
+        assert "ca.crt:" in publish
+        assert "tls.key" not in publish
 
 
 # ─── 5. k8s-gitops: ArgoCD ──────────────────────────────
@@ -1325,6 +1389,11 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
     assert "pg_tls_mode != 'requireTLS' or pg_tls_cutover_confirmed | bool" in (
         pg_gate["that"]
     )
+    pg_live_gate = by_name[
+        "Prove no remote plaintext PostgreSQL sessions before enforcement"
+    ]["ansible.builtin.shell"]
+    assert "a.client_addr is not null" in pg_live_gate
+    assert 'test "$plaintext_sessions" = 0' in pg_live_gate
 
     mongo_cluster = by_name["Create MongoDB cluster"]["kubernetes.core.k8s"][
         "definition"
@@ -1354,11 +1423,25 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
         mongo_cluster["spec"]["secrets"]["sslInternal"]
     )
     assert "mongo_alias_tls_cutover_enabled | bool" in mongo_cluster["spec"]["tls"]
+    assert (
+        "allowConnectionsWithoutCertificates: true"
+        in mongo_cluster["spec"]["replsets"][0]["configuration"]
+    )
+    mongo_alias_issuer = by_name[
+        "Create the MongoDB alias issuer from the existing Percona cluster CA"
+    ]["kubernetes.core.k8s"]["definition"]
+    assert mongo_alias_issuer["spec"]["ca"]["secretName"] == (
+        "{{ project_name | default('k8s') }}-mongo-ca-cert"
+    )
+    mongo_alias_certificate = by_name[
+        "Issue hostname-verified MongoDB alias certificate"
+    ]["kubernetes.core.k8s"]["definition"]
+    assert "mongodb-operator-ca" in mongo_alias_certificate["spec"]["issuerRef"]["name"]
     published_ca = by_name["Publish the hostname-verifying MongoDB client CA"][
         "kubernetes.core.k8s"
     ]["definition"]
     assert "type" not in published_ca
-    assert published_ca["stringData"]["ca.crt"]
+    assert "_mongo_alias_tls_secret_resource" in published_ca["stringData"]["ca.crt"]
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():
