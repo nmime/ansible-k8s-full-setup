@@ -266,6 +266,7 @@ mongodb_backup_resources:
     memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
 mongodb_backup_starting_deadline_seconds: 1800
 mongodb_backup_image: percona/percona-backup-mongodb:2.15.0
+mongodb_priority_class_name: n0xeid-platform-critical
 mongodb_replset_resources:
   requests:
     cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '250m' }}"
@@ -285,17 +286,76 @@ mongodb_pmm_resources:
 # GitLab
 # renovate: datasource=helm depName=gitlab
 gitlab_chart_version: "10.1.2"
+gitlab_registry_replicas: 2
 gitlab_runner_concurrent_jobs: 10
 gitlab_runner_worker_index: 0
+gitlab_runner_job_namespace: gitlab-ci-general
 gitlab_image_builder_runner_enabled: false
 gitlab_image_builder_runner_replicas: 1
 gitlab_image_builder_runner_concurrent_jobs: 1
 gitlab_image_builder_runner_namespace: gitlab-image-builds
+gitlab_image_builder_runner_worker_index: 0
 gitlab_docker_host_runner_enabled: false
 gitlab_docker_host_runner_replicas: 1
 gitlab_docker_host_runner_concurrent_jobs: 1
 gitlab_docker_host_runner_namespace: gitlab-docker-builds
 gitlab_docker_host_runner_worker_index: 0
+
+# Shared-cluster scheduling policy. System PriorityClasses remain above these
+# values; every CI class is deliberately negative and non-preempting so
+# services can always reclaim capacity without CI evicting other workloads.
+workload_priority_enabled: true
+workload_priority_classes:
+  - {name: n0xeid-platform-critical, value: 1000000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-service-production, value: 100000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-service-environment, value: 50000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-service-review, value: 10000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-ci-control, value: -50, preemption_policy: Never}
+  - {name: n0xeid-ci-production, value: -100, preemption_policy: Never}
+  - {name: n0xeid-ci-environment, value: -200, preemption_policy: Never}
+  - {name: n0xeid-ci-review, value: -300, preemption_policy: Never}
+  - {name: n0xeid-ci-maintenance, value: -400, preemption_policy: Never}
+  - {name: n0xeid-batch, value: -500, preemption_policy: Never}
+workload_priority_platform_namespaces:
+  - argocd
+  - backups
+  - cert-manager
+  - cilium-secrets
+  - cilium-system
+  - coroot
+  - databases
+  - dragonfly
+  - dragonfly-operator-system
+  - elasticsearch
+  - external-secrets
+  - gateway-secrets
+  - gitlab
+  - glitchtip
+  - keda
+  - kube-system
+  - logging-agents
+  - metallb-system
+  - monitoring
+  - postal
+  - storage
+  - temporal
+  - vault
+  - velero
+workload_priority_production_namespaces:
+  - agents
+  - dadya-production
+  - fun-games-production
+  - production
+  - social-agents-production
+workload_priority_environment_namespaces:
+  - analytics
+  - dadya-preproduction
+  - fun-games-preproduction
+  - social-agents-preproduction
+  - umami
+workload_priority_review_namespaces: []
+workload_priority_controller_overrides:
+  gitlab-ci-general/Deployment/gitlab-runner: n0xeid-ci-control
 
 # Public SSH is fail-closed. Supply operator/VPN CIDRs through a profile,
 # extra-vars, or comma-separated HETZNER_SSH_SOURCE_IPS in the ignored .env.

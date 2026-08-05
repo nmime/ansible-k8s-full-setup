@@ -1,0 +1,87 @@
+---
+- name: Workload priority | Resolve controller-specific class
+  ansible.builtin.set_fact:
+    _workload_priority_target_class: >-
+      {{
+        workload_priority_controller_overrides.get(
+          item.metadata.namespace ~ '/' ~ item.kind ~ '/' ~ item.metadata.name,
+          _workload_priority_namespace_map[item.metadata.namespace]
+        )
+      }}
+
+- name: Workload priority | Resolve a Dragonfly operator owner
+  ansible.builtin.set_fact:
+    _workload_priority_dragonfly_owner: >-
+      {{
+        (item.metadata.ownerReferences | default([]) |
+         selectattr('kind', 'equalto', 'Dragonfly') |
+         map(attribute='name') | list | first) | default('')
+      }}
+
+- name: Workload priority | Patch the owning Dragonfly resource
+  kubernetes.core.k8s:
+    state: present
+    merge_type:
+      - merge
+    definition:
+      apiVersion: dragonflydb.io/v1alpha1
+      kind: Dragonfly
+      metadata:
+        name: '{{ _workload_priority_dragonfly_owner }}'
+        namespace: '{{ item.metadata.namespace }}'
+      spec:
+        priorityClassName: '{{ _workload_priority_target_class }}'
+  register: _workload_priority_dragonfly_patch
+  when: _workload_priority_dragonfly_owner | length > 0
+
+- name: Workload priority | Patch controller template
+  kubernetes.core.k8s:
+    state: present
+    merge_type:
+      - strategic-merge
+    definition:
+      apiVersion: apps/v1
+      kind: '{{ item.kind }}'
+      metadata:
+        name: '{{ item.metadata.name }}'
+        namespace: '{{ item.metadata.namespace }}'
+      spec:
+        template:
+          spec:
+            priorityClassName: >-
+              {{ _workload_priority_target_class }}
+  register: _workload_priority_controller_patch
+  when: _workload_priority_dragonfly_owner | length == 0
+
+- name: Workload priority | Wait for the Dragonfly operator projection
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: '{{ item.metadata.namespace }}'
+    name: '{{ item.metadata.name }}'
+  register: _workload_priority_dragonfly_statefulset
+  retries: 30
+  delay: 2
+  until:
+    - _workload_priority_dragonfly_statefulset.resources | length == 1
+    - >-
+      _workload_priority_dragonfly_statefulset.resources[0].spec.template.spec.priorityClassName |
+      default('') == _workload_priority_target_class
+  when: _workload_priority_dragonfly_owner | length > 0
+
+- name: Workload priority | Wait for the controller rollout gate
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - rollout
+      - status
+      - '{{ item.kind | lower }}/{{ item.metadata.name }}'
+      - --namespace={{ item.metadata.namespace }}
+      - --timeout={{ workload_priority_rollout_timeout | default('10m') }}
+  changed_when: false
+  when:
+    - _workload_priority_dragonfly_owner | length == 0
+    - _workload_priority_controller_patch is changed
+    - >-
+      item.kind != 'StatefulSet'
+      or (item.spec.updateStrategy.type | default('RollingUpdate')) != 'OnDelete'

@@ -325,6 +325,12 @@
       when: platform_hipaa_enabled | bool
       tags: [hipaa, security, compliance]
 
+    - name: Reconcile workload service priority after all controllers exist
+      ansible.builtin.import_role:
+        name: workload-priority
+      when: workload_priority_enabled | bool
+      tags: [priority, scheduling, resources]
+
     # A later component reconcile can consume the last scheduling headroom
     # after Velero's own rollout gate passed. Re-check at the true end of every
     # deployment, including profiles where DR is not normally enabled but a
