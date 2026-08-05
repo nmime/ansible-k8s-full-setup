@@ -128,9 +128,32 @@ secrets:
     storage_size: 10Gi
     data_storage_class: platform-local
     audit_storage_class: hcloud-volumes
+    seed_generated_credentials: true
+    generated_credentials_path: clusters/k8s/platform/generated
   eso:
     enabled: true
     replicas: 1
+    # Exact KV-v2 paths currently consumed by this profile. Keep this list in
+    # lockstep with ExternalSecret manifests; wildcard paths are rejected.
+    read_paths:
+      - social-agents/production/runtime
+      - social-agents/production/steel
+      - shared/analytics/metabase
+      - shared/analytics/metabase-sources
+      - fun-games/preproduction
+      - fun-games/production
+      - fun-games/registry
+      - shared/nx-cache/development
+      - shared/nx-cache/protected
+      - shared/nx-cache/proxy
+    allowed_namespaces:
+      - agents
+      - analytics
+      - fun-games-preproduction
+      - fun-games-production
+      - nx-cache
+    token_audience: external-secrets
+    token_ttl: 15m
 
 # ---------------------------------------------
 # Databases

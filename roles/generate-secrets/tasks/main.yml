@@ -83,6 +83,30 @@
     generated_object_storage_nx_cache_development_secret_key: "{{ lookup('env', 'OBJECT_STORAGE_NX_CACHE_DEVELOPMENT_SECRET_KEY') | default(saved_secrets.object_storage_nx_cache_development_secret_key | default(lookup('password', '/dev/null chars=ascii_letters,digits length=32')), true) }}"
   no_log: true
 
+- name: Resolve external disaster-recovery credentials
+  ansible.builtin.set_fact:
+    generated_backup_dr_access_key: >-
+      {{ lookup('env', 'BACKUP_DR_ACCESS_KEY') |
+         default(saved_secrets.backup_dr_access_key | default(''), true) }}
+    generated_backup_dr_secret_key: >-
+      {{ lookup('env', 'BACKUP_DR_SECRET_KEY') |
+         default(saved_secrets.backup_dr_secret_key | default(''), true) }}
+  no_log: true
+
+- name: Require external disaster-recovery credentials before persistence
+  ansible.builtin.assert:
+    that:
+      - generated_backup_dr_access_key | length >= 8
+      - generated_backup_dr_secret_key | length >= 16
+      - backup_dr_storage_endpoint | length > 0
+      - backup_dr_storage_region | length > 0
+      - backup_dr_storage_bucket | length > 0
+    fail_msg: >-
+      External disaster-recovery credentials and location must be complete
+      before the encrypted recovery state can be replaced.
+  no_log: true
+  when: backup_dr_enabled | default(false) | bool
+
 - name: Generate platform credentials
   set_fact:
     generated_grafana_admin_user: "{{ saved_secrets.grafana_admin_user | default('admin') }}"
@@ -104,8 +128,14 @@
 
 - name: Resolve alert notification credentials (Telegram + email)
   set_fact:
-    generated_alert_telegram_bot_token: "{{ lookup('env', 'ALERT_TELEGRAM_BOT_TOKEN') | default(saved_secrets.alert_telegram_bot_token | default(''), true) }}"
-    generated_alert_telegram_chat_id: "{{ lookup('env', 'ALERT_TELEGRAM_CHAT_ID') | default(saved_secrets.alert_telegram_chat_id | default(''), true) }}"
+    generated_alert_telegram_bot_token: >-
+      {{ lookup('env', 'ALERTS_TELEGRAM_BOT_TOKEN') |
+         default(lookup('env', 'ALERT_TELEGRAM_BOT_TOKEN') |
+         default(saved_secrets.alert_telegram_bot_token | default(''), true), true) }}
+    generated_alert_telegram_chat_id: >-
+      {{ lookup('env', 'ALERTS_TELEGRAM_CHAT_ID') |
+         default(lookup('env', 'ALERT_TELEGRAM_CHAT_ID') |
+         default(saved_secrets.alert_telegram_chat_id | default(''), true), true) }}
     generated_alert_email_to: "{{ lookup('env', 'ALERT_EMAIL_TO') | default(saved_secrets.alert_email_to | default('alerts@' + domain), true) }}"
   no_log: true
 
@@ -230,6 +260,52 @@
     alert_telegram_bot_token: "{{ generated_alert_telegram_bot_token }}"
     alert_telegram_chat_id: "{{ generated_alert_telegram_chat_id }}"
     alert_email_to: "{{ generated_alert_email_to }}"
+    backup_dr_storage_access_key: "{{ generated_backup_dr_access_key }}"
+    backup_dr_storage_secret_key: "{{ generated_backup_dr_secret_key }}"
+  no_log: true
+
+- name: Build the generated platform credential recovery bundle
+  ansible.builtin.set_fact:
+    platform_generated_secret_bundle:
+      object_storage_access_key: "{{ object_storage_access_key }}"
+      object_storage_secret_key: "{{ object_storage_secret_key }}"
+      object_storage_bootstrap_access_key: "{{ object_storage_bootstrap_access_key }}"
+      object_storage_bootstrap_secret_key: "{{ object_storage_bootstrap_secret_key }}"
+      object_storage_gitlab_access_key: "{{ object_storage_gitlab_access_key }}"
+      object_storage_gitlab_secret_key: "{{ object_storage_gitlab_secret_key }}"
+      object_storage_backup_access_key: "{{ object_storage_backup_access_key }}"
+      object_storage_backup_secret_key: "{{ object_storage_backup_secret_key }}"
+      object_storage_observability_access_key: "{{ object_storage_observability_access_key }}"
+      object_storage_observability_secret_key: "{{ object_storage_observability_secret_key }}"
+      object_storage_ci_cache_access_key: "{{ object_storage_ci_cache_access_key }}"
+      object_storage_ci_cache_secret_key: "{{ object_storage_ci_cache_secret_key }}"
+      object_storage_nx_cache_protected_access_key: "{{ object_storage_nx_cache_protected_access_key }}"
+      object_storage_nx_cache_protected_secret_key: "{{ object_storage_nx_cache_protected_secret_key }}"
+      object_storage_nx_cache_development_access_key: "{{ object_storage_nx_cache_development_access_key }}"
+      object_storage_nx_cache_development_secret_key: "{{ object_storage_nx_cache_development_secret_key }}"
+      grafana_admin_user: "{{ grafana_admin_user }}"
+      grafana_admin_password: "{{ grafana_admin_password }}"
+      app_db_password: "{{ app_db_password }}"
+      jwt_secret: "{{ app_jwt_secret }}"
+      jwt_refresh_secret: "{{ app_refresh_secret }}"
+      argocd_admin_password: "{{ argocd_admin_password }}"
+      headscale_api_key: "{{ headscale_api_key }}"
+      dragonfly_password: "{{ dragonfly_password }}"
+      daytona_api_key: "{{ daytona_api_key }}"
+      daytona_encryption_key: "{{ daytona_encryption_key }}"
+      es_superuser_password: "{{ es_superuser_password }}"
+      es_logging_ingest_password: "{{ es_logging_ingest_password }}"
+      postal_db_password: "{{ postal_db_password }}"
+      postal_rails_secret: "{{ postal_rails_secret }}"
+      postal_admin_password: "{{ postal_admin_password }}"
+      gitlab_runner_token: "{{ gitlab_runner_token }}"
+      gitlab_image_builder_runner_token: "{{ gitlab_image_builder_runner_token }}"
+      gitlab_docker_host_runner_token: "{{ gitlab_docker_host_runner_token }}"
+      alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
+      alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
+      alert_email_to: "{{ alert_email_to }}"
+      backup_dr_access_key: "{{ backup_dr_storage_access_key }}"
+      backup_dr_secret_key: "{{ backup_dr_storage_secret_key }}"
   no_log: true
 
 - name: Save all generated secrets to file (plaintext migration only)
@@ -275,6 +351,11 @@
       alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
       alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
       alert_email_to: "{{ alert_email_to }}"
+      backup_dr_access_key: "{{ backup_dr_storage_access_key }}"
+      backup_dr_secret_key: "{{ backup_dr_storage_secret_key }}"
+      backup_dr_endpoint: "{{ backup_dr_storage_endpoint }}"
+      backup_dr_region: "{{ backup_dr_storage_region }}"
+      backup_dr_bucket: "{{ backup_dr_storage_bucket }}"
     dest: "{{ secrets_file }}"
     mode: '0600'
   delegate_to: localhost
@@ -327,6 +408,11 @@
           alert_telegram_bot_token: "{{ alert_telegram_bot_token }}"
           alert_telegram_chat_id: "{{ alert_telegram_chat_id }}"
           alert_email_to: "{{ alert_email_to }}"
+          backup_dr_access_key: "{{ backup_dr_storage_access_key }}"
+          backup_dr_secret_key: "{{ backup_dr_storage_secret_key }}"
+          backup_dr_endpoint: "{{ backup_dr_storage_endpoint }}"
+          backup_dr_region: "{{ backup_dr_storage_region }}"
+          backup_dr_bucket: "{{ backup_dr_storage_bucket }}"
         dest: "{{ secrets_file }}.tmp"
         mode: '0600'
       delegate_to: localhost
@@ -350,6 +436,30 @@
       no_log: true
       register: vault_encrypt_result
       changed_when: true
+
+    - name: Load staged encrypted recovery state for integrity verification
+      ansible.builtin.include_vars:
+        file: "{{ secrets_file }}.encrypted"
+        name: staged_platform_secrets
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Verify staged encrypted recovery state before atomic replacement
+      ansible.builtin.assert:
+        that:
+          - staged_platform_secrets.backup_dr_access_key | default('') == backup_dr_storage_access_key
+          - staged_platform_secrets.backup_dr_secret_key | default('') == backup_dr_storage_secret_key
+          - staged_platform_secrets.backup_dr_endpoint | default('') == backup_dr_storage_endpoint
+          - staged_platform_secrets.backup_dr_region | default('') == backup_dr_storage_region
+          - staged_platform_secrets.backup_dr_bucket | default('') == backup_dr_storage_bucket
+        fail_msg: >-
+          Staged encrypted recovery state failed DR integrity verification;
+          the current encrypted state was preserved.
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: backup_dr_enabled | default(false) | bool
 
     - name: Atomically replace secrets file with encrypted output
       ansible.builtin.command:

@@ -3208,6 +3208,56 @@ def test_project_env_dr_location_is_used_as_blank_profile_fallback_without_secre
     assert "load-project-env.sh" in orchestrator
     assert 'backup_dr_storage_access_key=' not in orchestrator
     assert 'backup_dr_storage_secret_key=' not in orchestrator
+    assert "with-encrypted-dr-credentials.py" in orchestrator
+    assert "--vault-password-file" in orchestrator
+    assert 'vault_init_output_file="${ANSIBLE_DIR}/.campaign-state/${PROJECT}/.vault-init-${PROJECT}.json"' in orchestrator
+    assert '-e "vault_init_output_file=${vault_init_output_file}"' in orchestrator
+
+
+def test_dr_credentials_have_an_encrypted_out_of_band_loader_and_atomic_writer():
+    loader = (ROOT / "scripts" / "with-encrypted-dr-credentials.py").read_text(
+        encoding="utf-8"
+    )
+    writer = (ROOT / "scripts" / "store-dr-credentials.py").read_text(
+        encoding="utf-8"
+    )
+    generated = (
+        ROOT / "roles" / "generate-secrets" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "VaultLib" in loader
+    assert "BACKUP_DR_ACCESS_KEY" in loader
+    assert "BACKUP_DR_SECRET_KEY" in loader
+    assert "subprocess.run(args.command, env=environment" in loader
+    assert "print(" not in loader
+    assert "fcntl.flock(lock_file, fcntl.LOCK_EX)" in loader
+    assert 'with_suffix(args.file.suffix + ".lock")' in loader
+    assert 'if not environment.get("BACKUP_DR_ACCESS_KEY")' in loader
+    assert 'if not environment.get("BACKUP_DR_SECRET_KEY")' in loader
+
+    assert "getpass.getpass" in writer
+    assert "read_credentials_from_fifo" in writer
+    assert "stat.S_ISFIFO" in writer
+    assert 'fifo_stat.st_uid != os.getuid()' in writer
+    assert 'fifo_stat.st_mode & 0o777 != 0o600' in writer
+    assert "VaultLib" in writer
+    assert "tempfile.mkstemp" in writer
+    assert "os.replace(staged_name, args.file)" in writer
+    assert '"backup_dr_access_key": access_key' in writer
+    assert '"backup_dr_secret_key": secret_key' in writer
+
+    assert "Resolve external disaster-recovery credentials" in generated
+    assert generated.count(
+        'backup_dr_access_key: "{{ backup_dr_storage_access_key }}"'
+    ) == 3
+    assert generated.count(
+        'backup_dr_secret_key: "{{ backup_dr_storage_secret_key }}"'
+    ) == 3
+    assert "Require external disaster-recovery credentials before persistence" in generated
+    assert "Load staged encrypted recovery state for integrity verification" in generated
+    assert "Verify staged encrypted recovery state before atomic replacement" in generated
+    assert "the current encrypted state was preserved" in generated
+    assert "no_log: true" in generated
 
 
 def test_application_backup_orchestrator_triggers_postgresql_full_backup():
