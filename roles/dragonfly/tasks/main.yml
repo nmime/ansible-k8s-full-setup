@@ -9,42 +9,8 @@
     df_image_ver: "{{ dragonfly_image_version }}"
     df_replicas: "{{ dragonfly_replicas }}"
     df_password: "{{ dragonfly_password }}"
-    df_tls_mode: "{{ dragonfly_tls_mode }}"
-    df_tls_port: "{{ dragonfly_tls_port | int }}"
-    df_tls_proxy_revision: "{{ dragonfly_tls_proxy_revision | string }}"
-    df_allow_plaintext_clients: "{{ dragonfly_allow_plaintext_clients | bool }}"
     storage_class: "{{ storage_class | default('hcloud-volumes') }}"
   no_log: true
-
-- name: Validate the staged Dragonfly TLS mode
-  ansible.builtin.assert:
-    that:
-      - df_tls_mode in ['disabled', 'proxy']
-      - df_tls_port | int >= 1024
-      - df_tls_port | int <= 65535
-      - df_tls_port | int != 6379
-      - dragonfly_tls_client_namespaces is sequence
-      - dragonfly_tls_client_namespaces is not string
-      - df_allow_plaintext_clients or df_tls_mode == 'proxy'
-    fail_msg: >-
-      Dragonfly TLS must be disabled or exposed through the parallel verified
-      proxy listener on a distinct non-privileged port.
-
-- name: Resolve Dragonfly client listener ports
-  ansible.builtin.set_fact:
-    df_client_ports: >-
-      {{
-        (
-          ([6379] if df_allow_plaintext_clients else []) +
-          ([df_tls_port | int] if df_tls_mode == 'proxy' else [])
-        ) | unique | list
-      }}
-
-- name: Build Dragonfly NetworkPolicy listener ports
-  ansible.builtin.set_fact:
-    df_network_policy_ports: >-
-      {{ (df_network_policy_ports | default([])) + [{'protocol': 'TCP', 'port': item | int}] }}
-  loop: "{{ df_client_ports }}"
 
 - name: Create Dragonfly namespace
   kubernetes.core.k8s:
@@ -63,247 +29,6 @@
   retries: 3
   delay: 10
   until: _r_create_dragonfly_ns is not failed
-
-- name: Create Dragonfly TLS bootstrap issuer
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Issuer
-      metadata:
-        name: dragonfly-tls-bootstrap
-        namespace: "{{ df_ns }}"
-      spec:
-        selfSigned: {}
-  when: df_tls_mode == 'proxy'
-
-- name: Create Dragonfly client CA
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Certificate
-      metadata:
-        name: dragonfly-client-ca
-        namespace: "{{ df_ns }}"
-      spec:
-        isCA: true
-        commonName: Dragonfly internal client CA
-        secretName: dragonfly-client-ca
-        duration: 87600h
-        renewBefore: 8760h
-        privateKey:
-          algorithm: ECDSA
-          size: 256
-          rotationPolicy: Always
-        issuerRef:
-          name: dragonfly-tls-bootstrap
-          kind: Issuer
-  when: df_tls_mode == 'proxy'
-
-- name: Wait for the Dragonfly client CA
-  kubernetes.core.k8s_info:
-    api_version: cert-manager.io/v1
-    kind: Certificate
-    namespace: "{{ df_ns }}"
-    name: dragonfly-client-ca
-  register: _dragonfly_client_ca_certificate
-  retries: 30
-  delay: 5
-  until:
-    - _dragonfly_client_ca_certificate.resources | length == 1
-    - >-
-      (_dragonfly_client_ca_certificate.resources[0].status.conditions | default([]) |
-      selectattr('type', 'equalto', 'Ready') |
-      selectattr('status', 'equalto', 'True') | list | length) == 1
-  when: df_tls_mode == 'proxy'
-
-- name: Create Dragonfly client CA issuer
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Issuer
-      metadata:
-        name: dragonfly-client-ca
-        namespace: "{{ df_ns }}"
-      spec:
-        ca:
-          secretName: dragonfly-client-ca
-  when: df_tls_mode == 'proxy'
-
-- name: Issue the hostname-verifying Dragonfly server certificate
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Certificate
-      metadata:
-        name: dragonfly-tls
-        namespace: "{{ df_ns }}"
-      spec:
-        secretName: dragonfly-tls
-        duration: 2160h
-        renewBefore: 360h
-        privateKey:
-          algorithm: ECDSA
-          size: 256
-          rotationPolicy: Always
-        usages:
-          - digital signature
-          - server auth
-        dnsNames:
-          - dragonfly-tls
-          - dragonfly-tls.{{ df_ns }}
-          - dragonfly-tls.{{ df_ns }}.svc
-          - dragonfly-tls.{{ df_ns }}.svc.cluster.local
-        issuerRef:
-          name: dragonfly-client-ca
-          kind: Issuer
-  when: df_tls_mode == 'proxy'
-
-- name: Wait for the Dragonfly server certificate
-  kubernetes.core.k8s_info:
-    api_version: cert-manager.io/v1
-    kind: Certificate
-    namespace: "{{ df_ns }}"
-    name: dragonfly-tls
-  register: _dragonfly_tls_certificate
-  retries: 30
-  delay: 5
-  until:
-    - _dragonfly_tls_certificate.resources | length == 1
-    - >-
-      (_dragonfly_tls_certificate.resources[0].status.conditions | default([]) |
-      selectattr('type', 'equalto', 'Ready') |
-      selectattr('status', 'equalto', 'True') | list | length) == 1
-  when: df_tls_mode == 'proxy'
-
-- name: Create Dragonfly TLS proxy configuration
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: dragonfly-tls-proxy
-        namespace: "{{ df_ns }}"
-      data:
-        haproxy.cfg: |
-          global
-            log stdout format raw local0
-
-          defaults
-            log global
-            mode tcp
-            option tcplog
-            timeout connect 5s
-            timeout client 1h
-            timeout server 1h
-
-          frontend redis_tls
-            bind :{{ df_tls_port }} ssl crt /run/dragonfly-tls/server.pem ssl-min-ver TLSv1.2
-            default_backend redis_plaintext_loopback
-
-          backend redis_plaintext_loopback
-            server dragonfly 127.0.0.1:6379 check
-  when: df_tls_mode == 'proxy'
-
-- name: Build the parallel Dragonfly TLS proxy pod template
-  ansible.builtin.set_fact:
-    _dragonfly_tls_proxy_containers:
-      - name: tls-proxy
-        image: "{{ dragonfly_tls_proxy_image }}"
-        imagePullPolicy: IfNotPresent
-        command: [/bin/sh, -ec]
-        args:
-          - |
-            umask 077
-            proxy_pid=''
-            terminate() {
-              test -z "$proxy_pid" || kill -TERM "$proxy_pid" 2>/dev/null || true
-              test -z "$proxy_pid" || wait "$proxy_pid" 2>/dev/null || true
-              exit 0
-            }
-            trap terminate TERM INT
-            while true; do
-              certificate_hash="$(sha256sum /etc/dragonfly-tls/tls.crt /etc/dragonfly-tls/tls.key)"
-              cat /etc/dragonfly-tls/tls.crt /etc/dragonfly-tls/tls.key > /run/dragonfly-tls/server.pem
-              haproxy -W -db -f /etc/haproxy/haproxy.cfg &
-              proxy_pid=$!
-              while kill -0 "$proxy_pid" 2>/dev/null; do
-                sleep 60 &
-                wait $!
-                next_hash="$(sha256sum /etc/dragonfly-tls/tls.crt /etc/dragonfly-tls/tls.key)"
-                test "$next_hash" = "$certificate_hash" || break
-              done
-              if kill -0 "$proxy_pid" 2>/dev/null; then
-                kill -TERM "$proxy_pid"
-                wait "$proxy_pid" || true
-              else
-                wait "$proxy_pid"
-                exit $?
-              fi
-              proxy_pid=''
-            done
-        ports:
-          - name: redis-tls
-            containerPort: "{{ df_tls_port | int }}"
-            protocol: TCP
-        readinessProbe:
-          exec:
-            command:
-              - /bin/sh
-              - -ec
-              - pidof haproxy >/dev/null && nc -z 127.0.0.1 6379
-          initialDelaySeconds: 2
-          periodSeconds: 5
-          timeoutSeconds: 2
-          failureThreshold: 6
-        livenessProbe:
-          exec:
-            command:
-              - /bin/sh
-              - -ec
-              - pidof haproxy >/dev/null && nc -z 127.0.0.1 6379
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 2
-          failureThreshold: 6
-        resources:
-          requests:
-            cpu: 10m
-            memory: 24Mi
-          limits:
-            cpu: 100m
-            memory: 64Mi
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: [ALL]
-        volumeMounts:
-          - name: dragonfly-tls-certificate
-            mountPath: /etc/dragonfly-tls
-            readOnly: true
-          - name: dragonfly-tls-proxy-config
-            mountPath: /etc/haproxy
-            readOnly: true
-          - name: dragonfly-tls-work
-            mountPath: /run/dragonfly-tls
-    _dragonfly_tls_proxy_volumes:
-      - name: dragonfly-tls-certificate
-        secret:
-          secretName: dragonfly-tls
-      - name: dragonfly-tls-proxy-config
-        configMap:
-          name: dragonfly-tls-proxy
-      - name: dragonfly-tls-work
-        emptyDir: {}
-    _dragonfly_tls_proxy_pod_metadata:
-      annotations:
-        platform.n0xeid.xyz/dragonfly-tls-proxy-revision: '{{ df_tls_proxy_revision }}'
-  when: df_tls_mode == 'proxy'
 
 - name: Download pinned Dragonfly Operator manifest
   ansible.builtin.get_url:
@@ -402,10 +127,6 @@
       spec:
         image: "docker.dragonflydb.io/dragonflydb/dragonfly:{{ df_image_ver }}"
         replicas: "{{ df_replicas | int }}"
-        additionalContainers: "{{ _dragonfly_tls_proxy_containers | default(omit) }}"
-        additionalVolumes: "{{ _dragonfly_tls_proxy_volumes | default(omit) }}"
-        podMetadata: "{{ _dragonfly_tls_proxy_pod_metadata | default(omit) }}"
-        priorityClassName: "{{ dragonfly_priority_class_name }}"
         enableReplicationReadinessGate: "{{ (df_replicas | int) > 1 }}"
         nodeSelector: "{{ dragonfly_node_selector }}"
         affinity:
@@ -457,6 +178,7 @@
         args:
           - "--maxmemory={{ dragonfly_memory_limit }}"
           - "--proactor_threads=2"
+          - "--cluster_mode=emulated"
         serviceSpec:
           type: ClusterIP
         pdb:
@@ -546,89 +268,6 @@
     storage_reconcile_desired: '{{ dragonfly_snapshot_storage }}'
     storage_reconcile_orphan: false
 
-- name: Roll Dragonfly pods one at a time onto the TLS proxy template
-  ansible.builtin.shell: |
-    set -euo pipefail
-    for ordinal in $(seq 0 $(({{ df_replicas | int }} - 1))); do
-      pod="dragonfly-${ordinal}"
-      current_revision="$(kubectl get pod "$pod" -n {{ df_ns | quote }} \
-        -o jsonpath='{.metadata.annotations.platform\.n0xeid\.xyz/dragonfly-tls-proxy-revision}' \
-        2>/dev/null || true)"
-      has_proxy="$(kubectl get pod "$pod" -n {{ df_ns | quote }} -o json \
-        | jq -r 'any(.spec.containers[]; .name == "tls-proxy")')"
-      if [[ "$current_revision" == {{ df_tls_proxy_revision | quote }} && "$has_proxy" == true ]]; then
-        continue
-      fi
-      old_uid="$(kubectl get pod "$pod" -n {{ df_ns | quote }} -o jsonpath='{.metadata.uid}')"
-      echo "rolling $pod onto Dragonfly TLS proxy revision {{ df_tls_proxy_revision }}"
-      kubectl delete pod "$pod" -n {{ df_ns | quote }} --wait=false
-      replacement_ready=false
-      for attempt in $(seq 1 120); do
-        pod_json="$(kubectl get pod "$pod" -n {{ df_ns | quote }} -o json 2>/dev/null || true)"
-        if [[ -n "$pod_json" ]] && jq -e \
-          --arg old_uid "$old_uid" \
-          '.metadata.uid != $old_uid and
-           .metadata.annotations["platform.n0xeid.xyz/dragonfly-tls-proxy-revision"] == {{ df_tls_proxy_revision | to_json }} and
-           any(.status.containerStatuses[]?; .name == "tls-proxy" and .ready == true) and
-           any(.status.conditions[]?; .type == "Ready" and .status == "True")' \
-          <<<"$pod_json" >/dev/null; then
-          replacement_ready=true
-          break
-        fi
-        sleep 5
-      done
-      [[ "$replacement_ready" == true ]] || {
-        echo "replacement pod $pod did not expose a Ready TLS proxy within 10 minutes" >&2
-        exit 1
-      }
-    done
-  args:
-    executable: /bin/bash
-  register: _dragonfly_tls_proxy_rollout
-  changed_when: _dragonfly_tls_proxy_rollout.stdout | length > 0
-  when: df_tls_mode == 'proxy'
-
-- name: Create the hostname-verified Dragonfly TLS service
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: dragonfly-tls
-        namespace: "{{ df_ns }}"
-        labels:
-          app.kubernetes.io/part-of: dragonfly
-      spec:
-        type: ClusterIP
-        selector:
-          app: dragonfly
-          role: master
-        ports:
-          - name: redis-tls
-            protocol: TCP
-            port: "{{ df_tls_port | int }}"
-            targetPort: redis-tls
-  when: df_tls_mode == 'proxy'
-
-- name: Discover existing Dragonfly consumer namespaces
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Namespace
-  register: _df_cluster_namespaces
-
-- name: Resolve existing Dragonfly consumer namespaces
-  ansible.builtin.set_fact:
-    df_existing_consumers: >-
-      {{
-        (
-          ['production', 'postal', 'glitchtip', 'daytona', 'gitlab'] +
-          (dragonfly_tls_client_namespaces if df_tls_mode == 'proxy' else [])
-        ) | unique |
-        intersect(_df_cluster_namespaces.resources |
-        map(attribute='metadata.name') | list)
-      }}
-
 - name: Create allow-from-platform NetworkPolicies for Dragonfly
   kubernetes.core.k8s:
     state: present
@@ -646,88 +285,34 @@
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: "{{ item }}"
-            ports: "{{ df_network_policy_ports }}"
-  loop: "{{ df_existing_consumers }}"
+            ports:
+              - protocol: TCP
+                port: 6379
+  loop:
+    - production
+    - agents
+    - postal
+    - glitchtip
+    - daytona
+    - gitlab
   register: _r_create_df_netpols
   retries: 3
   delay: 10
   until: _r_create_df_netpols is not failed
 
-- name: Resolve existing verified Dragonfly TLS consumers
-  ansible.builtin.set_fact:
-    df_existing_tls_consumers: >-
-      {{ dragonfly_tls_client_namespaces |
-      intersect(_df_cluster_namespaces.resources |
-      map(attribute='metadata.name') | list) }}
-  when: df_tls_mode == 'proxy'
-
-- name: Retrieve the PostgreSQL endpoint, MongoDB, and Dragonfly client CAs
-  no_log: true
+- name: Discover existing Dragonfly consumer namespaces
   kubernetes.core.k8s_info:
     api_version: v1
-    kind: Secret
-    namespace: "{{ item.namespace }}"
-    name: "{{ item.name }}"
-  loop:
-    - namespace: databases
-      name: "{{ databases.postgresql.service_alias }}-tls"
-    - namespace: databases
-      name: "{{ project_name | default('k8s') }}-pg-cluster-ca-cert"
-    - namespace: databases
-      name: "{{ databases.mongodb.service_alias }}-tls"
-    - namespace: "{{ df_ns }}"
-      name: dragonfly-client-ca
-  register: _dragonfly_datastore_client_cas
-  when:
-    - df_tls_mode == 'proxy'
-    - df_existing_tls_consumers | length > 0
+    kind: Namespace
+  register: _df_cluster_namespaces
 
-- name: Build the combined verified datastore CA bundle
-  no_log: true
+- name: Resolve existing Dragonfly consumer namespaces
   ansible.builtin.set_fact:
-    _dragonfly_datastore_client_ca_bundle: |
-      {{ _dragonfly_datastore_client_cas.results[0].resources[0].data['ca.crt'] | b64decode | trim }}
-      {{ _dragonfly_datastore_client_cas.results[1].resources[0].data['ca.crt'] | b64decode | trim }}
-      {{ _dragonfly_datastore_client_cas.results[2].resources[0].data['ca.crt'] | b64decode | trim }}
-      {{ _dragonfly_datastore_client_cas.results[3].resources[0].data['tls.crt'] | b64decode | trim }}
-  when:
-    - df_tls_mode == 'proxy'
-    - df_existing_tls_consumers | length > 0
+    df_existing_consumers: >-
+      {{ ['production', 'postal', 'glitchtip', 'daytona', 'gitlab'] |
+      intersect(_df_cluster_namespaces.resources |
+      map(attribute='metadata.name') | list) }}
 
-- name: Publish the verified PostgreSQL endpoint, MongoDB, and Dragonfly client CA bundle
-  no_log: true
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: datastore-client-ca
-        namespace: "{{ item }}"
-        labels:
-          app.kubernetes.io/part-of: platform-datastores
-      type: Opaque
-      stringData:
-        ca.crt: "{{ _dragonfly_datastore_client_ca_bundle }}"
-  loop: "{{ df_existing_tls_consumers }}"
-  when:
-    - df_tls_mode == 'proxy'
-    - df_existing_tls_consumers | length > 0
-
-- name: Remove partial namespace-wide Dragonfly egress policies
-  kubernetes.core.k8s:
-    state: absent
-    api_version: networking.k8s.io/v1
-    kind: NetworkPolicy
-    name: allow-egress-to-dragonfly
-    namespace: "{{ item }}"
-  loop: "{{ df_existing_consumers }}"
-  register: _r_remove_df_consumer_netpols
-  retries: 3
-  delay: 10
-  until: _r_remove_df_consumer_netpols is not failed
-
-- name: Allow the blackbox exporter to probe verified Dragonfly TCP health
 - name: Allow agents workloads to resolve DNS and reach Dragonfly
   kubernetes.core.k8s:
     state: present
@@ -764,7 +349,9 @@
           - toEndpoints:
               - matchLabels:
                   k8s:io.kubernetes.pod.namespace: "{{ df_ns }}"
+                  k8s:app.kubernetes.io/name: dragonfly
                   k8s:app: dragonfly
+                  k8s:role: master
             toPorts:
               - ports:
                   - { port: '6379', protocol: TCP }
@@ -779,21 +366,24 @@
       apiVersion: networking.k8s.io/v1
       kind: NetworkPolicy
       metadata:
-        name: allow-from-monitoring-blackbox
-        namespace: "{{ df_ns }}"
+        name: allow-egress-to-dragonfly
+        namespace: "{{ item }}"
       spec:
-        podSelector:
-          matchLabels:
-            app: dragonfly
-        policyTypes: [Ingress]
-        ingress:
-          - from:
+        podSelector: {}
+        policyTypes: [Egress]
+        egress:
+          - to:
               - namespaceSelector:
                   matchLabels:
-                    kubernetes.io/metadata.name: "{{ monitoring_namespace | default('monitoring') }}"
+                    kubernetes.io/metadata.name: "{{ df_ns }}"
             ports:
               - protocol: TCP
-                port: "{{ df_tls_port if df_tls_mode == 'proxy' else 6379 }}"
+                port: 6379
+  loop: "{{ df_existing_consumers }}"
+  register: _r_create_df_consumer_netpols
+  retries: 3
+  delay: 10
+  until: _r_create_df_consumer_netpols is not failed
 
 - name: Wait for Dragonfly pods to be ready
   kubernetes.core.k8s_info:
@@ -864,17 +454,6 @@
       - "  Dragonfly: {{ df_image_ver }}"
       - "  Namespace: {{ df_ns }}"
       - "  Replicas: {{ df_replicas }}"
-      - >-
-        {{
-          '  Plaintext compatibility endpoint: dragonfly.' ~ df_ns ~ '.svc.cluster.local:6379'
-          if df_allow_plaintext_clients
-          else '  Plaintext compatibility endpoint: blocked by NetworkPolicy'
-        }}
-      - >-
-        {{
-          '  Verified TLS endpoint: dragonfly-tls.' ~ df_ns ~ '.svc.cluster.local:' ~ (df_tls_port | string)
-          if df_tls_mode == 'proxy'
-          else '  Verified TLS endpoint: disabled'
-        }}
+      - "  Endpoint: dragonfly.{{ df_ns }}.svc.cluster.local:6379"
       - "  Auth: password from dragonfly-auth secret"
       - "=========================================="

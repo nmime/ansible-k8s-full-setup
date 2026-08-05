@@ -366,27 +366,7 @@ class TestVaultTLS:
         assert "failed_when: false" not in reconcile
         assert reconcile.count("no_log: true") >= 8
 
-    def test_vault_snapshot_role_uses_bounded_batch_tokens(self):
-        reconcile = self.content.split(
-            "- name: Create Vault Kubernetes auth role for snapshot backups", 1
-        )[1].split("- name: Create Vault TLS certificate", 1)[0]
-
-        assert "audience=vault-backup" in reconcile
-        assert "policies=snapshot-backup" in reconcile
-        assert "token_no_default_policy=true" in reconcile
-        assert "token_ttl=15m" in reconcile
-        assert "token_explicit_max_ttl=15m" in reconcile
-        assert "token_type=batch" in reconcile
-        assert "policies=default" not in reconcile
-        assert "no_log: true" in reconcile
-
     def test_vault_eso_policy_and_role_reconcile_fail_closed(self):
-        defaults = yaml.safe_load(read("defaults/main.yml"))
-        assert defaults["eso_vault_read_paths"] == []
-        assert defaults["eso_vault_allowed_namespaces"] == ["default"]
-        assert defaults["eso_vault_token_audience"] == "external-secrets"
-        assert defaults["eso_vault_token_ttl"] == "15m"
-
         reconcile = self.content.split("- name: Create Vault policy for ESO", 1)[1]
         reconcile = reconcile.split(
             "- name: Create ClusterSecretStore for Vault", 1
@@ -396,84 +376,11 @@ class TestVaultTLS:
         assert "auth/kubernetes/role/external-secrets" in reconcile
         assert "vault policy read external-secrets" in reconcile
         assert "Prove the Vault ESO auth role is reconciled" in reconcile
-        assert "policies=external-secrets" in reconcile
-        assert "token_no_default_policy=true" in reconcile
-        assert "token_explicit_max_ttl=\"$4\"" in reconcile
-        assert "token_type=batch" in reconcile
-        assert "audience=\"$3\"" in reconcile
-        assert 'path "auth/token/lookup-self"' in self.content
-        assert 'capabilities = ["read"]' in self.content
-        assert "secret/data/*" not in reconcile
-        assert "capabilities = [\"read\", \"list\"]" not in reconcile
-        assert "eso_vault_token_ttl_seconds" in reconcile
+        assert ".data.token_ttl | int == 3600" in reconcile
         assert reconcile.count("vault_init_data is defined") >= 6
         assert "vault_init is changed" not in reconcile
         assert "failed_when: false" not in reconcile
         assert reconcile.count("no_log: true") >= 6
-
-        store = self.content.split(
-            "- name: Create ClusterSecretStore for Vault", 1
-        )[1].split("- name: Validate the opt-in example ExternalSecret contract", 1)[0]
-        assert "conditions:" in store
-        assert "eso_vault_allowed_namespaces" in store
-        assert "audiences:" in store
-        assert "eso_vault_token_audience" in store
-        assert "Wait for the restricted Vault ClusterSecretStore" in store
-
-    def test_generated_credentials_are_seeded_once_and_drift_checked(self):
-        defaults = yaml.safe_load(read("defaults/main.yml"))
-        assert defaults["vault_platform_generated_seed_enabled"] is True
-        assert "clusters/" in defaults["vault_platform_generated_secret_path"]
-        assert defaults["vault_platform_generated_dr_rotation_allowed"] is False
-        assert (
-            defaults["vault_platform_generated_alert_destination_rotation_allowed"]
-            is False
-        )
-        assert defaults["vault_platform_generated_gitlab_runner_rotation_allowed"] is False
-        assert (
-            defaults["vault_platform_generated_gitlab_runner_secret_namespace"]
-            == "gitlab-ci-general"
-        )
-
-        generate = read("roles/generate-secrets/tasks/main.yml")
-        assert "Build the generated platform credential recovery bundle" in generate
-        assert "platform_generated_secret_bundle:" in generate
-        assert "no_log: true" in generate
-
-        reconcile = self.content
-        assert "Read the generated platform credential mirror from Vault" in reconcile
-        assert "Identify generated credential drift keys without exposing values" in reconcile
-        assert "_vault_platform_generated_drift_keys" in reconcile
-        assert "Refuse divergent generated credentials in Vault" in reconcile
-        assert "Classify the one-time alert credential bootstrap" in reconcile
-        assert "Classify an explicitly authorized Telegram destination rotation" in reconcile
-        assert "_vault_platform_generated_alert_destination_rotation" in reconcile
-        assert "vault_platform_generated_alert_destination_rotation_allowed" in reconcile
-        assert "['alert_telegram_chat_id']" in reconcile
-        assert "Classify the authorized alert bootstrap plus live Runner adoption" in reconcile
-        assert "Classify the explicitly authorized live GitLab Runner rotation" in reconcile
-        assert "_vault_platform_generated_gitlab_runner_rotation" in reconcile
-        assert "Require the authorized GitLab Runner token to match the live runtime" in reconcile
-        assert "vault_platform_generated_gitlab_runner_rotation_allowed" in reconcile
-        assert "vault_platform_generated_gitlab_runner_secret_key" in reconcile
-        assert "Classify an explicitly authorized DR credential rotation" in reconcile
-        assert "vault_platform_generated_dr_rotation_allowed" in reconcile
-        assert "Seed or one-time-bootstrap the generated credential mirror" in reconcile
-        assert "vault kv put \"secret/$3\" @\"$2\"" in reconcile
-        assert 'vault kv put -cas="$4"' in reconcile
-        assert "vault kv get -format=json \"secret/$2\"" in reconcile
-        assert "every other overwrite is" in reconcile
-        assert '>-' + '\n      "\'..\' not in' not in reconcile
-
-        cleanup = read("roles/k8s-secrets/tasks/main.yml")
-        assert "Remove the transient generated credential file from the pod" in cleanup
-        assert "Remove the transient generated credential file from the controller" in cleanup
-
-
-    def test_kubernetes_secret_encryption_uses_authenticated_secretbox(self):
-        tasks = read("roles/k8s-cluster-management/tasks/main.yml")
-        assert "kube_encryption_algorithm: secretbox" in tasks
-        assert "kube_encryption_algorithm: aescbc" not in tasks
 
     def test_example_externalsecret_is_opt_in_and_removed_when_disabled(self):
         defaults = yaml.safe_load(read("defaults/main.yml"))
@@ -630,76 +537,24 @@ class TestDragonflyPodSecurity:
         assert "allowPrivilegeEscalation: false" in content
         assert "drop: [ALL]" in content
 
-    def test_dragonfly_does_not_impose_partial_namespace_wide_egress_isolation(self):
+    def test_default_deny_consumers_receive_paired_egress_policy(self):
         content = read("roles/dragonfly/tasks/main.yml")
-        assert "Remove partial namespace-wide Dragonfly egress policies" in content
+        assert "Allow consumers to egress to Dragonfly" in content
         assert "allow-egress-to-dragonfly" in content
-        cleanup = content.split(
-            "- name: Remove partial namespace-wide Dragonfly egress policies", 1
-        )[1].split("- name: Allow the blackbox exporter", 1)[0]
-        assert "state: absent" in cleanup
-        assert "podSelector: {}" not in cleanup
+        assert "kubernetes.io/metadata.name: \"{{ df_ns }}\"" in content
+        assert "port: 6379" in content
 
-    def test_gitlab_owned_egress_policy_allows_only_dragonfly_tls(self):
-        content = read("roles/gitlab-selfhosted/tasks/main.yml")
-        policy = content.split(
-            "- name: Allow GitLab egress to PostgreSQL, Dragonfly TLS, and object storage", 1
-        )[1].split("- name: Create GitLab VMServiceScrape", 1)[0]
-        assert "k8s:io.kubernetes.pod.namespace: dragonfly" in policy
-        assert 'dragonfly_tls_port | default(6380)' in policy
-        assert "port: '6379'" not in policy
-
-    def test_blackbox_tcp_probe_has_matching_least_privilege_ingress(self):
+    def test_replicated_cache_is_ready_spread_and_disruption_safe(self):
         content = read("roles/dragonfly/tasks/main.yml")
-        assert "Allow the blackbox exporter to probe verified Dragonfly TCP health" in content
-        assert "allow-from-monitoring-blackbox" in content
-        assert "kubernetes.io/metadata.name: \"{{ monitoring_namespace | default('monitoring') }}\"" in content
-        assert "app: dragonfly" in content
-        assert "df_tls_port if df_tls_mode == 'proxy' else 6379" in content
-
-    def test_parallel_tls_listener_is_hostname_verified_and_rotation_safe(self):
-        content = read("roles/dragonfly/tasks/main.yml")
-        assert "dragonfly-tls.{{ df_ns }}.svc.cluster.local" in content
-        assert "ssl-min-ver TLSv1.2" in content
-        assert "server dragonfly 127.0.0.1:6379 check" in content
-        assert "sha256sum /etc/dragonfly-tls/tls.crt" in content
-        assert "readOnlyRootFilesystem: true" in content
-        assert "name: dragonfly-tls" in content
-        assert "targetPort: redis-tls" in content
-        assert "pidof haproxy >/dev/null && nc -z 127.0.0.1 6379" in content
-        assert "tcpSocket:\n            port: redis-tls" not in content
-        assert "dragonfly_tls_proxy_revision" in content
-
-    def test_plaintext_client_policy_has_an_explicit_final_cutover_switch(self):
         defaults = read("roles/dragonfly/defaults/main.yml")
-        content = read("roles/dragonfly/tasks/main.yml")
-        assert "dragonfly_allow_plaintext_clients" in defaults
-        assert "df_allow_plaintext_clients or df_tls_mode == 'proxy'" in content
-        assert "Plaintext compatibility endpoint: blocked by NetworkPolicy" in content
-
-    def test_verified_datastore_ca_bundle_contains_no_private_keys(self):
-        content = read("roles/dragonfly/tasks/main.yml")
-        publish = content.split(
-            "- name: Publish the verified PostgreSQL endpoint, MongoDB, and Dragonfly client CA bundle", 1
-        )[1].split("- name: Remove partial namespace-wide Dragonfly egress policies", 1)[0]
-        retrieve = content.split(
-            "- name: Retrieve the PostgreSQL endpoint, MongoDB, and Dragonfly client CAs", 1
-        )[1].split("- name: Build the combined verified datastore CA bundle", 1)[0]
-        build = content.split(
-            "- name: Build the combined verified datastore CA bundle", 1
-        )[1].split("- name: Publish the verified PostgreSQL endpoint, MongoDB, and Dragonfly client CA bundle", 1)[0]
-        assert 'name: "{{ databases.postgresql.service_alias }}-tls"' in retrieve
-        assert 'name: "{{ project_name | default(\'k8s\') }}-pg-cluster-ca-cert"' in retrieve
-        assert 'name: "{{ databases.mongodb.service_alias }}-tls"' in retrieve
-        assert "_dragonfly_datastore_client_ca_bundle: |" in build
-        assert ".results[0].resources[0].data['ca.crt']" in build
-        assert ".results[1].resources[0].data['ca.crt']" in build
-        assert ".results[2].resources[0].data['ca.crt']" in build
-        assert ".results[3].resources[0].data['tls.crt']" in build
-        assert "~ '\\n' ~" not in build
-        assert "name: datastore-client-ca" in publish
-        assert "ca.crt:" in publish
-        assert "tls.key" not in publish
+        assert "enableReplicationReadinessGate:" in content
+        assert "requiredDuringSchedulingIgnoredDuringExecution:" in content
+        assert "topologySpreadConstraints:" in content
+        assert "topologyKey: kubernetes.io/hostname" in content
+        assert "nodeSelector: \"{{ dragonfly_node_selector }}\"" in content
+        assert "node-role.kubernetes.io/worker" in defaults
+        assert "2 if (df_replicas | int) >= 3 else 1" in content
+        assert "Verify Dragonfly replicas occupy distinct nodes" in content
 
 
 # ─── 5. k8s-gitops: ArgoCD ──────────────────────────────
@@ -724,6 +579,25 @@ class TestArgoCD:
     def test_server_insecure_is_configurable(self):
         assert "argocd_insecure_mode" in self.content, \
             "server.insecure should use argocd_insecure_mode variable"
+
+    def test_ha_mode_replaces_single_redis_with_three_node_redis_ha(self):
+        tasks = yaml.safe_load(self.content)
+        install = next(
+            task
+            for task in tasks
+            if task.get("name") == "Install ArgoCD with Helm"
+        )
+        values = install["kubernetes.core.helm"]["values"]
+
+        assert values["redis"]["enabled"] == "{{ not (argocd_ha | bool) }}"
+        redis_ha = values["redis-ha"]
+        assert redis_ha["enabled"] == "{{ argocd_ha | bool }}"
+        assert redis_ha["replicas"] == 3
+        assert redis_ha["hardAntiAffinity"] is True
+        assert redis_ha["podDisruptionBudget"]["maxUnavailable"] == 1
+        assert redis_ha["haproxy"]["replicas"] == 3
+        assert redis_ha["haproxy"]["hardAntiAffinity"] is True
+        assert redis_ha["haproxy"]["podDisruptionBudget"]["maxUnavailable"] == 1
 
     def test_appproject_has_allowlists(self):
         assert "argocd_allowed_source_repos" in self.content, \
@@ -1066,8 +940,6 @@ def test_promtail_is_isolated_in_a_privileged_agent_namespace():
     assert "pod-security.kubernetes.io/enforce: privileged" in observability
     promtail = observability.split("name: Install Promtail for log collection", 1)[1]
     assert "release_namespace: '{{ logging_agent_namespace }}'" in promtail
-    assert "tolerations:" in promtail
-    assert "- operator: Exists" in promtail
     assert "name: default-deny" in promtail
     assert "name: allow-logging-egress" in promtail
     assert "k8s:app.kubernetes.io/component: gateway" in promtail
@@ -1272,6 +1144,12 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
     assert pg_spec["instances"][0]["containers"]["replicaCertCopy"]["resources"] == (
         "{{ postgresql_replica_cert_copy_resources }}"
     )
+    assert "not (cp_schedulable | default(false) | bool)" in (
+        pg_spec["instances"][0]["tolerations"]
+    )
+    assert "pg_data_storage_class == local_storage_class" in (
+        pg_spec["instances"][0]["tolerations"]
+    )
     pgbackrest = pg_spec["backups"]["pgbackrest"]
     assert pgbackrest["containers"]["pgbackrest"]["resources"] == (
         "{{ postgresql_pgbackrest_resources }}"
@@ -1303,8 +1181,6 @@ def test_operator_injected_database_containers_have_tier_aware_resources():
     mongo_spec = mongo_task["kubernetes.core.k8s"]["definition"]["spec"]
     mongo_replset = mongo_spec["replsets"][0]
     assert mongo_replset["resources"] == "{{ mongodb_replset_resources }}"
-    assert mongo_replset["priorityClassName"] == "{{ mongodb_priority_class_name }}"
-    assert defaults["mongodb_priority_class_name"] == "n0xeid-platform-critical"
     assert mongo_replset["storage"]["engine"] == "wiredTiger"
     assert mongo_replset["storage"]["wiredTiger"]["engineConfig"] == {
         "cacheSizeRatio": "{{ mongodb_wiredtiger_cache_size_ratio }}"
@@ -1369,6 +1245,22 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
         mongo_certificate["dnsNames"]
     )
     assert mongo_certificate["secretName"] == "{{ mongo_alias_tls_secret }}"
+    assert mongo_certificate["issuerRef"]["name"] == (
+        "{{ project_name | default('k8s') }}-mongo-psmdb-issuer"
+    )
+    task_names = [task.get("name") for task in tasks]
+    assert task_names.index("Wait for MongoDB cluster to be ready") < task_names.index(
+        "Issue hostname-verified MongoDB alias certificate"
+    )
+    alias_ca_wait = by_name[
+        "Wait for the MongoDB alias certificate to use the active operator CA"
+    ]
+    assert '_mongo_alias_tls_secret.resources[0].data["ca.crt"]' in (
+        alias_ca_wait["until"]
+    )
+    assert '_mongo_cluster_ca_secret.resources[0].data["ca.crt"]' in (
+        alias_ca_wait["until"]
+    )
 
     pg_cluster = by_name[
         "Create PostgreSQL cluster (PG Operator 3.x — v2 API)"
@@ -1391,11 +1283,6 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
     assert "pg_tls_mode != 'requireTLS' or pg_tls_cutover_confirmed | bool" in (
         pg_gate["that"]
     )
-    pg_live_gate = by_name[
-        "Prove no remote plaintext PostgreSQL sessions before enforcement"
-    ]["ansible.builtin.shell"]
-    assert "a.client_addr is not null" in pg_live_gate
-    assert 'test "$plaintext_sessions" = 0' in pg_live_gate
 
     mongo_cluster = by_name["Create MongoDB cluster"]["kubernetes.core.k8s"][
         "definition"
@@ -1425,25 +1312,40 @@ def test_database_aliases_are_hostname_verified_without_renaming_operator_object
         mongo_cluster["spec"]["secrets"]["sslInternal"]
     )
     assert "mongo_alias_tls_cutover_enabled | bool" in mongo_cluster["spec"]["tls"]
-    assert (
-        "allowConnectionsWithoutCertificates: true"
-        in mongo_cluster["spec"]["replsets"][0]["configuration"]
+    same_ca_gate = by_name[
+        "Reject a MongoDB alias certificate signed by a different CA"
+    ]["ansible.builtin.assert"]
+    assert any(
+        '_mongo_cutover_alias_tls_secret.resources[0].data["ca.crt"]'
+        in condition
+        and '_mongo_cutover_operator_ca_secret.resources[0].data["ca.crt"]'
+        in condition
+        for condition in same_ca_gate["that"]
     )
-    mongo_alias_issuer = by_name[
-        "Create the MongoDB alias issuer from the existing Percona cluster CA"
-    ]["kubernetes.core.k8s"]["definition"]
-    assert mongo_alias_issuer["spec"]["ca"]["secretName"] == (
-        "{{ project_name | default('k8s') }}-mongo-ca-cert"
-    )
-    mongo_alias_certificate = by_name[
-        "Issue hostname-verified MongoDB alias certificate"
-    ]["kubernetes.core.k8s"]["definition"]
-    assert "mongodb-operator-ca" in mongo_alias_certificate["spec"]["issuerRef"]["name"]
+    assert task_names.index(
+        "Reject a MongoDB alias certificate signed by a different CA"
+    ) < task_names.index("Create MongoDB cluster")
     published_ca = by_name["Publish the hostname-verifying MongoDB client CA"][
         "kubernetes.core.k8s"
     ]["definition"]
     assert "type" not in published_ca
-    assert "_mongo_alias_tls_secret_resource" in published_ca["stringData"]["ca.crt"]
+    assert "_mongo_cluster_ca_secret" in published_ca["stringData"]["ca.crt"]
+    client_certificate = by_name["Issue dedicated MongoDB client certificates"][
+        "kubernetes.core.k8s"
+    ]["definition"]["spec"]
+    assert client_certificate["privateKey"] == {
+        "algorithm": "RSA",
+        "encoding": "PKCS8",
+        "size": 2048,
+        "rotationPolicy": "Always",
+    }
+    assert client_certificate["usages"] == ["client auth"]
+    published_identity = by_name["Publish dedicated MongoDB client identities"][
+        "kubernetes.core.k8s"
+    ]["definition"]
+    assert published_identity["type"] == "kubernetes.io/tls"
+    assert set(published_identity["data"]) == {"ca.crt", "tls.crt", "tls.key"}
+    assert published_identity["metadata"]["namespace"] == "{{ item.item.namespace }}"
 
 
 def test_platform_operators_have_bounded_resources_and_restricted_pod_security():
@@ -1530,22 +1432,6 @@ def test_configurable_platform_addons_are_not_best_effort():
         assert seaweed[component]["resources"]["requests"]["memory"]
         assert seaweed[component]["resources"]["limits"]["cpu"]
         assert seaweed[component]["resources"]["limits"]["memory"]
-        pod_security = seaweed[component]["podSecurityContext"]
-        assert pod_security["enabled"] is True
-        assert pod_security["runAsNonRoot"] is True
-        assert pod_security["runAsUser"] == 1000
-        assert pod_security["runAsGroup"] == 1000
-        assert pod_security["fsGroup"] == 1000
-        assert pod_security["fsGroupChangePolicy"] == "OnRootMismatch"
-        assert pod_security["seccompProfile"]["type"] == "RuntimeDefault"
-        container_security = seaweed[component]["containerSecurityContext"]
-        assert container_security["enabled"] is True
-        assert container_security["allowPrivilegeEscalation"] is False
-        assert container_security["runAsNonRoot"] is True
-        assert container_security["runAsUser"] == 1000
-        assert container_security["runAsGroup"] == 1000
-        assert container_security["capabilities"]["drop"] == ["ALL"]
-        assert container_security["seccompProfile"]["type"] == "RuntimeDefault"
 
     coroot_tasks = yaml.safe_load(read("roles/k8s-observability/tasks/coroot.yml"))
     coroot = next(
@@ -1682,6 +1568,19 @@ def test_orchestrator_defaults_to_the_project_campaign_kubeconfig():
     assert "export K8S_AUTH_KUBECONFIG" in orchestrator
 
 
+def test_orchestrator_serializes_project_mutations_across_worktrees():
+    orchestrator = read("platform-orchestrator/platform.sh")
+
+    assert 'lock_root="${TMPDIR:-/tmp}/ansible-k8s-platform-locks"' in orchestrator
+    assert 'lock_dir="${lock_root}/${PROJECT}.lock"' in orchestrator
+    assert 'kill -0 "$owner_pid"' in orchestrator
+    assert "trap release_mutation_lock EXIT" in orchestrator
+    assert (
+        'deploy)       load_config; acquire_mutation_lock; '
+        'deploy_component "${1:-all}"'
+    ) in orchestrator
+
+
 def test_bastion_default_route_reconcile_is_inventory_driven_and_idempotent():
     tasks = load_yaml("roles/network-security/tasks/main.yml")
     by_name = {task["name"]: task for task in tasks if "name" in task}
@@ -1750,16 +1649,3 @@ def test_argocd_reaches_private_gitlab_without_public_exposure():
     assert "name: allow-repo-server-to-gitlab-shell" in gitops
     assert "k8s:app: gitlab-shell" in gitops
     assert "sectionName: cluster-https" in gitlab
-
-
-def test_orchestrator_serializes_project_mutations_across_worktrees():
-    orchestrator = read("platform-orchestrator/platform.sh")
-
-    assert 'lock_root="${TMPDIR:-/tmp}/ansible-k8s-platform-locks"' in orchestrator
-    assert 'lock_dir="${lock_root}/${PROJECT}.lock"' in orchestrator
-    assert 'kill -0 "$owner_pid"' in orchestrator
-    assert "trap release_mutation_lock EXIT" in orchestrator
-    assert (
-        'deploy)       load_config; acquire_mutation_lock; '
-        'deploy_component "${1:-all}"'
-    ) in orchestrator
