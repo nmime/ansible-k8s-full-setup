@@ -170,28 +170,6 @@ vault_chart_version: "0.34.0"
 vault_replicas: "{{ 3 if resource_tier in ['medium', 'production'] else 1 }}"
 vault_storage_size: 20Gi
 eso_enabled: true
-# Vault access is deny-by-default. Each environment must enumerate the exact
-# KV-v2 remote paths consumed by ExternalSecrets and the namespaces allowed to
-# reference the shared ClusterSecretStore.
-eso_vault_read_paths: []
-eso_vault_allowed_namespaces:
-  - default
-eso_vault_token_audience: external-secrets
-eso_vault_token_ttl: 15m
-# Generated platform credentials are mirrored into Vault once, then checked
-# for exact drift. The encrypted local bundle remains an out-of-band recovery
-# seed; neither side silently overwrites the other.
-vault_platform_generated_seed_enabled: true
-vault_platform_generated_secret_path: >-
-  clusters/{{ project_name | default('k8s') }}/platform/generated
-# A provider-side DR key rotation must be an explicit, one-run CAS update. It
-# never defaults on and permits changes only to the two external DR fields.
-vault_platform_generated_dr_rotation_allowed: false
-vault_platform_generated_alert_destination_rotation_allowed: false
-vault_platform_generated_gitlab_runner_rotation_allowed: false
-vault_platform_generated_gitlab_runner_secret_namespace: gitlab-ci-general
-vault_platform_generated_gitlab_runner_secret_name: platform-gitlab-runner-auth
-vault_platform_generated_gitlab_runner_secret_key: runner-token
 # The `default/example-secret` ExternalSecret is only a demonstration fixture.
 # Production reconciliation removes it unless an operator explicitly enables
 # the fixture and points it at an existing Vault KV-v2 key/property.
@@ -275,7 +253,6 @@ mongodb_backup_resources:
     memory: "{{ '512Mi' if resource_tier in ['minimal', 'small'] else '1Gi' }}"
 mongodb_backup_starting_deadline_seconds: 1800
 mongodb_backup_image: percona/percona-backup-mongodb:2.15.0
-mongodb_priority_class_name: n0xeid-platform-critical
 mongodb_replset_resources:
   requests:
     cpu: "{{ '100m' if resource_tier in ['minimal', 'small'] else '250m' }}"
@@ -295,14 +272,12 @@ mongodb_pmm_resources:
 # GitLab
 # renovate: datasource=helm depName=gitlab
 gitlab_chart_version: "10.1.2"
-gitlab_registry_replicas: 2
 # Registry pull-through cache for docker.io (cuts external egress; 20TB/server/month budget)
 gitlab_registry_pullthrough_enabled: true
 gitlab_registry_pullthrough_remote_url: "https://registry-1.docker.io"
 gitlab_registry_pullthrough_ttl: "720h"
 gitlab_runner_concurrent_jobs: 10
 gitlab_runner_worker_index: 0
-gitlab_runner_job_namespace: gitlab-ci-general
 # Scheduler requests are independently configurable from container limits so
 # two distinct Runner classes can deliberately serialize on one compact CI
 # node. Defaults preserve the existing general-purpose envelope.
@@ -322,7 +297,6 @@ gitlab_image_builder_runner_enabled: false
 gitlab_image_builder_runner_replicas: 1
 gitlab_image_builder_runner_concurrent_jobs: 1
 gitlab_image_builder_runner_namespace: gitlab-image-builds
-gitlab_image_builder_runner_worker_index: 0
 gitlab_image_builder_cpu_request: 1000m
 gitlab_image_builder_cpu_limit: 4000m
 gitlab_image_builder_memory_request: 2Gi
@@ -336,62 +310,6 @@ gitlab_docker_host_runner_replicas: 1
 gitlab_docker_host_runner_concurrent_jobs: 1
 gitlab_docker_host_runner_namespace: gitlab-docker-builds
 gitlab_docker_host_runner_worker_index: 0
-
-# Shared-cluster scheduling policy. System PriorityClasses remain above these
-# values; every CI class is deliberately negative and non-preempting so
-# services can always reclaim capacity without CI evicting other workloads.
-workload_priority_enabled: true
-workload_priority_classes:
-  - {name: n0xeid-platform-critical, value: 1000000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-service-production, value: 100000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-service-environment, value: 50000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-service-review, value: 10000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-ci-control, value: -50, preemption_policy: Never}
-  - {name: n0xeid-ci-production, value: -100, preemption_policy: Never}
-  - {name: n0xeid-ci-environment, value: -200, preemption_policy: Never}
-  - {name: n0xeid-ci-review, value: -300, preemption_policy: Never}
-  - {name: n0xeid-ci-maintenance, value: -400, preemption_policy: Never}
-  - {name: n0xeid-batch, value: -500, preemption_policy: Never}
-workload_priority_platform_namespaces:
-  - argocd
-  - backups
-  - cert-manager
-  - cilium-secrets
-  - cilium-system
-  - coroot
-  - databases
-  - dragonfly
-  - dragonfly-operator-system
-  - elasticsearch
-  - external-secrets
-  - gateway-secrets
-  - gitlab
-  - glitchtip
-  - keda
-  - kube-system
-  - logging-agents
-  - metallb-system
-  - monitoring
-  - postal
-  - storage
-  - temporal
-  - vault
-  - velero
-workload_priority_production_namespaces:
-  - agents
-  - dadya-production
-  - fun-games-production
-  - production
-  - social-agents-production
-workload_priority_environment_namespaces:
-  - analytics
-  - dadya-preproduction
-  - fun-games-preproduction
-  - social-agents-preproduction
-  - umami
-workload_priority_review_namespaces: []
-workload_priority_controller_overrides:
-  gitlab-ci-general/Deployment/gitlab-runner: n0xeid-ci-control
 
 # Public SSH is fail-closed. Supply operator/VPN CIDRs through a profile,
 # extra-vars, or comma-separated HETZNER_SSH_SOURCE_IPS in the ignored .env.
