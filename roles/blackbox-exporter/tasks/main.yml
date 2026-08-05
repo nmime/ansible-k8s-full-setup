@@ -51,23 +51,6 @@
           type: RuntimeDefault
       serviceMonitor:
         enabled: false
-      extraSecretMounts: >-
-        {{
-          [
-            {
-              'name': 'datastore-client-ca',
-              'mountPath': '/etc/blackbox/datastore-ca',
-              'secretName': 'datastore-client-ca',
-              'readOnly': true,
-              'defaultMode': 292
-            }
-          ]
-          if (
-            platform_dragonfly_enabled | default(false) | bool and
-            dragonfly.tls_mode | default('disabled') == 'proxy'
-          )
-          else []
-        }}
       config:
         modules:
           http_2xx:
@@ -81,140 +64,27 @@
               fail_if_not_ssl: true
               tls_config:
                 insecure_skip_verify: false
-          # Administrative hostnames are intentionally unreachable without
-          # VPN source identity. Their public contract is a TLS-valid 404;
-          # monitoring that exact response proves both edge availability and
-          # that the private boundary has not accidentally opened.
-          http_private_gateway:
-            prober: http
-            timeout: "{{ blackbox_probe_timeout }}"
-            http:
-              preferred_ip_protocol: ip4
-              valid_status_codes: [404]
-              follow_redirects: false
-              fail_if_ssl: false
-              fail_if_not_ssl: true
-              tls_config:
-                insecure_skip_verify: false
-          # Argo CD intentionally redirects an unauthenticated request to its
-          # login path. Keep that exact edge contract separate from the 404
-          # boundary so either behavior changing becomes observable.
-          http_private_gateway_redirect:
-            prober: http
-            timeout: "{{ blackbox_probe_timeout }}"
-            http:
-              preferred_ip_protocol: ip4
-              valid_status_codes: [307]
-              follow_redirects: false
-              fail_if_ssl: false
-              fail_if_not_ssl: true
-              tls_config:
-                insecure_skip_verify: false
           tcp_connect:
             prober: tcp
             timeout: "{{ blackbox_probe_timeout }}"
-          tcp_tls_verified:
-            prober: tcp
-            timeout: "{{ blackbox_probe_timeout }}"
-            tcp:
-              preferred_ip_protocol: ip4
-              tls: true
-              tls_config:
-                ca_file: /etc/blackbox/datastore-ca/ca.crt
-                server_name: dragonfly-tls.dragonfly.svc.cluster.local
-                insecure_skip_verify: false
   register: _r_bb_install
   retries: 3
   delay: 15
   until: _r_bb_install is not failed
 
-- name: Build list of VPN-only gateway boundary targets
-  set_fact:
-    bb_private_gateway_targets: >-
-      {{
-        ([ 'https://grafana.' + domain ]) +
-        ([ 'https://kibana.' + domain ] if platform_elasticsearch_enabled | default(false) | bool else []) +
-        ([ 'https://git.'  + domain ] if (
-          platform_gitlab_enabled | default(false) | bool and
-          not (gitlab.public_webservice_enabled | default(false) | bool)
-        ) else []) +
-        ([ 'https://mail.'    + domain ] if platform_postal_enabled | default(false) | bool else []) +
-        ([ 'https://temporal.' + domain ] if platform_temporal_enabled | default(false) | bool else []) +
-        ([ 'https://glitchtip.' + domain ] if deploy_glitchtip | default(false) | bool else [])
-      }}
-
-- name: Build list of VPN-only redirect boundary targets
-  set_fact:
-    bb_private_gateway_redirect_targets: >-
-      {{ ([ 'https://argocd.' + domain ] if platform_gitops_enabled | default(false) | bool else []) }}
-
-- name: Build list of genuinely public HTTPS probe targets
+- name: Build list of public probe targets
   set_fact:
     bb_public_targets: >-
       {{
-        ([ blackbox_daytona_target ] if deploy_daytona | default(false) | bool else []) +
-        ([ 'https://git.' + domain ] if (
-          platform_gitlab_enabled | default(false) | bool and
-          gitlab.public_webservice_enabled | default(false) | bool
-        ) else [])
+        ([ 'https://grafana.' + domain ]) +
+        ([ 'https://kibana.' + domain ] if platform_elasticsearch_enabled | default(false) | bool else []) +
+        ([ 'https://gitlab.'  + domain ] if platform_gitlab_enabled | default(false) | bool else []) +
+        ([ 'https://argocd.'  + domain ] if platform_gitops_enabled | default(false) | bool else []) +
+        ([ 'https://mail.'    + domain ] if platform_postal_enabled | default(false) | bool else []) +
+        ([ 'https://temporal.' + domain ] if platform_temporal_enabled | default(false) | bool else []) +
+        ([ 'https://glitchtip.' + domain ] if deploy_glitchtip | default(false) | bool else []) +
+        ([ blackbox_daytona_target ] if deploy_daytona | default(false) | bool else [])
       }}
-
-- name: Create VMProbe for VPN-only gateway boundaries
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: operator.victoriametrics.com/v1beta1
-      kind: VMProbe
-      metadata:
-        name: blackbox-private-gateway
-        namespace: "{{ bb_ns }}"
-      spec:
-        module: http_private_gateway
-        interval: "{{ blackbox_probe_interval }}"
-        scrapeTimeout: "{{ blackbox_probe_timeout }}"
-        vmProberSpec:
-          url: "blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115"
-          scheme: http
-          path: /probe
-        targets:
-          staticConfig:
-            targets: "{{ bb_private_gateway_targets }}"
-            labels:
-              probe: private-gateway
-  when: bb_private_gateway_targets | length > 0
-
-- name: Create VMProbe for VPN-only redirect boundaries
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: operator.victoriametrics.com/v1beta1
-      kind: VMProbe
-      metadata:
-        name: blackbox-private-gateway-redirect
-        namespace: "{{ bb_ns }}"
-      spec:
-        module: http_private_gateway_redirect
-        interval: "{{ blackbox_probe_interval }}"
-        scrapeTimeout: "{{ blackbox_probe_timeout }}"
-        vmProberSpec:
-          url: "blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115"
-          scheme: http
-          path: /probe
-        targets:
-          staticConfig:
-            targets: "{{ bb_private_gateway_redirect_targets }}"
-            labels:
-              probe: private-gateway-redirect
-  when: bb_private_gateway_redirect_targets | length > 0
-
-- name: Remove the private redirect probe when no target is declared
-  kubernetes.core.k8s:
-    state: absent
-    api_version: operator.victoriametrics.com/v1beta1
-    kind: VMProbe
-    namespace: "{{ bb_ns }}"
-    name: blackbox-private-gateway-redirect
-  when: bb_private_gateway_redirect_targets | length == 0
 
 - name: Build list of internal TCP probe targets
   set_fact:
@@ -229,19 +99,8 @@
           ) ~ ':5432'
         ] if platform_postgresql_enabled | default(false) | bool else []) +
         ([ 'elasticsearch.elasticsearch.svc.cluster.local:9200' ] if platform_elasticsearch_enabled | default(false) | bool else []) +
+        ([ 'dragonfly.dragonfly.svc.cluster.local:6379' ] if platform_dragonfly_enabled | default(false) | bool else []) +
         ([ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') ] if platform_object_storage_enabled | default(false) | bool else [])
-      }}
-
-- name: Build list of verified internal TLS probe targets
-  set_fact:
-    bb_internal_tls_targets: >-
-      {{
-        ([ 'dragonfly-tls.dragonfly.svc.cluster.local:' +
-          (dragonfly.tls_port | default(6380) | string) ]
-        if (
-          platform_dragonfly_enabled | default(false) | bool and
-          dragonfly.tls_mode | default('disabled') == 'proxy'
-        ) else [])
       }}
 
 - name: Create VMProbe for HTTP endpoints
@@ -270,18 +129,8 @@
   retries: 3
   delay: 10
   until: _r_bb_probe is not failed
-  when: bb_public_targets | length > 0
 
-- name: Remove the public HTTPS probe when no public target is declared
-  kubernetes.core.k8s:
-    state: absent
-    api_version: operator.victoriametrics.com/v1beta1
-    kind: VMProbe
-    namespace: "{{ bb_ns }}"
-    name: blackbox-public-https
-  when: bb_public_targets | length == 0
-
-- name: Create VMProbe for internal TCP health (PG, ES, object storage)
+- name: Create VMProbe for internal TCP health (PG, ES, Redis, object storage)
   kubernetes.core.k8s:
     state: present
     definition:
@@ -309,49 +158,9 @@
   until: _r_bb_probe_tcp is not failed
   when: bb_internal_targets | length > 0
 
-- name: Create VMProbe for verified internal TLS health
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: operator.victoriametrics.com/v1beta1
-      kind: VMProbe
-      metadata:
-        name: blackbox-internal-tls
-        namespace: "{{ bb_ns }}"
-      spec:
-        module: tcp_tls_verified
-        interval: "{{ blackbox_probe_interval }}"
-        scrapeTimeout: "{{ blackbox_probe_timeout }}"
-        vmProberSpec:
-          url: "blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115"
-          scheme: http
-          path: /probe
-        targets:
-          staticConfig:
-            targets: "{{ bb_internal_tls_targets }}"
-            labels:
-              probe: internal-tls
-  register: _r_bb_probe_tls
-  retries: 3
-  delay: 10
-  until: _r_bb_probe_tls is not failed
-  when: bb_internal_tls_targets | length > 0
-
-- name: Remove the internal TLS probe when no target is declared
-  kubernetes.core.k8s:
-    state: absent
-    api_version: operator.victoriametrics.com/v1beta1
-    kind: VMProbe
-    namespace: "{{ bb_ns }}"
-    name: blackbox-internal-tls
-  when: bb_internal_tls_targets | length == 0
-
 - name: Print Blackbox info
   debug:
     msg:
       - "Blackbox exporter installed in {{ bb_ns }} namespace"
-      - "Probing {{ bb_private_gateway_targets | length }} private gateway boundaries every {{ blackbox_probe_interval }}"
-      - "Probing {{ bb_private_gateway_redirect_targets | length }} private redirect boundaries every {{ blackbox_probe_interval }}"
       - "Probing {{ bb_public_targets | length }} public endpoints every {{ blackbox_probe_interval }}"
-      - "Probing {{ bb_internal_tls_targets | length }} verified internal TLS endpoints every {{ blackbox_probe_interval }}"
       - "Metrics: probe_success, probe_http_status_code, probe_ssl_earliest_cert_expiry"
