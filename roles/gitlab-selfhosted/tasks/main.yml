@@ -28,6 +28,13 @@
     gitlab_registry_max_replicas: '{{ gitlab.registry_max_replicas | default(5) }}'
     gitlab_registry_replicas: >-
       {{ gitlab.registry_replicas | default(gitlab_registry_replicas | default(2)) }}
+    _gitlab_registry_pullthrough_env: >-
+      {{
+        [
+          {'name': 'REGISTRY_PROXY_REMOTEURL', 'value': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io')},
+          {'name': 'REGISTRY_PROXY_TTL', 'value': gitlab_registry_pullthrough_ttl | default('720h')}
+        ] if (gitlab_registry_pullthrough_enabled | default(false)) | bool else []
+      }}
     gitlab_gitaly_storage_size: '{{ gitlab.gitaly_storage_size | default(''10Gi'' if resource_tier == ''minimal'' else ''20Gi'' if resource_tier == ''small'' else ''50Gi'') }}'
     gitlab_backup_persistence_enabled: '{{ gitlab.backup_persistence_enabled | default(true) | bool }}'
     gitlab_backup_persistence_size: '{{ gitlab.backup_persistence_size | default(''50Gi'') }}'
@@ -1090,6 +1097,9 @@
         storage:
           secret: gitlab-registry-storage
           key: config
+        # Pull-through cache for docker.io to cut external egress (traffic budget 20TB/server/month).
+        # Enabled via gitlab_registry_pullthrough_enabled; backend stays the same S3 bucket.
+        extraEnv: "{{ _gitlab_registry_pullthrough_env }}"
         maintenance:
           gc:
             disabled: false

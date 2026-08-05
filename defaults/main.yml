@@ -287,6 +287,10 @@ mongodb_pmm_resources:
 # renovate: datasource=helm depName=gitlab
 gitlab_chart_version: "10.1.2"
 gitlab_registry_replicas: 2
+# Registry pull-through cache for docker.io (cuts external egress; 20TB/server/month budget)
+gitlab_registry_pullthrough_enabled: true
+gitlab_registry_pullthrough_remote_url: "https://registry-1.docker.io"
+gitlab_registry_pullthrough_ttl: "720h"
 gitlab_runner_concurrent_jobs: 10
 gitlab_runner_worker_index: 0
 gitlab_runner_job_namespace: gitlab-ci-general
