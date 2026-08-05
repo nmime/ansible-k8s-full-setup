@@ -252,7 +252,10 @@
       kube_encrypt_secret_data: true
       kube_encryption_resources:
         - secrets
-      kube_encryption_algorithm: aescbc
+      # secretbox is authenticated encryption. Kubespray's legacy aescbc
+      # option is intentionally avoided because Kubernetes no longer
+      # recommends CBC encryption for Secret data.
+      kube_encryption_algorithm: secretbox
       metrics_server_enabled: true
       enable_nodelocaldns: true
       kubelet_max_pods: 110
