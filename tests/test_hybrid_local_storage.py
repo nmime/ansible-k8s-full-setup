@@ -39,7 +39,7 @@ def test_only_application_replicated_claims_use_local_ssd():
         "postgresql/data",
     }
     assert estimate["local_reserved_gib"] == 300
-    assert estimate["provider_persistent_gib"] == 220
+    assert estimate["provider_persistent_gib"] == 230
     assert estimate["provider_backup_scratch_gib"] == 0
     assert all(
         claim["storage_class"] == "hcloud-volumes"
@@ -114,6 +114,12 @@ def test_medium_optimized_filer_survives_large_multipart_backups():
     normalizer = (ROOT / "playbooks/tasks/normalize_profile.yml").read_text()
     object_storage = (ROOT / "roles/object-storage/tasks/main.yml").read_text()
 
+    assert profile["storage"]["volume_resources"] == {
+        "cpu_request": "100m",
+        "cpu_limit": "1",
+        "memory_request": "512Mi",
+        "memory_limit": "2Gi",
+    }
     assert profile["storage"]["filer_resources"] == {
         "cpu_request": "100m",
         "cpu_limit": "1",
@@ -121,13 +127,27 @@ def test_medium_optimized_filer_survives_large_multipart_backups():
         "memory_limit": "2Gi",
     }
     for variable in (
+        "object_storage_volume_cpu_request",
+        "object_storage_volume_cpu_limit",
+        "object_storage_volume_memory_request",
+        "object_storage_volume_memory_limit",
         "object_storage_filer_cpu_request",
         "object_storage_filer_cpu_limit",
         "object_storage_filer_memory_request",
         "object_storage_filer_memory_limit",
     ):
         assert variable in normalizer
-        assert object_storage.count(variable) >= 2
+        assert object_storage.count(variable) >= 1
+
+    volume_values = object_storage.split("          volume:", 1)[1].split(
+        "          filer:", 1
+    )[0]
+    filer_values = object_storage.split("          filer:", 1)[1].split(
+        "          s3:", 1
+    )[0]
+    assert "object_storage_volume_memory_request" in volume_values
+    assert "object_storage_filer_memory_request" not in volume_values
+    assert "object_storage_filer_memory_request" in filer_values
 
 
 def test_storage_class_change_requires_full_target_capacity_and_replacement():

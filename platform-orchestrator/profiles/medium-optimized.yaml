@@ -16,7 +16,7 @@ cost_estimate: >-
   Current balanced tariff: 3 x cpx32 control plane, 3 x cpx32 application
   workers, one isolated cpx32 Docker worker, one isolated cpx42 general/image
   worker, cpx22 bastion, lb11, one bastion IPv4, 300 GiB active
-  replication-qualified local claims, and 220 GiB provider-billable persistent
+  replication-qualified local claims, and 230 GiB provider-billable persistent
   volumes. GitLab backup staging is transient node-local scratch. See
   docs/COST_MODEL.md.
 
@@ -111,6 +111,11 @@ storage:
   size_per_replica: 40Gi
   index_size: 2Gi
   index_persistent: true
+  volume_resources:
+    cpu_request: 100m
+    cpu_limit: "1"
+    memory_request: 512Mi
+    memory_limit: 2Gi
   filer_size: 5Gi
   filer_resources:
     cpu_request: 100m
@@ -244,6 +249,7 @@ gitlab:
   sidekiq_replicas: 1
   sidekiq_max_replicas: 2
   registry_max_replicas: 2
+  registry_replicas: 2
   gitaly_storage_size: 30Gi
   # Registry compression and the final GitLab archive coexist temporarily.
   # Keep this off provider CSI: every backup is uploaded to object storage,
@@ -252,14 +258,15 @@ gitlab:
   backup_persistence_size: 30Gi
   runner:
     enabled: true
-    replicas: 1
-    # General and rootless image-build jobs share a private, tainted CI-build
-    # worker. Keeping one general job plus one protected image job bounds peak
-    # memory and disk pressure without consuming production-node ephemeral
-    # storage. Override worker 5 to cpx42 (8 vCPU, 16 GiB, 320 GB) or larger
-    # for sustained production pipelines.
-    concurrent_jobs: 1
-    dedicated_worker_index: 5
+    replicas: 2
+    namespace: gitlab-ci-general
+    # General jobs form a shared pool across ordinary workers. Workload
+    # PriorityClasses keep production services ahead of CI, and quota bounds
+    # the pool independently of node placement.
+    # Two managers with two slots each give the shared pool four bounded jobs.
+    # Namespace quota and negative CI priority preserve service headroom.
+    concurrent_jobs: 2
+    dedicated_worker_index: 0
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.
@@ -267,6 +274,7 @@ gitlab:
       enabled: true
       replicas: 1
       concurrent_jobs: 1
+      dedicated_worker_index: 5
     # Backward-compatible docker-host tag without Docker access on bastion:
     # only the digest-pinned DinD service is privileged in its own namespace.
     docker_host:
