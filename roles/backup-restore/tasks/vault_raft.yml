@@ -40,6 +40,7 @@
         labels:
           app.kubernetes.io/part-of: backup-restore
           app.kubernetes.io/component: vault-raft
+      automountServiceAccountToken: false
   tags: [backup, backup-vault]
 
 - name: "Backup-Vault | Detect active Vault storage backend"
@@ -87,6 +88,7 @@
             template:
               spec:
                 serviceAccountName: vault-backup
+                automountServiceAccountToken: false
                 restartPolicy: Never
                 securityContext:
                   fsGroup: 1000
@@ -111,7 +113,7 @@
                         trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "%s" "$rc" > /backup/failed; fi' EXIT
                         TS=$(date -u +%Y%m%dT%H%M%SZ)
                         SF="/backup/vault-${TS}.snap"
-                        JWT=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                        JWT=$(cat /var/run/secrets/vault-auth/token)
                         VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login role=vault-backup jwt="$JWT")
                         export VAULT_TOKEN
                         vault operator raft snapshot save "${SF}"
@@ -124,6 +126,9 @@
                       - name: VAULT_CACERT
                         value: "{{ '/vault/tls/ca.crt' if not (vault_tls_disabled | default(false) | bool) else '' }}"
                     volumeMounts:
+                      - name: vault-auth-token
+                        mountPath: /var/run/secrets/vault-auth
+                        readOnly: true
                       - name: backup-work
                         mountPath: /backup
                       - name: vault-tls
@@ -191,6 +196,15 @@
                         cpu: "{{ backup_job_cpu_limit | default('500m') }}"
                         memory: "{{ backup_job_memory_limit | default('512Mi') }}"
                 volumes:
+                  - name: vault-auth-token
+                    projected:
+                      # Kubernetes API uses the decimal representation of 0400.
+                      defaultMode: 256
+                      sources:
+                        - serviceAccountToken:
+                            path: token
+                            audience: vault-backup
+                            expirationSeconds: 900
                   - name: backup-work
                     emptyDir: {}
                   - name: vault-tls

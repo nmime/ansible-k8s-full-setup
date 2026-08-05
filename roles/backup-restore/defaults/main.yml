@@ -81,6 +81,13 @@ backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | defaul
 backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
 backup_dr_schedule: "30 2 * * *"
 backup_dr_retention_hours: 720
+# CI execution namespaces contain only ephemeral job pods and declaratively
+# managed runner controls. Excluding them prevents normal job completion from
+# turning an otherwise recoverable full-cluster backup into PartiallyFailed.
+backup_dr_excluded_namespaces:
+  - gitlab-ci-general
+  - gitlab-image-builds
+  - gitlab-docker-builds
 backup_dr_velero_chart_version: "12.1.0"
 backup_dr_velero_image_tag: "v1.18.1"
 backup_dr_velero_aws_plugin_tag: "v1.14.2"
