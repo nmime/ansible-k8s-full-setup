@@ -665,9 +665,12 @@ def ensure_branch_protection(
                 )
                 continue
 
-            # Update in place (PATCH supported on this API version)
+            # PATCH on protected branches is a silent no-op on this GitLab
+            # version (19.1.2), so the reliable path is delete + recreate.
+            # The window is small and the branch itself is unaffected.
             if apply:
-                _patch_protection(api, rec, pid, path, desired_push, desired_merge)
+                api.delete(f"/projects/{pid}/protected_branches/main")
+                _protect_branch(api, rec, pid, path, desired_push, desired_merge)
             else:
                 rec.changed(
                     f"Would update {path} protection: "
@@ -719,30 +722,6 @@ def _protect_branch(
         )
     else:
         rec.warn(f"Failed to protect {path} main: {r.status_code} {r.text[:200]}")
-
-
-def _patch_protection(
-    api: GitLabAPI,
-    rec: reconciler,
-    pid: int,
-    path: str,
-    push_level: int,
-    merge_level: int,
-) -> None:
-    r = api.patch(
-        f"/projects/{pid}/protected_branches/main",
-        data={
-            "push_access_level": push_level,
-            "merge_access_level": merge_level,
-        },
-    )
-    if r.ok:
-        rec.changed(
-            f"Updated {path} main protection: push={LEVEL_NAMES.get(push_level, push_level)}, "
-            f"merge={LEVEL_NAMES[merge_level]}"
-        )
-    else:
-        rec.warn(f"Failed to update {path} main protection: {r.status_code} {r.text[:200]}")
 
 
 # ---------------------------------------------------------------------------
