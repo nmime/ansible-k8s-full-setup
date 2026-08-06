@@ -67,22 +67,44 @@
           tcp_connect:
             prober: tcp
             timeout: "{{ blackbox_probe_timeout }}"
+          tcp_tls_verified:
+            prober: tcp
+            timeout: "{{ blackbox_probe_timeout }}"
+            tcp:
+              preferred_ip_protocol: ip4
+              tls: true
+              tls_config:
+                ca_file: /etc/blackbox/datastore-ca/ca.crt
+                insecure_skip_verify: false
+                server_name: "{{ dragonfly_tls_service | default('dragonfly-tls.dragonfly.svc.cluster.local') }}"
+      # Project the datastore client CA so tcp_tls_verified can verify TLS datastores
+      # (Dragonfly TLS-only east-west). Mounted read-only at /etc/blackbox/datastore-ca.
+      extraVolumes:
+        - name: datastore-client-ca
+          secret:
+            defaultMode: 0444
+            secretName: datastore-client-ca
+      extraVolumeMounts:
+        - name: datastore-client-ca
+          mountPath: /etc/blackbox/datastore-ca
+          readOnly: true
   register: _r_bb_install
   retries: 3
   delay: 15
   until: _r_bb_install is not failed
 
 - name: Build list of public probe targets
+  # Only PUBLIC (main-gateway) endpoints are probed. VPN-only admin-gateway
+  # endpoints (grafana, mail, vault, storage console, temporal UI) return
+  # 403/404 to in-cluster probes by design and are verified by tailnet health
+  # checks instead; probing them would perpetually fire BlackboxProbeFailed.
   set_fact:
     bb_public_targets: >-
       {{
-        ([ 'https://grafana.' + domain ]) +
-        ([ 'https://kibana.' + domain ] if platform_elasticsearch_enabled | default(false) | bool else []) +
         ([ 'https://gitlab.'  + domain ] if platform_gitlab_enabled | default(false) | bool else []) +
         ([ 'https://argocd.'  + domain ] if platform_gitops_enabled | default(false) | bool else []) +
-        ([ 'https://mail.'    + domain ] if platform_postal_enabled | default(false) | bool else []) +
-        ([ 'https://temporal.' + domain ] if platform_temporal_enabled | default(false) | bool else []) +
-        ([ 'https://glitchtip.' + domain ] if deploy_glitchtip | default(false) | bool else []) +
+        ([ 'https://git.' + domain ] if platform_gitlab_enabled | default(false) | bool else []) +
+        ([ 'https://track.' + domain ] if platform_postal_enabled | default(false) | bool else []) +
         ([ blackbox_daytona_target ] if deploy_daytona | default(false) | bool else [])
       }}
 
@@ -99,8 +121,19 @@
           ) ~ ':5432'
         ] if platform_postgresql_enabled | default(false) | bool else []) +
         ([ 'elasticsearch.elasticsearch.svc.cluster.local:9200' ] if platform_elasticsearch_enabled | default(false) | bool else []) +
-        ([ 'dragonfly.dragonfly.svc.cluster.local:6379' ] if platform_dragonfly_enabled | default(false) | bool else []) +
         ([ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') ] if platform_object_storage_enabled | default(false) | bool else [])
+      }}
+
+# TLS-verified datastore targets are probed separately via the tcp_tls_verified
+# module (which validates the datastore TLS chain against the client CA).
+# Plaintext Dragonfly (6379) was removed by the TLS-only east-west migration;
+# the TLS endpoint (6380) is probed here instead.
+- name: Build list of internal TLS datastore probe targets
+  set_fact:
+    bb_internal_tls_targets: >-
+      {{
+        ([ (dragonfly_tls_service | default('dragonfly-tls.dragonfly.svc.cluster.local')) ~ ':6380' ]
+         if platform_dragonfly_enabled | default(false) | bool else [])
       }}
 
 - name: Create VMProbe for HTTP endpoints
@@ -157,6 +190,34 @@
   delay: 10
   until: _r_bb_probe_tcp is not failed
   when: bb_internal_targets | length > 0
+
+- name: Create VMProbe for internal TLS datastore health (Dragonfly TLS)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMProbe
+      metadata:
+        name: blackbox-internal-tls
+        namespace: "{{ bb_ns }}"
+      spec:
+        module: tcp_tls_verified
+        interval: "{{ blackbox_probe_interval }}"
+        scrapeTimeout: "{{ blackbox_probe_timeout }}"
+        vmProberSpec:
+          url: "blackbox-exporter-prometheus-blackbox-exporter.{{ bb_ns }}.svc.cluster.local:9115"
+          scheme: http
+          path: /probe
+        targets:
+          staticConfig:
+            targets: "{{ bb_internal_tls_targets }}"
+            labels:
+              probe: internal-tls
+  register: _r_bb_probe_tls
+  retries: 3
+  delay: 10
+  until: _r_bb_probe_tls is not failed
+  when: bb_internal_tls_targets | length > 0
 
 # Private-gateway (VPN-only) probes are intentionally NOT created here:
 # endpoints behind the admin-gateway (grafana, mail, argocd) return 403/404 to
