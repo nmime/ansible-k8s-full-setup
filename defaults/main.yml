@@ -194,6 +194,7 @@ postgresql_replicas: "{{ 2 if resource_tier in ['medium', 'production'] else 1 }
 postgresql_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
 mongodb_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
+mongodb_priority_class_name: n0xeid-platform-critical
 
 # Operator-injected database containers need explicit reservations as well as
 # the primary database containers. The constrained envelope is deliberately
@@ -366,7 +367,8 @@ workload_priority_environment_namespaces:
   - social-agents-preproduction
   - umami
 workload_priority_review_namespaces: []
-workload_priority_controller_overrides: {}
+workload_priority_controller_overrides:
+  gitlab-ci-general/Deployment/gitlab-runner: n0xeid-ci
 
 # Public SSH is fail-closed. Supply operator/VPN CIDRs through a profile,
 # extra-vars, or comma-separated HETZNER_SSH_SOURCE_IPS in the ignored .env.

@@ -1048,6 +1048,7 @@
         replsets:
         - name: rs0
           size: '{{ mongo_replicas }}'
+          priorityClassName: '{{ mongodb_priority_class_name }}'
           tolerations: '{{ [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}] if tier == "production" else [] }}'
           storage:
             engine: wiredTiger

@@ -223,6 +223,11 @@
         name: k8s-cluster-management
       tags: [cluster, kubernetes]
 
+    - name: Apply workload priority classes and namespace labels
+      ansible.builtin.import_role:
+        name: workload-priority
+      tags: [cluster, kubernetes, priority]
+
     - name: Deploy Secrets Management (Vault + ESO)
       ansible.builtin.import_role:
         name: k8s-secrets

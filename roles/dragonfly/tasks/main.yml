@@ -127,6 +127,7 @@
       spec:
         image: "docker.dragonflydb.io/dragonflydb/dragonfly:{{ df_image_ver }}"
         replicas: "{{ df_replicas | int }}"
+        priorityClassName: "{{ dragonfly_priority_class_name }}"
         enableReplicationReadinessGate: "{{ (df_replicas | int) > 1 }}"
         nodeSelector: "{{ dragonfly_node_selector }}"
         affinity:
