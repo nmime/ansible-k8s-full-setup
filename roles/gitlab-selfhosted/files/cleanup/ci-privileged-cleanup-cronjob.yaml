@@ -39,7 +39,7 @@ spec:
             workload.n0xeid.xyz/component: ci-cleanup
         spec:
           restartPolicy: Never
-          priorityClassName: platform-ci
+          priorityClassName: n0xeid-ci
           tolerations:
             - key: workload.n0xeid.xyz/ci-build
               operator: Equal
@@ -123,7 +123,7 @@ spec:
             workload.n0xeid.xyz/component: ci-cleanup
         spec:
           restartPolicy: Never
-          priorityClassName: platform-ci
+          priorityClassName: n0xeid-ci
           tolerations:
             - key: workload.n0xeid.xyz/ci-build
               operator: Equal

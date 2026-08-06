@@ -48,42 +48,56 @@
 - name: Docker smoke | Establish the fail-closed network boundary
   ansible.builtin.include_tasks: docker-host-network.yml
 
-- name: Docker smoke | Bound aggregate namespace resources
+- name: Docker smoke | Bound aggregate namespace resources (RUNNERS-DYN pool budget)
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ResourceQuota
       metadata:
-        name: protected-docker-smoke-budget
+        name: docker-host-budget
         namespace: '{{ gitlab_docker_host_runner_namespace }}'
       spec:
         hard:
-          requests.cpu: '3'
-          requests.memory: 6Gi
-          limits.cpu: '8'
-          limits.memory: 7Gi
-          pods: '10'
-          services: '8'
-          secrets: '20'
-          configmaps: '12'
+          requests.cpu: '8'
+          requests.memory: 16Gi
+          limits.cpu: '16'
+          limits.memory: 32Gi
+          requests.ephemeral-storage: 48Gi
+          limits.ephemeral-storage: 96Gi
+          pods: '12'
+          services: '6'
+          secrets: '24'
+          configmaps: '16'
           persistentvolumeclaims: '0'
 
-- name: Docker smoke | Bound each container
+- name: Docker smoke | Bound each container (RUNNERS-DYN pool defaults)
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: LimitRange
       metadata:
-        name: protected-docker-smoke-containers
+        name: docker-host-containers
         namespace: '{{ gitlab_docker_host_runner_namespace }}'
       spec:
         limits:
           - type: Container
-            max: {cpu: '4', memory: 4Gi}
-            defaultRequest: {cpu: 100m, memory: 128Mi}
-            default: {cpu: 500m, memory: 512Mi}
+            max: {cpu: '4', memory: 8Gi}
+            defaultRequest: {cpu: 250m, memory: 256Mi}
+            default: {cpu: '2', memory: 4Gi}
+
+- name: Docker smoke | Remove legacy protected budget objects (superseded)
+  kubernetes.core.k8s:
+    state: absent
+    definition: '{{ item }}'
+  loop:
+    - apiVersion: v1
+      kind: ResourceQuota
+      metadata: {name: protected-docker-smoke-budget, namespace: '{{ gitlab_docker_host_runner_namespace }}'}
+    - apiVersion: v1
+      kind: LimitRange
+      metadata: {name: protected-docker-smoke-containers, namespace: '{{ gitlab_docker_host_runner_namespace }}'}
 
 - name: Docker smoke | Read the persisted Runner authentication token
   no_log: true

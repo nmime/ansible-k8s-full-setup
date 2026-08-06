@@ -1329,7 +1329,32 @@
 # Bounded node-local storage (optional)
 # ============================================
 
+
+- name: Configure platform, service and CI PriorityClasses
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: scheduling.k8s.io/v1
+      kind: PriorityClass
+      metadata:
+        name: '{{ item.name }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          scheduling.n0xeid.xyz/policy: shared-worker-pool
+      value: '{{ item.value | int }}'
+      globalDefault: false
+      preemptionPolicy: '{{ item.preemption_policy }}'
+      description: >-
+        Managed n0xeid workload class. Services outrank every CI class; CI
+        classes never preempt running workloads.
+  loop: '{{ workload_priority_classes }}'
+  loop_control:
+    label: '{{ item.name }}'
+  when: workload_priority_enabled | bool
+  tags: [priority, scheduling, resources]
+
 - name: Configure the non-preempting low-priority cache class
+
   kubernetes.core.k8s:
     state: present
     definition:

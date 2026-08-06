@@ -15,7 +15,7 @@
         labels:
           app.kubernetes.io/part-of: gitlab
           n0xeid.xyz/environment-tier: ci
-          n0xeid.xyz/priority-class: n0xeid-ci-review
+          n0xeid.xyz/priority-class: n0xeid-ci
           pod-security.kubernetes.io/enforce: restricted
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted

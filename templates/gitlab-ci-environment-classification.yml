@@ -13,19 +13,19 @@
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"'
       variables:
         N0XEID_CI_CLASS: maintenance
-        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-maintenance
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci
     - if: '$CI_COMMIT_REF_PROTECTED == "true" && ($CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_TAG)'
       variables:
         N0XEID_CI_CLASS: production
-        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-production
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci
     - if: '$CI_COMMIT_REF_PROTECTED == "true"'
       variables:
         N0XEID_CI_CLASS: environment
-        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-environment
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH'
       variables:
         N0XEID_CI_CLASS: review
-        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci-review
+        KUBERNETES_PRIORITY_CLASS_NAME_OVERWRITE: n0xeid-ci
     - when: never
 
 .n0xeid-deploy-production:

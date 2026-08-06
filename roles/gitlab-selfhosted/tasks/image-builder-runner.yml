@@ -25,42 +25,56 @@
 - name: Image builder | Establish the fail-closed network boundary
   ansible.builtin.include_tasks: image-builder-network.yml
 
-- name: Image builder | Bound aggregate namespace resources
+- name: Image builder | Bound aggregate namespace resources (RUNNERS-DYN pool budget)
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ResourceQuota
       metadata:
-        name: protected-image-build-budget
+        name: image-builder-budget
         namespace: '{{ gitlab_image_builder_runner_namespace }}'
       spec:
         hard:
-          requests.cpu: '2'
-          requests.memory: 4Gi
-          limits.cpu: '4'
-          limits.memory: 5Gi
-          pods: '8'
+          requests.cpu: '8'
+          requests.memory: 12Gi
+          limits.cpu: '16'
+          limits.memory: 32Gi
+          requests.ephemeral-storage: 48Gi
+          limits.ephemeral-storage: 96Gi
+          pods: '12'
           services: '6'
-          secrets: '20'
-          configmaps: '12'
+          secrets: '24'
+          configmaps: '16'
           persistentvolumeclaims: '0'
 
-- name: Image builder | Bound each container
+- name: Image builder | Bound each container (RUNNERS-DYN pool defaults)
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: LimitRange
       metadata:
-        name: protected-image-build-containers
+        name: image-builder-containers
         namespace: '{{ gitlab_image_builder_runner_namespace }}'
       spec:
         limits:
           - type: Container
-            max: {cpu: '3', memory: 4Gi}
-            defaultRequest: {cpu: 100m, memory: 128Mi}
-            default: {cpu: 500m, memory: 512Mi}
+            max: {cpu: '4', memory: 8Gi}
+            defaultRequest: {cpu: 250m, memory: 256Mi}
+            default: {cpu: '2', memory: 4Gi}
+
+- name: Image builder | Remove legacy protected budget objects (superseded)
+  kubernetes.core.k8s:
+    state: absent
+    definition: '{{ item }}'
+  loop:
+    - apiVersion: v1
+      kind: ResourceQuota
+      metadata: {name: protected-image-build-budget, namespace: '{{ gitlab_image_builder_runner_namespace }}'}
+    - apiVersion: v1
+      kind: LimitRange
+      metadata: {name: protected-image-build-containers, namespace: '{{ gitlab_image_builder_runner_namespace }}'}
 
 - name: Image builder | Read the persisted Runner authentication token
   no_log: true

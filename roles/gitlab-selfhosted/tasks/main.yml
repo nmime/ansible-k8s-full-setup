@@ -2597,6 +2597,15 @@
     apply:
       tags: [gitlab-runner, gitlab-docker-host-runner]
   when: gitlab_docker_host_runner_enabled | bool
+- name: RUNNERS-DYN | Apply dynamic-pool governance (SA, RBAC, quotas, sweeper, priority remap, runner API)
+  tags: [gitlab-runner, gitlab-runner-dyn, gitlab-general-runner, gitlab-image-builder-runner, gitlab-docker-host-runner]
+  ansible.builtin.include_tasks:
+    file: dynamic-runner-pools.yml
+    apply:
+      tags: [gitlab-runner, gitlab-runner-dyn]
+  when:
+    - gitlab_runner_enabled | bool
+    - gitlab_runner_namespace != gitlab_namespace
 - name: Check for active jobs on the legacy general Runner
   tags: [gitlab-runner, gitlab-general-runner]
   kubernetes.core.k8s_info:

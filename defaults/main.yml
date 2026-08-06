@@ -59,7 +59,7 @@ local_storage_enabled: false
 local_storage_class: platform-local
 local_storage_path: /var/lib/platform-local-storage
 local_storage_min_free_gib_per_node: 40
-local_storage_cache_priority_class: n0xeid-cache
+local_storage_cache_priority_class: n0xeid-ci
 ansible_ssh_strict_host_key_checking: true
 # Controller-local state must be unique when several clusters are reconciled
 # concurrently. Override the port per cluster and run each controller with an
@@ -315,6 +315,58 @@ gitlab_docker_host_runner_replicas: 1
 gitlab_docker_host_runner_concurrent_jobs: 1
 gitlab_docker_host_runner_namespace: gitlab-docker-builds
 gitlab_docker_host_runner_worker_index: 0
+
+# Shared-cluster scheduling policy (USER-SPECIFIED MODEL, exact).
+# System PriorityClasses remain above these values; every CI/batch class is
+# negative and non-preempting so services always reclaim capacity without CI
+# evicting other workloads. The 5 managed classes are created by the
+# k8s-cluster-management role BEFORE any workload chart references them.
+workload_priority_enabled: true
+workload_priority_classes:
+  - {name: n0xeid-platform-critical, value: 1000000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-production, value: 100000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-preproduction, value: 10000, preemption_policy: PreemptLowerPriority}
+  - {name: n0xeid-ci, value: -100, preemption_policy: Never}
+  - {name: n0xeid-batch, value: -200, preemption_policy: Never}
+workload_priority_platform_namespaces:
+  - argocd
+  - backups
+  - cert-manager
+  - cilium-secrets
+  - cilium-system
+  - coroot
+  - databases
+  - dragonfly
+  - dragonfly-operator-system
+  - elasticsearch
+  - external-secrets
+  - gateway-secrets
+  - gitlab
+  - glitchtip
+  - keda
+  - kube-system
+  - logging-agents
+  - metallb-system
+  - monitoring
+  - postal
+  - storage
+  - temporal
+  - vault
+  - velero
+workload_priority_production_namespaces:
+  - agents
+  - dadya-production
+  - fun-games-production
+  - production
+  - social-agents-production
+workload_priority_environment_namespaces:
+  - analytics
+  - dadya-preproduction
+  - fun-games-preproduction
+  - social-agents-preproduction
+  - umami
+workload_priority_review_namespaces: []
+workload_priority_controller_overrides: {}
 
 # Public SSH is fail-closed. Supply operator/VPN CIDRs through a profile,
 # extra-vars, or comma-separated HETZNER_SSH_SOURCE_IPS in the ignored .env.
