@@ -111,10 +111,10 @@ class TestE2EUpgradeFlags:
 
 class TestE2ERunbook:
     def test_runbook_exists(self):
-        assert os.path.isfile(os.path.join(REPO, "UPGRADE_RUNBOOK.md"))
+        assert os.path.isfile(os.path.join(REPO, "docs", "UPGRADE_RUNBOOK.md"))
 
     def test_runbook_sections(self):
-        with open(os.path.join(REPO, "UPGRADE_RUNBOOK.md")) as f:
+        with open(os.path.join(REPO, "docs", "UPGRADE_RUNBOOK.md")) as f:
             content = f.read()
         for section in ["Preflight", "Rollback", "Health Gates", "Canary",
                          "Snapshot", "Dry-Run", "Troubleshooting", "Quick Reference"]:

@@ -98,7 +98,7 @@ def test_explicit_compact_index_mode_removes_only_separate_index_claims():
 def test_medium_optimized_cost_document_tracks_capacity_source_of_truth():
     cost = (ROOT / "docs/COST_MODEL.md").read_text()
     readme = (ROOT / "README.md").read_text()
-    deployment = (ROOT / "DEPLOYMENT.md").read_text()
+    deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text()
 
     for document in (cost, readme, deployment):
         assert "300 GiB" in document

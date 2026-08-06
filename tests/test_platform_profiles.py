@@ -1621,7 +1621,7 @@ class TestComponentLifecycle:
         catalog = (
             REPO_ROOT / "docs" / "TECHNOLOGY_CATALOG.md"
         ).read_text(encoding="utf-8")
-        deployment = (REPO_ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        deployment = (REPO_ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
         components = (
             "object-storage",
             "secrets",
