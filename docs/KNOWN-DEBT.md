@@ -30,3 +30,23 @@ rollback path.
 5. Archive the old project.
 
 This should only be done during a planned maintenance window.
+
+## `fun/fun-games` outside convention (legacy repo)
+
+**What:** Project `fun/fun-games` (id=1) sits directly under the `fun/` group
+rather than under `fun/apps/` or `fun/development/`.
+
+**Why not fixed:** This is the original repository created before the
+convention was established. Active development has moved to
+`fun/development/fun-games` (id=2). Moving or archiving the legacy repo risks
+breaking historical CI references, Argo CD source URLs, and external clones.
+
+## `agents/platform/steel-browser` vs `agents/apps/steel-browser`
+
+**What:** Two steel-browser projects exist: `agents/platform/steel-browser`
+(id=7) and `agents/apps/steel-browser` (id=37). The platform one is outside
+the `agents/apps/` convention.
+
+**Why not fixed:** The platform project holds the infrastructure/platform
+component distinct from the application repo. Moving it risks breaking Argo CD
+source URLs and build pipelines that reference it by path.
