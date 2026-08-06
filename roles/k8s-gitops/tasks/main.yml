@@ -53,6 +53,7 @@
         name: argocd
         labels:
           app.kubernetes.io/part-of: argocd
+          gateway.n0xeid.xyz/n0xeid-route: 'true'
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
   register: _r_create_argocd_namespace
@@ -369,6 +370,37 @@
   retries: 3
   delay: 10
   until: _r_create_argocd_gateway_api_httproute_vpn_ is not failed
+- name: Create ArgoCD public HTTPRoute on main-gateway (reachable without VPN)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: argocd-server-public
+        namespace: '{{ argocd_namespace }}'
+        labels:
+          app.kubernetes.io/name: argocd-server-public
+          app.kubernetes.io/part-of: argocd
+      spec:
+        parentRefs:
+        - name: main-gateway
+          namespace: cilium-system
+          sectionName: https
+        hostnames: '{{ [argocd_domain] }}'
+        rules:
+        - matches:
+          - path:
+              type: PathPrefix
+              value: /
+          backendRefs:
+          - name: argocd-server
+            port: 80
+  when: argocd_public_route_enabled | default(true) | bool
+  register: _r_create_argocd_public_httproute
+  retries: 3
+  delay: 10
+  until: _r_create_argocd_public_httproute is not failed
 - name: Create TLS Certificate for ArgoCD
   kubernetes.core.k8s:
     state: present

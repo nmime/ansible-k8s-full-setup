@@ -1,0 +1,553 @@
+---
+# RUNNERS-DYN — dynamic GitLab runner pools (kubernetes executor).
+#
+# Model: three small manager Deployments register one runner each. The kubernetes
+# executor IS the autoscaler — every queued job becomes a pod that is scheduled
+# into the pool namespace and torn down when the job ends. Managers stay small
+# (requests 200m/512Mi) and never run user code; burst capacity comes from the
+# per-pool ResourceQuota + LimitRange below, not from static replicas.
+#
+# Pools
+#   general-ci     ns gitlab-ci-general   restricted PSS  tags [general]           concurrency 4  req 250m/512Mi  lim 1/2Gi
+#   image-builder  ns gitlab-image-builds privileged      tags [image-builder,docker] concurrency 2  req 1/1Gi     lim 4/8Gi
+#   docker-host    ns gitlab-docker-builds privileged dind tags [docker-host,dind]    concurrency 2  privileged
+#
+# Priority migration (graceful): the new PriorityClass n0xeid-ci (-100, Never) is
+# created FIRST (see platform scheduling role), every CI job pod is remapped to it,
+# then the legacy platform-ci / app-ci-high strategic patches are removed. CI can
+# never evict production (Never preemption) and always loses to prod under pressure.
+#
+# Each block is idempotent and safe to re-run.
+
+# ---------------------------------------------------------------------------
+# 0. Shared RBAC — least-privilege service account for CI job pods.
+#    The runner MANAGER keeps its own SA (needs to create pods); job pods run as
+#    ci-job-sa which has no API powers at all (automount token disabled in the
+#    executor config). Created in every pool namespace.
+# ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Create least-privilege ci-job-sa in each pool namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: ci-job-sa
+        namespace: '{{ item }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab-runner-hygiene
+          workload.n0xeid.xyz/component: ci-job-sa
+      automountServiceAccountToken: false
+  loop:
+    - '{{ gitlab_runner_namespace }}'                 # gitlab-ci-general
+    - '{{ gitlab_image_builder_runner_namespace }}'   # gitlab-image-builds
+    - '{{ gitlab_docker_host_runner_namespace }}'     # gitlab-docker-builds
+  loop_control:
+    label: '{{ item }}'
+
+- name: RUNNERS-DYN | Bind ci-job-sa to an empty (no-permission) Role
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: ci-job-noop
+        namespace: '{{ item }}'
+      rules: []   # CI job pods must not talk to the API server at all
+  loop:
+    - '{{ gitlab_runner_namespace }}'
+    - '{{ gitlab_image_builder_runner_namespace }}'
+    - '{{ gitlab_docker_host_runner_namespace }}'
+  loop_control:
+    label: '{{ item }}'
+
+- name: RUNNERS-DYN | Tighten the runner-manager Role to the exact verbs the
+        kubernetes executor needs (was resources=['*'] verbs=['*'])
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: gitlab-runner
+        namespace: '{{ item }}'
+      rules:
+        - apiGroups: ['']
+          resources: ['pods', 'pods/attach', 'pods/exec', 'pods/log']
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'watch']
+        - apiGroups: ['']
+          resources: ['secrets', 'services']
+          verbs: ['create', 'delete', 'get', 'list', 'patch', 'update']
+        - apiGroups: ['']
+          resources: ['events']
+          verbs: ['get', 'list', 'watch']
+  loop:
+    - '{{ gitlab_runner_namespace }}'
+    - '{{ gitlab_image_builder_runner_namespace }}'
+    - '{{ gitlab_docker_host_runner_namespace }}'
+  loop_control:
+    label: '{{ item }}'
+
+# ---------------------------------------------------------------------------
+# 1b. Registry pull secret — least-privilege docker-registry secret used by job
+#     pods via [runners.kubernetes] image_pull_secrets. Backed by a read-only
+#     deploy token (read_registry) on the platform group, so job pods can pull
+#     from the private registry without the runner's per-job token magic.
+# ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Create gitlab-registry-pull docker-registry secrets
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/dockerconfigjson
+      metadata:
+        name: gitlab-registry-pull
+        namespace: '{{ item }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab-runner-hygiene
+      stringData:
+        .dockerconfigjson: >-
+          {{ '{"auths":{"registry.n0xeid.xyz":{"username":"gitlab+deploy-token-139","password":"' ~
+             gitlab_registry_pull_token ~ '","auth":"' ~
+             (('gitlab+deploy-token-139:' ~ gitlab_registry_pull_token) | b64encode) ~
+             '"}}}' }}
+  loop:
+    - '{{ gitlab_runner_namespace }}'
+    - '{{ gitlab_image_builder_runner_namespace }}'
+    - '{{ gitlab_docker_host_runner_namespace }}'
+  loop_control:
+    label: '{{ item }}'
+
+# ---------------------------------------------------------------------------
+# 1. Resource governance — ResourceQuota (pods+cpu+mem cap) + LimitRange defaults.
+#    These are the cluster-level bounds the dynamic pools autoscale AGAINST.
+# ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | ResourceQuota for general-ci pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: general-ci-budget
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        hard:
+          pods: '40'
+          requests.cpu: '20'
+          requests.memory: 32Gi
+          limits.cpu: '40'
+          limits.memory: 64Gi
+          requests.ephemeral-storage: 64Gi
+          limits.ephemeral-storage: 128Gi
+          services: '12'
+          secrets: '40'
+          configmaps: '24'
+          persistentvolumeclaims: '0'
+
+- name: RUNNERS-DYN | LimitRange defaults for general-ci pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: general-ci-containers
+        namespace: '{{ gitlab_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            # Defaults applied when a job omits requests/limits.
+            defaultRequest: {cpu: 100m, memory: 128Mi, ephemeral-storage: 256Mi}
+            default: {cpu: '1', memory: 2Gi, ephemeral-storage: 4Gi}
+            # Hard ceiling so a runaway job cannot monopolise a worker.
+            max: {cpu: '2', memory: 4Gi, ephemeral-storage: 16Gi}
+
+- name: RUNNERS-DYN | ResourceQuota for image-builder pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: image-builder-budget
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        hard:
+          pods: '12'
+          requests.cpu: '8'
+          requests.memory: 12Gi
+          limits.cpu: '16'
+          limits.memory: 32Gi
+          requests.ephemeral-storage: 48Gi
+          limits.ephemeral-storage: 96Gi
+          services: '6'
+          secrets: '24'
+          configmaps: '16'
+          persistentvolumeclaims: '0'
+
+- name: RUNNERS-DYN | LimitRange defaults for image-builder pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: image-builder-containers
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            defaultRequest: {cpu: 250m, memory: 256Mi}
+            default: {cpu: '2', memory: 4Gi}
+            max: {cpu: '4', memory: 8Gi}
+
+- name: RUNNERS-DYN | ResourceQuota for docker-host pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: docker-host-budget
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        hard:
+          pods: '12'
+          requests.cpu: '8'
+          requests.memory: 16Gi
+          limits.cpu: '16'
+          limits.memory: 32Gi
+          requests.ephemeral-storage: 48Gi
+          limits.ephemeral-storage: 96Gi
+          services: '6'
+          secrets: '24'
+          configmaps: '16'
+          persistentvolumeclaims: '0'
+
+- name: RUNNERS-DYN | LimitRange defaults for docker-host pool
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: docker-host-containers
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+      spec:
+        limits:
+          - type: Container
+            defaultRequest: {cpu: 250m, memory: 256Mi}
+            default: {cpu: '2', memory: 4Gi}
+            max: {cpu: '4', memory: 8Gi}
+
+# ---------------------------------------------------------------------------
+# 2. Completed-pod sweeper — deletes Succeeded CI pods older than 1h so the
+#    API/etcd object count stays bounded under a dynamic (high churn) pool.
+#    Runs in the existing privileged gitlab-ci-cleanup namespace.
+# ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Ensure the cleanup namespace exists
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gitlab-ci-cleanup
+        labels:
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/enforce-version: latest
+          pod-security.kubernetes.io/audit: privileged
+          pod-security.kubernetes.io/warn: privileged
+
+- name: RUNNERS-DYN | ServiceAccount + RBAC for the pod sweeper
+  kubernetes.core.k8s:
+    state: present
+    definition: '{{ item }}'
+  loop:
+    - apiVersion: v1
+      kind: ServiceAccount
+      metadata: {name: ci-pod-sweeper, namespace: gitlab-ci-cleanup}
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata: {name: ci-pod-sweeper, namespace: '{{ gitlab_runner_namespace }}'}
+      rules:
+        - apiGroups: ['']
+          resources: ['pods']
+          verbs: ['get', 'list', 'delete']
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata: {name: ci-pod-sweeper, namespace: '{{ gitlab_image_builder_runner_namespace }}'}
+      rules:
+        - apiGroups: ['']
+          resources: ['pods']
+          verbs: ['get', 'list', 'delete']
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata: {name: ci-pod-sweeper, namespace: '{{ gitlab_docker_host_runner_namespace }}'}
+      rules:
+        - apiGroups: ['']
+          resources: ['pods']
+          verbs: ['get', 'list', 'delete']
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata: {name: ci-pod-sweeper, namespace: '{{ gitlab_runner_namespace }}'}
+      roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-pod-sweeper}
+      subjects: [{kind: ServiceAccount, name: ci-pod-sweeper, namespace: gitlab-ci-cleanup}]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata: {name: ci-pod-sweeper, namespace: '{{ gitlab_image_builder_runner_namespace }}'}
+      roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-pod-sweeper}
+      subjects: [{kind: ServiceAccount, name: ci-pod-sweeper, namespace: gitlab-ci-cleanup}]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata: {name: ci-pod-sweeper, namespace: '{{ gitlab_docker_host_runner_namespace }}'}
+      roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: ci-pod-sweeper}
+      subjects: [{kind: ServiceAccount, name: ci-pod-sweeper, namespace: gitlab-ci-cleanup}]
+  loop_control:
+    label: '{{ item.kind }}/{{ item.metadata.namespace }}/{{ item.metadata.name }}'
+
+- name: RUNNERS-DYN | CronJob that deletes completed CI pods older than 1h
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: ci-completed-pod-sweeper
+        namespace: gitlab-ci-cleanup
+        labels:
+          app.kubernetes.io/part-of: gitlab-runner-hygiene
+          workload.n0xeid.xyz/component: ci-cleanup
+      spec:
+        schedule: '*/15 * * * *'
+        timeZone: UTC
+        concurrencyPolicy: Forbid
+        successfulJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 3
+        startingDeadlineSeconds: 300
+        jobTemplate:
+          spec:
+            activeDeadlineSeconds: 300
+            backoffLimit: 1
+            template:
+              metadata:
+                labels:
+                  workload.n0xeid.xyz/component: ci-cleanup
+              spec:
+                restartPolicy: Never
+                serviceAccountName: ci-pod-sweeper
+                priorityClassName: n0xeid-batch
+                containers:
+                  - name: sweep
+                    image: bitnami/kubectl:1.32
+                    command:
+                      - /bin/sh
+                      - -ec
+                      - |
+                        # Delete Succeeded/Failed pods whose completion time is
+                        # older than the threshold. We approximate "older than
+                        # 1h" by deletion when the pod has been Succeeded for a
+                        # while: kubectl has no timestamp filter, so we list and
+                        # filter on status.startTime in the API response.
+                        AGE_SECONDS=3600
+                        now=$(date +%s)
+                        for ns in {{ gitlab_runner_namespace }} {{ gitlab_image_builder_runner_namespace }} {{ gitlab_docker_host_runner_namespace }}; do
+                          kubectl get pods -n "$ns" \
+                            --field-selector=status.phase=Succeeded \
+                            -o json |
+                          python3 -c "
+                        import json,sys,os,time
+                        now=int(os.environ['NOW']); age=int(os.environ['AGE'])
+                        for p in json.load(sys.stdin)['items']:
+                            st=p.get('status',{})
+                            # use containerStatuses finishedAt if present, else startTime
+                            ts=None
+                            for c in st.get('containerStatuses',[]):
+                                f=c.get('state',{}).get('terminated',{}).get('finishedAt')
+                                if f: ts=f; break
+                            if not ts: ts=st.get('startTime')
+                            if not ts: continue
+                            # parse RFC3339
+                            from datetime import datetime,timezone
+                            try:
+                                t=datetime.fromisoformat(ts.replace('Z','+00:00'))
+                            except Exception:
+                                continue
+                            if (now-int(t.timestamp()))>age:
+                                print(p['metadata']['name'])
+                        " NOW="$now" AGE="$AGE_SECONDS" |
+                          while read -r pod; do
+                            [ -n "$pod" ] && kubectl delete pod "$pod" -n "$ns" --ignore-not-found
+                          done
+                        done
+                    resources:
+                      requests: {cpu: 50m, memory: 64Mi}
+                      limits: {cpu: 200m, memory: 256Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      capabilities: {drop: [ALL]}
+                      seccompProfile: {type: RuntimeDefault}
+
+# ---------------------------------------------------------------------------
+# 3. Priority remap — patch each runner ConfigMap so job pods use n0xeid-ci and
+#    drop the legacy platform-ci / app-ci-high baseline + strategic patches.
+#    The ConfigMaps are Helm-managed; we patch the config.template.toml data key
+#    only (the part that controls job-pod generation), leaving Helm able to
+#    reconcile the rest. A rollout restart picks up the new template.
+# ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Read live general-ci runner config template
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ gitlab_runner_namespace }}'
+    label_selectors: ['app=gitlab-runner']
+  register: _runners_dyn_general_cm
+  changed_when: false
+
+- name: RUNNERS-DYN | Remap general-ci job pods to n0xeid-ci priority
+  kubernetes.core.k8s:
+    state: present
+    kind: ConfigMap
+    api_version: v1
+    namespace: '{{ gitlab_runner_namespace }}'
+    name: '{{ _runners_dyn_general_cm.resources[0].metadata.name }}'
+    data:
+      config.template.toml: >-
+        {{
+          (_runners_dyn_general_cm.resources[0].data['config.template.toml']
+            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
+            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
+            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
+            | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
+          )
+        }}
+  when: _runners_dyn_general_cm.resources | length > 0
+  register: _runners_dyn_general_patch
+
+- name: RUNNERS-DYN | Read live image-builder runner config template
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ gitlab_image_builder_runner_namespace }}'
+  register: _runners_dyn_builder_cm
+  changed_when: false
+
+- name: RUNNERS-DYN | Remap image-builder job pods to n0xeid-ci priority
+  kubernetes.core.k8s:
+    state: present
+    kind: ConfigMap
+    api_version: v1
+    namespace: '{{ gitlab_image_builder_runner_namespace }}'
+    name: '{{ _runners_dyn_builder_cm.resources[0].metadata.name }}'
+    data:
+      config.template.toml: >-
+        {{
+          (_runners_dyn_builder_cm.resources[0].data['config.template.toml']
+            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
+            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
+            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
+            | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
+          )
+        }}
+  when: _runners_dyn_builder_cm.resources | length > 0
+  register: _runners_dyn_builder_patch
+
+- name: RUNNERS-DYN | Read live docker-host runner config template
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+  register: _runners_dyn_docker_cm
+  changed_when: false
+
+- name: RUNNERS-DYN | Remap docker-host job pods to n0xeid-ci priority
+  kubernetes.core.k8s:
+    state: present
+    kind: ConfigMap
+    api_version: v1
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: '{{ _runners_dyn_docker_cm.resources[0].metadata.name }}'
+    data:
+      config.template.toml: >-
+        {{
+          (_runners_dyn_docker_cm.resources[0].data['config.template.toml']
+            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
+            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
+            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
+          )
+        }}
+  when: _runners_dyn_docker_cm.resources | length > 0
+  register: _runners_dyn_docker_patch
+
+- name: RUNNERS-DYN | Restart runner managers to pick up remapped config
+  kubernetes.core.k8s:
+    state: patched
+    kind: Deployment
+    api_version: apps/v1
+    definition:
+      metadata:
+        name: '{{ item.name }}'
+        namespace: '{{ item.ns }}'
+      spec:
+        template:
+          metadata:
+            annotations:
+              runners-dyn.restartedAt: '{{ ansible_date_time.iso8601 }}'
+  loop:
+    - {name: gitlab-runner, ns: '{{ gitlab_runner_namespace }}'}
+    - {name: '{{ _runners_dyn_builder_cm.resources[0].metadata.name | default("gitlab-image-builder-runner-gitlab-runner") }}', ns: '{{ gitlab_image_builder_runner_namespace }}'}
+    - {name: '{{ _runners_dyn_docker_cm.resources[0].metadata.name | default("gitlab-docker-host-runner-gitlab-runner") }}', ns: '{{ gitlab_docker_host_runner_namespace }}'}
+  loop_control:
+    label: '{{ item.ns }}/{{ item.name }}'
+  when: >
+    _runners_dyn_general_patch.changed or
+    _runners_dyn_builder_patch.changed or
+    _runners_dyn_docker_patch.changed
+
+# ---------------------------------------------------------------------------
+# 4. GitLab API — register/refresh the three runners with the correct tags and
+#    run_untagged=false. Idempotent: PUT is safe to repeat.
+# ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Refresh runner registrations via GitLab API
+  ansible.builtin.uri:
+    url: 'https://{{ gitlab_domain }}/api/v4/runners/{{ item.id }}'
+    method: PUT
+    headers:
+      PRIVATE-TOKEN: '{{ gitlab_admin_token }}'
+    body_format: json
+    body:
+      description: '{{ item.description }}'
+      tag_list: '{{ item.tags }}'
+      run_untagged: '{{ item.run_untagged }}'
+      active: true
+    status_code: [200]
+    timeout: 60
+  loop:
+    - id: 107
+      description: 'n0xeid-general-ci'
+      tags: ['general']
+      run_untagged: false
+    - id: 39
+      description: 'ansible-k8s-protected-image-builder'
+      tags: ['image-builder', 'docker']
+      run_untagged: false
+    - id: 40
+      description: 'ansible-k8s-protected-docker-host'
+      tags: ['docker-host', 'dind']
+      run_untagged: false
+  loop_control:
+    label: '{{ item.id }} ({{ item.description }})'
+  register: _runners_dyn_api
+  changed_when: false
+
+- name: RUNNERS-DYN | Show refreshed runners
+  ansible.builtin.debug:
+    msg: '{{ item.json.id }} tags={{ item.json.tag_list }} run_untagged={{ item.json.run_untagged }} active={{ item.json.active }}'
+  loop: '{{ _runners_dyn_api.results }}'
+  loop_control:
+    label: '{{ item.json.id }}'

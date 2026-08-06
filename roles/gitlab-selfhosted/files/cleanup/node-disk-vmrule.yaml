@@ -1,0 +1,28 @@
+# RUNNERS hygiene: fire a warning as soon as a node (esp. CI workers running
+# docker-in-docker / buildkit) crosses 80% filesystem usage, before the
+# existing platform 85% rule trips. Catches CI node disk exhaustion early.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMRule
+metadata:
+  name: node-disk-80-warning
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: gitlab-runner-hygiene
+spec:
+  groups:
+    - name: node-disk-ci
+      rules:
+        - alert: NodeDiskUsageAbove80
+          annotations:
+            summary: Node {{ $labels.instance }} root fs >80% used
+            description: >-
+              CI nodes running docker-in-docker/buildkit fill disks fast.
+              Investigate before kubelet image GC / DiskPressure kicks in.
+          expr: >-
+            100 - ((node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint="/"}
+            / node_filesystem_size_bytes) * 100) > 80
+          for: 10m
+          labels:
+            severity: warning
+            environment_tier: platform
+            owner: platform

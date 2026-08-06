@@ -1,0 +1,98 @@
+# RUNNERS-DYN — general-ci pool (dynamic kubernetes executor)
+# ns gitlab-ci-general (PSS restricted) | tags [general] | concurrency 4 | req 250m/512Mi | lim 1/2Gi
+[[runners]]
+  clone_url = "https://git.n0xeid.xyz"
+  # Dynamic pool: the manager only polls the queue; every job becomes a pod
+  # that is created here and deleted when the job ends. Two manager replicas
+  # share this runner token; per-manager concurrent=2 x 2 managers = 4 pool
+  # slots (task: concurrency 4), bound further by the general-ci-budget
+  # ResourceQuota (pods=40, cpu=40, mem=64Gi).
+  request_concurrency = 2
+  limit = 2
+  # The Kubernetes executor stages remote cache archives below this path.
+  cache_dir = "/tmp/cache"
+  # Restricted jobs run as a numeric UID that may not exist in the image
+  # passwd database. Give Git and the helper a writable HOME so source
+  # checkout never falls back to the read-only root path.
+  environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
+  [runners.cache]
+    Type = "s3"
+    Path = "gitlab-runner"
+    Shared = true
+    [runners.cache.s3]
+      ServerAddress = "seaweedfs-filer.storage.svc.cluster.local:8333"
+      BucketName = "gitlab-runner-cache"
+      BucketLocation = "us-east-1"
+      Insecure = true
+      AuthenticationType = "access-key"
+  [runners.kubernetes]
+    namespace = "gitlab-ci-general"
+    image = "ubuntu:22.04"
+    # helper_image: NOT pinned — the runner auto-selects the arch/version
+    # correct gitlab-runner-helper from gitlab.com. Pinning a non-existent tag
+    # (e.g. x86_64-v19.2.0 is not published) breaks every job pod.
+    image_pull_secrets = ["gitlab-registry-pull"]
+    # Managers stay small; the job pods are the scalable unit.
+    poll_timeout = 3600
+    max_builds = 100
+    cleanup_grace_period_seconds = 5
+    pod_termination_grace_period_seconds = 5
+    cleanup_resources_timeout = "30s"
+    # Job pods run as the least-privilege SA: no API access, no token mounted.
+    service_account = "ci-job-sa"
+    # General non-privileged jobs land on the shared CI workers.
+    node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }
+    node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule", "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
+    privileged = false
+    allow_privilege_escalation = false
+    cap_drop = ["ALL"]
+    automount_service_account_token = false
+    # The general CI namespace enforces Pod Security restricted. Pin every
+    # generated init/build/helper/service container to a numeric non-root
+    # identity through the pod-level context.
+    logs_base_dir = "/tmp"
+    scripts_base_dir = "/tmp"
+    # Pool sizing per spec: requests 250m/512Mi, limits 1/2Gi.
+    cpu_request = "250m"
+    cpu_limit = "1"
+    memory_request = "512Mi"
+    memory_limit = "2Gi"
+    ephemeral_storage_request = "2Gi"
+    ephemeral_storage_limit = "8Gi"
+    service_cpu_request = "100m"
+    service_cpu_limit = "500m"
+    service_memory_request = "256Mi"
+    service_memory_limit = "1Gi"
+    service_ephemeral_storage_request = "1Gi"
+    service_ephemeral_storage_limit = "4Gi"
+    helper_cpu_request = "100m"
+    helper_cpu_limit = "1"
+    helper_memory_request = "256Mi"
+    helper_memory_limit = "1Gi"
+    helper_ephemeral_storage_request = "1Gi"
+    helper_ephemeral_storage_limit = "4Gi"
+    # RUNNERS-DYN: job pods never outlive 2h; CI always runs at n0xeid-ci
+    # priority (Never preemption - CI can never evict production workloads).
+    active_deadline_seconds = 7200
+    priority_class_name = "n0xeid-ci"
+    helper_priority_class_name = "n0xeid-ci"
+    service_priority_class_name = "n0xeid-ci"
+    pod_annotations_overwrite_allowed = ".*"
+    [runners.kubernetes.pod_security_context]
+      run_as_non_root = true
+      run_as_user = 1000
+      run_as_group = 1000
+      fs_group = 1000
+      [runners.kubernetes.pod_security_context.seccomp_profile]
+        type = "RuntimeDefault"
+    [runners.kubernetes.pod_labels]
+      "workload.n0xeid.xyz/class" = "ci-job"
+    [runners.kubernetes.affinity]
+      # Spread job pods across the CI workers; never co-locate two heavy jobs
+      # on one node when another CI worker is available.
+      [runners.kubernetes.affinity.pod_anti_affinity]
+        [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution]]
+          weight = 100
+          [runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term]
+            topology_key = "kubernetes.io/hostname"
+            label_selector = { "workload.n0xeid.xyz/class" = "ci-job" }

@@ -143,7 +143,12 @@ gateway_extra_certificate_refs: []
 gateway_extra_certificates: []
 gateway_https_hostname: ""
 gateway_extra_https_listeners: []
-gateway_http_allowed_routes: {namespaces: {from: All}}
+gateway_http_allowed_routes:
+  namespaces:
+    from: Selector
+    selector:
+      matchLabels:
+        gateway.n0xeid.xyz/http-route: 'true'
 gateway_https_allowed_routes: {namespaces: {from: All}}
 object_storage_create_external_routes: true
 object_storage_enabled: true
@@ -321,6 +326,7 @@ argocd_chart_version: "9.5.14"
 # renovate: datasource=github-releases depName=argoproj/argo-cd
 argocd_version: "v3.4.2"
 argocd_insecure_mode: false
+argocd_public_route_enabled: true
 argocd_allowed_source_repos:
   - "https://gitlab.{{ domain }}/platform/*"
 argocd_allowed_namespaces:
