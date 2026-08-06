@@ -240,6 +240,7 @@
         name: '{{ gitlab_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
+          gateway.n0xeid.xyz/n0xeid-route: 'true'
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
   register: _r_create_gitlab_namespace

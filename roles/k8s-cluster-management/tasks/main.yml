@@ -2942,7 +2942,7 @@
               - ipBlock:
                   cidr: "{{ kube_service_addresses | default('10.233.0.0/18') }}"
               - ipBlock:
-                  cidr: 10.0.0.0/8
+                  cidr: "{{ workers_subnet | default('10.0.2.0/24') }}"
             ports:
               - protocol: TCP
                 port: 443

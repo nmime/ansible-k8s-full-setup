@@ -1,0 +1,76 @@
+# RUNNERS-DYN — image-builder pool (dynamic kubernetes executor, privileged buildkit)
+# ns gitlab-image-builds (PSS privileged) | tags [image-builder, docker] | concurrency 2 | req 1/1Gi | lim 4/8Gi
+[[runners]]
+  clone_url = "https://git.n0xeid.xyz"
+  # Dynamic pool: 2 concurrent job pods max, bound by image-builder-budget
+  # ResourceQuota (pods=12, cpu=16, mem=32Gi).
+  request_concurrency = 2
+  limit = 2
+  environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
+  [runners.cache]
+    Type = "s3"
+    Path = "gitlab-runner"
+    Shared = true
+    [runners.cache.s3]
+      ServerAddress = "seaweedfs-filer.storage.svc.cluster.local:8333"
+      BucketName = "gitlab-runner-cache"
+      BucketLocation = "us-east-1"
+      Insecure = true
+      AuthenticationType = "access-key"
+  [runners.kubernetes]
+    namespace = "gitlab-image-builds"
+    image = "ubuntu:22.04"
+    # helper_image: NOT pinned — runner auto-selects arch/version-correct helper.
+    image_pull_secrets = ["gitlab-registry-pull"]
+    poll_timeout = 3600
+    max_builds = 100
+    cleanup_grace_period_seconds = 5
+    pod_termination_grace_period_seconds = 5
+    cleanup_resources_timeout = "30s"
+    # Buildkit needs privileged build containers (seccomp/apparmor unconfined)
+    # but the pod itself can stay non-root; job pods run as least-privilege SA.
+    service_account = "ci-job-sa"
+    # Image builds must run on the dedicated docker-capable CI worker (worker-5,
+    # tainted ci-build) so they never starve general jobs.
+    node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
+    node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+    privileged = false
+    allow_privilege_escalation = false
+    cap_drop = ["ALL"]
+    automount_service_account_token = false
+    logs_base_dir = "/tmp"
+    scripts_base_dir = "/tmp"
+    # Pool sizing per spec: requests 1/1Gi, limits 4/8Gi.
+    cpu_request = "1"
+    cpu_limit = "4"
+    memory_request = "1Gi"
+    memory_limit = "8Gi"
+    ephemeral_storage_request = "8Gi"
+    ephemeral_storage_limit = "32Gi"
+    helper_cpu_request = "100m"
+    helper_cpu_limit = "500m"
+    helper_memory_request = "256Mi"
+    helper_memory_limit = "512Mi"
+    helper_ephemeral_storage_request = "1Gi"
+    helper_ephemeral_storage_limit = "4Gi"
+    active_deadline_seconds = 7200
+    priority_class_name = "n0xeid-ci"
+    helper_priority_class_name = "n0xeid-ci"
+    service_priority_class_name = "n0xeid-ci"
+    pod_annotations_overwrite_allowed = ".*"
+    [runners.kubernetes.pod_security_context]
+      [runners.kubernetes.pod_security_context.seccomp_profile]
+        type = "RuntimeDefault"
+    [runners.kubernetes.build_container_security_context]
+      allow_privilege_escalation = false
+      [runners.kubernetes.build_container_security_context.seccomp_profile]
+        type = "Unconfined"
+    [runners.kubernetes.pod_labels]
+      "workload.n0xeid.xyz/class" = "protected-image-build-job"
+    [runners.kubernetes.affinity]
+      [runners.kubernetes.affinity.pod_anti_affinity]
+        [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution]]
+          weight = 100
+          [runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term]
+            topology_key = "kubernetes.io/hostname"
+            label_selector = { "workload.n0xeid.xyz/class" = "protected-image-build-job" }

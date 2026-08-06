@@ -1867,6 +1867,34 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
+- name: Allow analytics (metabase) to reach postgres/pgbouncer/mongo
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-from-analytics
+        namespace: databases
+      spec:
+        podSelector: {}
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: analytics
+            ports:
+              - port: 5432
+                protocol: TCP
+              - port: 6432
+                protocol: TCP
+              - port: 27017
+                protocol: TCP
+  when: >-
+    (platform_postgresql_enabled | default(true) | bool)
+    or (platform_mongodb_enabled | default(true) | bool)
 - name: Create PostgreSQL VMServiceScrape
   kubernetes.core.k8s:
     state: present
