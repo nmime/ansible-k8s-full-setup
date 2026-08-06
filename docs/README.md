@@ -2,6 +2,13 @@
 
 Every document in this directory with a one-line purpose.
 
+## Architecture and mapping
+
+| Document | Purpose |
+|---|---|
+| [infrastructure-map.md](infrastructure-map.md) | Live infrastructure map: network topology, node layout, Gateway/HTTPRoute map, storage, and traffic-flow diagrams. |
+| [gitlab-repos-map.md](gitlab-repos-map.md) | GitLab group tree, all projects, source-of-truth repos, legacy/duplicate markers, and runner routing map. |
+
 ## Getting started
 
 | Document | Purpose |
