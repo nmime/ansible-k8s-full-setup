@@ -7,13 +7,13 @@
              zip(['n0xeid-platform-critical'] *
                  (workload_priority_platform_namespaces | length))) |
         combine(dict(workload_priority_production_namespaces |
-                     zip(['n0xeid-service-production'] *
+                     zip(['n0xeid-production'] *
                          (workload_priority_production_namespaces | length)))) |
         combine(dict(workload_priority_environment_namespaces |
-                     zip(['n0xeid-service-environment'] *
+                     zip(['n0xeid-preproduction'] *
                          (workload_priority_environment_namespaces | length)))) |
         combine(dict(workload_priority_review_namespaces |
-                     zip(['n0xeid-service-review'] *
+                     zip(['n0xeid-preproduction'] *
                          (workload_priority_review_namespaces | length))))
       }}
 
@@ -29,8 +29,8 @@
           n0xeid.xyz/environment-tier: >-
             {{
               'platform' if item.value == 'n0xeid-platform-critical'
-              else 'production' if item.value == 'n0xeid-service-production'
-              else 'environment' if item.value == 'n0xeid-service-environment'
+              else 'production' if item.value == 'n0xeid-production'
+              else 'environment' if item.value == 'n0xeid-preproduction'
               else 'review'
             }}
           n0xeid.xyz/priority-class: '{{ item.value }}'
