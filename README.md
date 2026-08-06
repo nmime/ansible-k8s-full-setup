@@ -192,6 +192,28 @@ Object-storage credentials may be supplied through
 secret-generation role creates and persists strong values in the encrypted
 platform secrets file.
 
+## Repository layout
+
+```
+.
+├── ansible.cfg            # Ansible configuration
+├── defaults/              # Global default variables
+├── docs/                  # All documentation (see docs/README.md for index)
+├── helm-plugins/          # Custom Helm plugins
+├── inventory.example      # Example inventory file
+├── platform-orchestrator/ # CLI wrapper, profiles, and capacity tariffs
+├── playbooks/             # Ansible playbooks (deploy, upgrade, edge, etc.)
+├── requirements.txt       # Python dependencies for tests/scripts
+├── requirements.yml       # Ansible Galaxy collections
+├── roles/                 # Ansible roles (see roles/README.md)
+├── run_all.sh             # Full-stack deployment entry point
+├── run_tier.sh            # Tiered deployment entry point
+├── scripts/               # Operational scripts (backup, restore, validation)
+├── teardown.sh            # Cluster teardown entry point
+├── templates/             # Shared Jinja2 templates
+└── tests/                 # pytest suites (unit/, component/, e2e/)
+```
+
 ## Quick start
 
 The orchestrator is the canonical entry point:
@@ -620,7 +642,7 @@ to `teardown.sh --require-backup-receipt`; teardown re-downloads and hashes the
 remote receipt, checksum, and archive before its first provider operation. Use
 the recovered exact config/secrets/repository state with the `velero-bootstrap`
 tag, then run strict Velero restore and the structured native backup catalog.
-See [Backup and restore](BACKUP_RESTORE.md) for the ordered recovery commands.
+See [Backup and restore](docs/BACKUP_RESTORE.md) for the ordered recovery commands.
 Application consistency is a separate destructive gate: new backups bind the
 schema-v2 native catalog hash into that receipt, and `scripts/native-restore.sh`
 replays exact native artifacts in dependency order with replacement-UID-bound,
@@ -649,14 +671,14 @@ requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 
 ## Documentation
 
-- [Deployment guide](DEPLOYMENT.md)
+- [Deployment guide](docs/DEPLOYMENT.md)
 - [Technology catalog and profile matrix](docs/TECHNOLOGY_CATALOG.md)
-- [Operations runbook](RUNBOOK.md)
-- [Backup and restore](BACKUP_RESTORE.md)
-- [Security hardening](SECURITY_HARDENING.md)
-- [HIPAA-oriented hardening scope](HIPAA_COMPLIANCE.md)
-- [Observability stack](OBSERVABILITY.md)
-- [Upgrade runbook](UPGRADE_RUNBOOK.md)
+- [Operations runbook](docs/RUNBOOK.md)
+- [Backup and restore](docs/BACKUP_RESTORE.md)
+- [Security hardening](docs/SECURITY_HARDENING.md)
+- [HIPAA-oriented hardening scope](docs/HIPAA_COMPLIANCE.md)
+- [Observability stack](docs/OBSERVABILITY.md)
+- [Upgrade runbook](docs/UPGRADE_RUNBOOK.md)
 - [GitLab 18.11 to 19.1 plan](docs/GITLAB_UPGRADE_PLAN.md)
 - [Validation and CI](docs/CI_AUTOMATION.md)
 - [Hetzner server catalog and capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md)
@@ -668,6 +690,33 @@ The CI and local suite run YAML/Ansible linting, ShellCheck, playbook syntax,
 version-contract checks, and pytest unit/static component-contract tests. They
 do not claim to be a live Hetzner/Kubernetes end-to-end deployment. Live
 restore and upgrade drills require an explicitly authorized test cluster.
+
+## Repository relationships
+
+This is the **base repository** (`platform/ansible-k8s-full-setup`). It holds
+the upstream Ansible roles, playbooks, and platform orchestrator that are
+shared across all deployments.
+
+The **cluster-truth repository** (`agents/argocd/ansible-k8s-full-setup-n0xeid`)
+forks this base and adds cluster-specific overrides, project manifests, and
+live state. It is the source Argo CD reads for the n0xeid cluster.
+
+### How changes flow
+
+```
+base repo (here)  ──merge──▶  cluster-truth repo  ──Argo CD──▶  live cluster
+platform/ansible-              agents/argocd/ansible-
+k8s-full-setup                 k8s-full-setup-n0xeid
+```
+
+1. Make changes here first (or in the cluster repo, then cherry-pick back).
+2. Merge into the cluster-truth repository.
+3. Argo CD reconciles the cluster-truth repo to the live cluster.
+
+| Repository | GitLab path | Role |
+|---|---|---|
+| Base | `platform/ansible-k8s-full-setup` | Shared upstream Ansible platform |
+| Cluster truth | `agents/argocd/ansible-k8s-full-setup-n0xeid` | n0xeid cluster overrides + Argo CD source |
 
 ## License
 

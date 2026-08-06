@@ -13,7 +13,7 @@ RESTORE_SCRIPT = REPO_ROOT / "scripts" / "restore-drill.sh"
 VAULT_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "vault-restore-drill.sh"
 MONGODB_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "mongodb-restore-drill.sh"
 SEAWEEDFS_RESTORE_SCRIPT = REPO_ROOT / "scripts" / "seaweedfs-restore-drill.sh"
-BACKUP_DOC = REPO_ROOT / "BACKUP_RESTORE.md"
+BACKUP_DOC = REPO_ROOT / "docs" / "BACKUP_RESTORE.md"
 
 def load_yaml(path):
     docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
@@ -690,4 +690,4 @@ class TestIntegration:
         gi = (REPO_ROOT / ".gitignore").read_text()
         assert "scripts/backup-all.sh" not in gi
         assert "scripts/restore-drill.sh" not in gi
-        assert "BACKUP_RESTORE.md" not in gi
+        assert "docs/BACKUP_RESTORE.md" not in gi

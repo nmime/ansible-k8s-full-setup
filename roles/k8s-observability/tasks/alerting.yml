@@ -11,7 +11,7 @@
     alert_runbook_url_resolved: >-
       {{
         alert_runbook_url |
-        default('https://github.com/nmime/ansible-k8s-full-setup/blob/main/RUNBOOK.md')
+        default('https://github.com/nmime/ansible-k8s-full-setup/blob/main/docs/RUNBOOK.md')
       }}
     alert_telegram_configured: >-
       {{

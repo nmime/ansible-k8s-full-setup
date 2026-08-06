@@ -11,7 +11,7 @@ class TestFileStructure:
     def test_vmservicescrapes_exists(self):
         assert os.path.isfile(os.path.join(OBS, "templates", "vmservicescrapes.yml"))
     def test_observeability_md_exists(self):
-        assert os.path.isfile(os.path.join(REPO, "OBSERVABILITY.md"))
+        assert os.path.isfile(os.path.join(REPO, "docs", "OBSERVABILITY.md"))
 
 class TestMainOrchestration:
     @pytest.fixture

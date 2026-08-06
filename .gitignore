@@ -29,11 +29,22 @@ snapshot/
 # Kubespray
 kubespray/
 
+# Runtime logs
+logs/
+
 # Python
 *.pyc
 __pycache__/
 .venv/
 venv/
+.pytest_cache/
+
+# Secrets / keys
+*.pem
+*.key
+
+# Node
+node_modules/
 
 # OS
 .DS_Store

@@ -3,7 +3,7 @@
 # Generates all credentials ONCE and persists them to a local secrets file.
 # On subsequent runs, existing credentials are loaded (never regenerated).
 # SECRETS are encrypted with Ansible Vault to prevent plaintext persistence.
-# See SECURITY_HARDENING.md section 2 for migration from plaintext .platform-secrets.yml
+# See docs/SECURITY_HARDENING.md section 2 for migration from plaintext .platform-secrets.yml
 
 - name: Set secrets file path
   set_fact:
