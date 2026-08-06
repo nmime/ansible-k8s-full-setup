@@ -158,6 +158,25 @@
   until: _r_bb_probe_tcp is not failed
   when: bb_internal_targets | length > 0
 
+# Private-gateway (VPN-only) probes are intentionally NOT created here:
+# endpoints behind the admin-gateway (grafana, mail, argocd) return 403/404 to
+# in-cluster probes by design, so probing them for a 307/404 would always alert.
+# Public services are probed above; VPN-gated services are verified by tailnet
+# health checks instead. Remove any legacy private-gateway probes from earlier
+# deployments so the repo is the single source of truth and stale probes cannot
+# fire BlackboxProbeFailed forever.
+- name: Remove legacy private-gateway VMProbes (VPN-only endpoints)
+  kubernetes.core.k8s:
+    state: absent
+    api_version: operator.victoriametrics.com/v1beta1
+    kind: VMProbe
+    name: "{{ item }}"
+    namespace: "{{ bb_ns }}"
+  loop:
+    - blackbox-private-gateway
+    - blackbox-private-gateway-redirect
+  when: platform_gitops_enabled | default(false) | bool
+
 - name: Print Blackbox info
   debug:
     msg:
