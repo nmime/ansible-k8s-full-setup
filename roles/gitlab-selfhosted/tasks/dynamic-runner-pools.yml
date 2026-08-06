@@ -400,6 +400,11 @@
 #    only (the part that controls job-pod generation), leaving Helm able to
 #    reconcile the rest. A rollout restart picks up the new template.
 # ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Completed-pod sweeper CronJob (deletes Succeeded CI pods older than 1h)
+  kubernetes.core.k8s:
+    state: present
+    definition: '{{ lookup("template", "files/cleanup/ci-completed-pod-sweeper.yaml") }}'
+
 - name: RUNNERS-DYN | Read live general-ci runner config template
   kubernetes.core.k8s_info:
     api_version: v1

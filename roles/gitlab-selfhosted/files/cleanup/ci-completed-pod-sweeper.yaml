@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ci-completed-pod-sweeper
+  namespace: gitlab-ci-cleanup
+  labels:
+    app.kubernetes.io/part-of: gitlab-runner-hygiene
+    workload.n0xeid.xyz/component: ci-cleanup
+spec:
+  schedule: '*/15 * * * *'
+  timeZone: UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            workload.n0xeid.xyz/component: ci-cleanup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: ci-pod-sweeper
+          priorityClassName: n0xeid-batch
+          containers:
+            - name: sweep
+              # Same image the other CI cleanup CronJobs use (pulls fine via
+              # the registry pull-through proxy), plus curl for the API call.
+              image: docker:27-cli
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  set -eu
+                  AGE_SECONDS=3600
+                  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  for ns in gitlab-ci-general gitlab-image-builds gitlab-docker-builds; do
+                    echo "Sweeping $ns (Succeeded pods older than 1h)"
+                    curl -s --cacert "$CA" -H "Authorization: Bearer $TOKEN" \
+                      "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}/api/v1/namespaces/$ns/pods?fieldSelector=status.phase%3DSucceeded" \
+                      | python3 -c "
+                  import json,sys,os
+                  from datetime import datetime,timezone
+                  now=int(os.environ['NOW']); age=int(os.environ['AGE'])
+                  for p in json.load(sys.stdin)['items']:
+                      st=p.get('status',{})
+                      ts=None
+                      for c in st.get('containerStatuses',[]):
+                          f=c.get('state',{}).get('terminated',{}).get('finishedAt')
+                          if f: ts=f; break
+                      if not ts: ts=st.get('startTime')
+                      if not ts: continue
+                      try:
+                          t=datetime.fromisoformat(ts.replace('Z','+00:00'))
+                      except Exception:
+                          continue
+                      if (now-int(t.timestamp()))>age:
+                          print(p['metadata']['name'])
+                  " NOW="$(date +%s)" AGE="$AGE_SECONDS" |
+                      while read -r pod; do
+                        [ -n "$pod" ] && curl -s --cacert "$CA" -X DELETE -H "Authorization: Bearer $TOKEN" \
+                          "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}/api/v1/namespaces/$ns/pods/$pod"
+                      done
+                  done
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: 200m, memory: 256Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 1000
+                capabilities: {drop: [ALL]}
+                seccompProfile: {type: RuntimeDefault}
