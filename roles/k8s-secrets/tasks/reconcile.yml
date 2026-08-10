@@ -1573,6 +1573,7 @@
               - steel-preproduction
               - social-agents-production
               - social-agents-preproduction
+              - social-agents-edge
         provider:
           vault:
             server: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault.{{ vault_ns }}.svc.cluster.local:8200"
