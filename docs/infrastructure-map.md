@@ -137,6 +137,15 @@ Two Cilium Gateways front all cluster ingress (GatewayClass: `cilium`).
     track.n0xeid.xyz               → postal-web (tracking pixel)
     nx-cache.n0xeid.xyz            → nx-cache-protected
     nx-cache-dev.n0xeid.xyz        → nx-cache-development
+
+> **Note (2026-08-10):** `nx-cache-development` runs with `requests.memory: 32Mi`
+> (down from 128Mi). Its PV is pinned to `worker-2`, which runs at ~97-99%
+> memory-request saturation; 64Mi+ requests no longer schedule there. The dev
+> cache tolerates the lower reservation (limits remain 512Mi). The StatefulSet
+> is currently **not** managed by any Argo Application (the former
+> `shared-nx-cache` app was removed); the reduced request was applied directly
+> and survives restarts. If it is re-onboarded into GitOps, keep
+> `requests.memory <= 32Mi` or add capacity to worker-2.
 ```
 
 ### 3b. admin-gateway (10.0.10.2) — ADMIN / VPN
