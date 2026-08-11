@@ -364,6 +364,7 @@ workload_priority_environment_namespaces:
   - analytics
   - dadya-preproduction
   - fun-games-preproduction
+  - social-agents-edge
   - social-agents-preproduction
   - umami
 workload_priority_review_namespaces: []
