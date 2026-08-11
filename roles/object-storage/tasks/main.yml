@@ -1166,6 +1166,32 @@
                     port: 8333
       when: object_storage_network_policy_enabled | default(false) | bool
 
+    - name: Allow GitLab registry to use the SeaweedFS S3 gateway
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: allow-from-gitlab-registry-s3
+            namespace: "{{ object_storage_namespace_resolved }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: seaweedfs
+                app.kubernetes.io/instance: seaweedfs
+                app.kubernetes.io/component: filer
+            policyTypes: [Ingress]
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: gitlab
+                ports:
+                  - protocol: TCP
+                    port: 8333
+      when: object_storage_network_policy_enabled | default(false) | bool
+
     - name: Discover the agents namespace for S3 service egress
       kubernetes.core.k8s_info:
         api_version: v1
