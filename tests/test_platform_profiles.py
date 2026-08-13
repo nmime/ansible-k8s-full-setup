@@ -1172,7 +1172,6 @@ class TestComponentLifecycle:
             "platform_gitlab_enabled",
             "platform_gitops_enabled",
             "platform_postal_enabled",
-            "platform_temporal_enabled",
         ):
             assert normalized_flag in blackbox
         assert 'targets: "{{ bb_internal_targets }}"' in blackbox

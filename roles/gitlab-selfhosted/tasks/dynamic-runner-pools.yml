@@ -96,6 +96,7 @@
 #     from the private registry without the runner's per-job token magic.
 # ---------------------------------------------------------------------------
 - name: RUNNERS-DYN | Create gitlab-registry-pull docker-registry secrets
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:

@@ -315,13 +315,10 @@ gitlab:
   # another recovery point. Resume only after an explicit retention decision.
   toolbox_backup_suspended: true
   runner:
-    # Dedicated CI workers 4 and 5 are decommissioned from the live topology,
-    # so no node carries the ci-general/ci-build/ci-docker labels and every
-    # runner pool stayed unschedulable. CI is intentionally disabled until the
-    # dedicated workers are re-provisioned; re-enable these flags together
-    # with the workers to restore CI.
-    enabled: false
-    general_pool_enabled: false
+    enabled: true
+    # General non-privileged jobs spread across workers 4 and 5. Protected
+    # rootless image builds remain on worker 5 and DinD remains on worker 4.
+    general_pool_enabled: true
     replicas: 2
     namespace: gitlab-ci-general
     # One job per manager preserves two-job aggregate concurrency without a
@@ -355,7 +352,7 @@ gitlab:
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.
     image_builder:
-      enabled: false
+      enabled: true
       replicas: 1
       concurrent_jobs: 1
       job_resources:
@@ -370,7 +367,7 @@ gitlab:
     # Backward-compatible docker-host tag without Docker access on bastion:
     # only the digest-pinned DinD service is privileged in its own namespace.
     docker_host:
-      enabled: false
+      enabled: true
       replicas: 1
       concurrent_jobs: 1
       dedicated_worker_index: 4

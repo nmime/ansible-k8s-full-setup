@@ -653,7 +653,8 @@ class TestChart10ValuesStructure:
 
         quota = next(
             task for task in tasks
-            if task.get("name") == "General Runner | Bound aggregate namespace resources"
+            if task.get("name")
+            == "General Runner | Bound aggregate namespace resources (RUNNERS-DYN pool budget)"
         )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
         assert "general_pool_quota" in quota["requests.cpu"]
         assert "general_pool_quota" in quota["requests.memory"]
@@ -663,10 +664,11 @@ class TestChart10ValuesStructure:
 
         limit_range = next(
             task for task in tasks
-            if task.get("name") == "General Runner | Bound each container"
+            if task.get("name")
+            == "General Runner | Bound each container (RUNNERS-DYN pool defaults)"
         )["kubernetes.core.k8s"]["definition"]["spec"]["limits"][0]
-        assert "gitlab_runner_job_resources.cpu_limit" in limit_range["max"]["cpu"]
-        assert "gitlab_runner_job_resources.memory_limit" in limit_range["max"]["memory"]
+        assert limit_range["max"]["cpu"] == "2"
+        assert limit_range["max"]["memory"] == "4Gi"
 
         policies = next(
             task for task in tasks
@@ -876,10 +878,11 @@ class TestChart10ValuesStructure:
         assert labels["pod-security.kubernetes.io/warn"] == "restricted"
         quota = next(
             task for task in tasks
-            if task.get("name") == "Image builder | Bound aggregate namespace resources"
+            if task.get("name")
+            == "Image builder | Bound aggregate namespace resources (RUNNERS-DYN pool budget)"
         )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
-        assert quota["limits.cpu"] == "4"
-        assert quota["limits.memory"] == "5Gi"
+        assert quota["limits.cpu"] == "16"
+        assert quota["limits.memory"] == "32Gi"
         assert quota["persistentvolumeclaims"] == "0"
 
         network = read(IMAGE_BUILDER_NETWORK_PATH)
@@ -1102,10 +1105,11 @@ class TestChart10ValuesStructure:
         )
         quota = next(
             task for task in tasks
-            if task.get("name") == "Docker smoke | Bound aggregate namespace resources"
+            if task.get("name")
+            == "Docker smoke | Bound aggregate namespace resources (RUNNERS-DYN pool budget)"
         )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
-        assert quota["limits.cpu"] == "8"
-        assert quota["limits.memory"] == "7Gi"
+        assert quota["limits.cpu"] == "16"
+        assert quota["limits.memory"] == "32Gi"
         assert quota["persistentvolumeclaims"] == "0"
         assert (
             "Establish the fail-closed network boundary" in runner

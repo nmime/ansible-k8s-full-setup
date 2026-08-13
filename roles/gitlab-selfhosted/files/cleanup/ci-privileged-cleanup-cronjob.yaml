@@ -160,7 +160,7 @@ spec:
                 runAsUser: 0
                 allowPrivilegeEscalation: true
                 capabilities:
-                  add: ["DAC_OVERRIDE","FOWNER","CHOWN","SYS_ADMIN"]
+                  add: ["DAC_OVERRIDE", "FOWNER", "CHOWN", "SYS_ADMIN"]
               resources:
                 requests:
                   cpu: 50m

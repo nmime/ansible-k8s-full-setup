@@ -82,7 +82,7 @@
       extraVolumes:
         - name: datastore-client-ca
           secret:
-            defaultMode: 0444
+            defaultMode: '0444'
             secretName: datastore-client-ca
       extraVolumeMounts:
         - name: datastore-client-ca

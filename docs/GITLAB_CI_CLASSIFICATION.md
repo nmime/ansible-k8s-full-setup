@@ -5,10 +5,10 @@ GitLab ref metadata, not from a hard-coded branch such as `preproduction`:
 
 | GitLab context | CI class | Kubernetes PriorityClass |
 |---|---|---|
-| protected schedule | maintenance | `platform-ci-maintenance` |
-| default protected branch or protected tag | production | `platform-ci-production` |
-| any other protected branch | environment | `platform-ci-environment` |
-| merge request or unprotected branch | review | `platform-ci-review` |
+| protected schedule | maintenance | `platform-ci` |
+| default protected branch or protected tag | production | `platform-ci` |
+| any other protected branch | environment | `platform-ci` |
+| merge request or unprotected branch | review | `platform-ci` |
 
 All CI PriorityClasses are negative and use `preemptionPolicy: Never`.
 Platform and application classes are positive, so services reclaim worker
