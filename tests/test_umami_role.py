@@ -137,8 +137,8 @@ def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
         umami_websites=[
             {
                 "id": "00000000-0000-4000-8000-000000000001",
-                "name": "UNO",
-                "domain": "uno.example.com",
+                    "name": "Example application",
+                    "domain": "app.example.com",
             }
         ],
     )

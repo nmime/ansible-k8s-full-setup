@@ -133,8 +133,20 @@ def test_public_gateway_supports_additional_project_certificates():
     assert defaults["gateway_extra_certificates"] == []
     assert defaults["gateway_https_hostname"] == ""
     assert defaults["gateway_extra_https_listeners"] == []
-    assert defaults["gateway_http_allowed_routes"] == {"namespaces": {"from": "All"}}
-    assert defaults["gateway_https_allowed_routes"] == {"namespaces": {"from": "All"}}
+    expected_http_allowed_routes = {
+        "namespaces": {
+            "from": "Selector",
+            "selector": {
+                "matchLabels": {
+                    "gateway.platform.example.com/http-route": "true",
+                }
+            },
+        }
+    }
+    assert defaults["gateway_http_allowed_routes"] == expected_http_allowed_routes
+    assert defaults["gateway_https_allowed_routes"] == {
+        "namespaces": {"from": "All"}
+    }
     assert "kubernetes.gateway" in normalize
     assert "extra_certificate_refs" in normalize
     assert "extra_certificates" in normalize

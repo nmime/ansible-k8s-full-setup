@@ -1557,23 +1557,10 @@
         name: vault-backend
       spec:
         # ClusterSecretStore access is explicitly scoped to workloads that use
-        # platform-managed Vault credentials. Keep edge aligned with the other
-        # fun-games environments; ExternalSecrets cannot read Vault otherwise.
+        # platform-managed Vault credentials. Deployment repositories extend
+        # this base list with their environment namespaces.
         conditions:
-          - namespaces:
-              - agents
-              - analytics
-              - fun-games-edge
-              - fun-games-preproduction
-              - fun-games-production
-              - nx-cache
-              - dadya-preproduction
-              - dadya-production
-              - steel-production
-              - steel-preproduction
-              - social-agents-production
-              - social-agents-preproduction
-              - social-agents-edge
+          - namespaces: "{{ secrets.external_secret_namespaces | default(['agents', 'analytics', 'nx-cache']) }}"
         provider:
           vault:
             server: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault.{{ vault_ns }}.svc.cluster.local:8200"

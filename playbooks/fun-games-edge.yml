@@ -1,9 +1,0 @@
----
-- name: Audit, canary, cut over, or roll back the Fun Games edge
-  hosts: fun_games_edge
-  become: true
-  gather_facts: true
-  serial: 1
-  any_errors_fatal: true
-  roles:
-    - role: fun-games-edge-proxy

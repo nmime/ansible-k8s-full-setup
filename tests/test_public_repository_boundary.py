@@ -9,6 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FORBIDDEN_LITERALS = (
     "n0xeid",
+    "dadya",
+    "durak",
+    "fun-games",
+    "fun_games",
+    "social-agents",
+    "social_agents",
     "funfiesta.games",
     "git.n0xeid.xyz",
     "vault.n0xeid.xyz",

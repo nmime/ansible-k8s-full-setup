@@ -356,16 +356,9 @@ workload_priority_platform_namespaces:
   - velero
 workload_priority_production_namespaces:
   - agents
-  - dadya-production
-  - fun-games-production
   - production
-  - social-agents-production
 workload_priority_environment_namespaces:
   - analytics
-  - dadya-preproduction
-  - fun-games-preproduction
-  - social-agents-edge
-  - social-agents-preproduction
   - umami
 workload_priority_review_namespaces: []
 workload_priority_controller_overrides:

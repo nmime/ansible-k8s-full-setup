@@ -108,7 +108,7 @@ def test_postgresql_extra_users_publish_tls_connection_secrets():
     assert "argocd.argoproj.io/compare-options: IgnoreExtraneous" in databases
 
 
-def test_medium_optimized_declares_scoped_application_database_users():
+def test_medium_optimized_declares_scoped_base_database_users():
     profile = yaml.safe_load(
         (ROOT / "platform-orchestrator/profiles/medium-optimized.yaml").read_text()
     )
@@ -121,27 +121,10 @@ def test_medium_optimized_declares_scoped_application_database_users():
         item["operator"]["name"]: item
         for item in postgresql["extra_users"]
     }
-    assert set(users) == {
-        "metabase",
-        "dadya-prod",
-        "dadya-pp",
-        "social-agents-owner",
-        "social-agents-production-owner",
-        "social-agents-preproduction-owner",
-    }
-    assert users["social-agents-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
-    assert users["social-agents-production-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
-    assert users["social-agents-preproduction-owner"]["operator"]["options"] == "BYPASSRLS CREATEROLE"
+    assert set(users) == {"metabase"}
     assert {
         item["target_namespace"] for item in users.values()
-    } == {
-        "analytics",
-        "dadya-production",
-        "dadya-preproduction",
-        "agents",
-        "social-agents-production",
-        "social-agents-preproduction",
-    }
+    } == {"analytics"}
     for item in users.values():
         assert "target_namespace" not in item["operator"]
         assert "secret_name" not in item["operator"]

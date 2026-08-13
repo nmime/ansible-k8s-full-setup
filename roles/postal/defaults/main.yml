@@ -69,11 +69,7 @@ postal_smtp_client_names: >-
       'argocd',
       'gitlab',
       'grafana',
-      'metabase',
-      'fun-uno-preproduction',
-      'fun-durak-preproduction',
-      'fun-uno-production',
-      'fun-durak-production'
+      'metabase'
     ])
   }}
 postal_smtp_client_namespaces: >-
@@ -84,9 +80,7 @@ postal_smtp_client_namespaces: >-
       'gitlab',
       'monitoring',
       'umami',
-      'glitchtip',
-      'fun-games-production',
-      'fun-games-preproduction'
+      'glitchtip'
     ])
   }}
 postal_worker_index: "{{ postal.worker_index | default(0) | int }}"

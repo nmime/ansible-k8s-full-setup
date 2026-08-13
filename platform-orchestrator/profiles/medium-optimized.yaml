@@ -174,10 +174,6 @@ storage:
     dragonfly/df-dragonfly-0: dragonfly-shared-0
     gitlab/repo-data-gitlab-gitaly-0: gitlab-gitaly-0
     postal/data-postal-mariadb-0: postal-mariadb-0
-    fun-games-preproduction/df-fun-games-cache-0: fun-preprod-cache-0
-    fun-games-preproduction/df-fun-games-cache-1: fun-preprod-cache-1
-    fun-games-production/df-fun-games-cache-0: fun-production-cache-0
-    fun-games-production/df-fun-games-cache-1: fun-production-cache-1
 
 # ---------------------------------------------
 # Secrets
@@ -214,56 +210,11 @@ databases:
           grantPublicSchemaAccess: true
         target_namespace: analytics
         secret_name: metabase-postgresql
-      - operator:
-          name: dadya-prod
-          databases: [dadya_prod]
-          grantPublicSchemaAccess: true
-        target_namespace: dadya-production
-        secret_name: dadya-postgresql
-      - operator:
-          name: dadya-pp
-          databases: [dadya_pp]
-          grantPublicSchemaAccess: true
-        target_namespace: dadya-preproduction
-        secret_name: dadya-postgresql
-      - operator:
-          name: social-agents-owner
-          databases: [social_agents]
-          # Used only by the one-shot migration and role-bootstrap hooks. The
-          # runtime API and worker use separate restricted login roles.
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: agents
-        secret_name: social-agents-owner-postgresql
-      - operator:
-          name: social-agents-production-owner
-          databases: [social_agents_production]
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: social-agents-production
-        secret_name: social-agents-owner-postgresql
-      - operator:
-          name: social-agents-preproduction-owner
-          databases: [social_agents_preproduction]
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: social-agents-preproduction
-        secret_name: social-agents-owner-postgresql
-      - operator:
-          name: social-agents-edge-owner
-          databases: [social_agents_edge]
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: social-agents-edge
-        secret_name: social-agents-owner-postgresql
   mongodb:
     enabled: false
     service_alias: platform-mongo
-    # Publish the operator CA anywhere the fun-games Helm values enable mongoTls.
-    tls_consumer_namespaces:
-      - fun-games-edge
-      - fun-games-preproduction
-      - fun-games-production
+    # Deployment repositories add namespaces whose workloads consume the CA.
+    tls_consumer_namespaces: []
     replicas: 3
     storage_size: 20Gi
     data_storage_class: platform-local
