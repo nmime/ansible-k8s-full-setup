@@ -4,16 +4,16 @@
     _workload_priority_namespace_map: >-
       {{
         dict(workload_priority_platform_namespaces |
-             zip(['n0xeid-platform-critical'] *
+             zip(['platform-platform-critical'] *
                  (workload_priority_platform_namespaces | length))) |
         combine(dict(workload_priority_production_namespaces |
-                     zip(['n0xeid-production'] *
+                     zip(['platform-production'] *
                          (workload_priority_production_namespaces | length)))) |
         combine(dict(workload_priority_environment_namespaces |
-                     zip(['n0xeid-preproduction'] *
+                     zip(['platform-preproduction'] *
                          (workload_priority_environment_namespaces | length)))) |
         combine(dict(workload_priority_review_namespaces |
-                     zip(['n0xeid-preproduction'] *
+                     zip(['platform-preproduction'] *
                          (workload_priority_review_namespaces | length))))
       }}
 
@@ -26,14 +26,14 @@
       metadata:
         name: '{{ item.key }}'
         labels:
-          n0xeid.xyz/environment-tier: >-
+          platform.example.com/environment-tier: >-
             {{
-              'platform' if item.value == 'n0xeid-platform-critical'
-              else 'production' if item.value == 'n0xeid-production'
-              else 'environment' if item.value == 'n0xeid-preproduction'
+              'platform' if item.value == 'platform-platform-critical'
+              else 'production' if item.value == 'platform-production'
+              else 'environment' if item.value == 'platform-preproduction'
               else 'review'
             }}
-          n0xeid.xyz/priority-class: '{{ item.value }}'
+          platform.example.com/priority-class: '{{ item.value }}'
   loop: '{{ _workload_priority_namespace_map | dict2items }}'
   loop_control:
     label: '{{ item.key }} -> {{ item.value }}'

@@ -21,7 +21,7 @@ metadata:
   namespace: gitlab-ci-cleanup
   labels:
     app.kubernetes.io/part-of: gitlab-runner-hygiene
-    workload.n0xeid.xyz/component: ci-cleanup
+    workload.platform.example.com/component: ci-cleanup
 spec:
   schedule: "30 2 * * *"
   timeZone: "UTC"
@@ -36,16 +36,16 @@ spec:
       template:
         metadata:
           labels:
-            workload.n0xeid.xyz/component: ci-cleanup
+            workload.platform.example.com/component: ci-cleanup
         spec:
           restartPolicy: Never
-          priorityClassName: n0xeid-ci
+          priorityClassName: platform-ci
           tolerations:
-            - key: workload.n0xeid.xyz/ci-build
+            - key: workload.platform.example.com/ci-build
               operator: Equal
               value: "true"
               effect: NoSchedule
-            - key: workload.n0xeid.xyz/ci-docker
+            - key: workload.platform.example.com/ci-docker
               operator: Equal
               value: "true"
               effect: NoSchedule
@@ -54,7 +54,7 @@ spec:
               requiredDuringSchedulingIgnoredDuringExecution:
                 nodeSelectorTerms:
                   - matchExpressions:
-                      - key: workload.n0xeid.xyz/ci-general
+                      - key: workload.platform.example.com/ci-general
                         operator: In
                         values: ["true"]
           containers:
@@ -105,7 +105,7 @@ metadata:
   namespace: gitlab-ci-cleanup
   labels:
     app.kubernetes.io/part-of: gitlab-runner-hygiene
-    workload.n0xeid.xyz/component: ci-cleanup
+    workload.platform.example.com/component: ci-cleanup
 spec:
   schedule: "0 3 * * 0"
   timeZone: "UTC"
@@ -120,16 +120,16 @@ spec:
       template:
         metadata:
           labels:
-            workload.n0xeid.xyz/component: ci-cleanup
+            workload.platform.example.com/component: ci-cleanup
         spec:
           restartPolicy: Never
-          priorityClassName: n0xeid-ci
+          priorityClassName: platform-ci
           tolerations:
-            - key: workload.n0xeid.xyz/ci-build
+            - key: workload.platform.example.com/ci-build
               operator: Equal
               value: "true"
               effect: NoSchedule
-            - key: workload.n0xeid.xyz/ci-docker
+            - key: workload.platform.example.com/ci-docker
               operator: Equal
               value: "true"
               effect: NoSchedule
@@ -138,7 +138,7 @@ spec:
               requiredDuringSchedulingIgnoredDuringExecution:
                 nodeSelectorTerms:
                   - matchExpressions:
-                      - key: workload.n0xeid.xyz/ci-general
+                      - key: workload.platform.example.com/ci-general
                         operator: In
                         values: ["true"]
           containers:

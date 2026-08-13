@@ -1,12 +1,12 @@
 [Unit]
-Description=n0xeid egress gateway private health endpoint
-After=network-online.target n0xeid-egress-nat.service
+Description=platform egress gateway private health endpoint
+After=network-online.target platform-egress-nat.service
 Wants=network-online.target
-Requires=n0xeid-egress-nat.service
+Requires=platform-egress-nat.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/sbin/n0xeid-egress-health
+ExecStart=/usr/local/sbin/platform-egress-health
 Restart=always
 RestartSec=2
 DynamicUser=yes

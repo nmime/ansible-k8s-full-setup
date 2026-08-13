@@ -1,7 +1,7 @@
 # RUNNERS-DYN — image-builder pool (dynamic kubernetes executor, privileged buildkit)
 # ns gitlab-image-builds (PSS privileged) | tags [image-builder, docker] | concurrency 2 | req 1/1Gi | lim 4/8Gi
 [[runners]]
-  clone_url = "https://git.n0xeid.xyz"
+  clone_url = "https://git.platform.example.com"
   # Dynamic pool: 2 concurrent job pods max, bound by image-builder-budget
   # ResourceQuota (pods=12, cpu=16, mem=32Gi).
   request_concurrency = 2
@@ -32,8 +32,8 @@
     service_account = "ci-job-sa"
     # Image builds must run on the dedicated docker-capable CI worker (worker-5,
     # tainted ci-build) so they never starve general jobs.
-    node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
-    node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+    node_selector = { "workload.platform.example.com/ci-build" = "true" }
+    node_tolerations = { "workload.platform.example.com/ci-build=true" = "NoSchedule" }
     privileged = false
     allow_privilege_escalation = false
     cap_drop = ["ALL"]
@@ -54,9 +54,9 @@
     helper_ephemeral_storage_request = "1Gi"
     helper_ephemeral_storage_limit = "4Gi"
     active_deadline_seconds = 7200
-    priority_class_name = "n0xeid-ci"
-    helper_priority_class_name = "n0xeid-ci"
-    service_priority_class_name = "n0xeid-ci"
+    priority_class_name = "platform-ci"
+    helper_priority_class_name = "platform-ci"
+    service_priority_class_name = "platform-ci"
     pod_annotations_overwrite_allowed = ".*"
     [runners.kubernetes.pod_security_context]
       [runners.kubernetes.pod_security_context.seccomp_profile]
@@ -66,11 +66,11 @@
       [runners.kubernetes.build_container_security_context.seccomp_profile]
         type = "Unconfined"
     [runners.kubernetes.pod_labels]
-      "workload.n0xeid.xyz/class" = "protected-image-build-job"
+      "workload.platform.example.com/class" = "protected-image-build-job"
     [runners.kubernetes.affinity]
       [runners.kubernetes.affinity.pod_anti_affinity]
         [[runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution]]
           weight = 100
           [runners.kubernetes.affinity.pod_anti_affinity.preferred_during_scheduling_ignored_during_execution.pod_affinity_term]
             topology_key = "kubernetes.io/hostname"
-            label_selector = { "workload.n0xeid.xyz/class" = "protected-image-build-job" }
+            label_selector = { "workload.platform.example.com/class" = "protected-image-build-job" }

@@ -2,21 +2,13 @@
 
 Every document in this directory with a one-line purpose.
 
-## Architecture and mapping
-
-| Document | Purpose |
-|---|---|
-| [infrastructure-map.md](infrastructure-map.md) | Live infrastructure map: network topology, node layout, Gateway/HTTPRoute map, storage, and traffic-flow diagrams. |
-| [gitlab-repos-map.md](gitlab-repos-map.md) | GitLab group tree, all projects, source-of-truth repos, legacy/duplicate markers, and runner routing map. |
-
 ## Getting started
 
 | Document | Purpose |
 |---|---|
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Step-by-step platform provisioning and profile selection guide. |
-| [ACCESS_AND_CREDENTIALS.md](ACCESS_AND_CREDENTIALS.md) | How node, cluster, and service credentials are generated and accessed. |
 | [TECHNOLOGY_CATALOG.md](TECHNOLOGY_CATALOG.md) | Exhaustive selector table, version matrix, and per-component description. |
-| [RESOURCE_OWNERSHIP_MAP.md](RESOURCE_OWNERSHIP_MAP.md) | Which component owns which Kubernetes namespace, chart, or resource. |
+| [PUBLIC_REPOSITORY_BOUNDARY.md](PUBLIC_REPOSITORY_BOUNDARY.md) | Contract separating reusable public code from private deployment state. |
 
 ## Operations
 
@@ -36,7 +28,6 @@ Every document in this directory with a one-line purpose.
 | [CDN_ROUTING_MODES.md](CDN_ROUTING_MODES.md) | Edge CDN routing mode reference. |
 | [CONFIGURE_CDN_FOR_FRONTEND.md](CONFIGURE_CDN_FOR_FRONTEND.md) | How to configure the CDN for a frontend application. |
 | [EDGE_CDN_USAGE_GUIDE.md](EDGE_CDN_USAGE_GUIDE.md) | Operational guide for the multi-region edge/Gcore CDN workflow. |
-| [FUN_GAMES_EDGE_PROXY.md](FUN_GAMES_EDGE_PROXY.md) | Fun-Games edge proxy design and configuration. |
 
 ## Security and compliance
 
@@ -47,7 +38,6 @@ Every document in this directory with a one-line purpose.
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security audit findings and remediation status. |
 | [HIPAA_COMPLIANCE.md](HIPAA_COMPLIANCE.md) | HIPAA-oriented hardening scope and mapping. |
 | [VAULT_SECRET_GOVERNANCE.md](VAULT_SECRET_GOVERNANCE.md) | Vault deployment, External Secrets Operator integration, and secret lifecycle. |
-| [EAST_WEST_TLS_MIGRATION.md](EAST_WEST_TLS_MIGRATION.md) | Plan for migrating pod-to-pod traffic to mutual TLS. |
 
 ## Observability
 
@@ -79,15 +69,3 @@ Every document in this directory with a one-line purpose.
 | [GITLAB_UPGRADE_PLAN.md](GITLAB_UPGRADE_PLAN.md) | GitLab chart version upgrade path and risk assessment. |
 | [PG_OPERATOR_UPGRADE_PLAN.md](PG_OPERATOR_UPGRADE_PLAN.md) | Percona PostgreSQL operator upgrade plan. |
 | [VAULT_UPGRADE_PLAN.md](VAULT_UPGRADE_PLAN.md) | Vault chart/version upgrade plan. |
-
-## Historical reports
-
-| Document | Purpose |
-|---|---|
-| [FIVE_TIER_LIVE_TEST_2026-07-21.md](FIVE_TIER_LIVE_TEST_2026-07-21.md) | Five-profile live deployment test report (2026-07-21). |
-
-## Meta
-
-| Document | Purpose |
-|---|---|
-| [KNOWN-DEBT.md](KNOWN-DEBT.md) | Intentionally unfixed items with risk justification. |

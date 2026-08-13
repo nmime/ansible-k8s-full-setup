@@ -24,14 +24,14 @@ def test_split_dns_blocks_preserve_external_resolution_and_nodelocal_path():
     zones = module.validate_zones(
         [
             {
-                "zone": "n0xeid.xyz",
+                "zone": "platform.example.com",
                 "records": [
                     {
                         "address": "10.0.10.2",
                         "names": [
-                            "git.n0xeid.xyz",
-                            "argo.n0xeid.xyz",
-                            "metabase.n0xeid.xyz",
+                            "git.platform.example.com",
+                            "argo.platform.example.com",
+                            "metabase.platform.example.com",
                         ],
                     }
                 ],
@@ -39,11 +39,11 @@ def test_split_dns_blocks_preserve_external_resolution_and_nodelocal_path():
         ]
     )
     coredns = module.coredns_block(zones[0])
-    assert "10.0.10.2 git.n0xeid.xyz argo.n0xeid.xyz metabase.n0xeid.xyz" in coredns
+    assert "10.0.10.2 git.platform.example.com argo.platform.example.com metabase.platform.example.com" in coredns
     assert "fallthrough" in coredns
     assert "forward . 1.1.1.1 8.8.8.8" in coredns
     nodelocal = module.nodelocal_block(zones[0], "10.233.0.3", "169.254.25.10")
-    assert "n0xeid.xyz:53" in nodelocal
+    assert "platform.example.com:53" in nodelocal
     assert "forward . 10.233.0.3" in nodelocal
     assert "bind 169.254.25.10" in nodelocal
 
@@ -54,11 +54,11 @@ def test_split_dns_validation_rejects_names_outside_the_zone():
         module.validate_zones(
             [
                 {
-                    "zone": "n0xeid.xyz",
+                    "zone": "platform.example.com",
                     "records": [
                         {
                             "address": "10.0.10.2",
-                            "names": ["metabase.funfiesta.games"],
+                            "names": ["metabase.games.example.com"],
                         }
                     ],
                 }
@@ -114,8 +114,8 @@ def test_medium_optimized_declares_scoped_application_database_users():
     )
     postgresql = profile["databases"]["postgresql"]
     mongodb = profile["databases"]["mongodb"]
-    assert postgresql["service_alias"] == "n0xeid-pg"
-    assert mongodb["service_alias"] == "n0xeid-mongo"
+    assert postgresql["service_alias"] == "platform-pg"
+    assert mongodb["service_alias"] == "platform-mongo"
 
     users = {
         item["operator"]["name"]: item

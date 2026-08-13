@@ -642,13 +642,13 @@
       # isolation: Promtail remains a small, resource-bounded DaemonSet and
       # does not make the tainted nodes eligible for ordinary workloads.
       tolerations:
-      - key: workload.n0xeid.xyz/ci-docker
+      - key: workload.platform.example.com/ci-docker
         operator: Exists
         effect: NoSchedule
-      - key: workload.n0xeid.xyz/ci-build
+      - key: workload.platform.example.com/ci-build
         operator: Exists
         effect: NoSchedule
-      - key: workload.n0xeid.xyz/mail
+      - key: workload.platform.example.com/mail
         operator: Exists
         effect: NoSchedule
   register: _r_install_promtail_for_log_collection
@@ -835,7 +835,7 @@
           user: $__env{GF_SMTP_USER}
           password: $__env{GF_SMTP_PASSWORD}
           from_address: grafana@{{ domain }}
-          from_name: n0xeid Grafana
+          from_name: platform Grafana
           startTLS_policy: MandatoryStartTLS
       persistence:
         enabled: true
@@ -1542,14 +1542,14 @@
         - name: egress
           rules:
           - alert: HAEgressGatewayNotReady
-            expr: count(n0xeid_egress_ready == 1) < 2
+            expr: count(platform_egress_ready == 1) < 2
             for: 2m
             labels:
               severity: critical
             annotations:
               summary: Fewer than two HA egress gateways are ready
           - alert: HAEgressActiveGatewayCountInvalid
-            expr: sum(n0xeid_egress_active) != 1
+            expr: sum(platform_egress_active) != 1
             for: 1m
             labels:
               severity: critical
@@ -1839,7 +1839,7 @@
     values:
       imageTag: 9.4.3
       podAnnotations:
-        platform.n0xeid.xyz/logging-credentials-checksum: >-
+        platform.platform.example.com/logging-credentials-checksum: >-
           {{ _r_filebeat_source_secrets.results[1].resources[0].data.password
              | hash('sha256') }}
       daemonset:

@@ -1,7 +1,7 @@
 # RUNNERS-DYN — docker-host pool (dynamic kubernetes executor, privileged DinD)
 # ns gitlab-docker-builds (PSS privileged) | tags [docker-host, dind] | concurrency 2 | privileged dind
 [[runners]]
-  clone_url = "https://git.n0xeid.xyz"
+  clone_url = "https://git.platform.example.com"
   # Dynamic pool: 2 concurrent DinD job pods max, bound by docker-host-budget
   # ResourceQuota (pods=12, cpu=16, mem=32Gi).
   request_concurrency = 2
@@ -32,8 +32,8 @@
     service_account = "ci-job-sa"
     # The dind SERVICE container is privileged (see pod_spec patch below);
     # the build/helper containers stay restricted. Runs on worker-4 (ci-docker).
-    node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }
-    node_tolerations = { "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
+    node_selector = { "workload.platform.example.com/ci-docker" = "true" }
+    node_tolerations = { "workload.platform.example.com/ci-docker=true" = "NoSchedule" }
     privileged = false
     allow_privilege_escalation = false
     cap_drop = ["ALL"]
@@ -53,15 +53,15 @@
     helper_memory_request = "256Mi"
     helper_memory_limit = "512Mi"
     active_deadline_seconds = 7200
-    priority_class_name = "n0xeid-ci"
-    helper_priority_class_name = "n0xeid-ci"
-    service_priority_class_name = "n0xeid-ci"
+    priority_class_name = "platform-ci"
+    helper_priority_class_name = "platform-ci"
+    service_priority_class_name = "platform-ci"
     pod_annotations_overwrite_allowed = ".*"
     [runners.kubernetes.pod_security_context]
       [runners.kubernetes.pod_security_context.seccomp_profile]
         type = "RuntimeDefault"
     [runners.kubernetes.pod_labels]
-      "workload.n0xeid.xyz/class" = "protected-docker-smoke-job"
+      "workload.platform.example.com/class" = "protected-docker-smoke-job"
     [[runners.kubernetes.pod_spec]]
       name = "restrict-docker-smoke-build-and-helper"
       patch = '''
@@ -104,7 +104,7 @@
             requiredDuringSchedulingIgnoredDuringExecution:
               - labelSelector:
                   matchLabels:
-                    workload.n0xeid.xyz/class: ci-job
+                    workload.platform.example.com/class: ci-job
                 namespaces:
                   - "gitlab-ci-general"
                 topologyKey: kubernetes.io/hostname

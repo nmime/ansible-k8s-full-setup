@@ -10,7 +10,7 @@
         namespace: '{{ gitlab_docker_host_runner_namespace }}'
         labels:
           app.kubernetes.io/managed-by: ansible
-          workload.n0xeid.xyz/trust-boundary: protected-docker-smoke
+          workload.platform.example.com/trust-boundary: protected-docker-smoke
       spec:
         limits:
           - type: Container
@@ -185,7 +185,7 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+            workload.platform.example.com/class: protected-docker-smoke-manager
         egress:
           - toEntities: [kube-apiserver]
 
@@ -221,10 +221,10 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-job
+            workload.platform.example.com/class: protected-docker-smoke-job
         egress:
           - toFQDNs:
-              - {matchName: registry.n0xeid.xyz}
+              - {matchName: registry.platform.example.com}
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
@@ -234,7 +234,7 @@
               - {matchName: production.cloudfront.docker.com}
               # Protected component jobs publish their cacheable Nx result
               # through the authenticated public cache route.
-              - {matchName: nx-cache.n0xeid.xyz}
+              - {matchName: nx-cache.platform.example.com}
               - {matchPattern: '*.docker.com'}
               - {matchPattern: '*.docker.io'}
               - {matchPattern: '*.cloudflarestorage.com'}
@@ -268,7 +268,7 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+            workload.platform.example.com/class: protected-docker-smoke-manager
         ingress:
           - fromEndpoints:
               - matchLabels:

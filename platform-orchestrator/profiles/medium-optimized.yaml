@@ -65,7 +65,7 @@ network:
     enabled: true
     server_type: cpx22
 
-  # Billable opt-in. The live n0xeid profile enables this with a cross-location
+  # Billable opt-in. The live platform profile enables this with a cross-location
   # standby and activates it only after Floating-IP mail DNS is aligned.
   egress:
     enabled: false
@@ -170,7 +170,7 @@ storage:
     coroot/data-coroot-clickhouse-keeper-0: coroot-keeper-0
     coroot/data-coroot-clickhouse-keeper-1: coroot-keeper-1
     coroot/data-coroot-clickhouse-keeper-2: coroot-keeper-2
-    databases/n0xeid-medium-optimized-cx-pg-repo1: databases-pgbackrest-0
+    databases/platform-medium-optimized-cx-pg-repo1: databases-pgbackrest-0
     dragonfly/df-dragonfly-0: dragonfly-shared-0
     gitlab/repo-data-gitlab-gitaly-0: gitlab-gitaly-0
     postal/data-postal-mariadb-0: postal-mariadb-0
@@ -206,7 +206,7 @@ databases:
     data_storage_class: platform-local
     repo_storage_class: hcloud-volumes
     repo_storage_size: 10Gi
-    service_alias: n0xeid-pg
+    service_alias: platform-pg
     extra_users:
       - operator:
           name: metabase
@@ -258,7 +258,7 @@ databases:
         secret_name: social-agents-owner-postgresql
   mongodb:
     enabled: false
-    service_alias: n0xeid-mongo
+    service_alias: platform-mongo
     # Publish the operator CA anywhere the fun-games Helm values enable mongoTls.
     tls_consumer_namespaces:
       - fun-games-edge
@@ -282,7 +282,7 @@ databases:
 gitlab:
   enabled: true
   mode: light
-  # The canonical GitLab UI/API must be reachable at git.n0xeid.xyz for users,
+  # The canonical GitLab UI/API must be reachable at git.platform.example.com for users,
   # webhooks, and external repository mirrors. Registration remains disabled,
   # while authentication and project/group ACLs enforce access.
   public_webservice_enabled: true

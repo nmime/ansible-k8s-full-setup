@@ -682,7 +682,7 @@ requires the encrypted profile init file and `ANSIBLE_VAULT_PASSWORD_FILE`.
 - [GitLab 18.11 to 19.1 plan](docs/GITLAB_UPGRADE_PLAN.md)
 - [Validation and CI](docs/CI_AUTOMATION.md)
 - [Hetzner server catalog and capacity tariffs](docs/HETZNER_CAPACITY_TARIFFS.md)
-- [Five-profile live test report (2026-07-21)](docs/FIVE_TIER_LIVE_TEST_2026-07-21.md)
+- [Public/private repository boundary](docs/PUBLIC_REPOSITORY_BOUNDARY.md)
 
 ## Validation scope
 
@@ -697,16 +697,16 @@ This is the **base repository** (`platform/ansible-k8s-full-setup`). It holds
 the upstream Ansible roles, playbooks, and platform orchestrator that are
 shared across all deployments.
 
-The **cluster-truth repository** (`agents/argocd/ansible-k8s-full-setup-n0xeid`)
-forks this base and adds cluster-specific overrides, project manifests, and
-live state. It is the source Argo CD reads for the n0xeid cluster.
+Each deployment keeps a **private cluster-truth repository** that forks this
+base and adds cluster-specific overrides, project manifests, and live state.
+It is the source Argo CD reads for that deployment.
 
 ### How changes flow
 
 ```
 base repo (here)  ──merge──▶  cluster-truth repo  ──Argo CD──▶  live cluster
-platform/ansible-              agents/argocd/ansible-
-k8s-full-setup                 k8s-full-setup-n0xeid
+platform/ansible-              private cluster-truth
+k8s-full-setup                 repository
 ```
 
 1. Make changes here first (or in the cluster repo, then cherry-pick back).
@@ -716,7 +716,7 @@ k8s-full-setup                 k8s-full-setup-n0xeid
 | Repository | GitLab path | Role |
 |---|---|---|
 | Base | `platform/ansible-k8s-full-setup` | Shared upstream Ansible platform |
-| Cluster truth | `agents/argocd/ansible-k8s-full-setup-n0xeid` | n0xeid cluster overrides + Argo CD source |
+| Cluster truth | deployment-owned private repository | Cluster overrides + Argo CD source |
 
 ## License
 

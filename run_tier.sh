@@ -68,7 +68,7 @@ shift
 CAMPAIGN_ID="${CAMPAIGN_ID:-manual}"
 PROJECT="${PROJECT:-}"
 DOMAIN="${DOMAIN:-}"
-EMAIL="${EMAIL:-admin@n0xeid.xyz}"
+EMAIL="${EMAIL:-admin@platform.example.com}"
 LOCATION=""
 RUN_ROOT="${RUN_ROOT:-}"
 CONTROLLER_HOME="${CONTROLLER_HOME:-}"
@@ -137,7 +137,7 @@ if [[ "$CAPACITY_FAMILY" == cax && "$DRY_RUN" != true ]]; then
   die "cax is planning-only: the complete selected image set has no ARM64 production attestation"
 fi
 PROJECT="${PROJECT:-t5-${CAMPAIGN_ID}-${PROFILE}}"
-DOMAIN="${DOMAIN:-${PROFILE}.${BASE_DOMAIN:-n0xeid.xyz}}"
+DOMAIN="${DOMAIN:-${PROFILE}.${BASE_DOMAIN:-platform.example.com}}"
 DNS_ZONE="${DNS_ZONE:-${DOMAIN}}"
 RUN_ROOT="${RUN_ROOT:-/private/tmp/ansible-k8s-${CAMPAIGN_ID}/${PROFILE}}"
 CONTROLLER_HOME="${CONTROLLER_HOME:-${RUN_ROOT}/home}"

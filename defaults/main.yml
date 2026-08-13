@@ -59,7 +59,7 @@ local_storage_enabled: false
 local_storage_class: platform-local
 local_storage_path: /var/lib/platform-local-storage
 local_storage_min_free_gib_per_node: 40
-local_storage_cache_priority_class: n0xeid-ci
+local_storage_cache_priority_class: platform-ci
 ansible_ssh_strict_host_key_checking: true
 # Controller-local state must be unique when several clusters are reconciled
 # concurrently. Override the port per cluster and run each controller with an
@@ -148,7 +148,7 @@ gateway_http_allowed_routes:
     from: Selector
     selector:
       matchLabels:
-        gateway.n0xeid.xyz/http-route: 'true'
+        gateway.platform.example.com/http-route: 'true'
 gateway_https_allowed_routes: {namespaces: {from: All}}
 object_storage_create_external_routes: true
 object_storage_enabled: true
@@ -194,7 +194,7 @@ postgresql_replicas: "{{ 2 if resource_tier in ['medium', 'production'] else 1 }
 postgresql_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
 mongodb_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
-mongodb_priority_class_name: n0xeid-platform-critical
+mongodb_priority_class_name: platform-platform-critical
 
 # Operator-injected database containers need explicit reservations as well as
 # the primary database containers. The constrained envelope is deliberately
@@ -324,11 +324,11 @@ gitlab_docker_host_runner_worker_index: 0
 # k8s-cluster-management role BEFORE any workload chart references them.
 workload_priority_enabled: true
 workload_priority_classes:
-  - {name: n0xeid-platform-critical, value: 1000000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-production, value: 100000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-preproduction, value: 10000, preemption_policy: PreemptLowerPriority}
-  - {name: n0xeid-ci, value: -100, preemption_policy: Never}
-  - {name: n0xeid-batch, value: -200, preemption_policy: Never}
+  - {name: platform-platform-critical, value: 1000000, preemption_policy: PreemptLowerPriority}
+  - {name: platform-production, value: 100000, preemption_policy: PreemptLowerPriority}
+  - {name: platform-preproduction, value: 10000, preemption_policy: PreemptLowerPriority}
+  - {name: platform-ci, value: -100, preemption_policy: Never}
+  - {name: platform-batch, value: -200, preemption_policy: Never}
 workload_priority_platform_namespaces:
   - argocd
   - backups
@@ -369,7 +369,7 @@ workload_priority_environment_namespaces:
   - umami
 workload_priority_review_namespaces: []
 workload_priority_controller_overrides:
-  gitlab-ci-general/Deployment/gitlab-runner: n0xeid-ci
+  gitlab-ci-general/Deployment/gitlab-runner: platform-ci
 
 # Public SSH is fail-closed. Supply operator/VPN CIDRs through a profile,
 # extra-vars, or comma-separated HETZNER_SSH_SOURCE_IPS in the ignored .env.

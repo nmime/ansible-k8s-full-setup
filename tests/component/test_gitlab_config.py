@@ -236,10 +236,10 @@ class TestChart10ValuesStructure:
         assert "https://{{ gitlab_domain }}" not in values["runners"]["config"]
         assert values["metrics"] == {"enabled": True}
         assert values["serviceAccount"] == {"create": True}
-        assert "workload.n0xeid.xyz/ci-general" in values["nodeSelector"]
+        assert "workload.platform.example.com/ci-general" in values["nodeSelector"]
         assert "gitlab_runner_worker_index" in values["nodeSelector"]
-        assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
-        assert "workload.n0xeid.xyz/ci-docker" in values["tolerations"]
+        assert "workload.platform.example.com/ci-build" in values["tolerations"]
+        assert "workload.platform.example.com/ci-docker" in values["tolerations"]
         assert values["runners"]["tags"] == "kubernetes,k8s"
         assert (
             "request_concurrency = {{ [gitlab_runner_concurrent | int, 2] | max }}"
@@ -325,7 +325,7 @@ class TestChart10ValuesStructure:
         assert kubernetes["helper_memory_request"] == "256Mi"
         assert kubernetes["service_memory_request"] == "512Mi"
         assert kubernetes["pod_labels"] == {
-            "workload.n0xeid.xyz/class": "ci-job"
+            "workload.platform.example.com/class": "ci-job"
         }
 
         compact_rendered = Environment().from_string(
@@ -394,11 +394,11 @@ class TestChart10ValuesStructure:
         assert pooled_runner["cache_dir"] == "/tmp/cache"
         assert pooled_kubernetes["namespace"] == "gitlab-ci-general"
         assert pooled_kubernetes["node_selector"] == {
-            "workload.n0xeid.xyz/ci-general": "true"
+            "workload.platform.example.com/ci-general": "true"
         }
         assert pooled_kubernetes["node_tolerations"] == {
-            "workload.n0xeid.xyz/ci-build=true": "NoSchedule",
-            "workload.n0xeid.xyz/ci-docker=true": "NoSchedule",
+            "workload.platform.example.com/ci-build=true": "NoSchedule",
+            "workload.platform.example.com/ci-docker=true": "NoSchedule",
         }
         assert pooled_kubernetes["cpu_request"] == "750m"
         assert pooled_kubernetes["cpu_limit"] == "3"
@@ -416,7 +416,7 @@ class TestChart10ValuesStructure:
             {
                 "labelSelector": {
                     "matchLabels": {
-                        "workload.n0xeid.xyz/class": "protected-docker-smoke-job"
+                        "workload.platform.example.com/class": "protected-docker-smoke-job"
                     }
                 },
                 "namespaces": ["gitlab-docker-builds"],
@@ -432,7 +432,7 @@ class TestChart10ValuesStructure:
                 "nodeAffinityPolicy": "Honor",
                 "nodeTaintsPolicy": "Honor",
                 "labelSelector": {
-                    "matchLabels": {"workload.n0xeid.xyz/class": "ci-job"}
+                    "matchLabels": {"workload.platform.example.com/class": "ci-job"}
                 },
             }
         ]
@@ -523,11 +523,11 @@ class TestChart10ValuesStructure:
         assert 'cap_drop = ["ALL"]' in install
         assert "automount_service_account_token = false" in install
         assert (
-            'node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }'
+            'node_selector = { "workload.platform.example.com/ci-general" = "true" }'
             in install
         )
-        assert '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule"' in install
-        assert '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' in install
+        assert '"workload.platform.example.com/ci-build=true" = "NoSchedule"' in install
+        assert '"workload.platform.example.com/ci-docker=true" = "NoSchedule"' in install
         assert "cleanup_grace_period_seconds" in install
         assert "pod_termination_grace_period_seconds" in install
         assert "cleanup_resources_timeout" in install
@@ -556,11 +556,11 @@ class TestChart10ValuesStructure:
         assert "[runners.kubernetes.build_container_resources]" not in install
         assert "[runners.kubernetes.service_container_resources]" not in install
         assert "[runners.kubernetes.helper_container_resources]" not in install
-        assert '"workload.n0xeid.xyz/class" = "ci-job"' in install
+        assert '"workload.platform.example.com/class" = "ci-job"' in install
         assert 'name = "spread-ci-jobs-across-workers"' in install
         assert "minDomains: 3" not in install
         assert "whenUnsatisfiable: ScheduleAnyway" in install
-        assert "workload.n0xeid.xyz/class: ci-job" in install
+        assert "workload.platform.example.com/class: ci-job" in install
         assert 'patch_type = "strategic"' in install
         assert "gitlab_runner_token is defined" not in install
         assert "gitlab_runner_token != ''" not in install
@@ -585,7 +585,7 @@ class TestChart10ValuesStructure:
         migration = self.content.split(
             "- name: Check for active jobs on the legacy general Runner", 1
         )[1].split("- name: Remove legacy invalid Cilium default-deny", 1)[0]
-        assert "workload.n0xeid.xyz/class=ci-job" in migration
+        assert "workload.platform.example.com/class=ci-job" in migration
         assert "status.phase!=Succeeded" in migration
         assert "status.phase!=Failed" in migration
         assert "Refuse to interrupt active jobs" in migration
@@ -623,10 +623,10 @@ class TestChart10ValuesStructure:
             == "Remove stale general Runner pool labels from all other nodes"
         )
         assert build_discovery["kubernetes.core.k8s_info"]["label_selectors"] == [
-            "workload.n0xeid.xyz/ci-build=true"
+            "workload.platform.example.com/ci-build=true"
         ]
         assert docker_discovery["kubernetes.core.k8s_info"]["label_selectors"] == [
-            "workload.n0xeid.xyz/ci-docker=true"
+            "workload.platform.example.com/ci-docker=true"
         ]
         assert "metadata.name !=" in " ".join(
             pool_gate["ansible.builtin.assert"]["that"]
@@ -634,10 +634,10 @@ class TestChart10ValuesStructure:
         assert pool_gate["ansible.builtin.assert"]["quiet"] is True
         assert pool_reconcile["kubernetes.core.k8s"]["definition"]["metadata"][
             "labels"
-        ]["workload.n0xeid.xyz/ci-general"] == "true"
+        ]["workload.platform.example.com/ci-general"] == "true"
         assert stale_reconcile["kubernetes.core.k8s"]["definition"]["metadata"][
             "labels"
-        ]["workload.n0xeid.xyz/ci-general"] is None
+        ]["workload.platform.example.com/ci-general"] is None
         assert "not in _gitlab_general_pool_node_names" in " ".join(
             stale_reconcile["when"]
         )
@@ -742,7 +742,7 @@ class TestChart10ValuesStructure:
         }
         assert values["terminationGracePeriodSeconds"] == 3600
         assert values["shutdown_timeout"] == 3300
-        manager_label = "workload.n0xeid.xyz/component"
+        manager_label = "workload.platform.example.com/component"
         assert values["podLabels"][manager_label] == "gitlab-runner-manager"
         anti_affinity = values["affinity"]["podAntiAffinity"]
         assert "requiredDuringSchedulingIgnoredDuringExecution" not in anti_affinity
@@ -781,9 +781,9 @@ class TestChart10ValuesStructure:
         assert "spec.replicas | int) == 2" in assertions
         assert "maxSurge" in assertions
         assert "maxUnavailable" in assertions
-        assert "workload.n0xeid.xyz/ci-general" in assertions
-        assert "workload.n0xeid.xyz/ci-build" in assertions
-        assert "workload.n0xeid.xyz/ci-docker" in assertions
+        assert "workload.platform.example.com/ci-general" in assertions
+        assert "workload.platform.example.com/ci-build" in assertions
+        assert "workload.platform.example.com/ci-docker" in assertions
         assert "_gitlab_general_pool_node_names" in assertions
         assert "limit = 1" in assertions
         assert pool_gate["when"] == [
@@ -805,12 +805,12 @@ class TestChart10ValuesStructure:
 
         builder = read(IMAGE_BUILDER_TASKS_PATH)
         assert (
-            'node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }'
+            'node_selector = { "workload.platform.example.com/ci-build" = "true" }'
             in builder
         )
         assert (
             'node_tolerations = { '
-            '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }'
+            '"workload.platform.example.com/ci-build=true" = "NoSchedule" }'
             in builder
         )
         tasks = yaml.safe_load(builder)
@@ -822,8 +822,8 @@ class TestChart10ValuesStructure:
         )
         values = install["kubernetes.core.helm"]["values"]
         config = values["runners"]["config"]
-        assert "workload.n0xeid.xyz/ci-build" in values["nodeSelector"]
-        assert "workload.n0xeid.xyz/ci-build" in values["tolerations"]
+        assert "workload.platform.example.com/ci-build" in values["nodeSelector"]
+        assert "workload.platform.example.com/ci-build" in values["tolerations"]
         assert values["concurrent"] == (
             "{{ gitlab_image_builder_runner_concurrent | int }}"
         )
@@ -852,7 +852,7 @@ class TestChart10ValuesStructure:
         assert "allowPrivilegeEscalation: true" in config
         assert "- SETGID" in config
         assert "- SETUID" in config
-        assert 'workload.n0xeid.xyz/class" = "protected-image-build-job"' in config
+        assert 'workload.platform.example.com/class" = "protected-image-build-job"' in config
         assert "service_container_security_context" not in config
         assert "helper_container_security_context" not in config
         assert install["no_log"] is True
@@ -925,7 +925,7 @@ class TestChart10ValuesStructure:
             for item in fqdn_rule["toFQDNs"]
         }
         assert {
-            "registry.n0xeid.xyz",
+            "registry.platform.example.com",
             "registry-1.docker.io",
             "auth.docker.io",
             "production.cloudflare.docker.com",
@@ -973,7 +973,7 @@ class TestChart10ValuesStructure:
         )
         assert limit_range["metadata"]["labels"] == {
             "app.kubernetes.io/managed-by": "ansible",
-            "workload.n0xeid.xyz/trust-boundary": "protected-docker-smoke",
+            "workload.platform.example.com/trust-boundary": "protected-docker-smoke",
         }
         container_limits = limit_range["spec"]["limits"][0]
         assert container_limits["type"] == "Container"
@@ -1012,11 +1012,11 @@ class TestChart10ValuesStructure:
         values = install["kubernetes.core.helm"]["values"]
         config = values["runners"]["config"]
         assert values["nodeSelector"] == {
-            "workload.n0xeid.xyz/ci-docker": "true"
+            "workload.platform.example.com/ci-docker": "true"
         }
         assert values["tolerations"] == [
             {
-                "key": "workload.n0xeid.xyz/ci-docker",
+                "key": "workload.platform.example.com/ci-docker",
                 "operator": "Equal",
                 "value": "true",
                 "effect": "NoSchedule",
@@ -1049,12 +1049,12 @@ class TestChart10ValuesStructure:
             in config
         )
         assert (
-            'node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }'
+            'node_selector = { "workload.platform.example.com/ci-docker" = "true" }'
             in config
         )
         assert (
             'node_tolerations = { '
-            '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }'
+            '"workload.platform.example.com/ci-docker=true" = "NoSchedule" }'
             in config
         )
         assert "host_path" not in config
@@ -1135,11 +1135,11 @@ class TestChart10ValuesStructure:
             assert dns_egress["toPorts"][0]["rules"]["dns"] == [
                 {"matchPattern": "*"}
             ]
-        assert "workload.n0xeid.xyz/class: protected-docker-smoke-job" in network
+        assert "workload.platform.example.com/class: protected-docker-smoke-job" in network
         assert "port: '443'" in network
         assert "matchName: codeload.github.com" in network
         assert "matchName: production.cloudfront.docker.com" in network
-        assert "matchName: nx-cache.n0xeid.xyz" in network
+        assert "matchName: nx-cache.platform.example.com" in network
         assert "matchName: release-assets.githubusercontent.com" in network
         assert "matchName: unofficial-builds.nodejs.org" in network
         cache_policy = docker_policies[
@@ -1481,7 +1481,7 @@ class TestDefaultsTasksConsistency:
         assert "gitlab.backup_persistence_enabled | default(true)" in self.tasks_raw
         assert "enabled: '{{ gitlab_backup_persistence_enabled | bool }}'" in self.tasks_raw
         assert "name: gitlab-toolbox-backup-tmp" in self.tasks_raw
-        assert "platform.n0xeid.xyz/backup-scratch: 'true'" in self.tasks_raw
+        assert "platform.platform.example.com/backup-scratch: 'true'" in self.tasks_raw
         assert "state: patched" in self.tasks_raw
 
     @pytest.mark.component

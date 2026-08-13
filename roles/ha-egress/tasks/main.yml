@@ -405,7 +405,7 @@
 - name: Create controller staging directory
   ansible.builtin.tempfile:
     state: directory
-    prefix: n0xeid-egress-
+    prefix: platform-egress-
   register: ha_egress_stage
 
 - name: Build HA gateway inventory
@@ -425,7 +425,7 @@
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
       root@{{ item.public_ip }} \
-      "systemctl stop n0xeid-egress-watchdog.timer 2>/dev/null || true"
+      "systemctl stop platform-egress-watchdog.timer 2>/dev/null || true"
   args:
     executable: /bin/bash
   loop: "{{ ha_egress_gateways }}"
@@ -460,7 +460,7 @@
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
       root@{{ item.public_ip }} \
-      "systemctl start n0xeid-egress-watchdog.timer"
+      "systemctl start platform-egress-watchdog.timer"
   args:
     executable: /bin/bash
   loop: "{{ ha_egress_gateways }}"

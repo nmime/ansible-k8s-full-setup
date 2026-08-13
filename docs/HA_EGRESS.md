@@ -44,10 +44,10 @@ clients must retry.
 On either gateway:
 
 ```text
-sudo n0xeid-egressctl status
-sudo n0xeid-egressctl promote <provider-server-name>
-systemctl status n0xeid-egress-watchdog.timer
-journalctl -u n0xeid-egress-watchdog.service
+sudo platform-egressctl status
+sudo platform-egressctl promote <provider-server-name>
+systemctl status platform-egress-watchdog.timer
+journalctl -u platform-egress-watchdog.service
 ```
 
 `promote` refuses a target whose private readiness check or provider server

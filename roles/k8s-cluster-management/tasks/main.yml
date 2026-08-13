@@ -214,20 +214,20 @@
             access_ip: {{ ip }}
       {% if i == (dedicated_build_ci_worker_index | int) %}
             node_labels:
-              workload.n0xeid.xyz/ci-build: "true"
-              workload.n0xeid.xyz/ci-general: "true"
+              workload.platform.example.com/ci-build: "true"
+              workload.platform.example.com/ci-general: "true"
             node_taints:
-              - "workload.n0xeid.xyz/ci-build=true:NoSchedule"
+              - "workload.platform.example.com/ci-build=true:NoSchedule"
       {% elif i == (dedicated_docker_ci_worker_index | int) %}
             node_labels:
-              workload.n0xeid.xyz/ci-docker: "true"
+              workload.platform.example.com/ci-docker: "true"
             node_taints:
-              - "workload.n0xeid.xyz/ci-docker=true:NoSchedule"
+              - "workload.platform.example.com/ci-docker=true:NoSchedule"
       {% elif i == (dedicated_postal_worker_index | int) %}
             node_labels:
-              workload.n0xeid.xyz/mail: "true"
+              workload.platform.example.com/mail: "true"
             node_taints:
-              - "workload.n0xeid.xyz/mail=true:NoSchedule"
+              - "workload.platform.example.com/mail=true:NoSchedule"
       {% endif %}
       {% endfor %}
         children:
@@ -1340,12 +1340,12 @@
         name: '{{ item.name }}'
         labels:
           app.kubernetes.io/managed-by: ansible
-          scheduling.n0xeid.xyz/policy: shared-worker-pool
+          scheduling.platform.example.com/policy: shared-worker-pool
       value: '{{ item.value | int }}'
       globalDefault: false
       preemptionPolicy: '{{ item.preemption_policy }}'
       description: >-
-        Managed n0xeid workload class. Services outrank every CI class; CI
+        Managed platform workload class. Services outrank every CI class; CI
         classes never preempt running workloads.
   loop: '{{ workload_priority_classes }}'
   loop_control:
@@ -1409,8 +1409,8 @@
     kubectl get nodes -o json |
       jq -r '.items[]
         | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
-        | select(.metadata.labels["workload.n0xeid.xyz/ci-docker"] != "true")
-        | select(.metadata.labels["workload.n0xeid.xyz/ci-build"] != "true")
+        | select(.metadata.labels["workload.platform.example.com/ci-docker"] != "true")
+        | select(.metadata.labels["workload.platform.example.com/ci-build"] != "true")
         | .metadata.name' |
       sort
   args:
@@ -1514,9 +1514,9 @@
                 requiredDuringSchedulingIgnoredDuringExecution:
                   nodeSelectorTerms:
                     - matchExpressions:
-                        - key: workload.n0xeid.xyz/ci-docker
+                        - key: workload.platform.example.com/ci-docker
                           operator: DoesNotExist
-                        - key: workload.n0xeid.xyz/ci-build
+                        - key: workload.platform.example.com/ci-build
                           operator: DoesNotExist
             tolerations:
               - operator: Exists

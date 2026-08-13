@@ -53,7 +53,7 @@
         name: argocd
         labels:
           app.kubernetes.io/part-of: argocd
-          gateway.n0xeid.xyz/n0xeid-route: 'true'
+          gateway.platform.example.com/platform-route: 'true'
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
   register: _r_create_argocd_namespace

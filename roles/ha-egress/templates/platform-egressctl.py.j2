@@ -13,8 +13,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-CONFIG_PATH = Path("/etc/n0xeid-egress.json")
-LOCK_PATH = Path("/run/lock/n0xeid-egress.lock")
+CONFIG_PATH = Path("/etc/platform-egress.json")
+LOCK_PATH = Path("/run/lock/platform-egress.lock")
 
 
 class Controller:
@@ -192,5 +192,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:  # systemd records the complete reason without leaking the token.
-        print(f"n0xeid-egressctl: {exc}", file=sys.stderr)
+        print(f"platform-egressctl: {exc}", file=sys.stderr)
         raise SystemExit(1)

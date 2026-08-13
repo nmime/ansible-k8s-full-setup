@@ -117,7 +117,7 @@ the build and helper containers. Keep `concurrent_jobs: 1` for this runner.
 Set `gitlab.runner.dedicated_worker_index` to a different worker for ordinary
 Kubernetes-executor jobs and the protected rootless BuildKit runner. The
 playbook labels and taints that node with
-`workload.n0xeid.xyz/ci-build=true:NoSchedule`, excludes it from ingress and
+`workload.platform.example.com/ci-build=true:NoSchedule`, excludes it from ingress and
 the local-PV pool, and fails runner reconciliation unless exactly one matching
 node exists. Both runner classes receive the matching selector and toleration;
 application workloads receive neither.

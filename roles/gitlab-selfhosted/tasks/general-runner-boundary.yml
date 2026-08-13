@@ -9,7 +9,7 @@
         name: '{{ gitlab_runner_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
-          workload.n0xeid.xyz/trust-boundary: general-ci
+          workload.platform.example.com/trust-boundary: general-ci
           pod-security.kubernetes.io/enforce: restricted
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted
@@ -282,6 +282,6 @@
           - from:
               - namespaceSelector:
                   matchLabels:
-                    workload.n0xeid.xyz/trust-boundary: general-ci
+                    workload.platform.example.com/trust-boundary: general-ci
             ports:
               - {protocol: TCP, port: 8181}

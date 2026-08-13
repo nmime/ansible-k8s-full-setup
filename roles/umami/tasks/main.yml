@@ -29,7 +29,7 @@
         name: "{{ umami_ns }}"
         labels:
           app.kubernetes.io/part-of: umami
-          gateway.n0xeid.xyz/n0xeid-route: "true"
+          gateway.platform.example.com/platform-route: "true"
           pod-security.kubernetes.io/enforce: restricted
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted

@@ -138,7 +138,7 @@ def test_postal_components_have_health_and_spread_guards() -> None:
     assert "maxSurge: 0" in content
     assert 'maxUnavailable: "{{ 1 if item.replicas | int > 1 else 0 }}"' in content
     assert "postal_mail_node_label" in defaults
-    assert "workload.n0xeid.xyz/mail" in defaults
+    assert "workload.platform.example.com/mail" in defaults
     assert "{postal_mail_node_label: 'true'}" in content
     assert "'preferredDuringSchedulingIgnoredDuringExecution'" in content
     assert "Protect Postal data and serving components from voluntary eviction" in content
@@ -156,4 +156,4 @@ def test_postal_web_uses_the_public_gateway() -> None:
     assert "Remove the obsolete Postal admin-Gateway policy name" in content
     assert "Create separate Postal web and tracking HTTPRoutes" in content
     assert "{name: postal-track, hostname:" in content
-    assert 'gateway.n0xeid.xyz/n0xeid-route: "true"' in content
+    assert 'gateway.platform.example.com/platform-route: "true"' in content

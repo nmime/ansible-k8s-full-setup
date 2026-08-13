@@ -12,7 +12,7 @@
 #   image-builder  ns gitlab-image-builds privileged      tags [image-builder,docker] concurrency 2  req 1/1Gi     lim 4/8Gi
 #   docker-host    ns gitlab-docker-builds privileged dind tags [docker-host,dind]    concurrency 2  privileged
 #
-# Priority migration (graceful): the new PriorityClass n0xeid-ci (-100, Never) is
+# Priority migration (graceful): the new PriorityClass platform-ci (-100, Never) is
 # created FIRST (see platform scheduling role), every CI job pod is remapped to it,
 # then the legacy platform-ci / app-ci-high strategic patches are removed. CI can
 # never evict production (Never preemption) and always loses to prod under pressure.
@@ -36,7 +36,7 @@
         namespace: '{{ item }}'
         labels:
           app.kubernetes.io/part-of: gitlab-runner-hygiene
-          workload.n0xeid.xyz/component: ci-job-sa
+          workload.platform.example.com/component: ci-job-sa
       automountServiceAccountToken: false
   loop:
     - '{{ gitlab_runner_namespace }}'                 # gitlab-ci-general
@@ -109,7 +109,7 @@
           app.kubernetes.io/part-of: gitlab-runner-hygiene
       stringData:
         .dockerconfigjson: >-
-          {{ '{"auths":{"registry.n0xeid.xyz":{"username":"gitlab+deploy-token-139","password":"' ~
+          {{ '{"auths":{"registry.platform.example.com":{"username":"gitlab+deploy-token-139","password":"' ~
              gitlab_registry_pull_token ~ '","auth":"' ~
              (('gitlab+deploy-token-139:' ~ gitlab_registry_pull_token) | b64encode) ~
              '"}}}' }}
@@ -320,7 +320,7 @@
         namespace: gitlab-ci-cleanup
         labels:
           app.kubernetes.io/part-of: gitlab-runner-hygiene
-          workload.n0xeid.xyz/component: ci-cleanup
+          workload.platform.example.com/component: ci-cleanup
       spec:
         schedule: '*/15 * * * *'
         timeZone: UTC
@@ -335,11 +335,11 @@
             template:
               metadata:
                 labels:
-                  workload.n0xeid.xyz/component: ci-cleanup
+                  workload.platform.example.com/component: ci-cleanup
               spec:
                 restartPolicy: Never
                 serviceAccountName: ci-pod-sweeper
-                priorityClassName: n0xeid-batch
+                priorityClassName: platform-batch
                 containers:
                   - name: sweep
                     image: bitnami/kubectl:1.32
@@ -394,7 +394,7 @@
                       seccompProfile: {type: RuntimeDefault}
 
 # ---------------------------------------------------------------------------
-# 3. Priority remap — patch each runner ConfigMap so job pods use n0xeid-ci and
+# 3. Priority remap — patch each runner ConfigMap so job pods use platform-ci and
 #    drop the legacy platform-ci / app-ci-high baseline + strategic patches.
 #    The ConfigMaps are Helm-managed; we patch the config.template.toml data key
 #    only (the part that controls job-pod generation), leaving Helm able to
@@ -414,7 +414,7 @@
   register: _runners_dyn_general_cm
   changed_when: false
 
-- name: RUNNERS-DYN | Remap general-ci job pods to n0xeid-ci priority
+- name: RUNNERS-DYN | Remap general-ci job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
     kind: ConfigMap
@@ -425,9 +425,9 @@
       config.template.toml: >-
         {{
           (_runners_dyn_general_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
+            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
             | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
           )
         }}
@@ -442,7 +442,7 @@
   register: _runners_dyn_builder_cm
   changed_when: false
 
-- name: RUNNERS-DYN | Remap image-builder job pods to n0xeid-ci priority
+- name: RUNNERS-DYN | Remap image-builder job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
     kind: ConfigMap
@@ -453,9 +453,9 @@
       config.template.toml: >-
         {{
           (_runners_dyn_builder_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
+            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
             | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
           )
         }}
@@ -470,7 +470,7 @@
   register: _runners_dyn_docker_cm
   changed_when: false
 
-- name: RUNNERS-DYN | Remap docker-host job pods to n0xeid-ci priority
+- name: RUNNERS-DYN | Remap docker-host job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
     kind: ConfigMap
@@ -481,9 +481,9 @@
       config.template.toml: >-
         {{
           (_runners_dyn_docker_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
+            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
           )
         }}
   when: _runners_dyn_docker_cm.resources | length > 0
@@ -534,7 +534,7 @@
     timeout: 60
   loop:
     - id: 107
-      description: 'n0xeid-general-ci'
+      description: 'platform-general-ci'
       tags: ['general']
       run_untagged: false
     - id: 39

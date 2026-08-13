@@ -14,7 +14,7 @@
         name: '{{ gitlab_image_builder_runner_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
-          workload.n0xeid.xyz/trust-boundary: protected-image-builds
+          workload.platform.example.com/trust-boundary: protected-image-builds
           # Restricted/baseline reject an explicitly Unconfined build
           # container. Admission is privileged only in this namespace; the
           # concrete manager/helper/job security contexts below remain narrow.
@@ -233,7 +233,7 @@
         create: true
       nodeSelector: >-
         {{
-          {'workload.n0xeid.xyz/ci-build': 'true'}
+          {'workload.platform.example.com/ci-build': 'true'}
           if gitlab_runner_worker_index | default(0) | int > 0
           else {'node-role.kubernetes.io/worker': 'true'}
         }}
@@ -241,7 +241,7 @@
         {{
           [
             {
-              'key': 'workload.n0xeid.xyz/ci-build',
+              'key': 'workload.platform.example.com/ci-build',
               'operator': 'Equal',
               'value': 'true',
               'effect': 'NoSchedule'
@@ -274,8 +274,8 @@
               namespace = "{{ gitlab_image_builder_runner_namespace }}"
               image = "ubuntu:22.04"
           {% if gitlab_runner_worker_index | default(0) | int > 0 %}
-              node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
-              node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+              node_selector = { "workload.platform.example.com/ci-build" = "true" }
+              node_tolerations = { "workload.platform.example.com/ci-build=true" = "NoSchedule" }
           {% else %}
               node_selector = { "node-role.kubernetes.io/worker" = "true" }
           {% endif %}
@@ -303,7 +303,7 @@
                 [runners.kubernetes.build_container_security_context.seccomp_profile]
                   type = "Unconfined"
               [runners.kubernetes.pod_labels]
-                "workload.n0xeid.xyz/class" = "protected-image-build-job"
+                "workload.platform.example.com/class" = "protected-image-build-job"
               [[runners.kubernetes.pod_spec]]
                 name = "buildkit-build-container-only-security-exception"
                 patch = '''
@@ -326,7 +326,7 @@
         tags: image-build
         runUntagged: false
       podLabels:
-        workload.n0xeid.xyz/class: protected-image-build-manager
+        workload.platform.example.com/class: protected-image-build-manager
       podAnnotations:
         prometheus.io/scrape: 'true'
         prometheus.io/port: '9252'
@@ -377,7 +377,7 @@
       spec:
         selector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-image-build-manager
+            workload.platform.example.com/class: protected-image-build-manager
         podMetricsEndpoints:
           - port: metrics
             interval: 30s

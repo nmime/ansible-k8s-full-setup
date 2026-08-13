@@ -158,7 +158,7 @@
         labels:
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
-          gateway.n0xeid.xyz/n0xeid-route: "true"
+          gateway.platform.example.com/platform-route: "true"
   register: _r_postal_ns
   retries: 3
   delay: 10
