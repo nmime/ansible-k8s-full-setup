@@ -451,11 +451,11 @@
                     topologyKey: kubernetes.io/hostname
             resources:
               requests:
-                cpu: "{{ object_storage_filer_cpu_request | default('100m') }}"
-                memory: "{{ object_storage_filer_memory_request | default('256Mi') }}"
+                cpu: "{{ object_storage_volume_cpu_request | default('100m') }}"
+                memory: "{{ object_storage_volume_memory_request | default('256Mi') }}"
               limits:
-                cpu: "{{ object_storage_filer_cpu_limit | default('1') }}"
-                memory: "{{ object_storage_filer_memory_limit | default('1Gi') }}"
+                cpu: "{{ object_storage_volume_cpu_limit | default('1') }}"
+                memory: "{{ object_storage_volume_memory_limit | default('1Gi') }}"
             dataDirs:
               - name: data
                 type: persistentVolumeClaim

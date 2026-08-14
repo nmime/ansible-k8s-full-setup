@@ -133,7 +133,8 @@ def test_medium_optimized_filer_survives_large_multipart_backups():
         "object_storage_filer_memory_limit",
     ):
         assert variable in normalizer
-        assert object_storage.count(variable) >= 2
+        assert object_storage.count(variable) == 1
+        assert object_storage.count(variable.replace("filer", "volume")) == 1
 
 
 def test_storage_class_change_requires_full_target_capacity_and_replacement():
