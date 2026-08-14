@@ -105,6 +105,9 @@ def test_postgresql_extra_users_publish_tls_connection_secrets():
     assert "Configure PostgreSQL role search paths" in databases
     assert "ALTER ROLE" in databases
     assert "item.search_path" in databases
+    assert "Install declared PostgreSQL database extensions" in databases
+    assert "CREATE EXTENSION IF NOT EXISTS" in databases
+    assert "_pg_database_extensions" in databases
     assert "argocd.argoproj.io/compare-options: IgnoreExtraneous" in databases
 
 
