@@ -56,6 +56,8 @@
       {{ gitlab.runner.general_pool_enabled | default(false) | bool }}
     gitlab_runner_job_resources: >-
       {{ gitlab.runner.job_resources | default({}) }}
+    gitlab_runner_node_selector: >-
+      {{ gitlab.runner.node_selector | default({}) }}
     gitlab_runner_cleanup_grace_period_seconds: >-
       {{ gitlab.runner.cleanup_grace_period_seconds | default(5) }}
     gitlab_runner_pod_termination_grace_period_seconds: >-
@@ -2357,6 +2359,10 @@
           {% elif gitlab_runner_worker_index | default(0) | int > 0 %}
               node_selector = { "workload.platform.example.com/ci-build" = "true" }
               node_tolerations = { "workload.platform.example.com/ci-build=true" = "NoSchedule" }
+          {% elif gitlab_runner_node_selector.key | default('') | length > 0 %}
+              # A cluster profile may select a stable shared worker pool without
+              # embedding provider-specific labels in this public role.
+              node_selector = { "{{ gitlab_runner_node_selector.key }}" = "{{ gitlab_runner_node_selector.value }}" }
           {% else %}
               node_selector = { "node-role.kubernetes.io/worker" = "true" }
           {% endif %}
@@ -2370,14 +2376,20 @@
               cpu_limit = "{{ gitlab_runner_job_resources.cpu_limit | default(gitlab_runner_cpu_limit) }}"
               memory_request = "{{ gitlab_runner_job_resources.memory_request | default(gitlab_runner_memory_request) }}"
               memory_limit = "{{ gitlab_runner_job_resources.memory_limit | default(gitlab_runner_memory_limit) }}"
+              ephemeral_storage_request = "{{ gitlab_runner_job_resources.ephemeral_storage_request | default(gitlab_runner_ephemeral_storage_request) }}"
+              ephemeral_storage_limit = "{{ gitlab_runner_job_resources.ephemeral_storage_limit | default(gitlab_runner_ephemeral_storage_limit) }}"
               service_cpu_request = "{{ gitlab_runner_job_resources.service_cpu_request | default(gitlab_runner_service_cpu_request) }}"
               service_cpu_limit = "{{ gitlab_runner_job_resources.service_cpu_limit | default(gitlab_runner_service_cpu_limit) }}"
               service_memory_request = "{{ gitlab_runner_job_resources.service_memory_request | default(gitlab_runner_service_memory_request) }}"
               service_memory_limit = "{{ gitlab_runner_job_resources.service_memory_limit | default(gitlab_runner_service_memory_limit) }}"
+              service_ephemeral_storage_request = "{{ gitlab_runner_job_resources.service_ephemeral_storage_request | default(gitlab_runner_service_ephemeral_storage_request) }}"
+              service_ephemeral_storage_limit = "{{ gitlab_runner_job_resources.service_ephemeral_storage_limit | default(gitlab_runner_service_ephemeral_storage_limit) }}"
               helper_cpu_request = "{{ gitlab_runner_job_resources.helper_cpu_request | default(gitlab_runner_helper_cpu_request) }}"
               helper_cpu_limit = "{{ gitlab_runner_job_resources.helper_cpu_limit | default(gitlab_runner_helper_cpu_limit) }}"
               helper_memory_request = "{{ gitlab_runner_job_resources.helper_memory_request | default(gitlab_runner_helper_memory_request) }}"
               helper_memory_limit = "{{ gitlab_runner_job_resources.helper_memory_limit | default(gitlab_runner_helper_memory_limit) }}"
+              helper_ephemeral_storage_request = "{{ gitlab_runner_job_resources.helper_ephemeral_storage_request | default(gitlab_runner_helper_ephemeral_storage_request) }}"
+              helper_ephemeral_storage_limit = "{{ gitlab_runner_job_resources.helper_ephemeral_storage_limit | default(gitlab_runner_helper_ephemeral_storage_limit) }}"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"

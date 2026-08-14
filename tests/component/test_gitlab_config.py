@@ -299,18 +299,25 @@ class TestChart10ValuesStructure:
             gitlab_runner_pod_termination_grace_period_seconds=5,
             gitlab_runner_cleanup_resources_timeout="30s",
             gitlab_runner_job_resources={},
+            gitlab_runner_node_selector={},
             gitlab_runner_cpu_request="500m",
             gitlab_runner_cpu_limit="2000m",
             gitlab_runner_memory_request="1Gi",
             gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_ephemeral_storage_request="1Gi",
+            gitlab_runner_ephemeral_storage_limit="8Gi",
             gitlab_runner_service_cpu_request="200m",
             gitlab_runner_service_cpu_limit="1000m",
             gitlab_runner_service_memory_request="512Mi",
             gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_service_ephemeral_storage_request="256Mi",
+            gitlab_runner_service_ephemeral_storage_limit="4Gi",
             gitlab_runner_helper_cpu_request="100m",
             gitlab_runner_helper_cpu_limit="500m",
             gitlab_runner_helper_memory_request="256Mi",
             gitlab_runner_helper_memory_limit="512Mi",
+            gitlab_runner_helper_ephemeral_storage_request="256Mi",
+            gitlab_runner_helper_ephemeral_storage_limit="4Gi",
         )
         runner = tomllib.loads(rendered)["runners"][0]
         kubernetes = runner["kubernetes"]
@@ -322,8 +329,12 @@ class TestChart10ValuesStructure:
         }
         assert kubernetes["cpu_request"] == "500m"
         assert kubernetes["memory_request"] == "1Gi"
+        assert kubernetes["ephemeral_storage_request"] == "1Gi"
+        assert kubernetes["ephemeral_storage_limit"] == "8Gi"
         assert kubernetes["helper_memory_request"] == "256Mi"
+        assert kubernetes["helper_ephemeral_storage_request"] == "256Mi"
         assert kubernetes["service_memory_request"] == "512Mi"
+        assert kubernetes["service_ephemeral_storage_request"] == "256Mi"
         assert kubernetes["pod_labels"] == {
             "workload.platform.example.com/class": "ci-job"
         }
@@ -339,22 +350,43 @@ class TestChart10ValuesStructure:
             gitlab_runner_cleanup_grace_period_seconds=5,
             gitlab_runner_pod_termination_grace_period_seconds=5,
             gitlab_runner_cleanup_resources_timeout="30s",
-            gitlab_runner_job_resources={"memory_request": "3Gi"},
+            gitlab_runner_job_resources={
+                "memory_request": "3Gi",
+                "ephemeral_storage_request": "4Gi",
+                "helper_ephemeral_storage_request": "1Gi",
+                "service_ephemeral_storage_request": "1Gi",
+            },
+            gitlab_runner_node_selector={
+                "key": "hcloud/node-group",
+                "value": "worker-cx43",
+            },
             gitlab_runner_cpu_request="500m",
             gitlab_runner_cpu_limit="2000m",
             gitlab_runner_memory_request="1Gi",
             gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_ephemeral_storage_request="1Gi",
+            gitlab_runner_ephemeral_storage_limit="8Gi",
             gitlab_runner_service_cpu_request="200m",
             gitlab_runner_service_cpu_limit="1000m",
             gitlab_runner_service_memory_request="512Mi",
             gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_service_ephemeral_storage_request="256Mi",
+            gitlab_runner_service_ephemeral_storage_limit="4Gi",
             gitlab_runner_helper_cpu_request="100m",
             gitlab_runner_helper_cpu_limit="500m",
             gitlab_runner_helper_memory_request="256Mi",
             gitlab_runner_helper_memory_limit="512Mi",
+            gitlab_runner_helper_ephemeral_storage_request="256Mi",
+            gitlab_runner_helper_ephemeral_storage_limit="4Gi",
         )
         compact_runner = tomllib.loads(compact_rendered)["runners"][0]
         assert compact_runner["kubernetes"]["memory_request"] == "3Gi"
+        assert compact_runner["kubernetes"]["ephemeral_storage_request"] == "4Gi"
+        assert compact_runner["kubernetes"]["helper_ephemeral_storage_request"] == "1Gi"
+        assert compact_runner["kubernetes"]["service_ephemeral_storage_request"] == "1Gi"
+        assert compact_runner["kubernetes"]["node_selector"] == {
+            "hcloud/node-group": "worker-cx43"
+        }
 
         pooled_rendered = Environment().from_string(
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
@@ -374,18 +406,25 @@ class TestChart10ValuesStructure:
                 "memory_request": "2Gi",
                 "memory_limit": "6Gi",
             },
+            gitlab_runner_node_selector={},
             gitlab_runner_cpu_request="500m",
             gitlab_runner_cpu_limit="2000m",
             gitlab_runner_memory_request="1Gi",
             gitlab_runner_memory_limit="4Gi",
+            gitlab_runner_ephemeral_storage_request="1Gi",
+            gitlab_runner_ephemeral_storage_limit="8Gi",
             gitlab_runner_service_cpu_request="200m",
             gitlab_runner_service_cpu_limit="1000m",
             gitlab_runner_service_memory_request="512Mi",
             gitlab_runner_service_memory_limit="2Gi",
+            gitlab_runner_service_ephemeral_storage_request="256Mi",
+            gitlab_runner_service_ephemeral_storage_limit="4Gi",
             gitlab_runner_helper_cpu_request="100m",
             gitlab_runner_helper_cpu_limit="500m",
             gitlab_runner_helper_memory_request="256Mi",
             gitlab_runner_helper_memory_limit="512Mi",
+            gitlab_runner_helper_ephemeral_storage_request="256Mi",
+            gitlab_runner_helper_ephemeral_storage_limit="4Gi",
         )
         pooled_runner = tomllib.loads(pooled_rendered)["runners"][0]
         pooled_kubernetes = pooled_runner["kubernetes"]
