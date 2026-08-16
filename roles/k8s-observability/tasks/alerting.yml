@@ -469,11 +469,11 @@
             rules:
               - alert: PodUnexpectedRestart
                 expr: >-
-                  increase(kube_pod_container_status_restarts_total{namespace!~"kube-system|gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds"}[10m]) > 0
+                  increase(kube_pod_container_status_restarts_total{namespace!~"kube-system|gitlab-ci-general|gitlab-image-builds|gitlab-docker-builds"}[10m]) > 1
                 labels: {severity: warning, owner: platform}
                 annotations:
-                  summary: 'Pod restarted: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
-                  description: 'Container {{ "{{ $labels.container }}" }} restarted during the last 10 minutes.'
+                  summary: 'Pod restarted repeatedly: {{ "{{ $labels.namespace }}/{{ $labels.pod }}" }}'
+                  description: 'Container {{ "{{ $labels.container }}" }} restarted more than once during the last 10 minutes.'
                   runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: PodRestartStorm
                 expr: increase(kube_pod_container_status_restarts_total[15m]) >= 3

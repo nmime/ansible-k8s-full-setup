@@ -125,6 +125,44 @@
   retries: 3
   delay: 10
   until: _r_create_example_cpu_scaledobject is not failed
+- name: Grant KEDA core event recording permission
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: keda-operator-core-events
+        namespace: '{{ keda_namespace }}'
+      rules:
+      - apiGroups: ['']
+        resources: [events]
+        verbs: [create, patch, update]
+  register: _r_grant_keda_core_event_recording_permission
+  retries: 3
+  delay: 10
+  until: _r_grant_keda_core_event_recording_permission is not failed
+- name: Bind KEDA operator to core event recording permission
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: keda-operator-core-events
+        namespace: '{{ keda_namespace }}'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: keda-operator-core-events
+      subjects:
+      - kind: ServiceAccount
+        name: keda-operator
+        namespace: '{{ keda_namespace }}'
+  register: _r_bind_keda_operator_to_core_event_recording_permission
+  retries: 3
+  delay: 10
+  until: _r_bind_keda_operator_to_core_event_recording_permission is not failed
 - name: Create example Prometheus ScaledObject
   kubernetes.core.k8s:
     state: present

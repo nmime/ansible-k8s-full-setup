@@ -667,6 +667,9 @@
         extensions:
           builtin:
             pg_stat_statements: true
+            pgvector: >-
+              {{ databases.postgresql.pgvector_enabled |
+                 default(postgresql_pgvector_enabled | default(false)) | bool }}
         patroni:
           dynamicConfiguration:
             postgresql:

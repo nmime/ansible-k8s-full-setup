@@ -193,6 +193,9 @@ pg_operator_version: "3.0.0"
 postgresql_replicas: "{{ 2 if resource_tier in ['medium', 'production'] else 1 }}"
 postgresql_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 postgresql_version: 18
+# Built-in PostgreSQL extensions are opt-in. Profiles that have application
+# schemas depending on pgvector must set databases.postgresql.pgvector_enabled.
+postgresql_pgvector_enabled: false
 mongodb_storage: "{{ '20Gi' if resource_tier == 'minimal' else '30Gi' if resource_tier == 'small' else '50Gi' if resource_tier == 'medium' else '100Gi' }}"
 mongodb_priority_class_name: platform-platform-critical
 

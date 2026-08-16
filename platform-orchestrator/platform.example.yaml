@@ -142,6 +142,9 @@ databases:
     version: 18
     replicas: 1
     storage_size: 30Gi
+    # Enable only when one or more application databases use vector columns or
+    # indexes. The operator otherwise keeps the built-in extension disabled.
+    pgvector_enabled: false
     # Optional stable PgBouncer DNS. When set, the role issues a private
     # cert-manager certificate containing both the alias and the operator
     # service SANs and publishes verify-full connection secrets with the
