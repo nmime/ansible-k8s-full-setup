@@ -718,6 +718,33 @@ class TestChart10ValuesStructure:
         assert "general_pool_quota" in dynamic_quota["requests.ephemeral-storage"]
         assert "general_pool_quota" in dynamic_quota["limits.ephemeral-storage"]
 
+        registry_guard = next(
+            task for task in dynamic_tasks
+            if task.get("name")
+            == "RUNNERS-DYN | Require an explicit registry pull credential contract"
+        )
+        assert registry_guard["no_log"] is True
+        assert registry_guard["when"] == "gitlab_registry_pull_enabled | bool"
+        registry_requirements = "\n".join(registry_guard["ansible.builtin.assert"]["that"])
+        assert "gitlab_registry_pull_registry" in registry_requirements
+        assert "gitlab_registry_pull_username" in registry_requirements
+        registry_secret = next(
+            task for task in dynamic_tasks
+            if task.get("name")
+            == "RUNNERS-DYN | Create gitlab-registry-pull docker-registry secrets"
+        )
+        assert registry_secret["when"] == "gitlab_registry_pull_enabled | bool"
+        payload = registry_secret["kubernetes.core.k8s"]["definition"]["stringData"][
+            ".dockerconfigjson"
+        ]
+        assert "gitlab_registry_pull_registry" in payload
+        assert "gitlab_registry_pull_username" in payload
+        assert "gitlab_registry_pull_token" in payload
+        assert "to_json" in payload
+        assert "registry.platform.example.com" not in payload
+        assert "deploy-token-139" not in payload
+        assert "gitlab_registry_pull_enabled" in self.content
+
         limit_range = next(
             task for task in tasks
             if task.get("name")

@@ -56,6 +56,15 @@
       {{ gitlab.runner.general_pool_enabled | default(false) | bool }}
     gitlab_runner_job_resources: >-
       {{ gitlab.runner.job_resources | default({}) }}
+    # A registry deploy token is optional.  Normal CI job-token image pulls
+    # remain the default, so a runner reconcile never assumes a secret that
+    # was neither declared in the public profile nor persisted in Vault.
+    gitlab_registry_pull_enabled: >-
+      {{ ((gitlab.runner.registry_pull | default({})).enabled | default(false)) | bool }}
+    gitlab_registry_pull_registry: >-
+      {{ (gitlab.runner.registry_pull | default({})).registry | default('', true) | trim }}
+    gitlab_registry_pull_username: >-
+      {{ (gitlab.runner.registry_pull | default({})).username | default('', true) | trim }}
     gitlab_runner_node_selector: >-
       {{ gitlab.runner.node_selector | default({}) }}
     gitlab_runner_cleanup_grace_period_seconds: >-

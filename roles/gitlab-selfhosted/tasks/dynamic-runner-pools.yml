@@ -90,11 +90,24 @@
     label: '{{ item }}'
 
 # ---------------------------------------------------------------------------
-# 1b. Registry pull secret — least-privilege docker-registry secret used by job
-#     pods via [runners.kubernetes] image_pull_secrets. Backed by a read-only
-#     deploy token (read_registry) on the platform group, so job pods can pull
-#     from the private registry without the runner's per-job token magic.
+# 1b. Registry pull secret — opt-in least-privilege docker-registry secret used
+#     by job pods via [runners.kubernetes] image_pull_secrets. Normal job-token
+#     pulls remain the secure default; a cluster may explicitly enable this
+#     only when its encrypted state provides a read-only deploy-token password.
 # ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Require an explicit registry pull credential contract
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - gitlab_registry_pull_registry | length > 0
+      - gitlab_registry_pull_username | length > 0
+      - gitlab_registry_pull_token | default('', true) | string | trim | length > 0
+    fail_msg: >-
+      Set gitlab.runner.registry_pull.registry, username, and the encrypted
+      gitlab_registry_pull_token before enabling the optional registry pull
+      secret for dynamic Runner pools.
+  when: gitlab_registry_pull_enabled | bool
+
 - name: RUNNERS-DYN | Create gitlab-registry-pull docker-registry secrets
   no_log: true
   kubernetes.core.k8s:
@@ -110,16 +123,22 @@
           app.kubernetes.io/part-of: gitlab-runner-hygiene
       stringData:
         .dockerconfigjson: >-
-          {{ '{"auths":{"registry.platform.example.com":{"username":"gitlab+deploy-token-139","password":"' ~
-             gitlab_registry_pull_token ~ '","auth":"' ~
-             (('gitlab+deploy-token-139:' ~ gitlab_registry_pull_token) | b64encode) ~
-             '"}}}' }}
+          {{ {
+               'auths': {
+                 gitlab_registry_pull_registry: {
+                   'username': gitlab_registry_pull_username,
+                   'password': gitlab_registry_pull_token,
+                   'auth': (gitlab_registry_pull_username ~ ':' ~ gitlab_registry_pull_token) | b64encode
+                 }
+               }
+             } | to_json }}
   loop:
     - '{{ gitlab_runner_namespace }}'
     - '{{ gitlab_image_builder_runner_namespace }}'
     - '{{ gitlab_docker_host_runner_namespace }}'
   loop_control:
     label: '{{ item }}'
+  when: gitlab_registry_pull_enabled | bool
 
 # ---------------------------------------------------------------------------
 # 1. Resource governance — ResourceQuota (pods+cpu+mem cap) + LimitRange defaults.
