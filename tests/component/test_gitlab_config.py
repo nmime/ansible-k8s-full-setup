@@ -774,6 +774,9 @@ class TestChart10ValuesStructure:
             assert "name" in definition["metadata"]
             assert "namespace" in definition["metadata"]
             assert "config.template.toml" in definition["data"]
+        dynamic_source = read(DYNAMIC_RUNNER_POOLS_PATH)
+        assert "gitlab_admin_token" not in dynamic_source
+        assert "api/v4/runners/{{ item.id }}" not in dynamic_source
 
         limit_range = next(
             task for task in tasks
