@@ -485,6 +485,8 @@ class TestMediumOptimizedContract:
             "requests_memory": "20Gi",
             "limits_cpu": "32",
             "limits_memory": "56Gi",
+            "requests_ephemeral_storage": "96Gi",
+            "limits_ephemeral_storage": "192Gi",
         }
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):

@@ -42,6 +42,13 @@ GENERAL_RUNNER_BOUNDARY_PATH = os.path.join(
     "tasks",
     "general-runner-boundary.yml",
 )
+DYNAMIC_RUNNER_POOLS_PATH = os.path.join(
+    REPO_ROOT,
+    "roles",
+    "gitlab-selfhosted",
+    "tasks",
+    "dynamic-runner-pools.yml",
+)
 
 def read(path):
     with open(path) as f:
@@ -699,7 +706,17 @@ class TestChart10ValuesStructure:
         assert "general_pool_quota" in quota["requests.memory"]
         assert "general_pool_quota" in quota["limits.cpu"]
         assert "general_pool_quota" in quota["limits.memory"]
+        assert "general_pool_quota" in quota["requests.ephemeral-storage"]
+        assert "general_pool_quota" in quota["limits.ephemeral-storage"]
         assert quota["persistentvolumeclaims"] == "0"
+
+        dynamic_tasks = yaml.safe_load(read(DYNAMIC_RUNNER_POOLS_PATH))
+        dynamic_quota = next(
+            task for task in dynamic_tasks
+            if task.get("name") == "RUNNERS-DYN | ResourceQuota for general-ci pool"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
+        assert "general_pool_quota" in dynamic_quota["requests.ephemeral-storage"]
+        assert "general_pool_quota" in dynamic_quota["limits.ephemeral-storage"]
 
         limit_range = next(
             task for task in tasks

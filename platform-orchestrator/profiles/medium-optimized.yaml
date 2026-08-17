@@ -301,6 +301,8 @@ gitlab:
       requests_memory: 20Gi
       limits_cpu: '32'
       limits_memory: 56Gi
+      requests_ephemeral_storage: 96Gi
+      limits_ephemeral_storage: 192Gi
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.

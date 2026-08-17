@@ -39,8 +39,12 @@
           limits.memory: >-
             {{ (gitlab.runner.general_pool_quota | default({})).limits_memory |
                default('64Gi') }}
-          requests.ephemeral-storage: 64Gi
-          limits.ephemeral-storage: 128Gi
+          requests.ephemeral-storage: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_ephemeral_storage |
+               default('96Gi') }}
+          limits.ephemeral-storage: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_ephemeral_storage |
+               default('192Gi') }}
           pods: '40'
           services: '12'
           secrets: '40'
