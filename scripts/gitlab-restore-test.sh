@@ -212,9 +212,14 @@ if [ -n "$S3_ENDPOINT" ] && [[ ! "$S3_ENDPOINT" =~ ^https?://[A-Za-z0-9.-]+(:[0-
   fail "--s3-endpoint must be an HTTP(S) host with an optional numeric port"
   exit 2
 fi
-for tool in kubectl jq; do
-  command -v "$tool" >/dev/null || { fail "$tool is required"; exit 2; }
-done
+# A dry run deliberately builds its plan without talking to a cluster. Keep
+# the tool gate for list/restore paths, but allow an operator or CI to inspect
+# the plan before kubectl is installed or a kubeconfig is available.
+if [ "$DRY_RUN" != "true" ]; then
+  for tool in kubectl jq; do
+    command -v "$tool" >/dev/null || { fail "$tool is required"; exit 2; }
+  done
+fi
 
 # ── DRY-RUN PATH ─────────────────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
@@ -223,12 +228,13 @@ if [ "$DRY_RUN" = "true" ]; then
   info "Would restore backup: ${BACKUP_TIMESTAMP:-latest}"
   info "Would set TTL: ${TTL_HOURS}h auto-cleanup"
   info "Source namespace: $SOURCE_NS"
+  check_pass "dry-run inputs validated without cluster access"
 
   # Verify prerequisites
   if command -v kubectl &>/dev/null; then
     check_pass "kubectl available"
   else
-    check_fail "kubectl not found"
+    check_warn "kubectl not found; live restore requires it"
   fi
 
   if [ -n "$S3_ENDPOINT" ]; then

@@ -2457,6 +2457,11 @@ def test_disabled_source_dependency_disables_new_target_dependants(tmp_path):
     state_base = tmp_path / "state"
     env = os.environ.copy()
     env["PROFILE_MIGRATION_STATE_DIR"] = str(state_base)
+    # This assertion covers profile dependency closure, not Ansible runtime
+    # startup. The validation pipeline invokes the generated-profile Ansible
+    # gate separately; skipping it here keeps this hermetic subprocess test
+    # within its explicit timeout on constrained CI workers.
+    env["PROFILE_MIGRATION_SKIP_ANSIBLE_VALIDATION"] = "true"
     result = subprocess.run(
         [
             "bash",
