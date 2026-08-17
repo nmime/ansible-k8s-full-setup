@@ -1267,6 +1267,22 @@ class TestChart10ValuesStructure:
         assert "matchName: nx-cache.platform.example.com" in network
         assert "matchName: release-assets.githubusercontent.com" in network
         assert "matchName: unofficial-builds.nodejs.org" in network
+        legacy_selector_cleanup = next(
+            task
+            for task in yaml.safe_load(network)
+            if task.get("name")
+            == "Docker smoke | Remove retired private workload selector labels"
+        )
+        legacy_selector_patch = legacy_selector_cleanup[
+            "kubernetes.core.k8s_json_patch"
+        ]
+        assert legacy_selector_patch["kind"] == "CiliumNetworkPolicy"
+        assert legacy_selector_patch["patch"][0]["op"] == "remove"
+        assert "dict2items" in legacy_selector_patch["patch"][0]["path"]
+        assert "workload.platform.example.com/class" in (
+            legacy_selector_patch["patch"][0]["path"]
+        )
+        assert "dict2items" in legacy_selector_cleanup["when"]
         cache_policy = docker_policies[
             "Docker smoke | Allow runner cache traffic to SeaweedFS"
         ]["kubernetes.core.k8s"]["definition"]

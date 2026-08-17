@@ -277,3 +277,41 @@
               - ports:
                   - {port: '9252', protocol: TCP}
   when: platform_observability_enabled | default(false) | bool
+
+- name: Docker smoke | Discover legacy Cilium selector policies
+  kubernetes.core.k8s_info:
+    api_version: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: '{{ item }}'
+  loop:
+    - allow-manager-kube-api
+    - allow-build-dependencies
+    - allow-runner-metrics
+  register: _docker_smoke_cilium_selector_policies
+  changed_when: false
+
+- name: Docker smoke | Remove retired private workload selector labels
+  kubernetes.core.k8s_json_patch:
+    api_version: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: '{{ item.metadata.name }}'
+    patch:
+      - op: remove
+        path: >-
+          /spec/endpointSelector/matchLabels/{{
+            (item.spec.endpointSelector.matchLabels | dict2items |
+             rejectattr('key', 'equalto', 'workload.platform.example.com/class') |
+             selectattr('key', 'match', '^workload\\.') |
+             map(attribute='key') | first) | replace('/', '~1')
+          }}
+  loop: >-
+    {{ _docker_smoke_cilium_selector_policies.results |
+       map(attribute='resources') | flatten }}
+  loop_control:
+    label: '{{ item.metadata.name }}'
+  when: >-
+    (item.spec.endpointSelector.matchLabels | dict2items |
+     rejectattr('key', 'equalto', 'workload.platform.example.com/class') |
+     selectattr('key', 'match', '^workload\\.') | list | length) > 0
