@@ -133,7 +133,7 @@
       - gitlab_runner_namespace != gitlab_docker_host_runner_namespace
       - >-
         not (gitlab_general_runner_pool_enabled | bool) or
-        (gitlab_runner_replicas | int) == 2
+        (gitlab_runner_replicas | int) == 4
       - >-
         not (gitlab_general_runner_pool_enabled | bool) or
         (gitlab_runner_concurrent | int) == 1
@@ -143,7 +143,7 @@
     fail_msg: >-
       gitlab.runner.enabled=true requires a positive runner.concurrent_jobs value,
       an existing GitLab Runner authentication token (glrt-...), and a declared
-      HA general pool, when selected, of exactly two managers with one job each. Create an
+      HA general pool, when selected, of exactly four managers with one job each. Create an
       instance runner in GitLab Admin > CI/CD > Runners, export
       GITLAB_RUNNER_TOKEN=glrt-..., and rerun the playbook. The token is persisted
       only in the Ansible Vault-encrypted platform secrets file. Legacy runner
@@ -2516,11 +2516,11 @@
     - gitlab_runner_enabled | bool
     - gitlab_general_runner_pool_enabled | bool
 
-- name: Require the converged general Runner to remain on the isolated two-node pool
+- name: Require the converged general Runner to remain on the four-manager autoscaled pool
   tags: [gitlab-runner, gitlab-general-runner]
   ansible.builtin.assert:
     that:
-      - ((_gitlab_runner_deployment.resources | first).spec.replicas | int) == 2
+      - ((_gitlab_runner_deployment.resources | first).spec.replicas | int) == 4
       - >-
         ((_gitlab_runner_deployment.resources | first).spec.strategy.rollingUpdate.maxSurge |
          int) == 0

@@ -816,10 +816,10 @@ class TestChart10ValuesStructure:
             task
             for task in tasks
             if task.get("name")
-            == "Require the converged general Runner to remain on the isolated two-node pool"
+            == "Require the converged general Runner to remain on the four-manager autoscaled pool"
         )
         assertions = "\n".join(pool_gate["ansible.builtin.assert"]["that"])
-        assert "spec.replicas | int) == 2" in assertions
+        assert "spec.replicas | int) == 4" in assertions
         assert "maxSurge" in assertions
         assert "maxUnavailable" in assertions
         assert "workload.platform.example.com/ci-general" in assertions

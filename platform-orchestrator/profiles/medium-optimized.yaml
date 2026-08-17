@@ -267,13 +267,15 @@ gitlab:
   toolbox_backup_suspended: true
   runner:
     enabled: true
-    # General non-privileged jobs spread across workers 4 and 5. Protected
+    # General non-privileged jobs use autoscaled worker capacity. Protected
     # rootless image builds remain on worker 5 and DinD remains on worker 4.
     general_pool_enabled: true
-    replicas: 2
+    # Four single-job managers keep the normal eight-job validation pipeline
+    # below the five-minute queue SLO without admitting an unbounded burst.
+    replicas: 4
     namespace: gitlab-ci-general
-    # One job per manager preserves two-job aggregate concurrency without a
-    # rollout surge becoming an unintended third execution slot.
+    # One job per manager preserves four-job aggregate concurrency without a
+    # rollout surge becoming an unintended fifth execution slot.
     concurrent_jobs: 1
     cleanup_grace_period_seconds: 5
     pod_termination_grace_period_seconds: 5
@@ -281,7 +283,7 @@ gitlab:
     dedicated_worker_index: 5
     job_resources:
       cpu_request: 750m
-      cpu_limit: '3'
+      cpu_limit: '2'
       memory_request: 2Gi
       memory_limit: 6Gi
       service_cpu_request: 200m
@@ -292,13 +294,13 @@ gitlab:
       helper_cpu_limit: '1'
       helper_memory_request: 256Mi
       helper_memory_limit: 1Gi
-    # The quota is an admission ceiling, not a reservation. It covers two
-    # active jobs plus bounded overlap while completed executor pods terminate.
+    # The quota is an admission ceiling, not a reservation. It covers four
+    # active jobs, their helpers/services, and bounded termination overlap.
     general_pool_quota:
-      requests_cpu: '5'
-      requests_memory: 12Gi
-      limits_cpu: '20'
-      limits_memory: 34Gi
+      requests_cpu: '12'
+      requests_memory: 20Gi
+      limits_cpu: '32'
+      limits_memory: 56Gi
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.
