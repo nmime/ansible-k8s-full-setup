@@ -1,0 +1,68 @@
+# GitLab mirrors the public GitHub validation contract for the cluster source
+# of truth. The runner executes as an unprivileged numeric UID, so every tool
+# and collection is installed below the checkout rather than mutating the job
+# image at runtime.
+
+stages:
+  - validate
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+default:
+  interruptible: true
+  tags: [general]
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  ANSIBLE_CONFIG: "$CI_PROJECT_DIR/ansible.cfg"
+  ANSIBLE_COLLECTIONS_PATH: "$CI_PROJECT_DIR/.ansible/collections"
+  ANSIBLE_ROLES_PATH: "$CI_PROJECT_DIR/roles"
+  ANSIBLE_LOCAL_TEMP: /tmp/.ansible/tmp
+  PRE_COMMIT_HOME: "$CI_PROJECT_DIR/.cache/pre-commit"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  CI_YQ_VERSION: v4.44.6
+  CI_YQ_SHA256: 0c2b24e645b57d8e7c0566d18643a6d4f5580feeea3878127354a46f2a1e4598
+  CI_JQ_VERSION: jq-1.7.1
+  CI_JQ_SHA256: 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
+
+validate:
+  stage: validate
+  image:
+    name: docker.io/library/python:3.12.11-bookworm@sha256:13c9584604a99ca134c4f41800f74ffc64ee6ac8cf555cf1e704a6087fc84f12
+    entrypoint: [""]
+  cache:
+    key:
+      files:
+        - requirements.txt
+        - requirements.yml
+      prefix: ansible-validation
+    paths:
+      - .cache/pip/
+      - .cache/pre-commit/
+      - .ansible/collections/
+    policy: pull-push
+  before_script:
+    - export PATH="$CI_PROJECT_DIR/.ci-bin:$HOME/.local/bin:$PATH"
+    - mkdir -p "$CI_PROJECT_DIR/.ci-bin" "$PIP_CACHE_DIR" "$PRE_COMMIT_HOME" "$ANSIBLE_COLLECTIONS_PATH" "$ANSIBLE_LOCAL_TEMP"
+    - curl --retry 5 --retry-all-errors --fail --silent --show-error --location "https://github.com/mikefarah/yq/releases/download/${CI_YQ_VERSION}/yq_linux_amd64" --output "$CI_PROJECT_DIR/.ci-bin/yq"
+    - echo "${CI_YQ_SHA256}  $CI_PROJECT_DIR/.ci-bin/yq" | sha256sum --check --strict
+    - chmod 0755 "$CI_PROJECT_DIR/.ci-bin/yq"
+    - curl --retry 5 --retry-all-errors --fail --silent --show-error --location "https://github.com/jqlang/jq/releases/download/${CI_JQ_VERSION}/jq-linux-amd64" --output "$CI_PROJECT_DIR/.ci-bin/jq"
+    - echo "${CI_JQ_SHA256}  $CI_PROJECT_DIR/.ci-bin/jq" | sha256sum --check --strict
+    - chmod 0755 "$CI_PROJECT_DIR/.ci-bin/jq"
+    - python -m pip install --user --requirement requirements.txt
+    - ansible-galaxy collection install --requirements-file requirements.yml --collections-path "$ANSIBLE_COLLECTIONS_PATH"
+  script:
+    - yamllint -c .yamllint.yaml .
+    - pre-commit run --all-files --hook-stage manual
+    - ansible-lint -c .ansible-lint.yml
+    - ansible-playbook playbooks/deploy_platform.yml --syntax-check
+    - ansible-playbook playbooks/remove_component.yml --syntax-check
+    - ansible-playbook playbooks/continue_post_kubespray.yml --syntax-check
+    - ansible-playbook playbooks/edge-cdn.yml --syntax-check
+    - python scripts/verify-version-matrix.py
+    - python -m pytest tests/ -v --no-header --tb=short
+  timeout: 45m
