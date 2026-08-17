@@ -417,15 +417,19 @@
             # The upstream default allocates seven logical volumes whenever a
             # single-copy collection first writes. On resource-efficient 10Gi
             # claims that can consume every available volume slot with one
-            # mostly-empty collection and make unrelated S3 writes fail. Grow
-            # one logical volume at a time for every replication topology.
+            # mostly-empty collection and make unrelated S3 writes fail. A
+            # replicated (001) cache/archive write can advance several 256MiB
+            # volumes concurrently, so reserve a small writable runway before
+            # the current volume is full. Empty SeaweedFS volume files are
+            # sparse; this consumes slots, not the configured capacity up
+            # front. Keep compact single-copy profiles at one volume.
             config: |-
               [master.volume_growth]
               copy_1 = 1
-              copy_2 = 1
+              copy_2 = 4
               copy_3 = 1
               copy_other = 1
-              threshold = 0.9
+              threshold = 0.8
               disable = false
             # HashiCorp Raft supports explicit, observable membership changes
             # and reliable snapshots during Kubernetes rolling maintenance.

@@ -4,16 +4,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_resource_efficient_seaweedfs_grows_one_logical_volume_at_a_time():
+def test_replicated_seaweedfs_keeps_a_writable_runway_for_cache_bursts():
     tasks = (ROOT / "roles/object-storage/tasks/main.yml").read_text()
 
     growth = tasks.split("[master.volume_growth]", 1)[1].split(
         "# HashiCorp Raft", 1
     )[0]
-    for copies in ("copy_1", "copy_2", "copy_3", "copy_other"):
-        assert f"{copies} = 1" in growth
-    assert "threshold = 0.9" in growth
+    assert "copy_1 = 1" in growth
+    assert "copy_2 = 4" in growth
+    assert "copy_3 = 1" in growth
+    assert "copy_other = 1" in growth
+    assert "threshold = 0.8" in growth
     assert "disable = false" in growth
+    assert "replicated (001) cache/archive write" in tasks
+    assert "sparse" in tasks
 
     reclaim = tasks.split(
         "Reclaim stale empty SeaweedFS volumes from the legacy growth policy", 1
