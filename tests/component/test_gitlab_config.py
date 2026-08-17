@@ -751,7 +751,12 @@ class TestChart10ValuesStructure:
             == "General Runner | Bound each container (RUNNERS-DYN pool defaults)"
         )["kubernetes.core.k8s"]["definition"]["spec"]["limits"][0]
         assert limit_range["max"]["cpu"] == "2"
-        assert limit_range["max"]["memory"] == "4Gi"
+        assert limit_range["max"]["memory"] == "6Gi"
+        dynamic_limit_range = next(
+            task for task in dynamic_tasks
+            if task.get("name") == "RUNNERS-DYN | LimitRange defaults for general-ci pool"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["limits"][0]
+        assert dynamic_limit_range["max"]["memory"] == "6Gi"
 
         policies = next(
             task for task in tasks

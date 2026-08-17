@@ -186,8 +186,9 @@
             # Defaults applied when a job omits requests/limits.
             defaultRequest: {cpu: 100m, memory: 128Mi, ephemeral-storage: 256Mi}
             default: {cpu: '1', memory: 2Gi, ephemeral-storage: 4Gi}
-            # Hard ceiling so a runaway job cannot monopolise a worker.
-            max: {cpu: '2', memory: 4Gi, ephemeral-storage: 16Gi}
+            # Hard ceiling so a runaway job cannot monopolise a worker, while
+            # still admitting the declared 6Gi validation/build job limit.
+            max: {cpu: '2', memory: 6Gi, ephemeral-storage: 16Gi}
 
 - name: RUNNERS-DYN | ResourceQuota for image-builder pool
   kubernetes.core.k8s:

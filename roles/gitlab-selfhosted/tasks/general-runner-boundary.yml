@@ -63,12 +63,14 @@
       spec:
         limits:
           - type: Container
-            # RUNNERS-DYN: defaults 100m/128Mi .. 1/2Gi, ceiling 2/4Gi.
+            # RUNNERS-DYN: defaults 100m/128Mi .. 1/2Gi, ceiling 2/6Gi.
             defaultRequest: {cpu: 100m, memory: 128Mi, ephemeral-storage: 256Mi}
             default: {cpu: '1', memory: 2Gi, ephemeral-storage: 4Gi}
             max:
               cpu: '2'
-              memory: 4Gi
+              # The CI validation/build contract legitimately requests 6Gi.
+              # Keep the admission ceiling aligned so valid jobs start.
+              memory: 6Gi
               ephemeral-storage: 16Gi
 
 - name: General Runner | Apply the fail-closed network boundary
