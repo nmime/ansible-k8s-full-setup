@@ -26,6 +26,7 @@ rules:
 ignore: |
   .git/
   .venv/
+  .cache/
   .ansible/
   .migration-state/
   .campaign-state/
