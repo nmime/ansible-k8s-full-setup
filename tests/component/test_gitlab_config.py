@@ -759,6 +759,22 @@ class TestChart10ValuesStructure:
         assert "deploy-token-139" not in payload
         assert "gitlab_registry_pull_enabled" in self.content
 
+        priority_remaps = [
+            task
+            for task in dynamic_tasks
+            if task.get("name", "").startswith("RUNNERS-DYN | Remap ")
+        ]
+        assert len(priority_remaps) == 3
+        for priority_remap in priority_remaps:
+            spec = priority_remap["kubernetes.core.k8s"]
+            assert "data" not in spec
+            definition = spec["definition"]
+            assert definition["apiVersion"] == "v1"
+            assert definition["kind"] == "ConfigMap"
+            assert "name" in definition["metadata"]
+            assert "namespace" in definition["metadata"]
+            assert "config.template.toml" in definition["data"]
+
         limit_range = next(
             task for task in tasks
             if task.get("name")

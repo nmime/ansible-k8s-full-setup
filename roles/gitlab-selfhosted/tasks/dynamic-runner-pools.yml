@@ -442,20 +442,22 @@
 - name: RUNNERS-DYN | Remap general-ci job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
-    kind: ConfigMap
-    api_version: v1
-    namespace: '{{ gitlab_runner_namespace }}'
-    name: '{{ _runners_dyn_general_cm.resources[0].metadata.name }}'
-    data:
-      config.template.toml: >-
-        {{
-          (_runners_dyn_general_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
-            | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
-          )
-        }}
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: '{{ gitlab_runner_namespace }}'
+        name: '{{ _runners_dyn_general_cm.resources[0].metadata.name }}'
+      data:
+        config.template.toml: >-
+          {{
+            (_runners_dyn_general_cm.resources[0].data['config.template.toml']
+              | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+              | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+              | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
+              | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
+            )
+          }}
   when: _runners_dyn_general_cm.resources | length > 0
   register: _runners_dyn_general_patch
 
@@ -470,20 +472,22 @@
 - name: RUNNERS-DYN | Remap image-builder job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
-    kind: ConfigMap
-    api_version: v1
-    namespace: '{{ gitlab_image_builder_runner_namespace }}'
-    name: '{{ _runners_dyn_builder_cm.resources[0].metadata.name }}'
-    data:
-      config.template.toml: >-
-        {{
-          (_runners_dyn_builder_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
-            | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
-          )
-        }}
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+        name: '{{ _runners_dyn_builder_cm.resources[0].metadata.name }}'
+      data:
+        config.template.toml: >-
+          {{
+            (_runners_dyn_builder_cm.resources[0].data['config.template.toml']
+              | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+              | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+              | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
+              | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
+            )
+          }}
   when: _runners_dyn_builder_cm.resources | length > 0
   register: _runners_dyn_builder_patch
 
@@ -498,19 +502,21 @@
 - name: RUNNERS-DYN | Remap docker-host job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
-    kind: ConfigMap
-    api_version: v1
-    namespace: '{{ gitlab_docker_host_runner_namespace }}'
-    name: '{{ _runners_dyn_docker_cm.resources[0].metadata.name }}'
-    data:
-      config.template.toml: >-
-        {{
-          (_runners_dyn_docker_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
-          )
-        }}
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+        name: '{{ _runners_dyn_docker_cm.resources[0].metadata.name }}'
+      data:
+        config.template.toml: >-
+          {{
+            (_runners_dyn_docker_cm.resources[0].data['config.template.toml']
+              | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+              | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+              | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
+            )
+          }}
   when: _runners_dyn_docker_cm.resources | length > 0
   register: _runners_dyn_docker_patch
 
