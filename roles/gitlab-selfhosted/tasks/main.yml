@@ -2400,6 +2400,13 @@
               helper_ephemeral_storage_request = "{{ gitlab_runner_job_resources.helper_ephemeral_storage_request | default(gitlab_runner_helper_ephemeral_storage_request) }}"
               helper_ephemeral_storage_limit = "{{ gitlab_runner_job_resources.helper_ephemeral_storage_limit | default(gitlab_runner_helper_ephemeral_storage_limit) }}"
               [runners.kubernetes.pod_security_context]
+                # Job namespaces enforce the Kubernetes restricted profile.  Keep
+                # this on the runner's generated build/helper/service pods as
+                # well as on the manager deployment security context.
+                run_as_non_root = true
+                run_as_user = 1000
+                run_as_group = 1000
+                fs_group = 1000
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
               [runners.kubernetes.pod_labels]

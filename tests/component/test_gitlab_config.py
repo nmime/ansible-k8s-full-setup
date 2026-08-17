@@ -345,6 +345,13 @@ class TestChart10ValuesStructure:
         assert kubernetes["pod_labels"] == {
             "workload.platform.example.com/class": "ci-job"
         }
+        assert kubernetes["pod_security_context"] == {
+            "run_as_non_root": True,
+            "run_as_user": 1000,
+            "run_as_group": 1000,
+            "fs_group": 1000,
+            "seccomp_profile": {"type": "RuntimeDefault"},
+        }
 
         compact_rendered = Environment().from_string(
             install["kubernetes.core.helm"]["values"]["runners"]["config"]
@@ -450,6 +457,13 @@ class TestChart10ValuesStructure:
         assert pooled_kubernetes["cpu_limit"] == "3"
         assert pooled_kubernetes["memory_request"] == "2Gi"
         assert pooled_kubernetes["memory_limit"] == "6Gi"
+        assert pooled_kubernetes["pod_security_context"] == {
+            "run_as_non_root": True,
+            "run_as_user": 1000,
+            "run_as_group": 1000,
+            "fs_group": 1000,
+            "seccomp_profile": {"type": "RuntimeDefault"},
+        }
         assert len(pooled_kubernetes["pod_spec"]) == 1
         pod_spec = pooled_kubernetes["pod_spec"][0]
         assert pod_spec["name"] == "spread-ci-jobs-across-workers"
