@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-
-certificate_name="$(basename "${RENEWED_LINEAGE:?RENEWED_LINEAGE is required}")"
-exec "{{ fun_games_edge_install_root }}/deploy-certificate" "$certificate_name"
