@@ -16,10 +16,10 @@
     gitlab_webservice_max_replicas: '{{ gitlab.webservice_max_replicas | default(10) }}'
     _gitlab_registry_pullthrough_env: >-
       {{
-        [
-          {'name': 'REGISTRY_PROXY_REMOTEURL', 'value': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io')},
-          {'name': 'REGISTRY_PROXY_TTL', 'value': gitlab_registry_pullthrough_ttl | default('720h')}
-        ] if (gitlab_registry_pullthrough_enabled | default(false)) | bool else []
+        {
+          'REGISTRY_PROXY_REMOTEURL': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io'),
+          'REGISTRY_PROXY_TTL': gitlab_registry_pullthrough_ttl | default('720h')
+        } if (gitlab_registry_pullthrough_enabled | default(false)) | bool else {}
       }}
     gitlab_webservice_worker_processes: '{{ gitlab.worker_processes | default(2) }}'
     gitlab_webservice_memory_request: '{{ gitlab.webservice_memory_request | default("1Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "2.5Gi") }}'

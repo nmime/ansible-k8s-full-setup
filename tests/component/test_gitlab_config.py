@@ -72,6 +72,17 @@ class TestChart10ValuesStructure:
         assert "email:" in self.content
 
     @pytest.mark.component
+    def test_registry_pullthrough_environment_uses_chart_map_shape(self):
+        """GitLab chart 10 renders registry.extraEnv through global extraEnv."""
+        environment = self.content.split("_gitlab_registry_pullthrough_env:", 1)[1].split(
+            "gitlab_webservice_worker_processes:", 1
+        )[0]
+        assert "'REGISTRY_PROXY_REMOTEURL':" in environment
+        assert "'REGISTRY_PROXY_TTL':" in environment
+        assert "else {}" in environment
+        assert "'name': 'REGISTRY_PROXY_REMOTEURL'" not in environment
+
+    @pytest.mark.component
     def test_chart_gateway_and_issuer_are_disabled_for_platform_gateway(self):
         assert "gatewayApi:" in self.content
         assert "installEnvoy: false" in self.content
