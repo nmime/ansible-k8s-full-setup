@@ -45,13 +45,12 @@ def test_telegram_templates_are_compact_and_render_context_when_available():
     assert "System ID: <code>" not in content
 
 
-def test_job_failures_are_deduplicated_by_kubernetes_job():
+def test_job_failures_only_alert_when_the_job_does_not_recover():
     content = alerting_source()
-    expression = (
-        "max by (namespace, job_name) "
-        "(increase(kube_job_status_failed[10m])) > 0"
-    )
-    assert expression in content
+    assert "max by (namespace, job_name) (kube_job_status_failed > 0)" in content
+    assert "unless on (namespace, job_name)" in content
+    assert "max by (namespace, job_name) (kube_job_status_succeeded > 0)" in content
+    assert "for: 5m" in content
 
 
 def test_prometheus_printf_templates_do_not_render_escaped_quotes():

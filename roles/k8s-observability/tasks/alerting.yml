@@ -524,12 +524,19 @@
                   description: Ready replicas have remained below desired replicas for 10 minutes.
                   runbook_url: '{{ alert_runbook_url_resolved }}'
               - alert: KubernetesJobFailed
-                expr: max by (namespace, job_name) (increase(kube_job_status_failed[10m])) > 0
-                for: 2m
+                # A Job can replace a failed Pod and still complete successfully.
+                # Alert only when it has not recovered, rather than paging on a
+                # transient image pull or a single retry retained by kube-state-
+                # metrics after the successful completion.
+                expr: >-
+                  max by (namespace, job_name) (kube_job_status_failed > 0)
+                  unless on (namespace, job_name)
+                  max by (namespace, job_name) (kube_job_status_succeeded > 0)
+                for: 5m
                 labels: {severity: warning, owner: platform}
                 annotations:
                   summary: 'Job failed: {{ "{{ $labels.namespace }}/{{ $labels.job_name }}" }}'
-                  description: A Kubernetes Job has one or more failed pods.
+                  description: A Kubernetes Job has failed Pods and has not completed successfully for five minutes.
                   runbook_url: '{{ alert_runbook_url_resolved }}'
 
           - name: node-capacity
