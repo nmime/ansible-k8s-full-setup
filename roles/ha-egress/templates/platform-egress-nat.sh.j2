@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${1:-prepare}"
+FLOATING_IP={{ ha_egress_floating_ipv4 | quote }}
+PRIVATE_CIDR={{ ha_egress_network_cidr | quote }}
+PUBLIC_IF=$(ip -o -4 route show to default | awk 'NR == 1 {print $5}')
+PRIVATE_IF=$(ip -o -4 addr show | awk '$4 ~ /^10\./ {print $2; exit}')
+
+test -n "$PUBLIC_IF"
+test -n "$PRIVATE_IF"
+ip address replace "${FLOATING_IP}/32" dev "$PUBLIC_IF"
+sysctl -qw net.ipv4.ip_forward=1
+install -d -m 0755 /etc/sysctl.d
+printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-platform-egress.conf
+
+iptables -C FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT 2>/dev/null || \
+  iptables -I FORWARD 1 -i "$PRIVATE_IF" -o "$PUBLIC_IF" -s "$PRIVATE_CIDR" -j ACCEPT
+iptables -C FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" \
+  -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+  iptables -I FORWARD 1 -i "$PUBLIC_IF" -o "$PRIVATE_IF" -d "$PRIVATE_CIDR" \
+    -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+if [ "$MODE" = activate ]; then
+  while iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE 2>/dev/null; do
+    iptables -t nat -D POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j MASQUERADE
+  done
+  while iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j SNAT --to-source "$FLOATING_IP" 2>/dev/null; do
+    iptables -t nat -D POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j SNAT --to-source "$FLOATING_IP"
+  done
+  iptables -t nat -I POSTROUTING 1 -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j SNAT --to-source "$FLOATING_IP"
+else
+  iptables -t nat -C POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j SNAT --to-source "$FLOATING_IP" 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s "$PRIVATE_CIDR" -o "$PUBLIC_IF" -j SNAT --to-source "$FLOATING_IP"
+fi
+
+install -d -m 0755 /etc/iptables
+iptables-save > /etc/iptables/rules.v4

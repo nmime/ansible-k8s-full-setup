@@ -9,7 +9,7 @@
         name: '{{ gitlab_runner_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
-          workload.n0xeid.xyz/trust-boundary: general-ci
+          workload.platform.example.com/trust-boundary: general-ci
           pod-security.kubernetes.io/enforce: restricted
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted
@@ -39,8 +39,12 @@
           limits.memory: >-
             {{ (gitlab.runner.general_pool_quota | default({})).limits_memory |
                default('64Gi') }}
-          requests.ephemeral-storage: 64Gi
-          limits.ephemeral-storage: 128Gi
+          requests.ephemeral-storage: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_ephemeral_storage |
+               default('96Gi') }}
+          limits.ephemeral-storage: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_ephemeral_storage |
+               default('192Gi') }}
           pods: '40'
           services: '12'
           secrets: '40'
@@ -59,12 +63,14 @@
       spec:
         limits:
           - type: Container
-            # RUNNERS-DYN: defaults 100m/128Mi .. 1/2Gi, ceiling 2/4Gi.
+            # RUNNERS-DYN: defaults 100m/128Mi .. 1/2Gi, ceiling 2/6Gi.
             defaultRequest: {cpu: 100m, memory: 128Mi, ephemeral-storage: 256Mi}
             default: {cpu: '1', memory: 2Gi, ephemeral-storage: 4Gi}
             max:
               cpu: '2'
-              memory: 4Gi
+              # The CI validation/build contract legitimately requests 6Gi.
+              # Keep the admission ceiling aligned so valid jobs start.
+              memory: 6Gi
               ephemeral-storage: 16Gi
 
 - name: General Runner | Apply the fail-closed network boundary
@@ -282,6 +288,6 @@
           - from:
               - namespaceSelector:
                   matchLabels:
-                    workload.n0xeid.xyz/trust-boundary: general-ci
+                    workload.platform.example.com/trust-boundary: general-ci
             ports:
               - {protocol: TCP, port: 8181}

@@ -15,7 +15,7 @@ Options:
   --campaign-root DIR    Worktrees, homes, configs, logs, and results
   --source-ref REF       Git commit used by every controller (default: HEAD)
   --project-prefix NAME  Prefix for all five Hetzner projects
-  --base-domain DOMAIN   Parent test domain (default: n0xeid.xyz)
+  --base-domain DOMAIN   Parent test domain (default: platform.example.com)
   --email EMAIL          ACME/operator email
   --api-port-base PORT   First of five unique API tunnel ports (default: 16443)
   --dr-endpoint URL      External S3-compatible DR endpoint
@@ -41,8 +41,8 @@ CAMPAIGN_ID="${CAMPAIGN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 CAMPAIGN_ROOT="${CAMPAIGN_ROOT:-}"
 SOURCE_REF="${SOURCE_REF:-HEAD}"
 PROJECT_PREFIX="${PROJECT_PREFIX:-}"
-BASE_DOMAIN="${BASE_DOMAIN:-n0xeid.xyz}"
-EMAIL="${EMAIL:-admin@n0xeid.xyz}"
+BASE_DOMAIN="${BASE_DOMAIN:-platform.example.com}"
+EMAIL="${EMAIL:-admin@platform.example.com}"
 API_PORT_BASE="${API_PORT_BASE:-16443}"
 DR_ENDPOINT="${BACKUP_DR_ENDPOINT:-}"
 DR_BUCKET="${BACKUP_DR_BUCKET:-}"

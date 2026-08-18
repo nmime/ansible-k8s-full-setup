@@ -65,7 +65,7 @@ network:
     enabled: true
     server_type: cpx22
 
-  # Billable opt-in. The live n0xeid profile enables this with a cross-location
+  # Billable opt-in. The live platform profile enables this with a cross-location
   # standby and activates it only after Floating-IP mail DNS is aligned.
   egress:
     enabled: false
@@ -170,14 +170,10 @@ storage:
     coroot/data-coroot-clickhouse-keeper-0: coroot-keeper-0
     coroot/data-coroot-clickhouse-keeper-1: coroot-keeper-1
     coroot/data-coroot-clickhouse-keeper-2: coroot-keeper-2
-    databases/n0xeid-medium-optimized-cx-pg-repo1: databases-pgbackrest-0
+    databases/platform-medium-optimized-cx-pg-repo1: databases-pgbackrest-0
     dragonfly/df-dragonfly-0: dragonfly-shared-0
     gitlab/repo-data-gitlab-gitaly-0: gitlab-gitaly-0
     postal/data-postal-mariadb-0: postal-mariadb-0
-    fun-games-preproduction/df-fun-games-cache-0: fun-preprod-cache-0
-    fun-games-preproduction/df-fun-games-cache-1: fun-preprod-cache-1
-    fun-games-production/df-fun-games-cache-0: fun-production-cache-0
-    fun-games-production/df-fun-games-cache-1: fun-production-cache-1
 
 # ---------------------------------------------
 # Secrets
@@ -206,7 +202,7 @@ databases:
     data_storage_class: platform-local
     repo_storage_class: hcloud-volumes
     repo_storage_size: 10Gi
-    service_alias: n0xeid-pg
+    service_alias: platform-pg
     extra_users:
       - operator:
           name: metabase
@@ -214,44 +210,11 @@ databases:
           grantPublicSchemaAccess: true
         target_namespace: analytics
         secret_name: metabase-postgresql
-      - operator:
-          name: dadya-prod
-          databases: [dadya_prod]
-          grantPublicSchemaAccess: true
-        target_namespace: dadya-production
-        secret_name: dadya-postgresql
-      - operator:
-          name: dadya-pp
-          databases: [dadya_pp]
-          grantPublicSchemaAccess: true
-        target_namespace: dadya-preproduction
-        secret_name: dadya-postgresql
-      - operator:
-          name: social-agents-owner
-          databases: [social_agents]
-          # Used only by the one-shot migration and role-bootstrap hooks. The
-          # runtime API and worker use separate restricted login roles.
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: agents
-        secret_name: social-agents-owner-postgresql
-      - operator:
-          name: social-agents-production-owner
-          databases: [social_agents_production]
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: social-agents-production
-        secret_name: social-agents-owner-postgresql
-      - operator:
-          name: social-agents-preproduction-owner
-          databases: [social_agents_preproduction]
-          options: BYPASSRLS CREATEROLE
-          grantPublicSchemaAccess: true
-        target_namespace: social-agents-preproduction
-        secret_name: social-agents-owner-postgresql
   mongodb:
     enabled: false
-    service_alias: n0xeid-mongo
+    service_alias: platform-mongo
+    # Deployment repositories add namespaces whose workloads consume the CA.
+    tls_consumer_namespaces: []
     replicas: 3
     storage_size: 20Gi
     data_storage_class: platform-local
@@ -270,7 +233,7 @@ databases:
 gitlab:
   enabled: true
   mode: light
-  # The canonical GitLab UI/API must be reachable at git.n0xeid.xyz for users,
+  # The canonical GitLab UI/API must be reachable at git.platform.example.com for users,
   # webhooks, and external repository mirrors. Registration remains disabled,
   # while authentication and project/group ACLs enforce access.
   public_webservice_enabled: true
@@ -304,13 +267,15 @@ gitlab:
   toolbox_backup_suspended: true
   runner:
     enabled: true
-    # General non-privileged jobs spread across workers 4 and 5. Protected
+    # General non-privileged jobs use autoscaled worker capacity. Protected
     # rootless image builds remain on worker 5 and DinD remains on worker 4.
     general_pool_enabled: true
-    replicas: 2
+    # Four single-job managers keep the normal eight-job validation pipeline
+    # below the five-minute queue SLO without admitting an unbounded burst.
+    replicas: 4
     namespace: gitlab-ci-general
-    # One job per manager preserves two-job aggregate concurrency without a
-    # rollout surge becoming an unintended third execution slot.
+    # One job per manager preserves four-job aggregate concurrency without a
+    # rollout surge becoming an unintended fifth execution slot.
     concurrent_jobs: 1
     cleanup_grace_period_seconds: 5
     pod_termination_grace_period_seconds: 5
@@ -318,7 +283,7 @@ gitlab:
     dedicated_worker_index: 5
     job_resources:
       cpu_request: 750m
-      cpu_limit: '3'
+      cpu_limit: '2'
       memory_request: 2Gi
       memory_limit: 6Gi
       service_cpu_request: 200m
@@ -329,13 +294,15 @@ gitlab:
       helper_cpu_limit: '1'
       helper_memory_request: 256Mi
       helper_memory_limit: 1Gi
-    # The quota is an admission ceiling, not a reservation. It covers two
-    # active jobs plus bounded overlap while completed executor pods terminate.
+    # The quota is an admission ceiling, not a reservation. It covers four
+    # active jobs, their helpers/services, and bounded termination overlap.
     general_pool_quota:
-      requests_cpu: '5'
-      requests_memory: 12Gi
-      limits_cpu: '20'
-      limits_memory: 34Gi
+      requests_cpu: '12'
+      requests_memory: 20Gi
+      limits_cpu: '32'
+      limits_memory: 56Gi
+      requests_ephemeral_storage: 96Gi
+      limits_ephemeral_storage: 192Gi
     # Image builds need build-container-only Unconfined seccomp/AppArmor for
     # rootless BuildKit. Keep that narrow exception in a protected, tagged,
     # single-job runner rather than weakening the general CI runner.

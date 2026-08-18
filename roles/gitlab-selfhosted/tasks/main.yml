@@ -16,10 +16,10 @@
     gitlab_webservice_max_replicas: '{{ gitlab.webservice_max_replicas | default(10) }}'
     _gitlab_registry_pullthrough_env: >-
       {{
-        [
-          {'name': 'REGISTRY_PROXY_REMOTEURL', 'value': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io')},
-          {'name': 'REGISTRY_PROXY_TTL', 'value': gitlab_registry_pullthrough_ttl | default('720h')}
-        ] if (gitlab_registry_pullthrough_enabled | default(false)) | bool else []
+        {
+          'REGISTRY_PROXY_REMOTEURL': gitlab_registry_pullthrough_remote_url | default('https://registry-1.docker.io'),
+          'REGISTRY_PROXY_TTL': gitlab_registry_pullthrough_ttl | default('720h')
+        } if (gitlab_registry_pullthrough_enabled | default(false)) | bool else {}
       }}
     gitlab_webservice_worker_processes: '{{ gitlab.worker_processes | default(2) }}'
     gitlab_webservice_memory_request: '{{ gitlab.webservice_memory_request | default("1Gi" if (gitlab.mode | default("light" if resource_tier in ["minimal", "small"] or tier == "medium" else "full")) == "light" else "2.5Gi") }}'
@@ -56,6 +56,17 @@
       {{ gitlab.runner.general_pool_enabled | default(false) | bool }}
     gitlab_runner_job_resources: >-
       {{ gitlab.runner.job_resources | default({}) }}
+    # A registry deploy token is optional.  Normal CI job-token image pulls
+    # remain the default, so a runner reconcile never assumes a secret that
+    # was neither declared in the public profile nor persisted in Vault.
+    gitlab_registry_pull_enabled: >-
+      {{ ((gitlab.runner.registry_pull | default({})).enabled | default(false)) | bool }}
+    gitlab_registry_pull_registry: >-
+      {{ (gitlab.runner.registry_pull | default({})).registry | default('', true) | trim }}
+    gitlab_registry_pull_username: >-
+      {{ (gitlab.runner.registry_pull | default({})).username | default('', true) | trim }}
+    gitlab_runner_node_selector: >-
+      {{ gitlab.runner.node_selector | default({}) }}
     gitlab_runner_cleanup_grace_period_seconds: >-
       {{ gitlab.runner.cleanup_grace_period_seconds | default(5) }}
     gitlab_runner_pod_termination_grace_period_seconds: >-
@@ -131,7 +142,7 @@
       - gitlab_runner_namespace != gitlab_docker_host_runner_namespace
       - >-
         not (gitlab_general_runner_pool_enabled | bool) or
-        (gitlab_runner_replicas | int) == 2
+        (gitlab_runner_replicas | int) == 4
       - >-
         not (gitlab_general_runner_pool_enabled | bool) or
         (gitlab_runner_concurrent | int) == 1
@@ -141,7 +152,7 @@
     fail_msg: >-
       gitlab.runner.enabled=true requires a positive runner.concurrent_jobs value,
       an existing GitLab Runner authentication token (glrt-...), and a declared
-      HA general pool, when selected, of exactly two managers with one job each. Create an
+      HA general pool, when selected, of exactly four managers with one job each. Create an
       instance runner in GitLab Admin > CI/CD > Runners, export
       GITLAB_RUNNER_TOKEN=glrt-..., and rerun the playbook. The token is persisted
       only in the Ansible Vault-encrypted platform secrets file. Legacy runner
@@ -155,7 +166,7 @@
     api_version: v1
     kind: Node
     label_selectors:
-      - workload.n0xeid.xyz/ci-build=true
+      - workload.platform.example.com/ci-build=true
   register: _gitlab_ci_build_worker
   when:
     - gitlab_runner_enabled | bool
@@ -172,7 +183,7 @@
       - >-
         ((_gitlab_ci_build_worker.resources | first).spec.taints |
          default([]) |
-         selectattr('key', 'equalto', 'workload.n0xeid.xyz/ci-build') |
+         selectattr('key', 'equalto', 'workload.platform.example.com/ci-build') |
          selectattr('value', 'equalto', 'true') |
          selectattr('effect', 'equalto', 'NoSchedule') |
          list | length) == 1
@@ -240,7 +251,7 @@
         name: '{{ gitlab_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
-          gateway.n0xeid.xyz/n0xeid-route: 'true'
+          gateway.platform.example.com/platform-route: 'true'
           pod-security.kubernetes.io/enforce: baseline
           pod-security.kubernetes.io/warn: restricted
   register: _r_create_gitlab_namespace
@@ -1255,7 +1266,7 @@
         namespace: '{{ gitlab_namespace }}'
         name: gitlab-toolbox-backup-tmp
         labels:
-          platform.n0xeid.xyz/backup-scratch: 'true'
+          platform.platform.example.com/backup-scratch: 'true'
   when: gitlab_backup_persistence_enabled | bool
 
 - name: Enforce GitLab post-reconcile readiness
@@ -1931,7 +1942,7 @@
     api_version: v1
     kind: Node
     label_selectors:
-      - workload.n0xeid.xyz/ci-build=true
+      - workload.platform.example.com/ci-build=true
   register: _gitlab_general_pool_build_nodes
   when:
     - gitlab_runner_enabled | bool
@@ -1943,7 +1954,7 @@
     api_version: v1
     kind: Node
     label_selectors:
-      - workload.n0xeid.xyz/ci-docker=true
+      - workload.platform.example.com/ci-docker=true
   register: _gitlab_general_pool_docker_nodes
   when:
     - gitlab_runner_enabled | bool
@@ -2001,7 +2012,7 @@
       metadata:
         name: '{{ item }}'
         labels:
-          workload.n0xeid.xyz/ci-general: 'true'
+          workload.platform.example.com/ci-general: 'true'
   loop: '{{ _gitlab_general_pool_node_names }}'
   loop_control:
     label: '{{ item }}'
@@ -2020,7 +2031,7 @@
       metadata:
         name: '{{ item.metadata.name }}'
         labels:
-          workload.n0xeid.xyz/ci-general: null
+          workload.platform.example.com/ci-general: null
   loop: '{{ _gitlab_general_pool_all_nodes.resources }}'
   loop_control:
     label: '{{ item.metadata.name }}'
@@ -2029,7 +2040,7 @@
     - gitlab_general_runner_pool_enabled | bool
     - item.metadata.name not in _gitlab_general_pool_node_names
     - >-
-      'workload.n0xeid.xyz/ci-general' in
+      'workload.platform.example.com/ci-general' in
       (item.metadata.labels | default({}))
 
 - name: Establish the isolated general CI Runner boundary
@@ -2210,7 +2221,7 @@
         namespace: '{{ gitlab_runner_namespace }}'
         labels:
           app.kubernetes.io/managed-by: ansible
-          workload.n0xeid.xyz/trust-boundary: general-ci
+          workload.platform.example.com/trust-boundary: general-ci
       type: Opaque
       stringData:
         accesskey: '{{ object_storage_ci_cache_access_key }}'
@@ -2253,7 +2264,7 @@
       terminationGracePeriodSeconds: 3600
       shutdown_timeout: 3300
       podLabels:
-        workload.n0xeid.xyz/component: gitlab-runner-manager
+        workload.platform.example.com/component: gitlab-runner-manager
       affinity:
         podAntiAffinity:
           # The hard topology-spread rule below keeps the steady two replicas
@@ -2264,7 +2275,7 @@
               podAffinityTerm:
                 labelSelector:
                   matchLabels:
-                    workload.n0xeid.xyz/component: gitlab-runner-manager
+                    workload.platform.example.com/component: gitlab-runner-manager
                 topologyKey: kubernetes.io/hostname
       topologySpreadConstraints:
         - maxSkew: 1
@@ -2275,7 +2286,7 @@
           nodeTaintsPolicy: Honor
           labelSelector:
             matchLabels:
-              workload.n0xeid.xyz/component: gitlab-runner-manager
+              workload.platform.example.com/component: gitlab-runner-manager
       podDisruptionBudget:
         maxUnavailable: 1
       metrics:
@@ -2287,10 +2298,10 @@
         create: true
       nodeSelector: >-
         {{
-          {'workload.n0xeid.xyz/ci-general': 'true'}
+          {'workload.platform.example.com/ci-general': 'true'}
           if gitlab_general_runner_pool_enabled | bool
           else (
-            {'workload.n0xeid.xyz/ci-build': 'true'}
+            {'workload.platform.example.com/ci-build': 'true'}
             if gitlab_runner_worker_index | default(0) | int > 0
             else {'node-role.kubernetes.io/worker': 'true'}
           )
@@ -2300,13 +2311,13 @@
           (
             [
               {
-                'key': 'workload.n0xeid.xyz/ci-build',
+                'key': 'workload.platform.example.com/ci-build',
                 'operator': 'Equal',
                 'value': 'true',
                 'effect': 'NoSchedule'
               },
               {
-                'key': 'workload.n0xeid.xyz/ci-docker',
+                'key': 'workload.platform.example.com/ci-docker',
                 'operator': 'Equal',
                 'value': 'true',
                 'effect': 'NoSchedule'
@@ -2316,7 +2327,7 @@
             else (
               [
                 {
-                  'key': 'workload.n0xeid.xyz/ci-build',
+                  'key': 'workload.platform.example.com/ci-build',
                   'operator': 'Equal',
                   'value': 'true',
                   'effect': 'NoSchedule'
@@ -2352,11 +2363,15 @@
           {% if gitlab_general_runner_pool_enabled | default(false) %}
               # General non-privileged jobs run only on the two isolated CI
               # workers and tolerate each node's narrow dedicated taint.
-              node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }
-              node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule", "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
+              node_selector = { "workload.platform.example.com/ci-general" = "true" }
+              node_tolerations = { "workload.platform.example.com/ci-build=true" = "NoSchedule", "workload.platform.example.com/ci-docker=true" = "NoSchedule" }
           {% elif gitlab_runner_worker_index | default(0) | int > 0 %}
-              node_selector = { "workload.n0xeid.xyz/ci-build" = "true" }
-              node_tolerations = { "workload.n0xeid.xyz/ci-build=true" = "NoSchedule" }
+              node_selector = { "workload.platform.example.com/ci-build" = "true" }
+              node_tolerations = { "workload.platform.example.com/ci-build=true" = "NoSchedule" }
+          {% elif gitlab_runner_node_selector.key | default('') | length > 0 %}
+              # A cluster profile may select a stable shared worker pool without
+              # embedding provider-specific labels in this public role.
+              node_selector = { "{{ gitlab_runner_node_selector.key }}" = "{{ gitlab_runner_node_selector.value }}" }
           {% else %}
               node_selector = { "node-role.kubernetes.io/worker" = "true" }
           {% endif %}
@@ -2370,19 +2385,32 @@
               cpu_limit = "{{ gitlab_runner_job_resources.cpu_limit | default(gitlab_runner_cpu_limit) }}"
               memory_request = "{{ gitlab_runner_job_resources.memory_request | default(gitlab_runner_memory_request) }}"
               memory_limit = "{{ gitlab_runner_job_resources.memory_limit | default(gitlab_runner_memory_limit) }}"
+              ephemeral_storage_request = "{{ gitlab_runner_job_resources.ephemeral_storage_request | default(gitlab_runner_ephemeral_storage_request) }}"
+              ephemeral_storage_limit = "{{ gitlab_runner_job_resources.ephemeral_storage_limit | default(gitlab_runner_ephemeral_storage_limit) }}"
               service_cpu_request = "{{ gitlab_runner_job_resources.service_cpu_request | default(gitlab_runner_service_cpu_request) }}"
               service_cpu_limit = "{{ gitlab_runner_job_resources.service_cpu_limit | default(gitlab_runner_service_cpu_limit) }}"
               service_memory_request = "{{ gitlab_runner_job_resources.service_memory_request | default(gitlab_runner_service_memory_request) }}"
               service_memory_limit = "{{ gitlab_runner_job_resources.service_memory_limit | default(gitlab_runner_service_memory_limit) }}"
+              service_ephemeral_storage_request = "{{ gitlab_runner_job_resources.service_ephemeral_storage_request | default(gitlab_runner_service_ephemeral_storage_request) }}"
+              service_ephemeral_storage_limit = "{{ gitlab_runner_job_resources.service_ephemeral_storage_limit | default(gitlab_runner_service_ephemeral_storage_limit) }}"
               helper_cpu_request = "{{ gitlab_runner_job_resources.helper_cpu_request | default(gitlab_runner_helper_cpu_request) }}"
               helper_cpu_limit = "{{ gitlab_runner_job_resources.helper_cpu_limit | default(gitlab_runner_helper_cpu_limit) }}"
               helper_memory_request = "{{ gitlab_runner_job_resources.helper_memory_request | default(gitlab_runner_helper_memory_request) }}"
               helper_memory_limit = "{{ gitlab_runner_job_resources.helper_memory_limit | default(gitlab_runner_helper_memory_limit) }}"
+              helper_ephemeral_storage_request = "{{ gitlab_runner_job_resources.helper_ephemeral_storage_request | default(gitlab_runner_helper_ephemeral_storage_request) }}"
+              helper_ephemeral_storage_limit = "{{ gitlab_runner_job_resources.helper_ephemeral_storage_limit | default(gitlab_runner_helper_ephemeral_storage_limit) }}"
               [runners.kubernetes.pod_security_context]
+                # Job namespaces enforce the Kubernetes restricted profile.  Keep
+                # this on the runner's generated build/helper/service pods as
+                # well as on the manager deployment security context.
+                run_as_non_root = true
+                run_as_user = 1000
+                run_as_group = 1000
+                fs_group = 1000
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
               [runners.kubernetes.pod_labels]
-                "workload.n0xeid.xyz/class" = "ci-job"
+                "workload.platform.example.com/class" = "ci-job"
               [[runners.kubernetes.pod_spec]]
                 name = "spread-ci-jobs-across-workers"
                 patch = '''
@@ -2391,7 +2419,7 @@
                       requiredDuringSchedulingIgnoredDuringExecution:
                         - labelSelector:
                             matchLabels:
-                              workload.n0xeid.xyz/class: protected-docker-smoke-job
+                              workload.platform.example.com/class: protected-docker-smoke-job
                           # Pod affinity terms default to the current namespace.
                           # Protected jobs live in a separate namespace, so name
                           # it explicitly or this hard anti-affinity is a no-op.
@@ -2410,7 +2438,7 @@
                       nodeTaintsPolicy: Honor
                       labelSelector:
                         matchLabels:
-                          workload.n0xeid.xyz/class: ci-job
+                          workload.platform.example.com/class: ci-job
                 '''
                 patch_type = "strategic"
             [runners.cache]
@@ -2504,11 +2532,11 @@
     - gitlab_runner_enabled | bool
     - gitlab_general_runner_pool_enabled | bool
 
-- name: Require the converged general Runner to remain on the isolated two-node pool
+- name: Require the converged general Runner to remain on the four-manager autoscaled pool
   tags: [gitlab-runner, gitlab-general-runner]
   ansible.builtin.assert:
     that:
-      - ((_gitlab_runner_deployment.resources | first).spec.replicas | int) == 2
+      - ((_gitlab_runner_deployment.resources | first).spec.replicas | int) == 4
       - >-
         ((_gitlab_runner_deployment.resources | first).spec.strategy.rollingUpdate.maxSurge |
          int) == 0
@@ -2517,15 +2545,15 @@
          int) == 1
       - >-
         ((_gitlab_runner_deployment.resources | first).spec.template.spec.nodeSelector |
-         default({})).get('workload.n0xeid.xyz/ci-general', '') == 'true'
+         default({})).get('workload.platform.example.com/ci-general', '') == 'true'
       - >-
         ((_gitlab_runner_deployment.resources | first).spec.template.spec.tolerations |
-         selectattr('key', 'equalto', 'workload.n0xeid.xyz/ci-build') |
+         selectattr('key', 'equalto', 'workload.platform.example.com/ci-build') |
          selectattr('value', 'equalto', 'true') |
          selectattr('effect', 'equalto', 'NoSchedule') | list | length) == 1
       - >-
         ((_gitlab_runner_deployment.resources | first).spec.template.spec.tolerations |
-         selectattr('key', 'equalto', 'workload.n0xeid.xyz/ci-docker') |
+         selectattr('key', 'equalto', 'workload.platform.example.com/ci-docker') |
          selectattr('value', 'equalto', 'true') |
          selectattr('effect', 'equalto', 'NoSchedule') | list | length) == 1
       - (_gitlab_general_runner_manager_pods.resources | default([]) | length) == 2
@@ -2538,15 +2566,15 @@
          rejectattr('status.phase', 'equalto', 'Running') | list | length) == 0
       - (_gitlab_general_runner_configmap.resources | default([]) | length) == 1
       - >-
-        'node_selector = { "workload.n0xeid.xyz/ci-general" = "true" }' in
+        'node_selector = { "workload.platform.example.com/ci-general" = "true" }' in
         ((_gitlab_general_runner_configmap.resources | first).data['config.template.toml'] |
          default(''))
       - >-
-        '"workload.n0xeid.xyz/ci-build=true" = "NoSchedule"' in
+        '"workload.platform.example.com/ci-build=true" = "NoSchedule"' in
         ((_gitlab_general_runner_configmap.resources | first).data['config.template.toml'] |
          default(''))
       - >-
-        '"workload.n0xeid.xyz/ci-docker=true" = "NoSchedule"' in
+        '"workload.platform.example.com/ci-docker=true" = "NoSchedule"' in
         ((_gitlab_general_runner_configmap.resources | first).data['config.template.toml'] |
          default(''))
       - >-
@@ -2613,7 +2641,7 @@
     kind: Pod
     namespace: '{{ gitlab_namespace }}'
     label_selectors:
-      - workload.n0xeid.xyz/class=ci-job
+      - workload.platform.example.com/class=ci-job
     field_selectors:
       - status.phase!=Succeeded
       - status.phase!=Failed

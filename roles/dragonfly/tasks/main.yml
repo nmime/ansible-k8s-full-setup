@@ -328,7 +328,7 @@
           matchExpressions:
             - key: k8s:app.kubernetes.io/name
               operator: In
-              values: [steel-browser, social-agents]
+              values: "{{ dragonfly_agents_app_names | default(['browser-runtime', 'application-runtime']) }}"
         egress:
           - toEntities: [host]
             toPorts:

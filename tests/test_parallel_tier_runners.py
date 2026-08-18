@@ -42,7 +42,7 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
             "--project",
             "t5-pytest-medium-optimized",
             "--domain",
-            "medium-optimized.n0xeid.xyz",
+            "medium-optimized.platform.example.com",
             "--location",
             "fsn1",
             "--home",
@@ -61,7 +61,7 @@ def test_one_profile_dry_run_preserves_identity_and_isolates_controller(tmp_path
             "tier-tests",
             "--minimum-storage",
             "--dns-zone",
-            "n0xeid.xyz",
+            "platform.example.com",
             "--certificate-issuer",
             "letsencrypt-staging",
             "--dry-run",
@@ -138,7 +138,7 @@ def test_all_profiles_dry_run_creates_unique_fail_closed_plan(tmp_path):
         config = controller / "state" / "platform.yaml"
         data = yaml.safe_load(config.read_text(encoding="utf-8"))
         assert data["platform_profile"] == profile
-        assert data["global"]["domain"] == f"t5-pytest-{profile}.n0xeid.xyz"
+        assert data["global"]["domain"] == f"t5-pytest-{profile}.platform.example.com"
         assert data["backup"]["enabled"] is True
         assert data["backup"]["disaster_recovery"]["enabled"] is True
         projects.add(data["global"]["project"])

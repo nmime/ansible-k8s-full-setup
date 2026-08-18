@@ -31,7 +31,7 @@ def test_role_creates_protected_floating_ipv4_and_fixed_standby() -> None:
 
 
 def test_static_snat_is_explicit_and_staging_preserves_masquerade() -> None:
-    nat = read("roles/ha-egress/templates/n0xeid-egress-nat.sh.j2")
+    nat = read("roles/ha-egress/templates/platform-egress-nat.sh.j2")
     assert 'SNAT --to-source "$FLOATING_IP"' in nat
     assert 'if [ "$MODE" = activate ]; then' in nat
     activate = nat.split('if [ "$MODE" = activate ]; then', 1)[1].split("else", 1)[0]
@@ -41,7 +41,7 @@ def test_static_snat_is_explicit_and_staging_preserves_masquerade() -> None:
 
 
 def test_controller_owns_both_provider_mutations_and_rolls_back() -> None:
-    controller = read("roles/ha-egress/templates/n0xeid-egressctl.py.j2")
+    controller = read("roles/ha-egress/templates/platform-egressctl.py.j2")
     assert "/actions/assign" in controller
     assert "/actions/delete_route" in controller
     assert "/actions/add_route" in controller
@@ -52,19 +52,19 @@ def test_controller_owns_both_provider_mutations_and_rolls_back() -> None:
 
 
 def test_watchdog_requires_consecutive_failures_and_uses_lock() -> None:
-    controller = read("roles/ha-egress/templates/n0xeid-egressctl.py.j2")
-    service = read("roles/ha-egress/templates/n0xeid-egress-watchdog.service.j2")
+    controller = read("roles/ha-egress/templates/platform-egressctl.py.j2")
+    service = read("roles/ha-egress/templates/platform-egress-watchdog.service.j2")
     assert "consecutive_failures" in controller
     assert "failure_threshold" in controller
     assert "fcntl.flock(lock, fcntl.LOCK_EX)" in controller
     assert "server[\"status\"] != \"running\"" in controller
-    assert "ExecStartPre=/usr/local/sbin/n0xeid-egress-nat activate" in service
+    assert "ExecStartPre=/usr/local/sbin/platform-egress-nat activate" in service
     assert service.index("ExecStartPre=") < service.index("ExecStart=")
 
 
 def test_controller_secret_is_root_only_and_hidden_from_ansible_output() -> None:
     gateway = read("roles/ha-egress/tasks/configure_gateway.yml")
-    assert "n0xeid-hcloud-token" in gateway
+    assert "platform-hcloud-token" in gateway
     assert "mode: '0600'" in gateway
     assert "no_log: true" in gateway
     assert "install -o root -g root -m 0600" in gateway

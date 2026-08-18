@@ -27,7 +27,7 @@ def test_runner_error_and_queue_alerts_preserve_actionable_dimensions():
     assert "sum by (namespace, runner, runner_name, le)" in content
     assert "humanizeDuration $value" in content
     assert content.count("runbook_url: '{{ alert_runbook_url_resolved }}'") >= 4
-    assert "git.n0xeid.xyz" not in content
+    assert "git.platform.example.com" not in content
     assert "github.com/nmime/ansible-k8s-full-setup/blob/main/docs/RUNBOOK.md" in content
 
 

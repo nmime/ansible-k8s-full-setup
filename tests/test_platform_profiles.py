@@ -472,18 +472,21 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["enabled"] is True
         assert self.profile["gitlab"]["runner"]["general_pool_enabled"] is True
-        assert self.profile["gitlab"]["runner"]["replicas"] == 2
+        assert self.profile["gitlab"]["runner"]["replicas"] == 4
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
-        # Two managers each accept one job and remain isolated on workers 4/5.
+        # Four managers each accept one job on the autoscaled worker pool.
         assert self.profile["gitlab"]["runner"]["concurrent_jobs"] == 1
+        assert self.profile["gitlab"]["runner"]["job_resources"]["cpu_limit"] == "2"
         assert self.profile["gitlab"]["runner"]["job_resources"][
             "memory_limit"
         ] == "6Gi"
         assert self.profile["gitlab"]["runner"]["general_pool_quota"] == {
-            "requests_cpu": "5",
-            "requests_memory": "12Gi",
-            "limits_cpu": "20",
-            "limits_memory": "34Gi",
+            "requests_cpu": "12",
+            "requests_memory": "20Gi",
+            "limits_cpu": "32",
+            "limits_memory": "56Gi",
+            "requests_ephemeral_storage": "96Gi",
+            "limits_ephemeral_storage": "192Gi",
         }
 
     def test_bounds_storage_and_retention_for_the_small_envelope(self):
@@ -1172,7 +1175,6 @@ class TestComponentLifecycle:
             "platform_gitlab_enabled",
             "platform_gitops_enabled",
             "platform_postal_enabled",
-            "platform_temporal_enabled",
         ):
             assert normalized_flag in blackbox
         assert 'targets: "{{ bb_internal_targets }}"' in blackbox

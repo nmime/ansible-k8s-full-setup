@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Private health and Prometheus endpoint for an platform egress gateway."""
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import subprocess
+
+FLOATING_IP = {{ ha_egress_floating_ipv4 | to_json }}
+PRIVATE_IP = {{ ha_egress_config_local_private_ip | to_json }}
+PRIVATE_CIDR = {{ ha_egress_network_cidr | to_json }}
+PORT = {{ ha_egress_health_port | int }}
+
+
+def command_ok(argv: list[str]) -> bool:
+    return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+
+
+def ready() -> tuple[bool, dict[str, bool]]:
+    default_route = subprocess.run(
+        ["ip", "-o", "-4", "route", "show", "to", "default"],
+        text=True, capture_output=True, check=False,
+    )
+    fields = default_route.stdout.split()
+    public_if = fields[4] if len(fields) >= 5 else ""
+    checks = {
+        "ip_forward": open("/proc/sys/net/ipv4/ip_forward", encoding="ascii").read().strip() == "1",
+        "floating_address": command_ok(["ip", "address", "show"]) and command_ok(
+            ["bash", "-c", f"ip -o -4 address show | grep -Fq ' {FLOATING_IP}/32 '"]
+        ),
+        "snat": bool(public_if) and command_ok([
+            "iptables", "-t", "nat", "-C", "POSTROUTING", "-s", PRIVATE_CIDR,
+            "-o", public_if, "-j", "SNAT", "--to-source", FLOATING_IP,
+        ]),
+    }
+    return all(checks.values()), checks
+
+
+def active() -> bool:
+    trace = subprocess.run(
+        ["curl", "--fail", "--silent", "--show-error", "--max-time", "3", "--interface", FLOATING_IP,
+         "https://1.1.1.1/cdn-cgi/trace"],
+        text=True, capture_output=True, check=False,
+    )
+    if trace.returncode == 0 and f"ip={FLOATING_IP}" in trace.stdout.splitlines():
+        return True
+    fallback = subprocess.run(
+        ["curl", "--fail", "--silent", "--show-error", "--max-time", "3", "--interface", FLOATING_IP,
+         "https://api.ipify.org"],
+        text=True, capture_output=True, check=False,
+    )
+    return fallback.returncode == 0 and fallback.stdout.strip() == FLOATING_IP
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        is_ready, checks = ready()
+        if self.path == "/readyz":
+            payload = json.dumps({"ready": is_ready, "checks": checks}).encode()
+            self.send_response(200 if is_ready else 503)
+            content_type = "application/json"
+        elif self.path == "/healthz":
+            is_active = active() if is_ready else False
+            payload = json.dumps({"healthy": is_ready and is_active, "ready": is_ready, "active": is_active}).encode()
+            self.send_response(200 if is_ready and is_active else 503)
+            content_type = "application/json"
+        elif self.path == "/metrics":
+            is_active = active() if is_ready else False
+            payload = (
+                "# HELP platform_egress_ready Gateway forwarding and static SNAT are configured.\n"
+                "# TYPE platform_egress_ready gauge\n"
+                'platform_egress_ready{gateway="' + PRIVATE_IP + '"} ' + str(int(is_ready)) + '\n'
+                "# HELP platform_egress_active Gateway can originate traffic from the Floating IPv4.\n"
+                "# TYPE platform_egress_active gauge\n"
+                'platform_egress_active{gateway="' + PRIVATE_IP + '"} ' + str(int(is_active)) + '\n'
+            ).encode()
+            self.send_response(200)
+            content_type = "text/plain; version=0.0.4"
+        else:
+            payload = b"not found\n"
+            self.send_response(404)
+            content_type = "text/plain"
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+ThreadingHTTPServer((PRIVATE_IP, PORT), Handler).serve_forever()

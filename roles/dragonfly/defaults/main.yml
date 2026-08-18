@@ -1,6 +1,6 @@
 ---
 dragonfly_namespace: dragonfly
-dragonfly_priority_class_name: n0xeid-platform-critical
+dragonfly_priority_class_name: platform-platform-critical
 dragonfly_operator_version: "v1.6.1"
 dragonfly_operator_manifest_sha256: "5a7d65e8d0e1925a4a7a895fd2d6d2cbbb1d7adab5756d80c82f2210bb2434c5"
 dragonfly_image_version: "v1.39.0"

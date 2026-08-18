@@ -118,7 +118,7 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-image-build-manager
+            workload.platform.example.com/class: protected-image-build-manager
         egress:
           - toEntities: [kube-apiserver]
 
@@ -134,10 +134,10 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-image-build-job
+            workload.platform.example.com/class: protected-image-build-job
         egress:
           - toFQDNs:
-              - {matchName: registry.n0xeid.xyz}
+              - {matchName: registry.platform.example.com}
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
@@ -165,7 +165,7 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-image-build-manager
+            workload.platform.example.com/class: protected-image-build-manager
         ingress:
           - fromEndpoints:
               - matchLabels:

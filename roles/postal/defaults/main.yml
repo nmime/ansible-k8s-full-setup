@@ -69,11 +69,7 @@ postal_smtp_client_names: >-
       'argocd',
       'gitlab',
       'grafana',
-      'metabase',
-      'fun-uno-preproduction',
-      'fun-durak-preproduction',
-      'fun-uno-production',
-      'fun-durak-production'
+      'metabase'
     ])
   }}
 postal_smtp_client_namespaces: >-
@@ -84,13 +80,11 @@ postal_smtp_client_namespaces: >-
       'gitlab',
       'monitoring',
       'umami',
-      'glitchtip',
-      'fun-games-production',
-      'fun-games-preproduction'
+      'glitchtip'
     ])
   }}
 postal_worker_index: "{{ postal.worker_index | default(0) | int }}"
-postal_mail_node_label: "workload.n0xeid.xyz/mail"
+postal_mail_node_label: "workload.platform.example.com/mail"
 
 postal_web_replicas: "{{ postal.web_replicas | default(1) }}"
 postal_smtp_replicas: "{{ postal.smtp_replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"

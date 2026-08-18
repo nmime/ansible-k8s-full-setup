@@ -58,7 +58,7 @@ def render_postgresql_users(*, umami_enabled: bool) -> list[dict]:
     environment = Environment()
     environment.filters["bool"] = bool
     rendered = environment.from_string(users_template).render(
-        project_name="n0xeid",
+        project_name="platform",
         app_name="app",
         platform_umami_enabled=umami_enabled,
         databases={
@@ -126,8 +126,8 @@ def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
         umami_memory_request="256Mi",
         umami_memory_limit="768Mi",
         umami_database_namespace="databases",
-        umami_database_cluster="n0xeid-pg",
-        umami_database_service_alias="n0xeid-pg",
+        umami_database_cluster="platform-pg",
+        umami_database_service_alias="platform-pg",
         umami_admin_gateway_name="admin-gateway",
         umami_main_gateway_name="main-gateway",
         umami_gateway_namespace="cilium-system",
@@ -137,8 +137,8 @@ def render_resources(*, replicas: int, hpa_enabled: bool) -> list[dict]:
         umami_websites=[
             {
                 "id": "00000000-0000-4000-8000-000000000001",
-                "name": "UNO",
-                "domain": "uno.example.com",
+                    "name": "Example application",
+                    "domain": "app.example.com",
             }
         ],
     )
@@ -309,7 +309,7 @@ def test_umami_template_renders_valid_ha_and_singleton_resource_sets():
 
 
 def test_umami_dashboard_is_private_and_public_surface_is_minimal():
-    assert 'gateway.n0xeid.xyz/n0xeid-route: "true"' in TASKS
+    assert 'gateway.platform.example.com/platform-route: "true"' in TASKS
     assert "name: umami-dashboard" in RESOURCES
     assert "name: {{ umami_admin_gateway_name }}" in RESOURCES
     assert "name: umami-ingest" in RESOURCES

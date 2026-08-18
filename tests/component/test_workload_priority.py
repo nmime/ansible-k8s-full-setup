@@ -9,11 +9,11 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_priority_classes_keep_services_above_non_preempting_ci():
     defaults = yaml.safe_load((ROOT / "defaults/main.yml").read_text())
     classes = {item["name"]: item for item in defaults["workload_priority_classes"]}
-    assert classes["n0xeid-platform-critical"]["value"] > classes[
-        "n0xeid-production"
+    assert classes["platform-platform-critical"]["value"] > classes[
+        "platform-production"
     ]["value"]
-    assert classes["n0xeid-production"]["value"] > 0
-    for name in ("n0xeid-ci", "n0xeid-batch"):
+    assert classes["platform-production"]["value"] > 0
+    for name in ("platform-ci", "platform-batch"):
         assert classes[name]["value"] < 0
         assert classes[name]["preemption_policy"] == "Never"
 
@@ -24,7 +24,7 @@ def test_late_priority_reconcile_covers_controller_kinds_and_namespace_labels():
     assert "kind: Deployment" in tasks
     assert "kind: StatefulSet" in tasks
     assert "kind: DaemonSet" in tasks
-    assert "n0xeid.xyz/environment-tier" in tasks
+    assert "platform.example.com/environment-tier" in tasks
     assert "priorityClassName" in tasks
     assert "name: workload-priority" in playbook
 
@@ -32,7 +32,7 @@ def test_late_priority_reconcile_covers_controller_kinds_and_namespace_labels():
 def test_ci_manager_override_is_not_promoted_to_platform_critical():
     defaults = yaml.safe_load((ROOT / "defaults/main.yml").read_text())
     assert defaults["workload_priority_controller_overrides"] == {
-        "gitlab-ci-general/Deployment/gitlab-runner": "n0xeid-ci"
+        "gitlab-ci-general/Deployment/gitlab-runner": "platform-ci"
     }
     apply_task = (
         ROOT / "roles/workload-priority/tasks/apply-controller.yml"

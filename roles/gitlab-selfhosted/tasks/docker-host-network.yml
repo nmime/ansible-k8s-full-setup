@@ -10,7 +10,7 @@
         namespace: '{{ gitlab_docker_host_runner_namespace }}'
         labels:
           app.kubernetes.io/managed-by: ansible
-          workload.n0xeid.xyz/trust-boundary: protected-docker-smoke
+          workload.platform.example.com/trust-boundary: protected-docker-smoke
       spec:
         limits:
           - type: Container
@@ -185,7 +185,7 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+            workload.platform.example.com/class: protected-docker-smoke-manager
         egress:
           - toEntities: [kube-apiserver]
 
@@ -221,10 +221,10 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-job
+            workload.platform.example.com/class: protected-docker-smoke-job
         egress:
           - toFQDNs:
-              - {matchName: registry.n0xeid.xyz}
+              - {matchName: registry.platform.example.com}
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
@@ -234,7 +234,7 @@
               - {matchName: production.cloudfront.docker.com}
               # Protected component jobs publish their cacheable Nx result
               # through the authenticated public cache route.
-              - {matchName: nx-cache.n0xeid.xyz}
+              - {matchName: nx-cache.platform.example.com}
               - {matchPattern: '*.docker.com'}
               - {matchPattern: '*.docker.io'}
               - {matchPattern: '*.cloudflarestorage.com'}
@@ -268,7 +268,7 @@
       spec:
         endpointSelector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+            workload.platform.example.com/class: protected-docker-smoke-manager
         ingress:
           - fromEndpoints:
               - matchLabels:
@@ -277,3 +277,41 @@
               - ports:
                   - {port: '9252', protocol: TCP}
   when: platform_observability_enabled | default(false) | bool
+
+- name: Docker smoke | Discover legacy Cilium selector policies
+  kubernetes.core.k8s_info:
+    api_version: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: '{{ item }}'
+  loop:
+    - allow-manager-kube-api
+    - allow-build-dependencies
+    - allow-runner-metrics
+  register: _docker_smoke_cilium_selector_policies
+  changed_when: false
+
+- name: Docker smoke | Remove retired private workload selector labels
+  kubernetes.core.k8s_json_patch:
+    api_version: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    namespace: '{{ gitlab_docker_host_runner_namespace }}'
+    name: '{{ item.metadata.name }}'
+    patch:
+      - op: remove
+        path: >-
+          /spec/endpointSelector/matchLabels/{{
+            (item.spec.endpointSelector.matchLabels | dict2items |
+             rejectattr('key', 'equalto', 'workload.platform.example.com/class') |
+             selectattr('key', 'match', '^workload\\.') |
+             map(attribute='key') | first) | replace('/', '~1')
+          }}
+  loop: >-
+    {{ _docker_smoke_cilium_selector_policies.results |
+       map(attribute='resources') | flatten }}
+  loop_control:
+    label: '{{ item.metadata.name }}'
+  when: >-
+    (item.spec.endpointSelector.matchLabels | dict2items |
+     rejectattr('key', 'equalto', 'workload.platform.example.com/class') |
+     selectattr('key', 'match', '^workload\\.') | list | length) > 0

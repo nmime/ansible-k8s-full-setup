@@ -12,7 +12,7 @@
 #   image-builder  ns gitlab-image-builds privileged      tags [image-builder,docker] concurrency 2  req 1/1Gi     lim 4/8Gi
 #   docker-host    ns gitlab-docker-builds privileged dind tags [docker-host,dind]    concurrency 2  privileged
 #
-# Priority migration (graceful): the new PriorityClass n0xeid-ci (-100, Never) is
+# Priority migration (graceful): the new PriorityClass platform-ci (-100, Never) is
 # created FIRST (see platform scheduling role), every CI job pod is remapped to it,
 # then the legacy platform-ci / app-ci-high strategic patches are removed. CI can
 # never evict production (Never preemption) and always loses to prod under pressure.
@@ -36,7 +36,7 @@
         namespace: '{{ item }}'
         labels:
           app.kubernetes.io/part-of: gitlab-runner-hygiene
-          workload.n0xeid.xyz/component: ci-job-sa
+          workload.platform.example.com/component: ci-job-sa
       automountServiceAccountToken: false
   loop:
     - '{{ gitlab_runner_namespace }}'                 # gitlab-ci-general
@@ -90,12 +90,26 @@
     label: '{{ item }}'
 
 # ---------------------------------------------------------------------------
-# 1b. Registry pull secret — least-privilege docker-registry secret used by job
-#     pods via [runners.kubernetes] image_pull_secrets. Backed by a read-only
-#     deploy token (read_registry) on the platform group, so job pods can pull
-#     from the private registry without the runner's per-job token magic.
+# 1b. Registry pull secret — opt-in least-privilege docker-registry secret used
+#     by job pods via [runners.kubernetes] image_pull_secrets. Normal job-token
+#     pulls remain the secure default; a cluster may explicitly enable this
+#     only when its encrypted state provides a read-only deploy-token password.
 # ---------------------------------------------------------------------------
+- name: RUNNERS-DYN | Require an explicit registry pull credential contract
+  no_log: true
+  ansible.builtin.assert:
+    that:
+      - gitlab_registry_pull_registry | length > 0
+      - gitlab_registry_pull_username | length > 0
+      - gitlab_registry_pull_token | default('', true) | string | trim | length > 0
+    fail_msg: >-
+      Set gitlab.runner.registry_pull.registry, username, and the encrypted
+      gitlab_registry_pull_token before enabling the optional registry pull
+      secret for dynamic Runner pools.
+  when: gitlab_registry_pull_enabled | bool
+
 - name: RUNNERS-DYN | Create gitlab-registry-pull docker-registry secrets
+  no_log: true
   kubernetes.core.k8s:
     state: present
     definition:
@@ -109,16 +123,22 @@
           app.kubernetes.io/part-of: gitlab-runner-hygiene
       stringData:
         .dockerconfigjson: >-
-          {{ '{"auths":{"registry.n0xeid.xyz":{"username":"gitlab+deploy-token-139","password":"' ~
-             gitlab_registry_pull_token ~ '","auth":"' ~
-             (('gitlab+deploy-token-139:' ~ gitlab_registry_pull_token) | b64encode) ~
-             '"}}}' }}
+          {{ {
+               'auths': {
+                 gitlab_registry_pull_registry: {
+                   'username': gitlab_registry_pull_username,
+                   'password': gitlab_registry_pull_token,
+                   'auth': (gitlab_registry_pull_username ~ ':' ~ gitlab_registry_pull_token) | b64encode
+                 }
+               }
+             } | to_json }}
   loop:
     - '{{ gitlab_runner_namespace }}'
     - '{{ gitlab_image_builder_runner_namespace }}'
     - '{{ gitlab_docker_host_runner_namespace }}'
   loop_control:
     label: '{{ item }}'
+  when: gitlab_registry_pull_enabled | bool
 
 # ---------------------------------------------------------------------------
 # 1. Resource governance — ResourceQuota (pods+cpu+mem cap) + LimitRange defaults.
@@ -140,8 +160,12 @@
           requests.memory: 32Gi
           limits.cpu: '40'
           limits.memory: 64Gi
-          requests.ephemeral-storage: 64Gi
-          limits.ephemeral-storage: 128Gi
+          requests.ephemeral-storage: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).requests_ephemeral_storage |
+               default('96Gi') }}
+          limits.ephemeral-storage: >-
+            {{ (gitlab.runner.general_pool_quota | default({})).limits_ephemeral_storage |
+               default('192Gi') }}
           services: '12'
           secrets: '40'
           configmaps: '24'
@@ -162,8 +186,9 @@
             # Defaults applied when a job omits requests/limits.
             defaultRequest: {cpu: 100m, memory: 128Mi, ephemeral-storage: 256Mi}
             default: {cpu: '1', memory: 2Gi, ephemeral-storage: 4Gi}
-            # Hard ceiling so a runaway job cannot monopolise a worker.
-            max: {cpu: '2', memory: 4Gi, ephemeral-storage: 16Gi}
+            # Hard ceiling so a runaway job cannot monopolise a worker, while
+            # still admitting the declared 6Gi validation/build job limit.
+            max: {cpu: '2', memory: 6Gi, ephemeral-storage: 16Gi}
 
 - name: RUNNERS-DYN | ResourceQuota for image-builder pool
   kubernetes.core.k8s:
@@ -320,7 +345,7 @@
         namespace: gitlab-ci-cleanup
         labels:
           app.kubernetes.io/part-of: gitlab-runner-hygiene
-          workload.n0xeid.xyz/component: ci-cleanup
+          workload.platform.example.com/component: ci-cleanup
       spec:
         schedule: '*/15 * * * *'
         timeZone: UTC
@@ -335,11 +360,11 @@
             template:
               metadata:
                 labels:
-                  workload.n0xeid.xyz/component: ci-cleanup
+                  workload.platform.example.com/component: ci-cleanup
               spec:
                 restartPolicy: Never
                 serviceAccountName: ci-pod-sweeper
-                priorityClassName: n0xeid-batch
+                priorityClassName: platform-batch
                 containers:
                   - name: sweep
                     image: bitnami/kubectl:1.32
@@ -394,7 +419,7 @@
                       seccompProfile: {type: RuntimeDefault}
 
 # ---------------------------------------------------------------------------
-# 3. Priority remap — patch each runner ConfigMap so job pods use n0xeid-ci and
+# 3. Priority remap — patch each runner ConfigMap so job pods use platform-ci and
 #    drop the legacy platform-ci / app-ci-high baseline + strategic patches.
 #    The ConfigMaps are Helm-managed; we patch the config.template.toml data key
 #    only (the part that controls job-pod generation), leaving Helm able to
@@ -414,23 +439,25 @@
   register: _runners_dyn_general_cm
   changed_when: false
 
-- name: RUNNERS-DYN | Remap general-ci job pods to n0xeid-ci priority
+- name: RUNNERS-DYN | Remap general-ci job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
-    kind: ConfigMap
-    api_version: v1
-    namespace: '{{ gitlab_runner_namespace }}'
-    name: '{{ _runners_dyn_general_cm.resources[0].metadata.name }}'
-    data:
-      config.template.toml: >-
-        {{
-          (_runners_dyn_general_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
-            | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
-          )
-        }}
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: '{{ gitlab_runner_namespace }}'
+        name: '{{ _runners_dyn_general_cm.resources[0].metadata.name }}'
+      data:
+        config.template.toml: >-
+          {{
+            (_runners_dyn_general_cm.resources[0].data['config.template.toml']
+              | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+              | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+              | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
+              | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
+            )
+          }}
   when: _runners_dyn_general_cm.resources | length > 0
   register: _runners_dyn_general_patch
 
@@ -442,23 +469,25 @@
   register: _runners_dyn_builder_cm
   changed_when: false
 
-- name: RUNNERS-DYN | Remap image-builder job pods to n0xeid-ci priority
+- name: RUNNERS-DYN | Remap image-builder job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
-    kind: ConfigMap
-    api_version: v1
-    namespace: '{{ gitlab_image_builder_runner_namespace }}'
-    name: '{{ _runners_dyn_builder_cm.resources[0].metadata.name }}'
-    data:
-      config.template.toml: >-
-        {{
-          (_runners_dyn_builder_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
-            | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
-          )
-        }}
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+        name: '{{ _runners_dyn_builder_cm.resources[0].metadata.name }}'
+      data:
+        config.template.toml: >-
+          {{
+            (_runners_dyn_builder_cm.resources[0].data['config.template.toml']
+              | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+              | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+              | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
+              | regex_replace('(?s)\s*\[\[runners\.kubernetes\.pod_spec\]\]\s*name = "app-ci-high-priority".*?patch_type = "strategic"', '')
+            )
+          }}
   when: _runners_dyn_builder_cm.resources | length > 0
   register: _runners_dyn_builder_patch
 
@@ -470,22 +499,24 @@
   register: _runners_dyn_docker_cm
   changed_when: false
 
-- name: RUNNERS-DYN | Remap docker-host job pods to n0xeid-ci priority
+- name: RUNNERS-DYN | Remap docker-host job pods to platform-ci priority
   kubernetes.core.k8s:
     state: present
-    kind: ConfigMap
-    api_version: v1
-    namespace: '{{ gitlab_docker_host_runner_namespace }}'
-    name: '{{ _runners_dyn_docker_cm.resources[0].metadata.name }}'
-    data:
-      config.template.toml: >-
-        {{
-          (_runners_dyn_docker_cm.resources[0].data['config.template.toml']
-            | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "n0xeid-ci"')
-            | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "n0xeid-ci"')
-            | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "n0xeid-ci"')
-          )
-        }}
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+        name: '{{ _runners_dyn_docker_cm.resources[0].metadata.name }}'
+      data:
+        config.template.toml: >-
+          {{
+            (_runners_dyn_docker_cm.resources[0].data['config.template.toml']
+              | regex_replace('priority_class_name = "platform-ci"', 'priority_class_name = "platform-ci"')
+              | regex_replace('helper_priority_class_name = "platform-ci"', 'helper_priority_class_name = "platform-ci"')
+              | regex_replace('service_priority_class_name = "platform-ci"', 'service_priority_class_name = "platform-ci"')
+            )
+          }}
   when: _runners_dyn_docker_cm.resources | length > 0
   register: _runners_dyn_docker_patch
 
@@ -513,46 +544,3 @@
     _runners_dyn_general_patch.changed or
     _runners_dyn_builder_patch.changed or
     _runners_dyn_docker_patch.changed
-
-# ---------------------------------------------------------------------------
-# 4. GitLab API — register/refresh the three runners with the correct tags and
-#    run_untagged=false. Idempotent: PUT is safe to repeat.
-# ---------------------------------------------------------------------------
-- name: RUNNERS-DYN | Refresh runner registrations via GitLab API
-  ansible.builtin.uri:
-    url: 'https://{{ gitlab_domain }}/api/v4/runners/{{ item.id }}'
-    method: PUT
-    headers:
-      PRIVATE-TOKEN: '{{ gitlab_admin_token }}'
-    body_format: json
-    body:
-      description: '{{ item.description }}'
-      tag_list: '{{ item.tags }}'
-      run_untagged: '{{ item.run_untagged }}'
-      active: true
-    status_code: [200]
-    timeout: 60
-  loop:
-    - id: 107
-      description: 'n0xeid-general-ci'
-      tags: ['general']
-      run_untagged: false
-    - id: 39
-      description: 'ansible-k8s-protected-image-builder'
-      tags: ['image-builder', 'docker']
-      run_untagged: false
-    - id: 40
-      description: 'ansible-k8s-protected-docker-host'
-      tags: ['docker-host', 'dind']
-      run_untagged: false
-  loop_control:
-    label: '{{ item.id }} ({{ item.description }})'
-  register: _runners_dyn_api
-  changed_when: false
-
-- name: RUNNERS-DYN | Show refreshed runners
-  ansible.builtin.debug:
-    msg: '{{ item.json.id }} tags={{ item.json.tag_list }} run_untagged={{ item.json.run_untagged }} active={{ item.json.active }}'
-  loop: '{{ _runners_dyn_api.results }}'
-  loop_control:
-    label: '{{ item.json.id }}'

@@ -357,7 +357,7 @@ evaluate_pvc_protection_gate() {
       $pvc[0].items[]
       | select(.metadata.deletionTimestamp == null)
       | . as $claim
-      | (($claim.metadata.labels["platform.n0xeid.xyz/backup-scratch"] // "") == "true") as $backup_scratch
+      | (($claim.metadata.labels["platform.platform.example.com/backup-scratch"] // "") == "true") as $backup_scratch
       | [$mounts[] | select(
           .namespace == $claim.metadata.namespace and
           .claim == $claim.metadata.name
@@ -388,7 +388,7 @@ evaluate_pvc_protection_gate() {
       project: $project,
       source_context: $context,
       evaluated_at: (now | todateiso8601),
-      policy: "every non-terminating PVC must be Bound; PVCs not explicitly labeled platform.n0xeid.xyz/backup-scratch=true must also be mounted by a non-terminating Running pod",
+      policy: "every non-terminating PVC must be Bound; PVCs not explicitly labeled platform.platform.example.com/backup-scratch=true must also be mounted by a non-terminating Running pod",
       status: (if all($claims[]; .protected) then "complete" else "incomplete" end),
       summary: {
         evaluated: ($claims | length),

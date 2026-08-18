@@ -5,7 +5,7 @@ metadata:
   namespace: gitlab-ci-cleanup
   labels:
     app.kubernetes.io/part-of: gitlab-runner-hygiene
-    workload.n0xeid.xyz/component: ci-cleanup
+    workload.platform.example.com/component: ci-cleanup
 spec:
   schedule: '*/15 * * * *'
   timeZone: UTC
@@ -20,11 +20,11 @@ spec:
       template:
         metadata:
           labels:
-            workload.n0xeid.xyz/component: ci-cleanup
+            workload.platform.example.com/component: ci-cleanup
         spec:
           restartPolicy: Never
           serviceAccountName: ci-pod-sweeper
-          priorityClassName: n0xeid-batch
+          priorityClassName: platform-batch
           containers:
             - name: sweep
               # Same image the other CI cleanup CronJobs use (pulls fine via

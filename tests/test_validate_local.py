@@ -221,7 +221,9 @@ class TestScriptConfigIntegration:
 
     def test_generated_kubespray_checkout_is_excluded(self):
         with open(os.path.join(REPO_ROOT, ".yamllint.yaml")) as f:
-            assert "playbooks/kubespray/" in f.read()
+            yamllint_config = f.read()
+        assert "playbooks/kubespray/" in yamllint_config
+        assert ".cache/" in yamllint_config
         with open(os.path.join(REPO_ROOT, ".ansible-lint.yml")) as f:
             ansible_lint = f.read()
         assert "playbooks/kubespray/" in ansible_lint

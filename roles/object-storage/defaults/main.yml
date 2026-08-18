@@ -18,6 +18,10 @@ object_storage_volume_size: "{{ '20Gi' if resource_tier | default(tier) == 'mini
 object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
 object_storage_filer_node_selector: {}
+object_storage_volume_cpu_request: 100m
+object_storage_volume_cpu_limit: "1"
+object_storage_volume_memory_request: 256Mi
+object_storage_volume_memory_limit: 1Gi
 object_storage_filer_cpu_request: 100m
 object_storage_filer_cpu_limit: "1"
 object_storage_filer_memory_request: 256Mi

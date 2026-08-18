@@ -35,7 +35,7 @@
       {{
         {
           'api_endpoint': ha_egress_api_endpoint,
-          'token_file': '/etc/n0xeid-hcloud-token',
+          'token_file': '/etc/platform-hcloud-token',
           'network_id': ha_egress_network_document.id,
           'floating_ip_id': ha_egress_floating_document.id,
           'floating_ip': ha_egress_floating_ipv4,
@@ -45,7 +45,7 @@
           'health_timeout_seconds': ha_egress_health_timeout_seconds,
           'failure_threshold': ha_egress_failure_threshold,
           'promotion_timeout_seconds': ha_egress_promotion_timeout_seconds,
-          'state_file': '/var/lib/n0xeid-egress/watchdog-state.json'
+          'state_file': '/var/lib/platform-egress/watchdog-state.json'
         } | to_nice_json
       }}
 
@@ -64,13 +64,13 @@
   vars:
     ha_egress_config_local_private_ip: "{{ ha_gateway.private_ip }}"
   loop:
-    - {src: n0xeid-egress-nat.sh.j2, dest: n0xeid-egress-nat, mode: '0755'}
-    - {src: n0xeid-egress-health.py.j2, dest: n0xeid-egress-health, mode: '0755'}
-    - {src: n0xeid-egressctl.py.j2, dest: n0xeid-egressctl, mode: '0755'}
-    - {src: n0xeid-egress-nat.service.j2, dest: n0xeid-egress-nat.service, mode: '0644'}
-    - {src: n0xeid-egress-health.service.j2, dest: n0xeid-egress-health.service, mode: '0644'}
-    - {src: n0xeid-egress-watchdog.service.j2, dest: n0xeid-egress-watchdog.service, mode: '0644'}
-    - {src: n0xeid-egress-watchdog.timer.j2, dest: n0xeid-egress-watchdog.timer, mode: '0644'}
+    - {src: platform-egress-nat.sh.j2, dest: platform-egress-nat, mode: '0755'}
+    - {src: platform-egress-health.py.j2, dest: platform-egress-health, mode: '0755'}
+    - {src: platform-egressctl.py.j2, dest: platform-egressctl, mode: '0755'}
+    - {src: platform-egress-nat.service.j2, dest: platform-egress-nat.service, mode: '0644'}
+    - {src: platform-egress-health.service.j2, dest: platform-egress-health.service, mode: '0644'}
+    - {src: platform-egress-watchdog.service.j2, dest: platform-egress-watchdog.service, mode: '0644'}
+    - {src: platform-egress-watchdog.timer.j2, dest: platform-egress-watchdog.timer, mode: '0644'}
   loop_control:
     label: "{{ item.dest }}"
 
@@ -79,31 +79,31 @@
     set -euo pipefail
     ssh_options=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }})
     prefix={{ ha_egress_stage.path | quote }}/{{ ha_gateway.name | quote }}-
-    scp "${ssh_options[@]}" "${prefix}config.json" root@{{ ha_gateway.public_ip }}:/tmp/n0xeid-egress.json
-    scp "${ssh_options[@]}" "${prefix}token" root@{{ ha_gateway.public_ip }}:/tmp/n0xeid-hcloud-token
-    for file in n0xeid-egress-nat n0xeid-egress-health n0xeid-egressctl; do
+    scp "${ssh_options[@]}" "${prefix}config.json" root@{{ ha_gateway.public_ip }}:/tmp/platform-egress.json
+    scp "${ssh_options[@]}" "${prefix}token" root@{{ ha_gateway.public_ip }}:/tmp/platform-hcloud-token
+    for file in platform-egress-nat platform-egress-health platform-egressctl; do
       scp "${ssh_options[@]}" "${prefix}${file}" root@{{ ha_gateway.public_ip }}:/tmp/${file}
     done
-    for file in n0xeid-egress-nat.service n0xeid-egress-health.service n0xeid-egress-watchdog.service n0xeid-egress-watchdog.timer; do
+    for file in platform-egress-nat.service platform-egress-health.service platform-egress-watchdog.service platform-egress-watchdog.timer; do
       scp "${ssh_options[@]}" "${prefix}${file}" root@{{ ha_gateway.public_ip }}:/tmp/${file}
     done
     ssh "${ssh_options[@]}" root@{{ ha_gateway.public_ip }} 'bash -s' <<'REMOTE'
     set -euo pipefail
-    install -o root -g root -m 0600 /tmp/n0xeid-egress.json /etc/n0xeid-egress.json
-    install -o root -g root -m 0600 /tmp/n0xeid-hcloud-token /etc/n0xeid-hcloud-token
-    install -o root -g root -m 0755 /tmp/n0xeid-egress-nat /usr/local/sbin/n0xeid-egress-nat
-    install -o root -g root -m 0755 /tmp/n0xeid-egress-health /usr/local/sbin/n0xeid-egress-health
-    install -o root -g root -m 0755 /tmp/n0xeid-egressctl /usr/local/sbin/n0xeid-egressctl
-    install -o root -g root -m 0644 /tmp/n0xeid-egress-nat.service /etc/systemd/system/n0xeid-egress-nat.service
-    install -o root -g root -m 0644 /tmp/n0xeid-egress-health.service /etc/systemd/system/n0xeid-egress-health.service
-    install -o root -g root -m 0644 /tmp/n0xeid-egress-watchdog.service /etc/systemd/system/n0xeid-egress-watchdog.service
-    install -o root -g root -m 0644 /tmp/n0xeid-egress-watchdog.timer /etc/systemd/system/n0xeid-egress-watchdog.timer
-    rm -f /tmp/n0xeid-egress.json /tmp/n0xeid-hcloud-token /tmp/n0xeid-egress-nat \
-      /tmp/n0xeid-egress-health /tmp/n0xeid-egressctl /tmp/n0xeid-egress-*.service /tmp/n0xeid-egress-*.timer
+    install -o root -g root -m 0600 /tmp/platform-egress.json /etc/platform-egress.json
+    install -o root -g root -m 0600 /tmp/platform-hcloud-token /etc/platform-hcloud-token
+    install -o root -g root -m 0755 /tmp/platform-egress-nat /usr/local/sbin/platform-egress-nat
+    install -o root -g root -m 0755 /tmp/platform-egress-health /usr/local/sbin/platform-egress-health
+    install -o root -g root -m 0755 /tmp/platform-egressctl /usr/local/sbin/platform-egressctl
+    install -o root -g root -m 0644 /tmp/platform-egress-nat.service /etc/systemd/system/platform-egress-nat.service
+    install -o root -g root -m 0644 /tmp/platform-egress-health.service /etc/systemd/system/platform-egress-health.service
+    install -o root -g root -m 0644 /tmp/platform-egress-watchdog.service /etc/systemd/system/platform-egress-watchdog.service
+    install -o root -g root -m 0644 /tmp/platform-egress-watchdog.timer /etc/systemd/system/platform-egress-watchdog.timer
+    rm -f /tmp/platform-egress.json /tmp/platform-hcloud-token /tmp/platform-egress-nat \
+      /tmp/platform-egress-health /tmp/platform-egressctl /tmp/platform-egress-*.service /tmp/platform-egress-*.timer
     systemctl daemon-reload
-    systemctl enable n0xeid-egress-nat.service n0xeid-egress-health.service
-    systemctl restart n0xeid-egress-nat.service
-    systemctl restart n0xeid-egress-health.service
+    systemctl enable platform-egress-nat.service platform-egress-health.service
+    systemctl restart platform-egress-nat.service
+    systemctl restart platform-egress-health.service
     REMOTE
   args:
     executable: /bin/bash
@@ -114,7 +114,7 @@
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile={{ ha_egress_known_hosts_file | quote }} \
       root@{{ ha_gateway.public_ip }} \
-      "systemctl {{ 'enable' if ha_egress_activate | bool else 'disable --now' }} n0xeid-egress-watchdog.timer"
+      "systemctl {{ 'enable' if ha_egress_activate | bool else 'disable --now' }} platform-egress-watchdog.timer"
   args:
     executable: /bin/bash
   changed_when: true

@@ -623,7 +623,7 @@ def test_complete_backup_rejects_unbound_or_unmounted_live_pvcs_with_json_eviden
     assert '$claim.metadata.deletionTimestamp == null' not in content
     assert "select(.metadata.deletionTimestamp == null)" in content
     assert '($claim.status.phase // "") == "Bound"' in content
-    assert 'platform.n0xeid.xyz/backup-scratch' in content
+    assert 'platform.platform.example.com/backup-scratch' in content
     assert 'if (($backup_scratch | not) and ($claim_mounts | length) == 0)' in content
     assert 'if [[ "$ALLOW_INCOMPLETE" != true ]]' in content
     assert "non-terminating PVC(s) are non-Bound or unmounted" in content
@@ -655,7 +655,7 @@ def test_pvc_evidence_policy_classifies_live_claims(tmp_path):
                 "metadata": {
                     "namespace": "data",
                     "name": "completed-backup-scratch",
-                    "labels": {"platform.n0xeid.xyz/backup-scratch": "true"},
+                    "labels": {"platform.platform.example.com/backup-scratch": "true"},
                 },
                 "spec": {"volumeName": "pv-c", "resources": {"requests": {"storage": "1Gi"}}},
                 "status": {"phase": "Bound"},
@@ -2457,6 +2457,11 @@ def test_disabled_source_dependency_disables_new_target_dependants(tmp_path):
     state_base = tmp_path / "state"
     env = os.environ.copy()
     env["PROFILE_MIGRATION_STATE_DIR"] = str(state_base)
+    # This assertion covers profile dependency closure, not Ansible runtime
+    # startup. The validation pipeline invokes the generated-profile Ansible
+    # gate separately; skipping it here keeps this hermetic subprocess test
+    # within its explicit timeout on constrained CI workers.
+    env["PROFILE_MIGRATION_SKIP_ANSIBLE_VALIDATION"] = "true"
     result = subprocess.run(
         [
             "bash",

@@ -1556,6 +1556,11 @@
       metadata:
         name: vault-backend
       spec:
+        # ClusterSecretStore access is explicitly scoped to workloads that use
+        # platform-managed Vault credentials. Deployment repositories extend
+        # this base list with their environment namespaces.
+        conditions:
+          - namespaces: "{{ secrets.external_secret_namespaces | default(['agents', 'analytics', 'nx-cache']) }}"
         provider:
           vault:
             server: "{{ 'http' if vault_tls_disabled | bool else 'https' }}://vault.{{ vault_ns }}.svc.cluster.local:8200"

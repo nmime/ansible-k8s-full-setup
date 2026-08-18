@@ -1,0 +1,12 @@
+[Unit]
+Description=Check platform active egress gateway
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec={{ ha_egress_watchdog_interval_seconds }}s
+AccuracySec=1s
+RandomizedDelaySec=2s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -189,7 +189,7 @@
           # VMAlertmanager does not project an updated source config Secret
           # until its CR reconciles. Track the exact source revision so config
           # edits regenerate the operator-owned Secret without manual restarts.
-          n0xeid.xyz/config-secret-resource-version: >-
+          platform.example.com/config-secret-resource-version: >-
             {{ _alertmanager_config_secret_revision.resources[0].metadata.resourceVersion }}
       spec:
         replicaCount: "{{ alerting.replicas | default(2 if resource_tier in ['medium', 'production'] else 1) }}"

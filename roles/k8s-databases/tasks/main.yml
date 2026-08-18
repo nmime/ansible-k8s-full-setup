@@ -819,6 +819,31 @@
         )
       }}
   when: platform_postgresql_enabled | default(true) | bool
+- name: Build PostgreSQL database extension settings
+  ansible.builtin.set_fact:
+    _pg_database_extensions: >-
+      {{
+        databases.postgresql.extra_users | default([]) |
+        selectattr('extensions', 'defined') | list
+      }}
+  when: platform_postgresql_enabled | default(true) | bool
+- name: Validate PostgreSQL database extension settings
+  ansible.builtin.assert:
+    that:
+    - item.extensions is sequence
+    - item.extensions | length > 0
+    - >-
+      item.extensions | select('match', '^[a-z_][a-z0-9_]{0,62}$') |
+      list | length == item.extensions | length
+    - >-
+      item.operator.databases |
+      select('match', '^[a-z_][a-z0-9_]{0,62}$') |
+      list | length == item.operator.databases | length
+    fail_msg: >-
+      PostgreSQL extension and database names must be non-empty lists of
+      lowercase SQL identifiers.
+  loop: '{{ _pg_database_extensions | default([]) }}'
+  when: platform_postgresql_enabled | default(true) | bool
 - name: Validate PostgreSQL role search paths
   ansible.builtin.assert:
     that:
@@ -842,7 +867,9 @@
   delay: 5
   when:
   - platform_postgresql_enabled | default(true) | bool
-  - (_pg_role_search_paths | default([]) | length) > 0
+  - >-
+    (_pg_role_search_paths | default([]) | length) > 0 or
+    (_pg_database_extensions | default([]) | length) > 0
 - name: Configure PostgreSQL role search paths
   kubernetes.core.k8s_exec:
     namespace: '{{ db_ns }}'
@@ -853,6 +880,17 @@
       -c 'ALTER ROLE "{{ item.operator.name }}" SET search_path TO
       "{{ item.search_path }}", pg_catalog;'
   loop: '{{ _pg_role_search_paths | default([]) }}'
+  when: platform_postgresql_enabled | default(true) | bool
+- name: Install declared PostgreSQL database extensions
+  kubernetes.core.k8s_exec:
+    namespace: '{{ db_ns }}'
+    pod: '{{ _pg_role_primary.resources[0].metadata.name }}'
+    container: database
+    command: >-
+      psql -v ON_ERROR_STOP=1 -d "{{ item.1 }}"
+      -c '{% for extension in item.0.extensions %}CREATE EXTENSION IF NOT EXISTS
+      "{{ extension }}";{% endfor %}'
+  loop: "{{ query('subelements', _pg_database_extensions | default([]), 'operator.databases') }}"
   when: platform_postgresql_enabled | default(true) | bool
 - name: Check MongoDB Operator Helm release status
   ansible.builtin.command: helm status percona-server-mongodb-operator -n {{ db_ns }} -o json
@@ -1787,19 +1825,19 @@
   when: >-
     (platform_postgresql_enabled | default(true) | bool)
     or (platform_mongodb_enabled | default(true) | bool)
-- name: Allow SocialAgents migration and runtime workloads to reach PostgreSQL
+- name: Allow configured agents workloads to reach PostgreSQL
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: cilium.io/v2
       kind: CiliumNetworkPolicy
       metadata:
-        name: allow-social-agents-postgres
+        name: allow-agents-postgres
         namespace: agents
       spec:
         endpointSelector:
           matchLabels:
-            k8s:app.kubernetes.io/name: social-agents
+            k8s:app.kubernetes.io/name: "{{ databases.postgresql.agents_app_name | default('application-runtime') }}"
         egress:
         - toServices:
           - k8sService:

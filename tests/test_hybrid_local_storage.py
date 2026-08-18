@@ -63,23 +63,23 @@ def test_static_local_pool_is_retained_capacity_aware_and_gated():
     assert "three-plus-three-v1" in tasks
     assert "local_storage_min_free_gib_per_node" in tasks
     assert (
-        'select(.metadata.labels["workload.n0xeid.xyz/ci-docker"] != "true")'
+        'select(.metadata.labels["workload.platform.example.com/ci-docker"] != "true")'
         in tasks
     )
     assert (
-        'select(.metadata.labels["workload.n0xeid.xyz/ci-build"] != "true")'
+        'select(.metadata.labels["workload.platform.example.com/ci-build"] != "true")'
         in tasks
     )
-    assert "key: workload.n0xeid.xyz/ci-docker" in tasks
-    assert "key: workload.n0xeid.xyz/ci-build" in tasks
-    assert "workload.n0xeid.xyz/ci-general" in tasks
+    assert "key: workload.platform.example.com/ci-docker" in tasks
+    assert "key: workload.platform.example.com/ci-build" in tasks
+    assert "workload.platform.example.com/ci-general" in tasks
     docker_boundary = tasks.split(
         "{% elif i == (dedicated_docker_ci_worker_index | int) %}", 1
     )[1].split("{% elif i == (dedicated_postal_worker_index | int) %}", 1)[0]
-    assert "workload.n0xeid.xyz/ci-general" not in docker_boundary
-    assert "workload.n0xeid.xyz/mail=true:NoSchedule" in tasks
+    assert "workload.platform.example.com/ci-general" not in docker_boundary
+    assert "workload.platform.example.com/mail=true:NoSchedule" in tasks
     assert "operator: DoesNotExist" in tasks
-    assert "workload.n0xeid.xyz/ci-docker=true:NoSchedule" in tasks
+    assert "workload.platform.example.com/ci-docker=true:NoSchedule" in tasks
     assert (
         "if [ ! -f /storage/.platform-static-local-pv-ready ]; then"
         in tasks
@@ -133,7 +133,8 @@ def test_medium_optimized_filer_survives_large_multipart_backups():
         "object_storage_filer_memory_limit",
     ):
         assert variable in normalizer
-        assert object_storage.count(variable) >= 2
+        assert object_storage.count(variable) == 1
+        assert object_storage.count(variable.replace("filer", "volume")) == 1
 
 
 def test_storage_class_change_requires_full_target_capacity_and_replacement():

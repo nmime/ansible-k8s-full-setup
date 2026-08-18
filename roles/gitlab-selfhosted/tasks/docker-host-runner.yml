@@ -13,7 +13,7 @@
         name: '{{ gitlab_docker_host_runner_namespace }}'
         labels:
           app.kubernetes.io/part-of: gitlab
-          workload.n0xeid.xyz/trust-boundary: protected-docker-smoke
+          workload.platform.example.com/trust-boundary: protected-docker-smoke
           pod-security.kubernetes.io/enforce: privileged
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted
@@ -23,7 +23,7 @@
     api_version: v1
     kind: Node
     label_selectors:
-      - workload.n0xeid.xyz/ci-docker=true
+      - workload.platform.example.com/ci-docker=true
   register: _gitlab_docker_host_worker
 
 - name: Docker smoke | Enforce the dedicated CI worker boundary
@@ -37,7 +37,7 @@
       - >-
         ((_gitlab_docker_host_worker.resources | first).spec.taints |
          default([]) |
-         selectattr('key', 'equalto', 'workload.n0xeid.xyz/ci-docker') |
+         selectattr('key', 'equalto', 'workload.platform.example.com/ci-docker') |
          selectattr('value', 'equalto', 'true') |
          selectattr('effect', 'equalto', 'NoSchedule') |
          list | length) == 1
@@ -247,9 +247,9 @@
       serviceAccount:
         create: true
       nodeSelector:
-        workload.n0xeid.xyz/ci-docker: 'true'
+        workload.platform.example.com/ci-docker: 'true'
       tolerations:
-        - key: workload.n0xeid.xyz/ci-docker
+        - key: workload.platform.example.com/ci-docker
           operator: Equal
           value: 'true'
           effect: NoSchedule
@@ -279,8 +279,8 @@
               allowed_services = ["docker.io/library/docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"]
               privileged = false
               automount_service_account_token = false
-              node_selector = { "workload.n0xeid.xyz/ci-docker" = "true" }
-              node_tolerations = { "workload.n0xeid.xyz/ci-docker=true" = "NoSchedule" }
+              node_selector = { "workload.platform.example.com/ci-docker" = "true" }
+              node_tolerations = { "workload.platform.example.com/ci-docker=true" = "NoSchedule" }
               cpu_request = "{{ gitlab_docker_host_runner_job_resources.cpu_request | default('500m') }}"
               cpu_limit = "{{ gitlab_docker_host_runner_job_resources.cpu_limit | default('2000m') }}"
               memory_request = "{{ gitlab_docker_host_runner_job_resources.memory_request | default('1Gi') }}"
@@ -297,7 +297,7 @@
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
               [runners.kubernetes.pod_labels]
-                "workload.n0xeid.xyz/class" = "protected-docker-smoke-job"
+                "workload.platform.example.com/class" = "protected-docker-smoke-job"
               [[runners.kubernetes.pod_spec]]
                 name = "restrict-docker-smoke-build-and-helper"
                 patch = '''
@@ -340,7 +340,7 @@
                       requiredDuringSchedulingIgnoredDuringExecution:
                         - labelSelector:
                             matchLabels:
-                              workload.n0xeid.xyz/class: ci-job
+                              workload.platform.example.com/class: ci-job
                           # General jobs live outside this protected namespace.
                           # Cross-namespace matching is required for the hard
                           # anti-affinity to reserve the Docker worker in fact.
@@ -352,7 +352,7 @@
         tags: docker-host
         runUntagged: false
       podLabels:
-        workload.n0xeid.xyz/class: protected-docker-smoke-manager
+        workload.platform.example.com/class: protected-docker-smoke-manager
       podAnnotations:
         prometheus.io/scrape: 'true'
         prometheus.io/port: '9252'
@@ -399,7 +399,7 @@
       spec:
         selector:
           matchLabels:
-            workload.n0xeid.xyz/class: protected-docker-smoke-manager
+            workload.platform.example.com/class: protected-docker-smoke-manager
         podMetricsEndpoints:
           - port: metrics
             interval: 30s

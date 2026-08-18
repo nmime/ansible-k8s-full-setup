@@ -138,19 +138,19 @@
           - name: ha-egress
             rules:
               - alert: HAEgressGatewayNotReady
-                expr: count(n0xeid_egress_ready == 1) != 2
+                expr: count(platform_egress_ready == 1) != 2
                 for: 2m
                 labels: {severity: critical}
                 annotations:
                   summary: Fewer than two HA egress gateways are ready
               - alert: HAEgressActiveGatewayCountInvalid
-                expr: sum(n0xeid_egress_active) != 1
+                expr: sum(platform_egress_active) != 1
                 for: 1m
                 labels: {severity: critical}
                 annotations:
                   summary: HA egress must have exactly one active Floating-IP owner
               - alert: HAEgressGatewayFlapping
-                expr: changes(n0xeid_egress_active[10m]) > 2
+                expr: changes(platform_egress_active[10m]) > 2
                 for: 1m
                 labels: {severity: warning}
                 annotations:

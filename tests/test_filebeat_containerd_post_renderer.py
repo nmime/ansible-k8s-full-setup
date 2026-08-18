@@ -268,7 +268,7 @@ def test_efk_gets_agent_namespace_secrets_policies_and_health_check():
     filebeat = tasks.split(
         "- name: Install Filebeat for log collection (ELK)", 1
     )[1].split("- name: Remove legacy Fluentd release", 1)[0]
-    assert "platform.n0xeid.xyz/logging-credentials-checksum" in filebeat
+    assert "platform.platform.example.com/logging-credentials-checksum" in filebeat
     assert "_r_filebeat_source_secrets.results[1].resources[0].data.password" in filebeat
     assert "| hash('sha256')" in filebeat
     assert "no_log: true" in filebeat
