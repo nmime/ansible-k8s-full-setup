@@ -1238,6 +1238,56 @@
   delay: 10
   until: _r_patch_gitlab_toolbox_backup_gate is not failed
   when: platform_backup_enabled | default(backup_enabled) | bool
+- name: Ensure the persistent GitLab toolbox backup scratch claim
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: '{{ gitlab_toolbox_backup_scratch_claim | default("gitlab-toolbox-backup-tmp") }}'
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          platform.n0xeid.xyz/backup-scratch: 'true'
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: '{{ gitlab_toolbox_backup_scratch_storageclass | default("hcloud-volumes") }}'
+        resources:
+          requests:
+            storage: '{{ gitlab_toolbox_backup_scratch_size | default("160Gi") }}'
+  register: _r_create_gitlab_backup_scratch
+  retries: 3
+  delay: 10
+  until: _r_create_gitlab_backup_scratch is not failed
+  when: gitlab_backup_persistence_enabled | default(true) | bool
+
+- name: Wire the persistent scratch claim into the toolbox backup CronJob
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, subprocess
+        claim = '{{ gitlab_toolbox_backup_scratch_claim | default("gitlab-toolbox-backup-tmp") }}'
+        ns = '{{ gitlab_namespace }}'
+        cj = json.loads(subprocess.check_output(['kubectl', 'get', 'cronjob', 'gitlab-toolbox-backup', '-n', ns, '-o', 'json']))
+        vols = cj['spec']['jobTemplate']['spec']['template']['spec']['volumes']
+        changed = False
+        for v in vols:
+            if v.get('name') == 'toolbox-tmp' and v.get('persistentVolumeClaim', {}).get('claimName') != claim:
+                for k in ('emptyDir', 'hostPath'):
+                    v.pop(k, None)
+                v['persistentVolumeClaim'] = {'claimName': claim}
+                changed = True
+        if changed:
+            out = subprocess.check_output(['kubectl', 'apply', '-f', '-'], input=json.dumps(cj).encode())
+            print(out.decode().strip())
+        else:
+            print('already wired')
+  register: _r_wire_gitlab_backup_scratch_cronjob
+  changed_when: "'already wired' not in _r_wire_gitlab_backup_scratch_cronjob.stdout"
+  when: gitlab_backup_persistence_enabled | default(true) | bool
+
 - name: Discover the GitLab toolbox backup scratch claim
   kubernetes.core.k8s_info:
     api_version: v1
