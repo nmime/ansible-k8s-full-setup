@@ -201,7 +201,7 @@ def test_gitlab_backup_growth_is_bounded_without_automatic_deletion():
     }
 
     assert "gitlab-backups" in quotas
-    assert "51200" in quotas["gitlab-backups"]["quota_mib"]
+    assert "92160" in quotas["gitlab-backups"]["quota_mib"]
     assert "object_storage_additional_bucket_quotas" in tasks
     assert "s3.bucket.quota.enforce -apply" in tasks
     assert "s3.rm" not in tasks
