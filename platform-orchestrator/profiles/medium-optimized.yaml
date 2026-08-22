@@ -105,7 +105,10 @@ kubernetes:
       memory.available: 1Gi
       nodefs.available: 10%
       nodefs.inodesFree: 5%
-      imagefs.available: 15%
+      # Local PVs and containerd share the root filesystem on this profile.
+      # Keep imagefs aligned with nodefs so large durable volumes do not evict
+      # their own storage and database pods while ample absolute space remains.
+      imagefs.available: 10%
       imagefs.inodesFree: 5%
   features:
     gateway_api: true

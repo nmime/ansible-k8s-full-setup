@@ -301,7 +301,7 @@ class TestNamedProfileContract:
                 "memory.available": "1Gi",
                 "nodefs.available": "10%",
                 "nodefs.inodesFree": "5%",
-                "imagefs.available": "15%",
+                "imagefs.available": "10%",
                 "imagefs.inodesFree": "5%",
             },
         }
