@@ -1048,7 +1048,7 @@
                           - |
                             printf '%s\n' \
                               'lock' \
-                              'volume.vacuum -garbageThreshold=0.05' \
+                              'volume.vacuum -garbageThreshold 0.05' \
                               'volume.deleteEmpty -quietFor=24h -apply' \
                               'unlock' | /usr/bin/weed shell
                         env:
