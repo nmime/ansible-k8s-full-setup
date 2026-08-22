@@ -444,6 +444,7 @@
           volume:
             enabled: true
             replicas: "{{ object_storage_volume_replicas | int }}"
+            minFreeSpacePercent: "{{ object_storage_volume_min_free_space_percent | int }}"
             affinity: |
               podAntiAffinity:
                 requiredDuringSchedulingIgnoredDuringExecution:

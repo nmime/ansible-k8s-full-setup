@@ -164,6 +164,7 @@ object_storage_console_domain: "{{ ('seaweedfs.' ~ (domain | default('', true)))
 object_storage_api_domain: "{{ ('s3.' ~ (domain | default('', true))) if (domain | default('', true) | length > 0) else 's3.local' }}"
 object_storage_master_size: 4Gi
 object_storage_volume_size: "{{ '20Gi' if resource_tier == 'minimal' else '40Gi' if resource_tier == 'small' else '100Gi' if resource_tier == 'medium' else '150Gi' }}"
+object_storage_volume_min_free_space_percent: 10
 object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
 

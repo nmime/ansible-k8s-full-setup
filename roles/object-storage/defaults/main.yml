@@ -15,6 +15,7 @@ object_storage_index_storage_class: "{{ object_storage_volume_storage_class }}"
 object_storage_filer_storage_class: "{{ object_storage_storage_class }}"
 object_storage_master_size: 4Gi
 object_storage_volume_size: "{{ '20Gi' if resource_tier | default(tier) == 'minimal' else '40Gi' if resource_tier | default(tier) == 'small' else '100Gi' if resource_tier | default(tier) == 'medium' else '150Gi' }}"
+object_storage_volume_min_free_space_percent: 10
 object_storage_idx_size: 4Gi
 object_storage_filer_size: 10Gi
 object_storage_filer_node_selector: {}
