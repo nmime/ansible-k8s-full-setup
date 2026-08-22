@@ -136,7 +136,7 @@
       {{ storage.size_per_replica | default(storage.size | default(object_storage_volume_size)) }}
     object_storage_volume_min_free_space_percent: >-
       {{ storage.volume_min_free_space_percent |
-         default(object_storage_volume_min_free_space_percent | default(10)) }}
+         default(object_storage_volume_min_free_space_percent | default(8)) }}
     object_storage_idx_size: '{{ storage.index_size | default(object_storage_idx_size) }}'
     object_storage_index_persistent: '{{ storage.index_persistent | default(true) | bool }}'
     object_storage_filer_size: '{{ storage.filer_size | default(object_storage_filer_size) }}'

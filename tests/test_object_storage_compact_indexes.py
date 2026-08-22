@@ -45,7 +45,7 @@ def test_compact_storage_has_enough_logical_volume_slots_for_all_s3_consumers():
     tasks = (ROOT / "roles/object-storage/tasks/main.yml").read_text()
 
     assert "object_storage_volume_size_limit_mb: 256" in defaults
-    assert "object_storage_volume_min_free_space_percent: 10" in defaults
+    assert "object_storage_volume_min_free_space_percent: 8" in defaults
     assert "storage.volume_min_free_space_percent" in normalize
     assert 'volumeSizeLimitMB: "{{ object_storage_volume_size_limit_mb | int }}"' in tasks
     assert 'minFreeSpacePercent: "{{ object_storage_volume_min_free_space_percent | int }}"' in tasks

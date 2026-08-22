@@ -106,7 +106,7 @@ kubernetes:
       nodefs.available: 5%
       nodefs.inodesFree: 5%
       # Local PVs and containerd share the root filesystem on this profile.
-      # Keep imagefs aligned with nodefs below SeaweedFS's 10% write cutoff so
+      # Keep imagefs aligned with nodefs below SeaweedFS's 8% write cutoff so
       # object storage becomes read-only before kubelet evicts its dependencies.
       imagefs.available: 5%
       imagefs.inodesFree: 5%
@@ -144,7 +144,7 @@ storage:
   size_per_replica: 40Gi
   # Stop new object writes well before the colocated kubelet's 5% hard
   # eviction threshold. Local PV capacity is not filesystem-quota enforced.
-  volume_min_free_space_percent: 10
+  volume_min_free_space_percent: 8
   index_size: 2Gi
   index_persistent: true
   filer_size: 5Gi

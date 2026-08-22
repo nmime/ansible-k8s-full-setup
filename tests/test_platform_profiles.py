@@ -308,7 +308,7 @@ class TestNamedProfileContract:
         assert medium_optimized["storage"]["filer_node_selector"] == {
             "node-role.kubernetes.io/worker": "true"
         }
-        assert medium_optimized["storage"]["volume_min_free_space_percent"] == 10
+        assert medium_optimized["storage"]["volume_min_free_space_percent"] == 8
         assert medium["infrastructure"]["workers"]["count"] == 2
         assert production["infrastructure"]["control_plane"]["schedulable"] is False
         assert production["infrastructure"]["workers"]["count"] == 4
