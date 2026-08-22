@@ -56,13 +56,16 @@ object_storage_managed_bucket_policies_enabled: true
 object_storage_managed_bucket_policy_supported_chart_versions:
   - "4.25.1"
 object_storage_quota_enforcement_schedule: "*/5 * * * *"
+object_storage_retention_prune_schedule: "23 */6 * * *"
+object_storage_stale_multipart_cleanup_schedule: "17 */6 * * *"
+object_storage_volume_vacuum_schedule: "43 */6 * * *"
 # SeaweedFS path TTL is stamped on new writes. The chart hook therefore applies
 # these policies before Nx cache GitOps is enabled. Native bucket quotas provide
 # a bounded logical-size target; the periodic enforcer switches an over-quota
 # bucket read-only within one schedule interval.
 object_storage_managed_bucket_policies:
   - name: nx-cache-protected
-    ttl: 30d
+    ttl: 7d
     quota_mib: >-
       {{
         4096
@@ -74,7 +77,7 @@ object_storage_managed_bucket_policies:
         else 61440
       }}
   - name: nx-cache-development
-    ttl: 7d
+    ttl: 1d
     quota_mib: >-
       {{
         2048
@@ -84,6 +87,18 @@ object_storage_managed_bucket_policies:
         else 20480
         if resource_tier | default(tier | default('minimal')) == 'medium'
         else 30720
+      }}
+  - name: gitlab-runner-cache
+    ttl: 1d
+    quota_mib: >-
+      {{
+        2048
+        if resource_tier | default(tier | default('minimal')) == 'minimal'
+        else 4096
+        if resource_tier | default(tier | default('minimal')) == 'small'
+        else 8192
+        if resource_tier | default(tier | default('minimal')) == 'medium'
+        else 16384
       }}
 
 # Quota-only buckets are deliberately separate from createBuckets/TTL policy.

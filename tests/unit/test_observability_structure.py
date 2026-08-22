@@ -41,6 +41,11 @@ class TestMainOrchestration:
         assert "lokiCanary:" in content
         assert content.count("type: RuntimeDefault") >= 3
 
+    def test_loki_retention_is_backed_by_compactor_deletion(self, content):
+        assert "retention_period: '{{ loki_retention }}'" in content
+        assert "retention_enabled: true" in content
+        assert "delete_request_store: s3" in content
+
     def test_pmm_rwo_volume_uses_recreate_strategy(self, content):
         pmm = content.split("- name: Deploy PMM Server", 1)[1].split(
             "- name: Create PMM Server Service", 1

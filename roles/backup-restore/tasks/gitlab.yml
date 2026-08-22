@@ -95,6 +95,16 @@
                         destination="s3://${BACKUP_BUCKET}/${BACKUP_PROJECT}/gitlab-secrets/${ts}-secrets.yml"
                         aws --endpoint-url="$AWS_ENDPOINT_URL" s3 cp /rails/secrets.yml "$destination"
                         aws --endpoint-url="$AWS_ENDPOINT_URL" s3 ls "$destination" >/dev/null
+                        cutoff=$(date -u -d "{{ _backup_retention }} days ago" +%Y%m%dT%H%M%SZ)
+                        aws --endpoint-url="$AWS_ENDPOINT_URL" s3api list-objects-v2 \
+                          --bucket "$BACKUP_BUCKET" \
+                          --prefix "$BACKUP_PROJECT/gitlab-secrets/" \
+                          --query "Contents[?LastModified<=\`$cutoff\`].Key" \
+                          --output text | tr '\t' '\n' | while IFS= read -r key; do
+                            [ -n "$key" ] && [ "$key" != "None" ] || continue
+                            aws --endpoint-url="$AWS_ENDPOINT_URL" s3api delete-object \
+                              --bucket "$BACKUP_BUCKET" --key "$key"
+                          done
                         printf 'BACKUP_ARTIFACT_URI=%s\n' "$destination"
                     env:
                       - name: BACKUP_BUCKET

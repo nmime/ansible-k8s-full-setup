@@ -462,6 +462,9 @@
           retention_period: '{{ loki_retention }}'
           max_query_length: 721h
           max_query_parallelism: 32
+        compactor:
+          retention_enabled: true
+          delete_request_store: s3
       read:
         replicas: '{{ 0 if loki_deployment_mode == ''single-binary'' else vm_replicas | int }}'
         resources:
@@ -507,11 +510,19 @@
         replicas: '{{ 1 if loki_deployment_mode == ''single-binary'' else 0 }}'
         resources:
           requests:
-            cpu: '{{ ''25m'' if resource_tier == ''minimal'' else ''50m'' }}'
-            memory: '{{ ''64Mi'' if resource_tier == ''minimal'' else ''128Mi'' }}'
+            cpu: >-
+              {{ (observability.logging.resources | default({})).cpu_request |
+                 default('25m' if resource_tier == 'minimal' else '50m') }}
+            memory: >-
+              {{ (observability.logging.resources | default({})).memory_request |
+                 default('64Mi' if resource_tier == 'minimal' else '128Mi') }}
           limits:
-            cpu: 500m
-            memory: 512Mi
+            cpu: >-
+              {{ (observability.logging.resources | default({})).cpu_limit |
+                 default('500m') }}
+            memory: >-
+              {{ (observability.logging.resources | default({})).memory_limit |
+                 default('512Mi') }}
         persistence:
           enabled: true
           enableStatefulSetAutoDeletePVC: false

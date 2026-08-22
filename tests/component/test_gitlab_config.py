@@ -1652,7 +1652,30 @@ class TestDefaultsTasksConsistency:
                 )
             )
         )
-        assert medium["gitlab"]["toolbox_backup_suspended"] is True
+        assert medium["gitlab"]["toolbox_backup_suspended"] is False
+        assert medium["gitlab"]["backup_maximum_backups"] == 1
+        assert "--maximum-backups {{ gitlab_backup_maximum_backups | int }}" in self.tasks_raw
+
+    @pytest.mark.component
+    def test_registry_retention_and_legacy_gc_are_scheduled(self):
+        cleanup = read(
+            os.path.join(
+                REPO_ROOT,
+                "roles",
+                "gitlab-selfhosted",
+                "tasks",
+                "cleanup-retention.yml",
+            )
+        )
+        assert "name: gitlab-registry-tag-retention" in cleanup
+        assert "older_than: '3d'" in cleanup
+        assert "keep_n: 1" in cleanup
+        assert "name: gitlab-registry-garbage-collect" in cleanup
+        assert "/bin/registry garbage-collect -m" in cleanup
+        assert "trap restore_registry_service EXIT INT TERM" in cleanup
+        assert "name: gitlab-job-artifact-retention" in cleanup
+        assert "default_artifacts_expire_in: '3 days'" in cleanup
+        assert "Ci::ScheduleBulkDeleteJobArtifactCronWorker.perform_async" in cleanup
 
     @pytest.mark.component
     def test_every_toolbox_backup_bucket_is_bootstrapped(self):

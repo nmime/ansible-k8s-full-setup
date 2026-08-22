@@ -170,12 +170,19 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert defaults["object_storage_managed_bucket_policy_supported_chart_versions"] == [
         "4.25.1"
     ]
-    assert policies["nx-cache-protected"]["ttl"] == "30d"
-    assert policies["nx-cache-development"]["ttl"] == "7d"
+    assert policies["nx-cache-protected"]["ttl"] == "7d"
+    assert policies["nx-cache-development"]["ttl"] == "1d"
+    assert policies["gitlab-runner-cache"]["ttl"] == "1d"
     assert "createBuckets:" in tasks
     assert "object_storage_managed_bucket_policies" in tasks
     assert "s3.bucket.quota -name={{ policy.name }} -op=set" in tasks
     assert "s3.bucket.quota.enforce -apply" in tasks
+    assert "name: seaweedfs-cache-retention-pruner" in tasks
+    assert "s3api delete-object" in tasks
+    assert "name: seaweedfs-stale-multipart-cleaner" in tasks
+    assert "name: seaweedfs-volume-vacuum" in tasks
+    assert "volume.vacuum -garbageThreshold=0.05" in tasks
+    assert "volume.deleteEmpty -quietFor=24h -apply" in tasks
     assert "kind: CronJob" in tasks
     assert "concurrencyPolicy: Forbid" in tasks
     assert "automountServiceAccountToken: false" in tasks

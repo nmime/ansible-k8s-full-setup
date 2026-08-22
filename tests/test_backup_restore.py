@@ -50,6 +50,10 @@ class TestVariableDefaults:
     def test_restore_cleanup(self): assert self.d["restore_drill_auto_cleanup"] is True
     def test_restore_hours(self): assert self.d["restore_drill_cleanup_after_hours"] == 24
     def test_tz(self): assert self.d["backup_cron_timezone"] == "UTC"
+    def test_short_retention(self):
+        assert self.d["backup_retention_days"] == 3
+        assert self.d["backup_retention_count"] == 3
+        assert self.d["backup_dr_retention_hours"] == 72
     def test_concurrency(self): assert self.d["backup_cron_concurrency_policy"] == "Forbid"
     def test_resource_limits(self):
         for k in ("backup_job_cpu_request","backup_job_cpu_limit","backup_job_memory_request","backup_job_memory_limit"):

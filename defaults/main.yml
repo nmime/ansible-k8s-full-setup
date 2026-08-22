@@ -500,7 +500,8 @@ eso_chart_version: "2.7.0"
 
 # Backup and Restore
 backup_schedule: "0 2 * * *"
-backup_retention_days: 30
+backup_retention_days: 3
+backup_retention_count: 3
 backup_storage_type: s3
 backup_storage_bucket: backups
 backup_storage_region: "{{ object_storage_region | default('us-east-1') }}"
@@ -522,7 +523,7 @@ backup_dr_storage_prefix: >-
 backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}"
 backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
 backup_dr_schedule: "30 2 * * *"
-backup_dr_retention_hours: 720
+backup_dr_retention_hours: 72
 backup_dr_velero_chart_version: "12.1.0"
 backup_dr_velero_image_tag: "v1.18.1"
 backup_dr_velero_aws_plugin_tag: "v1.14.2"

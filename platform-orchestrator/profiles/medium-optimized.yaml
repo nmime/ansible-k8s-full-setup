@@ -267,10 +267,10 @@ gitlab:
   # while the 40 GiB/node free-space gate protects local scratch headroom.
   backup_persistence_enabled: false
   backup_persistence_size: 30Gi
-  # The retained verified archives currently exceed the 50 GiB safety quota.
-  # Keep backup execution suspended without disabling the chart or deleting
-  # another recovery point. Resume only after an explicit retention decision.
-  toolbox_backup_suspended: true
+  # Retain only the newest complete object-storage archive. The backup utility
+  # removes older archives only after a newer backup succeeds.
+  backup_maximum_backups: 1
+  toolbox_backup_suspended: false
   runner:
     enabled: true
     # General non-privileged jobs use autoscaled worker capacity. Protected
@@ -352,7 +352,7 @@ observability:
     enabled: false
   metrics:
     enabled: true
-    retention: 14d
+    retention: 7d
     storage_size: 40Gi
     replicas: 1
     # A single vmstorage replica is intentional in this constrained profile.
@@ -362,7 +362,12 @@ observability:
     enabled: true
     stack: loki
     deployment_mode: single-binary
-    retention: 7d
+    retention: 3d
+    resources:
+      cpu_request: 250m
+      cpu_limit: 1500m
+      memory_request: 512Mi
+      memory_limit: 2Gi
 
   grafana:
     enabled: true
@@ -414,7 +419,7 @@ autoscaling:
 backup:
   enabled: true
   schedule: "0 2 * * *"
-  retention_days: 30
+  retention_days: 3
   disaster_recovery:
     enabled: true
     endpoint: ""      # REQUIRED external S3-compatible endpoint
@@ -422,7 +427,7 @@ backup:
     bucket: ""        # REQUIRED external bucket
     prefix: k8s/velero
     schedule: "30 2 * * *"
-    retention_hours: 720
+    retention_hours: 72
   job_resources:
     cpu_request: 50m
     cpu_limit: 250m

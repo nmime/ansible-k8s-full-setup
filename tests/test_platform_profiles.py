@@ -500,8 +500,16 @@ class TestMediumOptimizedContract:
             "limits": {"cpu": "1", "memory": "2Gi"},
         }
         assert self.profile["observability"]["metrics"]["storage_size"] == "40Gi"
-        assert self.profile["observability"]["metrics"]["retention"] == "14d"
-        assert self.profile["observability"]["logging"]["retention"] == "7d"
+        assert self.profile["observability"]["metrics"]["retention"] == "7d"
+        assert self.profile["observability"]["logging"]["retention"] == "3d"
+        assert self.profile["observability"]["logging"]["resources"] == {
+            "cpu_request": "250m",
+            "cpu_limit": "1500m",
+            "memory_request": "512Mi",
+            "memory_limit": "2Gi",
+        }
+        assert self.profile["backup"]["retention_days"] == 3
+        assert self.profile["backup"]["disaster_recovery"]["retention_hours"] == 72
         assert self.profile["observability"]["logging"]["stack"] == "loki"
         assert self.profile["observability"]["logging"]["deployment_mode"] == "single-binary"
         assert self.profile["tracing"]["retention"] == "24h"

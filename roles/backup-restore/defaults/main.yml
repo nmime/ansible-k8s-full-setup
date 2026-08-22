@@ -9,8 +9,8 @@ backup_gitlab_verification_access_key: "{{ object_storage_gitlab_access_key | de
 backup_gitlab_verification_secret_key: "{{ object_storage_gitlab_secret_key | default('', true) }}"
 backup_storage_path_style: true
 backup_schedule: "0 2 * * *"
-backup_retention_days: 30
-backup_retention_count: 7
+backup_retention_days: 3
+backup_retention_count: 3
 backup_compression: true
 backup_namespace: backups
 backup_label: backup-restore
@@ -82,7 +82,7 @@ backup_dr_storage_prefix: >-
 backup_dr_storage_access_key: "{{ lookup('env', 'BACKUP_DR_ACCESS_KEY') | default('', true) }}"
 backup_dr_storage_secret_key: "{{ lookup('env', 'BACKUP_DR_SECRET_KEY') | default('', true) }}"
 backup_dr_schedule: "30 2 * * *"
-backup_dr_retention_hours: 720
+backup_dr_retention_hours: 72
 backup_dr_velero_chart_version: "12.1.0"
 backup_dr_velero_image_tag: "v1.18.1"
 backup_dr_velero_aws_plugin_tag: "v1.14.2"

@@ -832,6 +832,241 @@
                             drop: [ALL]
       when: object_storage_managed_bucket_policies_enabled | default(false) | bool
 
+    - name: Install periodic cache-bucket retention pruning
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: seaweedfs-cache-retention-pruner
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: bucket-retention
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            schedule: "{{ object_storage_retention_prune_schedule | default('23 */6 * * *') }}"
+            timeZone: UTC
+            concurrencyPolicy: Forbid
+            startingDeadlineSeconds: 1800
+            successfulJobsHistoryLimit: 1
+            failedJobsHistoryLimit: 3
+            jobTemplate:
+              spec:
+                activeDeadlineSeconds: 7200
+                backoffLimit: 2
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: seaweedfs
+                      app.kubernetes.io/component: bucket-retention
+                  spec:
+                    restartPolicy: OnFailure
+                    automountServiceAccountToken: false
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: cache-retention-pruner
+                        image: "{{ object_storage_aws_cli_image | default('amazon/aws-cli:2.34.48') }}"
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/sh", "-ec"]
+                        args:
+                          - |
+                            deleted=0
+                            {% for policy in object_storage_managed_bucket_policies | default([]) %}
+                            bucket='{{ policy.name }}'
+                            cutoff=$(date -u -d '{{ policy.ttl | regex_replace("d$", "") }} days ago' +%Y-%m-%dT%H:%M:%SZ)
+                            printf 'Pruning s3://%s objects older than %s\n' "$bucket" "$cutoff"
+                            while :; do
+                              objects=$(aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3api list-objects-v2 \
+                                --bucket "$bucket" --max-items 1000 \
+                                --query "Contents[?LastModified<=\`$cutoff\`].{Key:Key}" \
+                                --output json)
+                              [ -n "$objects" ] && [ "$objects" != '[]' ] && [ "$objects" != 'null' ] || break
+                              printf '{"Objects":%s,"Quiet":true}\n' "$objects" >/tmp/delete.json
+                              aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3api delete-objects \
+                                --bucket "$bucket" --delete file:///tmp/delete.json >/dev/null
+                            done
+                            {% endfor %}
+                            printf 'Cache retention pruning completed\n'
+                        env:
+                          - name: OBJECT_STORAGE_ENDPOINT
+                            valueFrom:
+                              secretKeyRef:
+                                name: object-storage-credentials
+                                key: endpoint
+                          - name: AWS_ACCESS_KEY_ID
+                            valueFrom:
+                              secretKeyRef:
+                                name: object-storage-credentials
+                                key: AWS_ACCESS_KEY_ID
+                          - name: AWS_SECRET_ACCESS_KEY
+                            valueFrom:
+                              secretKeyRef:
+                                name: object-storage-credentials
+                                key: AWS_SECRET_ACCESS_KEY
+                          - name: AWS_DEFAULT_REGION
+                            value: "{{ object_storage_region | default('us-east-1') }}"
+                          - name: AWS_EC2_METADATA_DISABLED
+                            value: "true"
+                          - name: HOME
+                            value: /tmp
+                        resources:
+                          requests:
+                            cpu: 25m
+                            memory: 64Mi
+                          limits:
+                            cpu: 500m
+                            memory: 256Mi
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          readOnlyRootFilesystem: true
+                          capabilities:
+                            drop: [ALL]
+                        volumeMounts:
+                          - name: tmp
+                            mountPath: /tmp
+                    volumes:
+                      - name: tmp
+                        emptyDir:
+                          sizeLimit: 64Mi
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
+
+    - name: Install periodic stale multipart upload cleanup
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: seaweedfs-stale-multipart-cleaner
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: bucket-policy
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            schedule: "{{ object_storage_stale_multipart_cleanup_schedule | default('17 */6 * * *') }}"
+            timeZone: UTC
+            concurrencyPolicy: Forbid
+            startingDeadlineSeconds: 1800
+            successfulJobsHistoryLimit: 1
+            failedJobsHistoryLimit: 3
+            jobTemplate:
+              spec:
+                backoffLimit: 3
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: seaweedfs
+                      app.kubernetes.io/component: bucket-policy
+                  spec:
+                    restartPolicy: OnFailure
+                    automountServiceAccountToken: false
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: stale-multipart-cleaner
+                        image: "{{ object_storage_policy_image }}"
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/sh", "-ec"]
+                        args:
+                          - |
+                            printf '%s\n' 's3.clean.uploads -timeAgo 24h' | /usr/bin/weed shell
+                        env:
+                          - name: WEED_CLUSTER_DEFAULT
+                            value: sw
+                          - name: WEED_CLUSTER_SW_MASTER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-master.{{ object_storage_namespace_resolved }}:9333"
+                          - name: WEED_CLUSTER_SW_FILER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-filer-client.{{ object_storage_namespace_resolved }}:8888"
+                        resources:
+                          requests: {cpu: 10m, memory: 32Mi}
+                          limits: {cpu: 200m, memory: 128Mi}
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          readOnlyRootFilesystem: true
+                          capabilities:
+                            drop: [ALL]
+
+    - name: Install periodic SeaweedFS volume vacuum
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: seaweedfs-volume-vacuum
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: volume-maintenance
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            schedule: "{{ object_storage_volume_vacuum_schedule | default('43 */6 * * *') }}"
+            timeZone: UTC
+            concurrencyPolicy: Forbid
+            startingDeadlineSeconds: 1800
+            successfulJobsHistoryLimit: 1
+            failedJobsHistoryLimit: 3
+            jobTemplate:
+              spec:
+                activeDeadlineSeconds: 10800
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: seaweedfs
+                      app.kubernetes.io/component: volume-maintenance
+                  spec:
+                    restartPolicy: OnFailure
+                    automountServiceAccountToken: false
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: volume-vacuum
+                        image: "{{ object_storage_policy_image }}"
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/sh", "-ec"]
+                        args:
+                          - |
+                            printf '%s\n' \
+                              'lock' \
+                              'volume.vacuum -garbageThreshold=0.05' \
+                              'volume.deleteEmpty -quietFor=24h -apply' \
+                              'unlock' | /usr/bin/weed shell
+                        env:
+                          - name: WEED_CLUSTER_DEFAULT
+                            value: sw
+                          - name: WEED_CLUSTER_SW_MASTER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-master.{{ object_storage_namespace_resolved }}:9333"
+                          - name: WEED_CLUSTER_SW_FILER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-filer-client.{{ object_storage_namespace_resolved }}:8888"
+                        resources:
+                          requests: {cpu: 25m, memory: 64Mi}
+                          limits: {cpu: 500m, memory: 256Mi}
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          readOnlyRootFilesystem: true
+                          capabilities:
+                            drop: [ALL]
+
     - name: Remove prior initial SeaweedFS bucket quota Job
       kubernetes.core.k8s:
         state: absent

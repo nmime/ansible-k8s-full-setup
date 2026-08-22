@@ -1,0 +1,259 @@
+---
+# GitLab owns registry tag expiry. SeaweedFS must never delete registry keys
+# directly because that bypasses GitLab's repository and manifest metadata.
+
+- name: GitLab cleanup | Create maintenance service account and RBAC
+  kubernetes.core.k8s:
+    state: present
+    definition: '{{ item }}'
+  loop:
+    - apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: gitlab-retention-maintenance
+        namespace: '{{ gitlab_namespace }}'
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: gitlab-retention-maintenance
+        namespace: '{{ gitlab_namespace }}'
+      rules:
+        - apiGroups: ['']
+          resources: ['pods']
+          verbs: ['get', 'list']
+        - apiGroups: ['']
+          resources: ['pods/exec']
+          verbs: ['create']
+        - apiGroups: ['']
+          resources: ['services']
+          resourceNames: ['gitlab-registry']
+          verbs: ['get', 'patch']
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: gitlab-retention-maintenance
+        namespace: '{{ gitlab_namespace }}'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: gitlab-retention-maintenance
+      subjects:
+        - kind: ServiceAccount
+          name: gitlab-retention-maintenance
+          namespace: '{{ gitlab_namespace }}'
+  loop_control:
+    label: '{{ item.kind }}/{{ item.metadata.name }}'
+
+- name: GitLab cleanup | Install short registry tag retention
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: gitlab-registry-tag-retention
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          app.kubernetes.io/component: registry-retention
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        schedule: '15 1 * * *'
+        timeZone: UTC
+        concurrencyPolicy: Forbid
+        startingDeadlineSeconds: 1800
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 3
+        jobTemplate:
+          spec:
+            activeDeadlineSeconds: 1800
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/component: registry-retention
+              spec:
+                restartPolicy: Never
+                serviceAccountName: gitlab-retention-maintenance
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  seccompProfile: {type: RuntimeDefault}
+                containers:
+                  - name: configure-tag-retention
+                    image: alpine/k8s:1.32.2
+                    imagePullPolicy: IfNotPresent
+                    command: [/bin/sh, -ec]
+                    args:
+                      - |
+                        pod=$(kubectl get pods -n '{{ gitlab_namespace }}' \
+                          -l app=toolbox,release=gitlab \
+                          -o jsonpath='{.items[0].metadata.name}')
+                        test -n "$pod"
+                        ruby=$(cat <<'RUBY'
+                        updated = 0
+                        Project.find_each do |project|
+                          next unless project.container_repositories.exists?
+                          policy = project.container_expiration_policy || project.build_container_expiration_policy
+                          policy.assign_attributes(
+                            enabled: true,
+                            cadence: '1d',
+                            keep_n: 1,
+                            older_than: '3d',
+                            name_regex: '.*',
+                            name_regex_keep: '^(main|master|production|stable|release.*|v[0-9].*)$',
+                            next_run_at: Time.current
+                          )
+                          policy.save!
+                          updated += 1
+                        end
+                        ContainerExpirationPolicyWorker.perform_async if updated.positive?
+                        puts "registry_retention_projects=#{updated}"
+                        RUBY
+                        )
+                        kubectl exec -n '{{ gitlab_namespace }}' "$pod" -c toolbox -- \
+                          gitlab-rails runner "$ruby"
+                    resources:
+                      requests: {cpu: 25m, memory: 48Mi}
+                      limits: {cpu: 200m, memory: 128Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: {drop: [ALL]}
+
+- name: GitLab cleanup | Install short CI job artifact retention
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: gitlab-job-artifact-retention
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          app.kubernetes.io/component: artifact-retention
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        schedule: '45 1 * * *'
+        timeZone: UTC
+        concurrencyPolicy: Forbid
+        startingDeadlineSeconds: 1800
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 3
+        jobTemplate:
+          spec:
+            activeDeadlineSeconds: 1800
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/component: artifact-retention
+              spec:
+                restartPolicy: Never
+                serviceAccountName: gitlab-retention-maintenance
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  seccompProfile: {type: RuntimeDefault}
+                containers:
+                  - name: configure-artifact-retention
+                    image: alpine/k8s:1.32.2
+                    imagePullPolicy: IfNotPresent
+                    command: [/bin/sh, -ec]
+                    args:
+                      - |
+                        pod=$(kubectl get pods -n '{{ gitlab_namespace }}' \
+                          -l app=toolbox,release=gitlab \
+                          -o jsonpath='{.items[0].metadata.name}')
+                        test -n "$pod"
+                        ruby=$(cat <<'RUBY'
+                        settings = ApplicationSetting.current
+                        settings.update!(default_artifacts_expire_in: '3 days')
+                        cutoff = 3.days.ago
+                        marked = Ci::JobArtifact
+                          .where('created_at < ?', cutoff)
+                          .where('expire_at IS NULL OR expire_at > ?', Time.current)
+                          .update_all(expire_at: Time.current)
+                        Ci::ScheduleBulkDeleteJobArtifactCronWorker.perform_async if marked.positive?
+                        puts "job_artifacts_marked_expired=#{marked}"
+                        RUBY
+                        )
+                        kubectl exec -n '{{ gitlab_namespace }}' "$pod" -c toolbox -- \
+                          gitlab-rails runner "$ruby"
+                    resources:
+                      requests: {cpu: 25m, memory: 48Mi}
+                      limits: {cpu: 200m, memory: 128Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: {drop: [ALL]}
+
+- name: GitLab cleanup | Install legacy registry garbage collection
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: gitlab-registry-garbage-collect
+        namespace: '{{ gitlab_namespace }}'
+        labels:
+          app.kubernetes.io/part-of: gitlab
+          app.kubernetes.io/component: registry-garbage-collection
+          app.kubernetes.io/managed-by: ansible
+      spec:
+        schedule: '15 4 * * 0'
+        timeZone: UTC
+        concurrencyPolicy: Forbid
+        startingDeadlineSeconds: 3600
+        successfulJobsHistoryLimit: 1
+        failedJobsHistoryLimit: 3
+        jobTemplate:
+          spec:
+            activeDeadlineSeconds: 10800
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 600
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/component: registry-garbage-collection
+              spec:
+                restartPolicy: Never
+                serviceAccountName: gitlab-retention-maintenance
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  seccompProfile: {type: RuntimeDefault}
+                containers:
+                  - name: registry-garbage-collect
+                    image: alpine/k8s:1.32.2
+                    imagePullPolicy: IfNotPresent
+                    command: [/bin/sh, -ec]
+                    args:
+                      - |
+                        restore_registry_service() {
+                          kubectl patch service gitlab-registry -n '{{ gitlab_namespace }}' \
+                            --type merge \
+                            -p '{"spec":{"selector":{"app":"registry","release":"gitlab"}}}' >/dev/null
+                        }
+                        trap restore_registry_service EXIT INT TERM
+                        kubectl patch service gitlab-registry -n '{{ gitlab_namespace }}' \
+                          --type merge \
+                          -p '{"spec":{"selector":{"app":"registry-maintenance-disabled","release":"gitlab"}}}' >/dev/null
+                        sleep 30
+                        pod=$(kubectl get pods -n '{{ gitlab_namespace }}' \
+                          -l app=registry,release=gitlab \
+                          -o jsonpath='{.items[0].metadata.name}')
+                        test -n "$pod"
+                        kubectl exec -n '{{ gitlab_namespace }}' "$pod" -c registry -- \
+                          /bin/registry garbage-collect -m /etc/docker/registry/config.yml
+                    resources:
+                      requests: {cpu: 25m, memory: 48Mi}
+                      limits: {cpu: 200m, memory: 128Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: {drop: [ALL]}
