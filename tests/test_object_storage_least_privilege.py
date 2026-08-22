@@ -181,6 +181,8 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "s3api delete-object" in tasks
     assert "name: seaweedfs-stale-multipart-cleaner" in tasks
     assert "name: seaweedfs-volume-vacuum" in tasks
+    assert defaults["object_storage_volume_vacuum_schedule"] == "43 1 * * *"
+    assert "activeDeadlineSeconds: 43200" in tasks
     assert "volume.vacuum -garbageThreshold=0.05" in tasks
     assert "volume.deleteEmpty -quietFor=24h -apply" in tasks
     assert "kind: CronJob" in tasks
