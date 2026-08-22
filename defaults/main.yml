@@ -493,7 +493,7 @@ coroot_node_agent_memory_limit: 1Gi
 coroot_cluster_agent_cpu_request: 100m
 coroot_cluster_agent_cpu_limit: 500m
 coroot_cluster_agent_memory_request: 200Mi
-coroot_cluster_agent_memory_limit: 1Gi
+coroot_cluster_agent_memory_limit: 2Gi
 
 # External Secrets Operator
 eso_chart_version: "2.7.0"

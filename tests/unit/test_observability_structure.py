@@ -145,6 +145,11 @@ class TestDefaults:
 
 
 class TestCorootStructure:
+    def test_cluster_agent_has_wal_replay_headroom(self):
+        with open(os.path.join(REPO, "defaults", "main.yml")) as fh:
+            defaults = fh.read()
+        assert "coroot_cluster_agent_memory_limit: 2Gi" in defaults
+
     def test_health_gate_matches_operator_statefulset(self):
         with open(os.path.join(OBS, "tasks", "coroot.yml")) as fh:
             content = fh.read()
