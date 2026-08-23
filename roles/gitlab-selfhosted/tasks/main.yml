@@ -1148,6 +1148,7 @@
               extraArgs: >-
                 --skip db
                 --skip registry
+                --skip artifacts
                 --s3tool awscli
                 --aws-s3-endpoint-url {{ object_storage_endpoint }}
                 --maximum-backups {{ gitlab_backup_maximum_backups | int }}

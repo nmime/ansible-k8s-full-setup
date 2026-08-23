@@ -1614,6 +1614,7 @@ class TestDefaultsTasksConsistency:
     def test_toolbox_skips_database_covered_by_native_percona_backup(self):
         assert "--skip db" in self.tasks_raw
         assert "--skip registry" in self.tasks_raw
+        assert "--skip artifacts" in self.tasks_raw
         assert "--s3tool awscli" in self.tasks_raw
 
     @pytest.mark.component
