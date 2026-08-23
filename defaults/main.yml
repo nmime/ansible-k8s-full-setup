@@ -503,6 +503,7 @@ backup_schedule: "0 2 * * *"
 backup_retention_days: 3
 backup_retention_count: 3
 backup_s3_retention_full_count: 1
+backup_mongodb_daily_keep: 1
 backup_mongodb_weekly_keep: 1
 backup_storage_type: s3
 backup_storage_bucket: backups

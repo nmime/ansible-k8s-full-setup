@@ -1131,7 +1131,7 @@
           - name: daily-backup
             enabled: '{{ platform_backup_enabled | default(backup_enabled) | bool }}'
             schedule: '{{ backup_schedule | default(''0 2 * * *'') }}'
-            keep: '{{ backup_retention_days | default(30) }}'
+            keep: '{{ backup_mongodb_daily_keep | default(1) | int }}'
             storageName: s3-object-storage
             compressionType: gzip
           - name: weekly-full-backup

@@ -69,6 +69,7 @@ class TestProjectDefaults:
     def test_retention(self): assert "backup_retention_days" in load_yaml(PROJECT_DEFAULTS)
     def test_short_s3_retention(self):
         assert load_yaml(PROJECT_DEFAULTS)["backup_s3_retention_full_count"] == 1
+        assert load_yaml(PROJECT_DEFAULTS)["backup_mongodb_daily_keep"] == 1
         assert load_yaml(PROJECT_DEFAULTS)["backup_mongodb_weekly_keep"] == 1
     def test_bucket(self): assert "backup_storage_bucket" in load_yaml(PROJECT_DEFAULTS)
     def test_alert_vars(self):
@@ -282,6 +283,7 @@ def test_database_native_schedules_follow_the_backup_selector_and_are_removable(
     assert "repo1-retention-diff: '1'" in databases
     assert "repo1-retention-archive: '1'" in databases
     assert "repo2-retention-full: '{{ backup_s3_retention_full_count | default(1) | string }}'" in databases
+    assert "keep: '{{ backup_mongodb_daily_keep | default(1) | int }}'" in databases
     assert 'path: "/spec/backups/pgbackrest/repos/{{ item }}/schedules"' in removal
     assert "Disable MongoDB operator backup and point-in-time recovery" in removal
     assert "path: /spec/backup/tasks" in removal
