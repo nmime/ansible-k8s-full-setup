@@ -318,6 +318,24 @@
                           --type merge \
                           -p '{"spec":{"selector":{"app":"registry-maintenance-disabled","release":"gitlab"}}}' >/dev/null
                         sleep 30
+                        for namespace in \
+                          '{{ gitlab_image_builder_runner_namespace }}' \
+                          '{{ gitlab_docker_host_runner_namespace }}'; do
+                          active_pods="$(
+                            kubectl get pods -n "$namespace" \
+                              -l 'job.runner.gitlab.com/pod' \
+                              --field-selector=status.phase=Pending \
+                              -o name
+                            kubectl get pods -n "$namespace" \
+                              -l 'job.runner.gitlab.com/pod' \
+                              --field-selector=status.phase=Running \
+                              -o name
+                          )"
+                          if [ -n "$active_pods" ]; then
+                            echo "registry_gc_aborted_active_ci namespace=$namespace"
+                            exit 0
+                          fi
+                        done
                         pod=$(kubectl get pods -n '{{ gitlab_namespace }}' \
                           -l app=registry,release=gitlab \
                           -o jsonpath='{.items[0].metadata.name}')

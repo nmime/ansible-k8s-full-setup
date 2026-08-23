@@ -1696,6 +1696,7 @@ class TestDefaultsTasksConsistency:
         assert "--field-selector=status.phase=Pending" in cleanup
         assert "--field-selector=status.phase=Running" in cleanup
         assert "registry_gc_skipped_active_ci" in cleanup
+        assert "registry_gc_aborted_active_ci" in cleanup
         assert "name: gitlab-job-artifact-retention" in cleanup
         assert "default_artifacts_expire_in: '3 days'" in cleanup
         assert ".non_trace" in cleanup
