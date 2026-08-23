@@ -1140,13 +1140,14 @@
               schedule: '{{ backup_schedule }}'
               timeZone: '{{ backup_cron_timezone }}'
               concurrencyPolicy: Forbid
-              successfulJobsHistoryLimit: 3
+              successfulJobsHistoryLimit: 1
               failedJobsHistoryLimit: 1
               resources:
                 requests: {cpu: 50m, memory: 128Mi}
                 limits: {cpu: 500m, memory: 1Gi}
               extraArgs: >-
                 --skip db
+                --skip registry
                 --s3tool awscli
                 --aws-s3-endpoint-url {{ object_storage_endpoint }}
                 --maximum-backups {{ gitlab_backup_maximum_backups | int }}

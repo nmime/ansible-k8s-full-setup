@@ -1613,7 +1613,16 @@ class TestDefaultsTasksConsistency:
     @pytest.mark.component
     def test_toolbox_skips_database_covered_by_native_percona_backup(self):
         assert "--skip db" in self.tasks_raw
+        assert "--skip registry" in self.tasks_raw
         assert "--s3tool awscli" in self.tasks_raw
+
+    @pytest.mark.component
+    def test_toolbox_backup_keeps_short_job_history(self):
+        toolbox_backup = self.tasks_raw.split("backups:\n", 1)[1].split(
+            "gitlab-exporter:", 1
+        )[0]
+        assert "successfulJobsHistoryLimit: 1" in toolbox_backup
+        assert "failedJobsHistoryLimit: 1" in toolbox_backup
 
     @pytest.mark.component
     def test_toolbox_awscli_receives_minio_credentials(self):
