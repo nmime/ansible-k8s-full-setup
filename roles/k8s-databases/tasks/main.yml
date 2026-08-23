@@ -629,9 +629,9 @@
             - secret:
                 name: pgbackrest-s3-creds
             global:
-              repo1-retention-full: '3'
-              repo1-retention-diff: '2'
-              repo1-retention-archive: '3'
+              repo1-retention-full: '1'
+              repo1-retention-diff: '1'
+              repo1-retention-archive: '1'
               repo2-s3-uri-style: path
               repo2-path: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
               repo2-retention-full: '{{ backup_s3_retention_full_count | default(1) | string }}'

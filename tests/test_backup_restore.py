@@ -278,6 +278,10 @@ def test_database_native_schedules_follow_the_backup_selector_and_are_removable(
         in databases
     )
     assert "Remove PostgreSQL operator backup schedules" in removal
+    assert "repo1-retention-full: '1'" in databases
+    assert "repo1-retention-diff: '1'" in databases
+    assert "repo1-retention-archive: '1'" in databases
+    assert "repo2-retention-full: '{{ backup_s3_retention_full_count | default(1) | string }}'" in databases
     assert 'path: "/spec/backups/pgbackrest/repos/{{ item }}/schedules"' in removal
     assert "Disable MongoDB operator backup and point-in-time recovery" in removal
     assert "path: /spec/backup/tasks" in removal
