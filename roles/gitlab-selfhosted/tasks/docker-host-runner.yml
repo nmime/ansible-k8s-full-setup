@@ -270,7 +270,8 @@
         config: |
           [[runners]]
             clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
-            request_concurrency = 1
+            request_concurrency = {{ gitlab_docker_host_runner_concurrent | int }}
+            limit = {{ gitlab_docker_host_runner_concurrent | int }}
             environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
             [runners.kubernetes]
               namespace = "{{ gitlab_docker_host_runner_namespace }}"
