@@ -174,11 +174,29 @@
                         settings.update!(default_artifacts_expire_in: '3 days')
                         cutoff = 3.days.ago
                         marked = Ci::JobArtifact
+                          .non_trace
                           .where('created_at < ?', cutoff)
                           .where('expire_at IS NULL OR expire_at > ?', Time.current)
                           .update_all(expire_at: Time.current)
                         Ci::ScheduleBulkDeleteJobArtifactCronWorker.perform_async if marked.positive?
-                        puts "job_artifacts_marked_expired=#{marked}"
+                        traces_deleted = 0
+                        loop do
+                          traces = Ci::JobArtifact
+                            .where(file_type: :trace)
+                            .where('created_at < ?', cutoff)
+                            .limit(100)
+                          break unless traces.exists?
+
+                          result = Ci::JobArtifacts::DestroyBatchService
+                            .new(traces, skip_projects_on_refresh: true)
+                            .execute
+                          deleted = result.fetch(:destroyed_artifacts_count)
+                          break if deleted.zero?
+
+                          traces_deleted += deleted
+                        end
+                        Ci::DeleteObjectsWorker.perform_async if traces_deleted.positive?
+                        puts "job_artifacts_marked_expired=#{marked} job_traces_deleted=#{traces_deleted}"
                         RUBY
                         )
                         kubectl exec -n '{{ gitlab_namespace }}' "$pod" -c toolbox -- \

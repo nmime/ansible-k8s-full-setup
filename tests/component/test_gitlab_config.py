@@ -1675,6 +1675,10 @@ class TestDefaultsTasksConsistency:
         assert "trap restore_registry_service EXIT INT TERM" in cleanup
         assert "name: gitlab-job-artifact-retention" in cleanup
         assert "default_artifacts_expire_in: '3 days'" in cleanup
+        assert ".non_trace" in cleanup
+        assert ".where(file_type: :trace)" in cleanup
+        assert "Ci::JobArtifacts::DestroyBatchService" in cleanup
+        assert "Ci::DeleteObjectsWorker.perform_async" in cleanup
         assert "Ci::ScheduleBulkDeleteJobArtifactCronWorker.perform_async" in cleanup
 
     @pytest.mark.component
