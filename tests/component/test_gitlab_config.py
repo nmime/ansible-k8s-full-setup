@@ -1686,7 +1686,7 @@ class TestDefaultsTasksConsistency:
             )
         )
         assert "name: gitlab-registry-tag-retention" in cleanup
-        assert "older_than: '3d'" in cleanup
+        assert "older_than: '1d'" in cleanup
         assert "keep_n: 1" in cleanup
         assert "name: gitlab-registry-garbage-collect" in cleanup
         assert "/bin/registry garbage-collect -m" in cleanup
