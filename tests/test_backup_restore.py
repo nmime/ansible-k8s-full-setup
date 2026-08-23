@@ -69,6 +69,7 @@ class TestProjectDefaults:
     def test_retention(self): assert "backup_retention_days" in load_yaml(PROJECT_DEFAULTS)
     def test_short_s3_retention(self):
         assert load_yaml(PROJECT_DEFAULTS)["backup_s3_retention_full_count"] == 1
+        assert load_yaml(PROJECT_DEFAULTS)["backup_mongodb_weekly_keep"] == 1
     def test_bucket(self): assert "backup_storage_bucket" in load_yaml(PROJECT_DEFAULTS)
     def test_alert_vars(self):
         d = load_yaml(PROJECT_DEFAULTS)
