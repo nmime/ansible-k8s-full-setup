@@ -94,7 +94,7 @@ object_storage_managed_bucket_policies:
       {{
         2048
         if resource_tier | default(tier | default('minimal')) == 'minimal'
-        else 4096
+        else 8192
         if resource_tier | default(tier | default('minimal')) == 'small'
         else 8192
         if resource_tier | default(tier | default('minimal')) == 'medium'
