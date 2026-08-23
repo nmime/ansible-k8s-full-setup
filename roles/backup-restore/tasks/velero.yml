@@ -191,6 +191,8 @@
         defaultItemOperationTimeout: 8h
         fsBackupTimeout: 8h
         uploaderType: kopia
+        extraArgs:
+          - --backup-repository-configmap=velero-backup-repository
         repositoryMaintenanceJob:
           repositoryConfigData:
             global:
@@ -202,6 +204,12 @@
       # restores. The upstream image declares the symbolic user "cnb"; pods
       # enforcing runAsNonRoot require an explicit numeric identity.
       configMaps:
+        backup-repository:
+          data:
+            kopia: |
+              {
+                "fullMaintenanceInterval": "eagerGC"
+              }
         fs-restore-action-config:
           labels:
             velero.io/plugin-config: ""
