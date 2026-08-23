@@ -480,7 +480,7 @@
         schedule: '17 * * * *'
         concurrencyPolicy: Forbid
         successfulJobsHistoryLimit: 1
-        failedJobsHistoryLimit: 2
+        failedJobsHistoryLimit: 1
         jobTemplate:
           spec:
             ttlSecondsAfterFinished: 3600
