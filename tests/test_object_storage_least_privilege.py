@@ -170,7 +170,7 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert defaults["object_storage_managed_bucket_policy_supported_chart_versions"] == [
         "4.25.1"
     ]
-    assert policies["nx-cache-protected"]["ttl"] == "7d"
+    assert policies["nx-cache-protected"]["ttl"] == "3d"
     assert policies["nx-cache-development"]["ttl"] == "1d"
     assert policies["gitlab-runner-cache"]["ttl"] == "1d"
     assert "createBuckets:" in tasks
@@ -181,10 +181,11 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "s3api delete-object" in tasks
     assert "name: seaweedfs-stale-multipart-cleaner" in tasks
     assert "name: seaweedfs-volume-vacuum" in tasks
-    assert defaults["object_storage_volume_vacuum_schedule"] == "43 1 * * *"
+    assert "name: seaweedfs-volume-reclaim" in tasks
+    assert "object_storage_volume_vacuum_schedule" not in defaults
+    assert "default('43 1 * * *')" in defaults["object_storage_volume_reclaim_schedule"]
     assert "activeDeadlineSeconds: 43200" in tasks
-    assert "volume.vacuum -garbageThreshold 0.05" in tasks
-    assert "volume.vacuum -garbageThreshold=0.05" not in tasks
+    assert "volume.vacuum" not in tasks
     assert "volume.deleteEmpty -quietFor=24h -apply" in tasks
     assert "kind: CronJob" in tasks
     assert "concurrencyPolicy: Forbid" in tasks

@@ -11,6 +11,7 @@ backup_storage_path_style: true
 backup_schedule: "0 2 * * *"
 backup_retention_days: 3
 backup_retention_count: 3
+backup_s3_retention_full_count: 1
 backup_compression: true
 backup_namespace: backups
 backup_label: backup-restore
@@ -53,7 +54,7 @@ restore_safety_gate_skip_verification: false
 restore_safety_gate_confirm_required: true
 backup_cron_timezone: UTC
 backup_cron_concurrency_policy: Forbid
-backup_cron_successful_jobs_history: 3
+backup_cron_successful_jobs_history: 1
 backup_cron_failed_jobs_history: 1
 backup_job_cpu_request: 100m
 backup_job_cpu_limit: 500m

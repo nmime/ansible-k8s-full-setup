@@ -58,14 +58,14 @@ object_storage_managed_bucket_policy_supported_chart_versions:
 object_storage_quota_enforcement_schedule: "*/5 * * * *"
 object_storage_retention_prune_schedule: "23 */6 * * *"
 object_storage_stale_multipart_cleanup_schedule: "17 */6 * * *"
-object_storage_volume_vacuum_schedule: "43 1 * * *"
+object_storage_volume_reclaim_schedule: "{{ object_storage_volume_vacuum_schedule | default('43 1 * * *') }}"
 # SeaweedFS path TTL is stamped on new writes. The chart hook therefore applies
 # these policies before Nx cache GitOps is enabled. Native bucket quotas provide
 # a bounded logical-size target; the periodic enforcer switches an over-quota
 # bucket read-only within one schedule interval.
 object_storage_managed_bucket_policies:
   - name: nx-cache-protected
-    ttl: 7d
+    ttl: 3d
     quota_mib: >-
       {{
         4096

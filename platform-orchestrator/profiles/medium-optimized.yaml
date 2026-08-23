@@ -101,6 +101,9 @@ kubernetes:
   kubelet:
     kube_memory_reserved: 512Mi
     system_memory_reserved: 1Gi
+    image_gc_high_threshold: 65
+    image_gc_low_threshold: 55
+    image_maximum_gc_age: 24h
     eviction_hard:
       memory.available: 1Gi
       nodefs.available: 5%

@@ -297,6 +297,9 @@ class TestNamedProfileContract:
         assert medium_optimized["kubernetes"]["kubelet"] == {
             "kube_memory_reserved": "512Mi",
             "system_memory_reserved": "1Gi",
+            "image_gc_high_threshold": 65,
+            "image_gc_low_threshold": 55,
+            "image_maximum_gc_age": "24h",
             "eviction_hard": {
                 "memory.available": "1Gi",
                 "nodefs.available": "5%",
@@ -420,6 +423,9 @@ class TestMediumOptimizedContract:
             6: "cx33",
         }
         assert self.profile["kubernetes"]["terminated_pod_gc_threshold"] == 1
+        assert self.profile["kubernetes"]["kubelet"]["image_gc_high_threshold"] == 65
+        assert self.profile["kubernetes"]["kubelet"]["image_gc_low_threshold"] == 55
+        assert self.profile["kubernetes"]["kubelet"]["image_maximum_gc_age"] == "24h"
         assert self.profile["gitlab"]["runner"]["dedicated_worker_index"] == 5
         assert (
             self.profile["gitlab"]["runner"]["docker_host"][

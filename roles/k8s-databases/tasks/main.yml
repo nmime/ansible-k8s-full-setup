@@ -634,7 +634,7 @@
               repo1-retention-archive: '3'
               repo2-s3-uri-style: path
               repo2-path: /pgbackrest/{{ project_name | default('k8s') }}-pg/repo2
-              repo2-retention-full: '2'
+              repo2-retention-full: '{{ backup_s3_retention_full_count | default(1) | string }}'
               repo2-retention-full-type: count
             repos:
             - name: repo1

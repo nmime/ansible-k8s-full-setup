@@ -1000,21 +1000,29 @@
                           capabilities:
                             drop: [ALL]
 
-    - name: Install periodic SeaweedFS volume vacuum
+    - name: Remove unsafe legacy SeaweedFS volume vacuum
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: CronJob
+        name: seaweedfs-volume-vacuum
+        namespace: "{{ object_storage_namespace_resolved }}"
+
+    - name: Install periodic SeaweedFS empty-volume reclamation
       kubernetes.core.k8s:
         state: present
         definition:
           apiVersion: batch/v1
           kind: CronJob
           metadata:
-            name: seaweedfs-volume-vacuum
+            name: seaweedfs-volume-reclaim
             namespace: "{{ object_storage_namespace_resolved }}"
             labels:
               app.kubernetes.io/name: seaweedfs
               app.kubernetes.io/component: volume-maintenance
               app.kubernetes.io/managed-by: ansible
           spec:
-            schedule: "{{ object_storage_volume_vacuum_schedule | default('43 1 * * *') }}"
+            schedule: "{{ object_storage_volume_reclaim_schedule | default('43 1 * * *') }}"
             timeZone: UTC
             concurrencyPolicy: Forbid
             startingDeadlineSeconds: 1800
@@ -1048,7 +1056,6 @@
                           - |
                             printf '%s\n' \
                               'lock' \
-                              'volume.vacuum -garbageThreshold 0.05' \
                               'volume.deleteEmpty -quietFor=24h -apply' \
                               'unlock' | /usr/bin/weed shell
                         env:

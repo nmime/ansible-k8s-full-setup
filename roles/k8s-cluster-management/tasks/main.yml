@@ -283,6 +283,13 @@
       enable_nodelocaldns: true
       kubelet_max_pods: 110
       kubelet_rotate_certificates: true
+      # Let kubelet, rather than an external containerd pruner, own unused image
+      # garbage collection. Age-based GC keeps short retention even on roomy
+      # nodes; thresholds provide a second bound during image-heavy CI bursts.
+      kubelet_image_gc_high_threshold: {{ kubernetes.kubelet.image_gc_high_threshold | default(65) | int }}
+      kubelet_image_gc_low_threshold: {{ kubernetes.kubelet.image_gc_low_threshold | default(55) | int }}
+      kubelet_config_extra_args:
+        imageMaximumGCAge: {{ kubernetes.kubelet.image_maximum_gc_age | default('24h') | quote }}
       # Keep the Kubespray defaults unless a compact schedulable-control-plane
       # profile explicitly reserves more host memory. eviction_hard is rendered
       # as a complete map because kubelet does not merge partial threshold maps.

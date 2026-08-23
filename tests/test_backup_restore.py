@@ -53,7 +53,9 @@ class TestVariableDefaults:
     def test_short_retention(self):
         assert self.d["backup_retention_days"] == 3
         assert self.d["backup_retention_count"] == 3
+        assert self.d["backup_s3_retention_full_count"] == 1
         assert self.d["backup_dr_retention_hours"] == 72
+        assert self.d["backup_cron_successful_jobs_history"] == 1
     def test_concurrency(self): assert self.d["backup_cron_concurrency_policy"] == "Forbid"
     def test_resource_limits(self):
         for k in ("backup_job_cpu_request","backup_job_cpu_limit","backup_job_memory_request","backup_job_memory_limit"):
@@ -65,6 +67,8 @@ class TestVariableDefaults:
 class TestProjectDefaults:
     def test_schedule(self): assert "backup_schedule" in load_yaml(PROJECT_DEFAULTS)
     def test_retention(self): assert "backup_retention_days" in load_yaml(PROJECT_DEFAULTS)
+    def test_short_s3_retention(self):
+        assert load_yaml(PROJECT_DEFAULTS)["backup_s3_retention_full_count"] == 1
     def test_bucket(self): assert "backup_storage_bucket" in load_yaml(PROJECT_DEFAULTS)
     def test_alert_vars(self):
         d = load_yaml(PROJECT_DEFAULTS)
