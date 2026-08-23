@@ -101,7 +101,7 @@
         concurrencyPolicy: Forbid
         startingDeadlineSeconds: 1800
         successfulJobsHistoryLimit: 1
-        failedJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 1
         jobTemplate:
           spec:
             activeDeadlineSeconds: 1800
@@ -179,7 +179,7 @@
         concurrencyPolicy: Forbid
         startingDeadlineSeconds: 1800
         successfulJobsHistoryLimit: 1
-        failedJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 1
         jobTemplate:
           spec:
             activeDeadlineSeconds: 1800
@@ -266,7 +266,7 @@
         concurrencyPolicy: Forbid
         startingDeadlineSeconds: 3600
         successfulJobsHistoryLimit: 1
-        failedJobsHistoryLimit: 3
+        failedJobsHistoryLimit: 1
         jobTemplate:
           spec:
             activeDeadlineSeconds: 10800
