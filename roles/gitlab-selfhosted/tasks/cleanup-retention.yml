@@ -140,7 +140,7 @@
                             keep_n: 1,
                             older_than: '1d',
                             name_regex: '.*',
-                            name_regex_keep: '^(main|master|production|stable|release.*|v[0-9].*)$',
+                            name_regex_keep: '^(main|master|production|preproduction|edge|stable|release.*|v[0-9].*|.*-(production|preproduction|edge))$',
                             next_run_at: Time.current
                           )
                           policy.save!

@@ -1688,6 +1688,8 @@ class TestDefaultsTasksConsistency:
         assert "name: gitlab-registry-tag-retention" in cleanup
         assert "older_than: '1d'" in cleanup
         assert "keep_n: 1" in cleanup
+        assert "preproduction|edge|stable" in cleanup
+        assert ".*-(production|preproduction|edge)" in cleanup
         assert "name: gitlab-registry-garbage-collect" in cleanup
         assert "/bin/registry garbage-collect -m" in cleanup
         assert "trap restore_registry_service EXIT INT TERM" in cleanup
