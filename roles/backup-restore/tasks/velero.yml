@@ -191,6 +191,10 @@
         defaultItemOperationTimeout: 8h
         fsBackupTimeout: 8h
         uploaderType: kopia
+        repositoryMaintenanceJob:
+          repositoryConfigData:
+            global:
+              keepLatestMaintenanceJobs: 1
       backupsEnabled: true
       snapshotsEnabled: false
       deployNodeAgent: true
