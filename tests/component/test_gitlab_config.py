@@ -1673,6 +1673,11 @@ class TestDefaultsTasksConsistency:
         assert "name: gitlab-registry-garbage-collect" in cleanup
         assert "/bin/registry garbage-collect -m" in cleanup
         assert "trap restore_registry_service EXIT INT TERM" in cleanup
+        assert "name: gitlab-registry-gc-build-guard" in cleanup
+        assert "job.runner.gitlab.com/pod" in cleanup
+        assert "--field-selector=status.phase=Pending" in cleanup
+        assert "--field-selector=status.phase=Running" in cleanup
+        assert "registry_gc_skipped_active_ci" in cleanup
         assert "name: gitlab-job-artifact-retention" in cleanup
         assert "default_artifacts_expire_in: '3 days'" in cleanup
         assert ".non_trace" in cleanup

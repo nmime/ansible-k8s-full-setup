@@ -44,6 +44,44 @@
   loop_control:
     label: '{{ item.kind }}/{{ item.metadata.name }}'
 
+- name: GitLab cleanup | Allow registry GC to inspect protected build pods
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: gitlab-registry-gc-build-guard
+        namespace: '{{ item }}'
+      rules:
+        - apiGroups: ['']
+          resources: ['pods']
+          verbs: ['get', 'list']
+  loop:
+    - '{{ gitlab_image_builder_runner_namespace }}'
+    - '{{ gitlab_docker_host_runner_namespace }}'
+
+- name: GitLab cleanup | Bind registry GC build guard
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: gitlab-registry-gc-build-guard
+        namespace: '{{ item }}'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: gitlab-registry-gc-build-guard
+      subjects:
+        - kind: ServiceAccount
+          name: gitlab-retention-maintenance
+          namespace: '{{ gitlab_namespace }}'
+  loop:
+    - '{{ gitlab_image_builder_runner_namespace }}'
+    - '{{ gitlab_docker_host_runner_namespace }}'
+
 - name: GitLab cleanup | Install short registry tag retention
   kubernetes.core.k8s:
     state: present
@@ -252,6 +290,24 @@
                     command: [/bin/sh, -ec]
                     args:
                       - |
+                        for namespace in \
+                          '{{ gitlab_image_builder_runner_namespace }}' \
+                          '{{ gitlab_docker_host_runner_namespace }}'; do
+                          active_pods="$(
+                            kubectl get pods -n "$namespace" \
+                              -l 'job.runner.gitlab.com/pod' \
+                              --field-selector=status.phase=Pending \
+                              -o name
+                            kubectl get pods -n "$namespace" \
+                              -l 'job.runner.gitlab.com/pod' \
+                              --field-selector=status.phase=Running \
+                              -o name
+                          )"
+                          if [ -n "$active_pods" ]; then
+                            echo "registry_gc_skipped_active_ci namespace=$namespace"
+                            exit 0
+                          fi
+                        done
                         restore_registry_service() {
                           kubectl patch service gitlab-registry -n '{{ gitlab_namespace }}' \
                             --type merge \
