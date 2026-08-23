@@ -261,7 +261,7 @@
           app.kubernetes.io/component: registry-garbage-collection
           app.kubernetes.io/managed-by: ansible
       spec:
-        schedule: '15 4 * * 0'
+        schedule: '15 4 * * *'
         timeZone: UTC
         concurrencyPolicy: Forbid
         startingDeadlineSeconds: 3600
