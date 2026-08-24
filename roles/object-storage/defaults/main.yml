@@ -56,7 +56,10 @@ object_storage_managed_bucket_policies_enabled: true
 object_storage_managed_bucket_policy_supported_chart_versions:
   - "4.25.1"
 object_storage_quota_enforcement_schedule: "*/5 * * * *"
-object_storage_retention_prune_schedule: "23 */6 * * *"
+# Cache churn is bursty during protected image releases. Reconcile expiry every
+# hour so the bounded runner-cache quota cannot remain read-only for a full
+# six-hour maintenance interval after a normal release burst.
+object_storage_retention_prune_schedule: "23 * * * *"
 object_storage_stale_multipart_cleanup_schedule: "17 */6 * * *"
 object_storage_volume_reclaim_schedule: "{{ object_storage_volume_vacuum_schedule | default('43 1 * * *') }}"
 # SeaweedFS path TTL is stamped on new writes. The chart hook therefore applies
@@ -89,7 +92,7 @@ object_storage_managed_bucket_policies:
         else 30720
       }}
   - name: gitlab-runner-cache
-    ttl: 1d
+    ttl: 6h
     quota_mib: >-
       {{
         8192
