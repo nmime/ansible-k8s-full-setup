@@ -408,6 +408,100 @@
   delay: 10
   until: _r_vmrules is not failed
 
+- name: Deploy audited backup, SeaweedFS, certificate, and Argo CD alerts
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: sre-hardening-alerts
+        namespace: '{{ monitoring_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/part-of: sre-alerting
+      spec:
+        groups:
+          - name: gitlab-backup
+            interval: 30s
+            rules:
+              - alert: GitLabToolboxBackupStale
+                expr: time() - kube_cronjob_status_last_successful_time{namespace="gitlab",cronjob="gitlab-toolbox-backup"} > 26 * 3600
+                for: 15m
+                labels: {severity: critical, namespace: gitlab, owner: platform, service: gitlab-backup}
+                annotations:
+                  summary: 'No successful GitLab toolbox backup for {{ "{{ $value | humanizeDuration }}" }} (threshold 26h)'
+                  description: >-
+                    Cronjob gitlab/toolbox-backup has no successful run within 26h. Check recent jobs,
+                    the SeaweedFS gitlab-backups collection, and whether a running job is stuck.
+              - alert: GitLabToolboxBackupRunningLong
+                expr: >-
+                  max by (namespace, job_name) (kube_job_status_active{namespace="gitlab",job_name=~"gitlab-toolbox-backup-.*"}) > 0
+                  and on (namespace, job_name)
+                  (time() - max by (namespace, job_name) (kube_job_status_start_time{namespace="gitlab",job_name=~"gitlab-toolbox-backup-.*"})) > 4 * 3600
+                for: 15m
+                labels: {severity: warning, namespace: gitlab, owner: platform, service: gitlab-backup}
+                annotations:
+                  summary: 'GitLab toolbox backup job {{ "{{ $labels.job_name }}" }} running for {{ "{{ $value | humanizeDuration }}" }} (threshold 4h)'
+                  description: A typical run takes about one hour; inspect the job and object-storage write path.
+          - name: seaweedfs-extra
+            interval: 30s
+            rules:
+              - alert: SeaweedFSReadOnlyVolumes
+                expr: max by (pod, collection) (SeaweedFS_volumeServer_read_only_volumes{type="isDiskSpaceLow"}) > 0
+                for: 10m
+                labels: {severity: critical, namespace: storage, owner: platform, service: seaweedfs}
+                annotations:
+                  summary: 'SeaweedFS volume server {{ "{{ $labels.pod }}" }} has {{ "{{ $value | humanize }}" }} disk-low volume(s) in collection {{ "{{ $labels.collection }}" }}'
+                  description: >-
+                    The volume server reports disk-space-low read-only volumes. Free or expand storage,
+                    then verify that S3 writes recover. Administrative no-write flags do not trigger this alert.
+              - alert: SeaweedFSS3LatencyHigh
+                expr: histogram_quantile(0.95, sum by (le) (rate(SeaweedFS_s3_request_seconds_bucket[5m]))) > 1
+                for: 10m
+                labels: {severity: warning, namespace: storage, owner: platform, service: seaweedfs}
+                annotations:
+                  summary: 'SeaweedFS filer S3 p95 latency is {{ "{{ $value | humanizeDuration }}" }} (threshold 1s)'
+                  description: Check filer and volume load, disk saturation, and disk-low volume state.
+              - alert: SeaweedFSS3LatencyCritical
+                expr: histogram_quantile(0.95, sum by (le) (rate(SeaweedFS_s3_request_seconds_bucket[5m]))) > 5
+                for: 5m
+                labels: {severity: critical, namespace: storage, owner: platform, service: seaweedfs}
+                annotations:
+                  summary: 'SeaweedFS filer S3 p95 latency is {{ "{{ $value | humanizeDuration }}" }} (threshold 5s)'
+                  description: Object-storage consumers are critically degraded.
+          - name: certificates-hardening
+            interval: 30s
+            rules:
+              - alert: CertificateExpiringIn14Days
+                expr: certmanager_certificate_expiration_timestamp_seconds - time() < 14 * 24 * 3600
+                for: 6h
+                labels: {severity: warning, owner: platform, service: cert-manager}
+                annotations:
+                  summary: 'Certificate {{ "{{ $labels.name }}" }} in {{ "{{ $labels.namespace }}" }} expires in {{ "{{ $value | humanizeDuration }}" }}'
+                  description: cert-manager certificate expires within 14 days.
+          - name: argocd
+            interval: 30s
+            rules:
+              - alert: ArgoCDAppOutOfSync
+                expr: argocd_application_sync_status{sync_status="OutOfSync"} == 1
+                for: 10m
+                labels: {severity: warning, namespace: argocd, owner: platform, service: argocd}
+                annotations:
+                  summary: 'Argo CD application {{ "{{ $labels.name }}" }} is OutOfSync for 10m'
+                  description: Inspect the application diff and recent synchronization attempts.
+              - alert: ArgoCDAppDegraded
+                expr: argocd_application_health_status{health_status="Degraded"} == 1
+                for: 10m
+                labels: {severity: critical, namespace: argocd, owner: platform, service: argocd}
+                annotations:
+                  summary: 'Argo CD application {{ "{{ $labels.name }}" }} is Degraded for 10m'
+                  description: Inspect unhealthy resources, pod status, and recent rollouts.
+  register: _r_sre_hardening_vmrule
+  retries: 3
+  delay: 10
+  until: _r_sre_hardening_vmrule is not failed
+
 - name: Deploy service SLO and operational VMRules
   kubernetes.core.k8s:
     state: present
