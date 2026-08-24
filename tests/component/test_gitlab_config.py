@@ -1071,6 +1071,24 @@ class TestChart10ValuesStructure:
             assert dns_egress["toPorts"][0]["rules"]["dns"] == [
                 {"matchPattern": "*"}
             ]
+        cache_policy = policies[
+            "Image builder | Allow runner cache traffic to SeaweedFS"
+        ]["kubernetes.core.k8s"]["definition"]
+        assert cache_policy["spec"]["podSelector"] == {}
+        assert cache_policy["spec"]["egress"] == [
+            {
+                "to": [
+                    {
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": "storage"
+                            }
+                        }
+                    }
+                ],
+                "ports": [{"port": 8333, "protocol": "TCP"}],
+            }
+        ]
         dependency_policy = policies[
             "Image builder | Allow audited HTTPS build dependencies"
         ]["kubernetes.core.k8s"]["definition"]
