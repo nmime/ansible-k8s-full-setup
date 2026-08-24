@@ -963,6 +963,9 @@ class TestChart10ValuesStructure:
         )
         assert values["runners"]["tags"] == "image-build"
         assert values["runners"]["runUntagged"] is False
+        assert values["runners"]["cache"]["secretName"] == (
+            "gitlab-runner-s3-cache"
+        )
         assert values["rbac"]["clusterWideAccess"] is False
         assert values["podSecurityContext"]["seccompProfile"]["type"] == (
             "RuntimeDefault"
@@ -971,6 +974,9 @@ class TestChart10ValuesStructure:
         assert "app" not in values["podLabels"]
         assert 'privileged = false' in config
         assert 'automount_service_account_token = false' in config
+        assert '[runners.cache]' in config
+        assert 'Type = "s3"' in config
+        assert 'BucketName = "gitlab-runner-cache"' in config
         assert "gitlab.runner.image_builder.job_resources" in config
         assert "gitlab_image_builder_memory_request" in config
         assert (

@@ -270,6 +270,17 @@
             clone_url = "http://gitlab-webservice-default.{{ gitlab_namespace }}.svc:8181"
             request_concurrency = 1
             environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
+            [runners.cache]
+              Type = "s3"
+              Path = "gitlab-runner"
+              Shared = true
+              [runners.cache.s3]
+                ServerAddress = "{{ object_storage_endpoint_hostport |
+                                     default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+                BucketName = "gitlab-runner-cache"
+                BucketLocation = "us-east-1"
+                Insecure = {{ gitlab_runner_cache_insecure |
+                              default(true) | lower }}
             [runners.kubernetes]
               namespace = "{{ gitlab_image_builder_runner_namespace }}"
               image = "ubuntu:22.04"
@@ -323,6 +334,8 @@
                           type: Unconfined
                 '''
                 patch_type = "strategic"
+        cache:
+          secretName: gitlab-runner-s3-cache
         tags: image-build
         runUntagged: false
       podLabels:
