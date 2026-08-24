@@ -92,10 +92,12 @@ object_storage_managed_bucket_policies:
         else 30720
       }}
   - name: gitlab-runner-cache
-    ttl: 6h
+    ttl: 2h
     quota_mib: >-
       {{
-        8192
+        24576
+        if platform_profile | default('') == 'medium-optimized'
+        else 8192
         if resource_tier | default(tier | default('minimal')) == 'minimal'
         else 16384
         if resource_tier | default(tier | default('minimal')) == 'small'

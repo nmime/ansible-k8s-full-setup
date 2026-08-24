@@ -172,8 +172,9 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     ]
     assert policies["nx-cache-protected"]["ttl"] == "3d"
     assert policies["nx-cache-development"]["ttl"] == "1d"
-    assert policies["gitlab-runner-cache"]["ttl"] == "6h"
+    assert policies["gitlab-runner-cache"]["ttl"] == "2h"
     assert defaults["object_storage_retention_prune_schedule"] == "23 * * * *"
+    assert "24576" in policies["gitlab-runner-cache"]["quota_mib"]
     assert "8192" in policies["gitlab-runner-cache"]["quota_mib"]
     assert "else 16384" in policies["gitlab-runner-cache"]["quota_mib"]
     assert "createBuckets:" in tasks
