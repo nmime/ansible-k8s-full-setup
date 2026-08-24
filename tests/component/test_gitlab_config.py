@@ -948,6 +948,23 @@ class TestChart10ValuesStructure:
             in builder
         )
         tasks = yaml.safe_load(builder)
+        cache_secret = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Image builder | Reconcile the namespaced S3 cache credentials"
+        )
+        cache_secret_definition = cache_secret["kubernetes.core.k8s"]["definition"]
+        assert cache_secret["no_log"] is True
+        assert cache_secret_definition["metadata"]["name"] == (
+            "gitlab-runner-s3-cache"
+        )
+        assert cache_secret_definition["metadata"]["namespace"] == (
+            "{{ gitlab_image_builder_runner_namespace }}"
+        )
+        assert cache_secret_definition["stringData"]["accesskey"] == (
+            "{{ object_storage_ci_cache_access_key }}"
+        )
         install = next(
             task
             for task in tasks

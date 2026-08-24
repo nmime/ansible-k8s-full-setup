@@ -22,6 +22,28 @@
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted
 
+- name: Image builder | Reconcile the namespaced S3 cache credentials
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-runner-s3-cache
+        namespace: '{{ gitlab_image_builder_runner_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          workload.platform.example.com/trust-boundary: protected-image-builds
+      type: Opaque
+      stringData:
+        accesskey: '{{ object_storage_ci_cache_access_key }}'
+        secretkey: '{{ object_storage_ci_cache_secret_key }}'
+  register: _r_reconcile_image_builder_s3_cache_secret
+  retries: 3
+  delay: 10
+  until: _r_reconcile_image_builder_s3_cache_secret is not failed
+
 - name: Image builder | Establish the fail-closed network boundary
   ansible.builtin.include_tasks: image-builder-network.yml
 
