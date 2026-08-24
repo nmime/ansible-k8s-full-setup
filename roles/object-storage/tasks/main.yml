@@ -881,7 +881,12 @@
                             deleted=0
                             {% for policy in object_storage_managed_bucket_policies | default([]) %}
                             bucket='{{ policy.name }}'
-                            cutoff=$(date -u -d '{{ policy.ttl | regex_replace("d$", "") }} days ago' +%Y-%m-%dT%H:%M:%SZ)
+                            retention='{{ policy.ttl }}'
+                            case "$retention" in
+                              *d) cutoff=$(date -u -d "${retention%d} days ago" +%Y-%m-%dT%H:%M:%SZ) ;;
+                              *h) cutoff=$(date -u -d "${retention%h} hours ago" +%Y-%m-%dT%H:%M:%SZ) ;;
+                              *) printf 'Unsupported cache retention: %s\n' "$retention" >&2; exit 1 ;;
+                            esac
                             printf 'Pruning s3://%s objects older than %s\n' "$bucket" "$cutoff"
                             while :; do
                               objects=$(aws --endpoint-url "$OBJECT_STORAGE_ENDPOINT" s3api list-objects-v2 \

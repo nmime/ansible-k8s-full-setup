@@ -172,7 +172,8 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     ]
     assert policies["nx-cache-protected"]["ttl"] == "3d"
     assert policies["nx-cache-development"]["ttl"] == "1d"
-    assert policies["gitlab-runner-cache"]["ttl"] == "1d"
+    assert policies["gitlab-runner-cache"]["ttl"] == "6h"
+    assert defaults["object_storage_retention_prune_schedule"] == "23 * * * *"
     assert "8192" in policies["gitlab-runner-cache"]["quota_mib"]
     assert "else 16384" in policies["gitlab-runner-cache"]["quota_mib"]
     assert "createBuckets:" in tasks
@@ -180,6 +181,7 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "s3.bucket.quota -name={{ policy.name }} -op=set" in tasks
     assert "s3.bucket.quota.enforce -apply" in tasks
     assert "name: seaweedfs-cache-retention-pruner" in tasks
+    assert 'retention%h} hours ago' in tasks
     assert "s3api delete-object" in tasks
     assert "name: seaweedfs-stale-multipart-cleaner" in tasks
     assert "name: seaweedfs-volume-vacuum" in tasks
