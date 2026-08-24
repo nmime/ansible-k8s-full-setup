@@ -433,6 +433,12 @@ class TestMediumOptimizedContract:
             ]
             == 4
         )
+        assert self.profile["gitlab"]["runner"]["docker_host"][
+            "job_resources"
+        ] == {
+            "memory_request": "2Gi",
+            "memory_limit": "4Gi",
+        }
         assert self.profile["secrets"]["vault"]["replicas"] == 3
         assert self.profile["databases"]["postgresql"]["replicas"] == 3
         assert self.profile["databases"]["mongodb"]["replicas"] == 3
