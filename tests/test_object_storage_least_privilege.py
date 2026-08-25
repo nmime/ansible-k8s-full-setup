@@ -209,10 +209,9 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "-cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }}" in tasks
     assert "-skipEcVolumes -reallyDeleteFromVolume" in tasks
     assert "volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3" in tasks
-    assert tasks.count("trap unlock_maintenance EXIT HUP INT TERM") == 2
-    assert tasks.count("trap - EXIT HUP INT TERM") == 2
-    assert tasks.count("printf '%s\\n' 'lock' | /usr/bin/weed shell") == 2
-    assert tasks.count("printf '%s\\n' 'unlock' | /usr/bin/weed shell") == 4
+    assert tasks.count("run_locked()") == 2
+    assert tasks.count("printf '%s\\n' 'lock' \"$1\" 'unlock' | /usr/bin/weed shell") == 2
+    assert "trap unlock_maintenance" not in tasks
     assert "emptyDir:" in tasks
     assert "kind: CronJob" in tasks
     assert "concurrencyPolicy: Forbid" in tasks
