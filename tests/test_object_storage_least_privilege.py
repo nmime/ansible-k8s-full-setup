@@ -200,8 +200,10 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert tasks.count("| /usr/bin/weed shell 2>&1") == 2
     assert tasks.count("vacuum_readonly_volumes()") == 2
     assert tasks.count('sub(/^.*DataNode /, "", node)') == 2
+    assert tasks.count('pending_mode[count] = replica_mode') == 2
+    assert tasks.count('awk \'$3 == "true" { print $1 }\'') == 2
     assert tasks.count('volume.mark -node=$node -volumeId=$volume_id -writable') == 2
-    assert tasks.count('volume.mark -node=$marked_node -volumeId=$volume_id -readonly') == 6
+    assert tasks.count('volume.mark -node=$readonly_node -volumeId=$volume_id -readonly') == 6
     assert "name: seaweedfs-stale-multipart-cleaner" in tasks
     assert "name: seaweedfs-volume-vacuum" in tasks
     assert "name: seaweedfs-volume-reclaim" in tasks
@@ -221,7 +223,7 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert tasks.count("printf '%s\\n' 'lock' \"$1\" 'unlock' | /usr/bin/weed shell") == 2
     assert "trap unlock_maintenance" not in tasks
     assert "vacuum_readonly_volumes 'gitlab-backups'" in tasks
-    assert "ReadOnly:true" in tasks
+    assert tasks.count('sub(/^.*ReadOnly:/, "", replica_mode)') == 2
     assert tasks.count('volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01') == 2
     assert "emptyDir:" in tasks
     assert "kind: CronJob" in tasks

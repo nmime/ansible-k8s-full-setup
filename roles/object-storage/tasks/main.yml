@@ -998,41 +998,44 @@
                               printf '%s\n' "volume.list -collectionPattern=$collection -v=5" \
                                 | /usr/bin/weed shell 2>&1 \
                                 | awk '
-                                    /volume Id:/ && /ReadOnly:true/ {
+                                    /volume Id:/ {
                                       volume_id = $0
                                       sub(/^.*volume Id:/, "", volume_id)
                                       sub(/,.*/, "", volume_id)
-                                      pending[++count] = volume_id
+                                      replica_mode = $0
+                                      sub(/^.*ReadOnly:/, "", replica_mode)
+                                      sub(/,.*/, "", replica_mode)
+                                      pending_id[++count] = volume_id
+                                      pending_mode[count] = replica_mode
                                     }
                                     /DataNode / {
                                       node = $0
                                       sub(/^.*DataNode /, "", node)
                                       sub(/ .*/, "", node)
-                                      for (i = 1; i <= count; i++) print pending[i], node
-                                      delete pending
+                                      for (i = 1; i <= count; i++) print pending_id[i], node, pending_mode[i]
+                                      delete pending_id
+                                      delete pending_mode
                                       count = 0
                                     }
                                   ' > "$readonly_map"
-                              cut -d' ' -f1 "$readonly_map" | sort -un | while read -r volume_id; do
-                                marked_nodes=""
+                              awk '$3 == "true" { print $1 }' "$readonly_map" | sort -un | while read -r volume_id; do
+                                readonly_nodes="$(awk -v id="$volume_id" '$1 == id && $3 == "true" { print $2 }' "$readonly_map")"
                                 for node in $(awk -v id="$volume_id" '$1 == id { print $2 }' "$readonly_map"); do
-                                  if run_locked "volume.mark -node=$node -volumeId=$volume_id -writable"; then
-                                    marked_nodes="$marked_nodes $node"
-                                  else
-                                    for marked_node in $marked_nodes; do
-                                      run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                  if ! run_locked "volume.mark -node=$node -volumeId=$volume_id -writable"; then
+                                    for readonly_node in $readonly_nodes; do
+                                      run_locked "volume.mark -node=$readonly_node -volumeId=$volume_id -readonly" || true
                                     done
                                     return 1
                                   fi
                                 done
                                 if ! run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"; then
-                                  for marked_node in $marked_nodes; do
-                                    run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                  for readonly_node in $readonly_nodes; do
+                                    run_locked "volume.mark -node=$readonly_node -volumeId=$volume_id -readonly" || true
                                   done
                                   return 1
                                 fi
-                                for marked_node in $marked_nodes; do
-                                  run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly"
+                                for readonly_node in $readonly_nodes; do
+                                  run_locked "volume.mark -node=$readonly_node -volumeId=$volume_id -readonly"
                                 done
                               done
                             }
@@ -1255,41 +1258,44 @@
                               printf '%s\n' "volume.list -collectionPattern=$collection -v=5" \
                                 | /usr/bin/weed shell 2>&1 \
                                 | awk '
-                                    /volume Id:/ && /ReadOnly:true/ {
+                                    /volume Id:/ {
                                       volume_id = $0
                                       sub(/^.*volume Id:/, "", volume_id)
                                       sub(/,.*/, "", volume_id)
-                                      pending[++count] = volume_id
+                                      replica_mode = $0
+                                      sub(/^.*ReadOnly:/, "", replica_mode)
+                                      sub(/,.*/, "", replica_mode)
+                                      pending_id[++count] = volume_id
+                                      pending_mode[count] = replica_mode
                                     }
                                     /DataNode / {
                                       node = $0
                                       sub(/^.*DataNode /, "", node)
                                       sub(/ .*/, "", node)
-                                      for (i = 1; i <= count; i++) print pending[i], node
-                                      delete pending
+                                      for (i = 1; i <= count; i++) print pending_id[i], node, pending_mode[i]
+                                      delete pending_id
+                                      delete pending_mode
                                       count = 0
                                     }
                                   ' > "$readonly_map"
-                              cut -d' ' -f1 "$readonly_map" | sort -un | while read -r volume_id; do
-                                marked_nodes=""
+                              awk '$3 == "true" { print $1 }' "$readonly_map" | sort -un | while read -r volume_id; do
+                                readonly_nodes="$(awk -v id="$volume_id" '$1 == id && $3 == "true" { print $2 }' "$readonly_map")"
                                 for node in $(awk -v id="$volume_id" '$1 == id { print $2 }' "$readonly_map"); do
-                                  if run_locked "volume.mark -node=$node -volumeId=$volume_id -writable"; then
-                                    marked_nodes="$marked_nodes $node"
-                                  else
-                                    for marked_node in $marked_nodes; do
-                                      run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                  if ! run_locked "volume.mark -node=$node -volumeId=$volume_id -writable"; then
+                                    for readonly_node in $readonly_nodes; do
+                                      run_locked "volume.mark -node=$readonly_node -volumeId=$volume_id -readonly" || true
                                     done
                                     return 1
                                   fi
                                 done
                                 if ! run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"; then
-                                  for marked_node in $marked_nodes; do
-                                    run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                  for readonly_node in $readonly_nodes; do
+                                    run_locked "volume.mark -node=$readonly_node -volumeId=$volume_id -readonly" || true
                                   done
                                   return 1
                                 fi
-                                for marked_node in $marked_nodes; do
-                                  run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly"
+                                for readonly_node in $readonly_nodes; do
+                                  run_locked "volume.mark -node=$readonly_node -volumeId=$volume_id -readonly"
                                 done
                               done
                             }
