@@ -60,6 +60,16 @@ object_storage_quota_enforcement_schedule: "*/5 * * * *"
 # hour so the bounded runner-cache quota cannot remain read-only for a full
 # six-hour maintenance interval after a normal release burst.
 object_storage_retention_prune_schedule: "23 * * * *"
+# S3 deletion removes filer entries immediately, while SeaweedFS keeps the
+# deleted needles in collection volumes until a vacuum compacts them. Compact
+# only cache collections, weekly and at the conservative 30% garbage threshold;
+# never restore the former global 5% vacuum.
+object_storage_cache_volume_compaction_schedule: "53 4 * * 0"
+object_storage_cache_volume_compaction_threshold: "0.3"
+object_storage_cache_volume_collections:
+  - gitlab-runner-cache
+  - nx-cache-protected
+  - nx-cache-development
 object_storage_stale_multipart_cleanup_schedule: "17 */6 * * *"
 object_storage_volume_reclaim_schedule: "{{ object_storage_volume_vacuum_schedule | default('43 1 * * *') }}"
 # GitLab keeps one current backup archive, but S3 metadata deletion can leave
