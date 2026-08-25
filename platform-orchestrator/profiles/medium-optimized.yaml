@@ -249,11 +249,11 @@ gitlab:
   webservice_replicas: 1
   webservice_max_replicas: 2
   worker_processes: 2
-  # A live webservice reached about 1.96Gi. Reserve its measured working set and
-  # allow bounded headroom without reverting the rest of this profile to the
-  # normal medium resource envelope.
+  # Live production reached about 3.03Gi and was OOM-killed at the former 3Gi
+  # ceiling. Preserve its measured 2Gi reservation and bounded recovery room
+  # without reverting the rest of this profile to the normal medium envelope.
   webservice_memory_request: 2Gi
-  webservice_memory_limit: 3Gi
+  webservice_memory_limit: 4Gi
   # Rails maintenance and backup commands exceeded the generic 1Gi toolbox
   # limit in a live cluster. Keep the steady reservation small while allowing
   # bounded burst memory for migrations and restores.
