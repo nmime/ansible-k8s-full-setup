@@ -943,6 +943,82 @@
                           sizeLimit: 64Mi
       when: object_storage_managed_bucket_policies_enabled | default(false) | bool
 
+    - name: Install scoped cache-volume physical compaction
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: seaweedfs-cache-volume-compaction
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: cache-volume-compaction
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            schedule: "{{ object_storage_cache_volume_compaction_schedule }}"
+            timeZone: UTC
+            concurrencyPolicy: Forbid
+            startingDeadlineSeconds: 3600
+            successfulJobsHistoryLimit: 1
+            failedJobsHistoryLimit: 1
+            jobTemplate:
+              spec:
+                activeDeadlineSeconds: 7200
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: seaweedfs
+                      app.kubernetes.io/component: cache-volume-compaction
+                  spec:
+                    restartPolicy: OnFailure
+                    automountServiceAccountToken: false
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: cache-volume-compaction
+                        image: "{{ object_storage_policy_image }}"
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/sh", "-ec"]
+                        args:
+                          - |
+                            printf '%s\n' \
+                              'lock' \
+                              {% for collection in object_storage_cache_volume_collections %}
+                              'volume.vacuum -collection={{ collection }} -garbageThreshold={{ object_storage_cache_volume_compaction_threshold }}' \
+                              {% endfor %}
+                              'unlock' | /usr/bin/weed shell
+                        env:
+                          - name: WEED_CLUSTER_DEFAULT
+                            value: sw
+                          - name: WEED_CLUSTER_SW_MASTER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-master.{{ object_storage_namespace_resolved }}:9333"
+                          - name: WEED_CLUSTER_SW_FILER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-filer-client.{{ object_storage_namespace_resolved }}:8888"
+                        resources:
+                          requests: {cpu: 25m, memory: 64Mi}
+                          limits: {cpu: 500m, memory: 512Mi}
+                        volumeMounts:
+                          - name: temp
+                            mountPath: /tmp
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          readOnlyRootFilesystem: true
+                          capabilities:
+                            drop: [ALL]
+                    volumes:
+                      - name: temp
+                        emptyDir:
+                          sizeLimit: 2Gi
+      when: object_storage_managed_bucket_policies_enabled | default(false) | bool
+
     - name: Install periodic stale multipart upload cleanup
       kubernetes.core.k8s:
         state: present
