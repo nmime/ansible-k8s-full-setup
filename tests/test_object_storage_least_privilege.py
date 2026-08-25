@@ -184,8 +184,8 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "name: seaweedfs-cache-retention-pruner" in tasks
     assert 'retention%h} hours ago' in tasks
     assert "s3api delete-object" in tasks
-    assert defaults["object_storage_cache_volume_compaction_schedule"] == "28 4 * * 0"
-    assert defaults["object_storage_cache_volume_compaction_threshold"] == "0.3"
+    assert defaults["object_storage_cache_volume_compaction_schedule"] == "28 4 * * *"
+    assert defaults["object_storage_cache_volume_compaction_threshold"] == "0.01"
     assert defaults["object_storage_cache_volume_collections"] == [
         "gitlab-runner-cache",
         "gitlab-registry",
@@ -200,7 +200,8 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert tasks.count("| /usr/bin/weed shell 2>&1") == 2
     assert tasks.count("vacuum_readonly_volumes()") == 2
     assert tasks.count('sub(/^.*DataNode /, "", node)') == 2
-    assert tasks.count('pending_mode[count] = replica_mode') == 2
+    assert tasks.count('if (node != "") print volume_id, node, replica_mode') == 2
+    assert "pending_mode" not in tasks
     assert tasks.count('awk \'$3 == "true" { print $1 }\'') == 2
     assert tasks.count('volume.mark -node=$node -volumeId=$volume_id -writable') == 2
     assert tasks.count('volume.mark -node=$readonly_node -volumeId=$volume_id -readonly') == 6
