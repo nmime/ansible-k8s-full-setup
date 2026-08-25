@@ -998,6 +998,12 @@
                               printf '%s\n' "volume.list -collectionPattern=$collection -v=5" \
                                 | /usr/bin/weed shell 2>&1 \
                                 | awk '
+                                    /DataNode / {
+                                      node = $0
+                                      sub(/^.*DataNode /, "", node)
+                                      sub(/ .*/, "", node)
+                                      next
+                                    }
                                     /volume Id:/ {
                                       volume_id = $0
                                       sub(/^.*volume Id:/, "", volume_id)
@@ -1005,17 +1011,7 @@
                                       replica_mode = $0
                                       sub(/^.*ReadOnly:/, "", replica_mode)
                                       sub(/,.*/, "", replica_mode)
-                                      pending_id[++count] = volume_id
-                                      pending_mode[count] = replica_mode
-                                    }
-                                    /DataNode / {
-                                      node = $0
-                                      sub(/^.*DataNode /, "", node)
-                                      sub(/ .*/, "", node)
-                                      for (i = 1; i <= count; i++) print pending_id[i], node, pending_mode[i]
-                                      delete pending_id
-                                      delete pending_mode
-                                      count = 0
+                                      if (node != "") print volume_id, node, replica_mode
                                     }
                                   ' > "$readonly_map"
                               awk '$3 == "true" { print $1 }' "$readonly_map" | sort -un | while read -r volume_id; do
@@ -1258,6 +1254,12 @@
                               printf '%s\n' "volume.list -collectionPattern=$collection -v=5" \
                                 | /usr/bin/weed shell 2>&1 \
                                 | awk '
+                                    /DataNode / {
+                                      node = $0
+                                      sub(/^.*DataNode /, "", node)
+                                      sub(/ .*/, "", node)
+                                      next
+                                    }
                                     /volume Id:/ {
                                       volume_id = $0
                                       sub(/^.*volume Id:/, "", volume_id)
@@ -1265,17 +1267,7 @@
                                       replica_mode = $0
                                       sub(/^.*ReadOnly:/, "", replica_mode)
                                       sub(/,.*/, "", replica_mode)
-                                      pending_id[++count] = volume_id
-                                      pending_mode[count] = replica_mode
-                                    }
-                                    /DataNode / {
-                                      node = $0
-                                      sub(/^.*DataNode /, "", node)
-                                      sub(/ .*/, "", node)
-                                      for (i = 1; i <= count; i++) print pending_id[i], node, pending_mode[i]
-                                      delete pending_id
-                                      delete pending_mode
-                                      count = 0
+                                      if (node != "") print volume_id, node, replica_mode
                                     }
                                   ' > "$readonly_map"
                               awk '$3 == "true" { print $1 }' "$readonly_map" | sort -un | while read -r volume_id; do
