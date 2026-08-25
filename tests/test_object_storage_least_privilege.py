@@ -188,6 +188,7 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert defaults["object_storage_cache_volume_compaction_threshold"] == "0.3"
     assert defaults["object_storage_cache_volume_collections"] == [
         "gitlab-runner-cache",
+        "gitlab-registry",
         "nx-cache-protected",
         "nx-cache-development",
     ]
