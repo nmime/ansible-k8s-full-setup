@@ -184,7 +184,7 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "name: seaweedfs-cache-retention-pruner" in tasks
     assert 'retention%h} hours ago' in tasks
     assert "s3api delete-object" in tasks
-    assert defaults["object_storage_cache_volume_compaction_schedule"] == "53 4 * * 0"
+    assert defaults["object_storage_cache_volume_compaction_schedule"] == "28 4 * * 0"
     assert defaults["object_storage_cache_volume_compaction_threshold"] == "0.3"
     assert defaults["object_storage_cache_volume_collections"] == [
         "gitlab-runner-cache",
