@@ -996,7 +996,7 @@
                             run_locked 'volume.vacuum -collection={{ collection }} -garbageThreshold={{ object_storage_cache_volume_compaction_threshold }}'
                             readonly_volume_ids="$({
                               printf '%s\n' 'volume.list -collectionPattern={{ collection }} -readonly -v=5' \
-                                | /usr/bin/weed shell
+                                | /usr/bin/weed shell 2>&1
                             } | sed -n 's/.*volume Id:\([0-9][0-9]*\),.*ReadOnly:true.*/\1/p' | sort -un)"
                             for volume_id in $readonly_volume_ids; do
                               run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"
@@ -1220,7 +1220,7 @@
                             run_locked 'volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3'
                             readonly_volume_ids="$({
                               printf '%s\n' 'volume.list -collectionPattern=gitlab-backups -readonly -v=5' \
-                                | /usr/bin/weed shell
+                                | /usr/bin/weed shell 2>&1
                             } | sed -n 's/.*volume Id:\([0-9][0-9]*\),.*ReadOnly:true.*/\1/p' | sort -un)"
                             for volume_id in $readonly_volume_ids; do
                               run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"
