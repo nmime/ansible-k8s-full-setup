@@ -62,6 +62,12 @@ object_storage_quota_enforcement_schedule: "*/5 * * * *"
 object_storage_retention_prune_schedule: "23 * * * *"
 object_storage_stale_multipart_cleanup_schedule: "17 */6 * * *"
 object_storage_volume_reclaim_schedule: "{{ object_storage_volume_vacuum_schedule | default('43 1 * * *') }}"
+# GitLab keeps one current backup archive, but S3 metadata deletion can leave
+# old replicated needles behind in the dedicated SeaweedFS collection. Reclaim
+# only chunks that have been unreachable for three days, then compact only that
+# collection at SeaweedFS' conservative default 30% garbage threshold.
+object_storage_gitlab_backup_orphan_reclaim_schedule: "43 5 * * 0"
+object_storage_gitlab_backup_orphan_cutoff: "72h"
 # SeaweedFS path TTL is stamped on new writes. The chart hook therefore applies
 # these policies before Nx cache GitOps is enabled. Native bucket quotas provide
 # a bounded logical-size target; the periodic enforcer switches an over-quota

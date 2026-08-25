@@ -1079,6 +1079,80 @@
                           capabilities:
                             drop: [ALL]
 
+    - name: Install scoped GitLab backup orphan reclamation
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: seaweedfs-gitlab-backup-orphan-reclaim
+            namespace: "{{ object_storage_namespace_resolved }}"
+            labels:
+              app.kubernetes.io/name: seaweedfs
+              app.kubernetes.io/component: gitlab-backup-orphan-reclaim
+              app.kubernetes.io/managed-by: ansible
+          spec:
+            schedule: "{{ object_storage_gitlab_backup_orphan_reclaim_schedule }}"
+            timeZone: UTC
+            concurrencyPolicy: Forbid
+            startingDeadlineSeconds: 3600
+            successfulJobsHistoryLimit: 1
+            failedJobsHistoryLimit: 1
+            jobTemplate:
+              spec:
+                activeDeadlineSeconds: 43200
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: seaweedfs
+                      app.kubernetes.io/component: gitlab-backup-orphan-reclaim
+                  spec:
+                    restartPolicy: OnFailure
+                    automountServiceAccountToken: false
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: orphan-reclaim
+                        image: "{{ object_storage_policy_image }}"
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/sh", "-ec"]
+                        args:
+                          - |
+                            printf '%s\n' \
+                              'lock' \
+                              'volume.fsck -collection=gitlab-backups -cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }} -skipEcVolumes -reallyDeleteFromVolume' \
+                              'volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3' \
+                              'unlock' | /usr/bin/weed shell
+                        env:
+                          - name: WEED_CLUSTER_DEFAULT
+                            value: sw
+                          - name: WEED_CLUSTER_SW_MASTER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-master.{{ object_storage_namespace_resolved }}:9333"
+                          - name: WEED_CLUSTER_SW_FILER
+                            value: "{{ object_storage_release_name | default('seaweedfs') }}-filer-client.{{ object_storage_namespace_resolved }}:8888"
+                        resources:
+                          requests: {cpu: 25m, memory: 64Mi}
+                          limits: {cpu: 500m, memory: 512Mi}
+                        volumeMounts:
+                          - name: temp
+                            mountPath: /tmp
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          readOnlyRootFilesystem: true
+                          capabilities:
+                            drop: [ALL]
+                    volumes:
+                      - name: temp
+                        emptyDir:
+                          sizeLimit: 2Gi
+
     - name: Remove prior initial SeaweedFS bucket quota Job
       kubernetes.core.k8s:
         state: absent
