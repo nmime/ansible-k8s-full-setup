@@ -992,15 +992,53 @@
                             run_locked() {
                               printf '%s\n' 'lock' "$1" 'unlock' | /usr/bin/weed shell
                             }
+                            vacuum_readonly_volumes() {
+                              collection="$1"
+                              readonly_map=/tmp/readonly-volume-map
+                              printf '%s\n' "volume.list -collectionPattern=$collection -readonly -v=5" \
+                                | /usr/bin/weed shell 2>&1 \
+                                | awk '
+                                    /volume Id:/ && /ReadOnly:true/ {
+                                      volume_id = $0
+                                      sub(/^.*volume Id:/, "", volume_id)
+                                      sub(/,.*/, "", volume_id)
+                                      pending[++count] = volume_id
+                                    }
+                                    /DataNode / {
+                                      node = $0
+                                      sub(/^.*DataNode /, "", node)
+                                      sub(/ .*/, "", node)
+                                      for (i = 1; i <= count; i++) print pending[i], node
+                                      delete pending
+                                      count = 0
+                                    }
+                                  ' > "$readonly_map"
+                              cut -d' ' -f1 "$readonly_map" | sort -un | while read -r volume_id; do
+                                marked_nodes=""
+                                for node in $(awk -v id="$volume_id" '$1 == id { print $2 }' "$readonly_map"); do
+                                  if run_locked "volume.mark -node=$node -volumeId=$volume_id -writable"; then
+                                    marked_nodes="$marked_nodes $node"
+                                  else
+                                    for marked_node in $marked_nodes; do
+                                      run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                    done
+                                    return 1
+                                  fi
+                                done
+                                if ! run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"; then
+                                  for marked_node in $marked_nodes; do
+                                    run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                  done
+                                  return 1
+                                fi
+                                for marked_node in $marked_nodes; do
+                                  run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly"
+                                done
+                              done
+                            }
                             {% for collection in object_storage_cache_volume_collections %}
                             run_locked 'volume.vacuum -collection={{ collection }} -garbageThreshold={{ object_storage_cache_volume_compaction_threshold }}'
-                            readonly_volume_ids="$({
-                              printf '%s\n' 'volume.list -collectionPattern={{ collection }} -readonly -v=5' \
-                                | /usr/bin/weed shell
-                            } | sed -n 's/.*volume Id:\([0-9][0-9]*\),.*ReadOnly:true.*/\1/p' | sort -un)"
-                            for volume_id in $readonly_volume_ids; do
-                              run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"
-                            done
+                            vacuum_readonly_volumes '{{ collection }}'
                             {% endfor %}
                         env:
                           - name: WEED_CLUSTER_DEFAULT
@@ -1211,6 +1249,50 @@
                             run_locked() {
                               printf '%s\n' 'lock' "$1" 'unlock' | /usr/bin/weed shell
                             }
+                            vacuum_readonly_volumes() {
+                              collection="$1"
+                              readonly_map=/tmp/readonly-volume-map
+                              printf '%s\n' "volume.list -collectionPattern=$collection -readonly -v=5" \
+                                | /usr/bin/weed shell 2>&1 \
+                                | awk '
+                                    /volume Id:/ && /ReadOnly:true/ {
+                                      volume_id = $0
+                                      sub(/^.*volume Id:/, "", volume_id)
+                                      sub(/,.*/, "", volume_id)
+                                      pending[++count] = volume_id
+                                    }
+                                    /DataNode / {
+                                      node = $0
+                                      sub(/^.*DataNode /, "", node)
+                                      sub(/ .*/, "", node)
+                                      for (i = 1; i <= count; i++) print pending[i], node
+                                      delete pending
+                                      count = 0
+                                    }
+                                  ' > "$readonly_map"
+                              cut -d' ' -f1 "$readonly_map" | sort -un | while read -r volume_id; do
+                                marked_nodes=""
+                                for node in $(awk -v id="$volume_id" '$1 == id { print $2 }' "$readonly_map"); do
+                                  if run_locked "volume.mark -node=$node -volumeId=$volume_id -writable"; then
+                                    marked_nodes="$marked_nodes $node"
+                                  else
+                                    for marked_node in $marked_nodes; do
+                                      run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                    done
+                                    return 1
+                                  fi
+                                done
+                                if ! run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"; then
+                                  for marked_node in $marked_nodes; do
+                                    run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly" || true
+                                  done
+                                  return 1
+                                fi
+                                for marked_node in $marked_nodes; do
+                                  run_locked "volume.mark -node=$marked_node -volumeId=$volume_id -readonly"
+                                done
+                              done
+                            }
                             # A minority replica can retain orphan needles after the
                             # collection's other replica has already purged them.
                             # Force purging makes the scoped fsck reconcile every
@@ -1218,13 +1300,7 @@
                             # authoritative.
                             run_locked 'volume.fsck -collection=gitlab-backups -cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }} -skipEcVolumes -reallyDeleteFromVolume -forcePurging'
                             run_locked 'volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3'
-                            readonly_volume_ids="$({
-                              printf '%s\n' 'volume.list -collectionPattern=gitlab-backups -readonly -v=5' \
-                                | /usr/bin/weed shell
-                            } | sed -n 's/.*volume Id:\([0-9][0-9]*\),.*ReadOnly:true.*/\1/p' | sort -un)"
-                            for volume_id in $readonly_volume_ids; do
-                              run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"
-                            done
+                            vacuum_readonly_volumes 'gitlab-backups'
                         env:
                           - name: WEED_CLUSTER_DEFAULT
                             value: sw
