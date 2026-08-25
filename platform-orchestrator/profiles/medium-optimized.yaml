@@ -335,6 +335,12 @@ gitlab:
       replicas: 1
       concurrent_jobs: 2
       dedicated_worker_index: 4
+      # Browser plus Testcontainers evidence exceeded the generic 2Gi build
+      # ceiling. Keep the privileged DinD service unchanged and reserve only
+      # the non-privileged build container's measured release headroom.
+      job_resources:
+        memory_request: 2Gi
+        memory_limit: 4Gi
 
 # ---------------------------------------------
 # GitOps
