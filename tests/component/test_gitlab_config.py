@@ -1101,7 +1101,7 @@ class TestChart10ValuesStructure:
             for item in fqdn_rule["toFQDNs"]
         }
         assert {
-            "registry.platform.example.com",
+            "{{ registry_domain }}",
             "registry-1.docker.io",
             "auth.docker.io",
             "production.cloudflare.docker.com",
@@ -1324,7 +1324,9 @@ class TestChart10ValuesStructure:
         assert "port: '443'" in network
         assert "matchName: codeload.github.com" in network
         assert "matchName: production.cloudfront.docker.com" in network
-        assert "matchName: nx-cache.platform.example.com" in network
+        assert 'matchName: "nx-cache.{{ domain }}"' in network
+        assert 'matchName: "{{ registry_domain }}"' in network
+        assert "nx-cache.platform.example.com" not in network
         assert "matchName: release-assets.githubusercontent.com" in network
         assert "matchName: unofficial-builds.nodejs.org" in network
         legacy_selector_cleanup = next(

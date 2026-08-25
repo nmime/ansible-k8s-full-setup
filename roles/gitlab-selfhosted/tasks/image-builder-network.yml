@@ -157,7 +157,7 @@
             workload.platform.example.com/class: protected-image-build-job
         egress:
           - toFQDNs:
-              - {matchName: registry.platform.example.com}
+              - {matchName: "{{ registry_domain }}"}
               - {matchName: registry-1.docker.io}
               - {matchName: auth.docker.io}
               - {matchName: production.cloudflare.docker.com}
