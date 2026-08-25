@@ -67,8 +67,8 @@ object_storage_retention_prune_schedule: "23 * * * *"
 # Start five minutes after the hourly retention pruner. This leaves 55 minutes
 # before the next delete pass, so a full collection rewrite does not race newly
 # deleted needles into volumes it has already checked.
-object_storage_cache_volume_compaction_schedule: "28 4 * * 0"
-object_storage_cache_volume_compaction_threshold: "0.3"
+object_storage_cache_volume_compaction_schedule: "28 4 * * *"
+object_storage_cache_volume_compaction_threshold: "0.01"
 object_storage_cache_volume_collections:
   - gitlab-runner-cache
   - gitlab-registry
