@@ -102,7 +102,7 @@ def load_profile(name: str) -> dict:
 def test_medium_keeps_measured_gitlab_webservice_headroom():
     profile = load_profile("medium")
     assert profile["gitlab"]["webservice_memory_request"] == "2Gi"
-    assert profile["gitlab"]["webservice_memory_limit"] == "3Gi"
+    assert profile["gitlab"]["webservice_memory_limit"] == "4Gi"
 
 
 def test_component_certificates_use_selectable_cluster_issuer():
@@ -338,7 +338,7 @@ class TestNamedProfileContract:
         assert profile["gitlab"]["registry_max_replicas"] == 3
         assert profile["gitlab"]["runner"]["concurrent_jobs"] == 4
         assert profile["gitlab"]["webservice_memory_request"] == "2Gi"
-        assert profile["gitlab"]["webservice_memory_limit"] == "3Gi"
+        assert profile["gitlab"]["webservice_memory_limit"] == "4Gi"
         assert profile["gitlab"]["sidekiq_memory_request"] == "768Mi"
         assert profile["gitlab"]["kas_memory_request"] == "128Mi"
         assert profile["gitlab"]["toolbox_memory_request"] == "192Mi"
@@ -477,7 +477,7 @@ class TestMediumOptimizedContract:
         self,
     ):
         assert self.profile["gitlab"]["webservice_memory_request"] == "2Gi"
-        assert self.profile["gitlab"]["webservice_memory_limit"] == "3Gi"
+        assert self.profile["gitlab"]["webservice_memory_limit"] == "4Gi"
         assert self.profile["gitlab"]["toolbox_cpu_request"] == "100m"
         assert self.profile["gitlab"]["toolbox_cpu_limit"] == "1.5"
         assert self.profile["gitlab"]["toolbox_memory_request"] == "512Mi"
