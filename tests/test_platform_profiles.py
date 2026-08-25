@@ -493,6 +493,11 @@ class TestMediumOptimizedContract:
         assert self.profile["gitlab"]["runner"]["job_resources"][
             "memory_limit"
         ] == "6Gi"
+        image_builder_resources = self.profile["gitlab"]["runner"][
+            "image_builder"
+        ]["job_resources"]
+        assert image_builder_resources["memory_request"] == "4Gi"
+        assert image_builder_resources["memory_limit"] == "8Gi"
         assert self.profile["gitlab"]["runner"]["general_pool_quota"] == {
             "requests_cpu": "12",
             "requests_memory": "20Gi",
