@@ -190,8 +190,16 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "object_storage_volume_vacuum_schedule" not in defaults
     assert "default('43 1 * * *')" in defaults["object_storage_volume_reclaim_schedule"]
     assert "activeDeadlineSeconds: 43200" in tasks
-    assert "volume.vacuum" not in tasks
+    assert "volume.vacuum -garbageThreshold 0.05" not in tasks
     assert "volume.deleteEmpty -quietFor=24h -apply" in tasks
+    assert "name: seaweedfs-gitlab-backup-orphan-reclaim" in tasks
+    assert defaults["object_storage_gitlab_backup_orphan_reclaim_schedule"] == "43 5 * * 0"
+    assert defaults["object_storage_gitlab_backup_orphan_cutoff"] == "72h"
+    assert "volume.fsck -collection=gitlab-backups" in tasks
+    assert "-cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }}" in tasks
+    assert "-skipEcVolumes -reallyDeleteFromVolume" in tasks
+    assert "volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3" in tasks
+    assert "emptyDir:" in tasks
     assert "kind: CronJob" in tasks
     assert "concurrencyPolicy: Forbid" in tasks
     assert "automountServiceAccountToken: false" in tasks
