@@ -1138,6 +1138,23 @@ class TestChart10ValuesStructure:
         network = read(DOCKER_HOST_NETWORK_PATH)
         tasks = yaml.safe_load(runner)
         network_tasks = yaml.safe_load(network)
+        cache_secret = next(
+            task
+            for task in tasks
+            if task.get("name")
+            == "Docker smoke | Reconcile the namespaced S3 cache credentials"
+        )
+        cache_secret_definition = cache_secret["kubernetes.core.k8s"]["definition"]
+        assert cache_secret["no_log"] is True
+        assert cache_secret_definition["metadata"]["name"] == (
+            "gitlab-runner-s3-cache"
+        )
+        assert cache_secret_definition["metadata"]["namespace"] == (
+            "{{ gitlab_docker_host_runner_namespace }}"
+        )
+        assert cache_secret_definition["stringData"]["accesskey"] == (
+            "{{ object_storage_ci_cache_access_key }}"
+        )
         limit_range = next(
             task
             for task in network_tasks
@@ -1219,9 +1236,15 @@ class TestChart10ValuesStructure:
         )
         assert values["runners"]["tags"] == "docker-host"
         assert values["runners"]["runUntagged"] is False
+        assert values["runners"]["cache"]["secretName"] == (
+            "gitlab-runner-s3-cache"
+        )
         assert values["rbac"]["clusterWideAccess"] is False
         assert "app" not in values["podLabels"]
         assert 'privileged = false' in config
+        assert '[runners.cache]' in config
+        assert 'Type = "s3"' in config
+        assert 'BucketName = "gitlab-runner-cache"' in config
         assert "services_privileged" not in config
         assert "allowed_privileged_services" not in config
         assert f'allowed_services = ["{dind}"]' in config

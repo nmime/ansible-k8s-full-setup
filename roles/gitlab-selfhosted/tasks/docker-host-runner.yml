@@ -18,6 +18,28 @@
           pod-security.kubernetes.io/audit: restricted
           pod-security.kubernetes.io/warn: restricted
 
+- name: Docker smoke | Reconcile the namespaced S3 cache credentials
+  no_log: true
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-runner-s3-cache
+        namespace: '{{ gitlab_docker_host_runner_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: ansible
+          workload.platform.example.com/trust-boundary: protected-docker-smoke
+      type: Opaque
+      stringData:
+        accesskey: '{{ object_storage_ci_cache_access_key }}'
+        secretkey: '{{ object_storage_ci_cache_secret_key }}'
+  register: _r_reconcile_docker_host_s3_cache_secret
+  retries: 3
+  delay: 10
+  until: _r_reconcile_docker_host_s3_cache_secret is not failed
+
 - name: Docker smoke | Resolve the dedicated CI worker
   kubernetes.core.k8s_info:
     api_version: v1
@@ -273,6 +295,17 @@
             request_concurrency = {{ gitlab_docker_host_runner_concurrent | int }}
             limit = {{ gitlab_docker_host_runner_concurrent | int }}
             environment = ["HOME=/tmp", "FF_USE_ADVANCED_POD_SPEC_CONFIGURATION=true"]
+            [runners.cache]
+              Type = "s3"
+              Path = "gitlab-runner"
+              Shared = true
+              [runners.cache.s3]
+                ServerAddress = "{{ object_storage_endpoint_hostport |
+                                     default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
+                BucketName = "gitlab-runner-cache"
+                BucketLocation = "us-east-1"
+                Insecure = {{ gitlab_runner_cache_insecure |
+                              default(true) | lower }}
             [runners.kubernetes]
               namespace = "{{ gitlab_docker_host_runner_namespace }}"
               image = "docker.io/library/node:24.18.0-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd"
@@ -350,6 +383,8 @@
                           topologyKey: kubernetes.io/hostname
                 '''
                 patch_type = "strategic"
+        cache:
+          secretName: gitlab-runner-s3-cache
         tags: docker-host
         runUntagged: false
       podLabels:
