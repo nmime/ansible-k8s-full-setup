@@ -1211,7 +1211,12 @@
                             run_locked() {
                               printf '%s\n' 'lock' "$1" 'unlock' | /usr/bin/weed shell
                             }
-                            run_locked 'volume.fsck -collection=gitlab-backups -cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }} -skipEcVolumes -reallyDeleteFromVolume'
+                            # A minority replica can retain orphan needles after the
+                            # collection's other replica has already purged them.
+                            # Force purging makes the scoped fsck reconcile every
+                            # replica instead of treating the first clean replica as
+                            # authoritative.
+                            run_locked 'volume.fsck -collection=gitlab-backups -cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }} -skipEcVolumes -reallyDeleteFromVolume -forcePurging'
                             run_locked 'volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3'
                             readonly_volume_ids="$({
                               printf '%s\n' 'volume.list -collectionPattern=gitlab-backups -readonly -v=5' \

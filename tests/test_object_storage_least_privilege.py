@@ -208,7 +208,7 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert defaults["object_storage_gitlab_backup_orphan_cutoff"] == "72h"
     assert "volume.fsck -collection=gitlab-backups" in tasks
     assert "-cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }}" in tasks
-    assert "-skipEcVolumes -reallyDeleteFromVolume" in tasks
+    assert "-skipEcVolumes -reallyDeleteFromVolume -forcePurging" in tasks
     assert "volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3" in tasks
     assert tasks.count("run_locked()") == 2
     assert tasks.count("printf '%s\\n' 'lock' \"$1\" 'unlock' | /usr/bin/weed shell") == 2
