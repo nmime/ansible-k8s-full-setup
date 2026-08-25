@@ -994,6 +994,13 @@
                             }
                             {% for collection in object_storage_cache_volume_collections %}
                             run_locked 'volume.vacuum -collection={{ collection }} -garbageThreshold={{ object_storage_cache_volume_compaction_threshold }}'
+                            readonly_volume_ids="$({
+                              printf '%s\n' 'volume.list -collectionPattern={{ collection }} -readonly -v=5' \
+                                | /usr/bin/weed shell
+                            } | sed -n 's/.*volume Id:\([0-9][0-9]*\),.*ReadOnly:true.*/\1/p' | sort -un)"
+                            for volume_id in $readonly_volume_ids; do
+                              run_locked "volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01"
+                            done
                             {% endfor %}
                         env:
                           - name: WEED_CLUSTER_DEFAULT
