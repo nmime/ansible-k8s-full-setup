@@ -212,6 +212,9 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert tasks.count("run_locked()") == 2
     assert tasks.count("printf '%s\\n' 'lock' \"$1\" 'unlock' | /usr/bin/weed shell") == 2
     assert "trap unlock_maintenance" not in tasks
+    assert "volume.list -collectionPattern=gitlab-backups -readonly -v=5" in tasks
+    assert "ReadOnly:true" in tasks
+    assert 'volume.vacuum -volumeId=$volume_id -garbageThreshold=0.01' in tasks
     assert "emptyDir:" in tasks
     assert "kind: CronJob" in tasks
     assert "concurrencyPolicy: Forbid" in tasks
