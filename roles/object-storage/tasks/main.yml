@@ -989,12 +989,23 @@
                         command: ["/bin/sh", "-ec"]
                         args:
                           - |
+                            locked=false
+                            unlock_maintenance() {
+                              if [ "$locked" = true ]; then
+                                printf '%s\n' 'unlock' | /usr/bin/weed shell
+                              fi
+                            }
+                            trap unlock_maintenance EXIT HUP INT TERM
+                            printf '%s\n' 'lock' | /usr/bin/weed shell
+                            locked=true
+                            {% for collection in object_storage_cache_volume_collections %}
                             printf '%s\n' \
-                              'lock' \
-                              {% for collection in object_storage_cache_volume_collections %}
                               'volume.vacuum -collection={{ collection }} -garbageThreshold={{ object_storage_cache_volume_compaction_threshold }}' \
-                              {% endfor %}
-                              'unlock' | /usr/bin/weed shell
+                              | /usr/bin/weed shell
+                            {% endfor %}
+                            printf '%s\n' 'unlock' | /usr/bin/weed shell
+                            locked=false
+                            trap - EXIT HUP INT TERM
                         env:
                           - name: WEED_CLUSTER_DEFAULT
                             value: sw
@@ -1201,11 +1212,24 @@
                         command: ["/bin/sh", "-ec"]
                         args:
                           - |
+                            locked=false
+                            unlock_maintenance() {
+                              if [ "$locked" = true ]; then
+                                printf '%s\n' 'unlock' | /usr/bin/weed shell
+                              fi
+                            }
+                            trap unlock_maintenance EXIT HUP INT TERM
+                            printf '%s\n' 'lock' | /usr/bin/weed shell
+                            locked=true
                             printf '%s\n' \
-                              'lock' \
                               'volume.fsck -collection=gitlab-backups -cutoffTimeAgo={{ object_storage_gitlab_backup_orphan_cutoff }} -skipEcVolumes -reallyDeleteFromVolume' \
+                              | /usr/bin/weed shell
+                            printf '%s\n' \
                               'volume.vacuum -collection=gitlab-backups -garbageThreshold=0.3' \
-                              'unlock' | /usr/bin/weed shell
+                              | /usr/bin/weed shell
+                            printf '%s\n' 'unlock' | /usr/bin/weed shell
+                            locked=false
+                            trap - EXIT HUP INT TERM
                         env:
                           - name: WEED_CLUSTER_DEFAULT
                             value: sw
