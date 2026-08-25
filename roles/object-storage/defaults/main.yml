@@ -64,7 +64,10 @@ object_storage_retention_prune_schedule: "23 * * * *"
 # deleted needles in collection volumes until a vacuum compacts them. Compact
 # only high-churn cache and registry collections, weekly and at the conservative
 # 30% garbage threshold; never restore the former global 5% vacuum.
-object_storage_cache_volume_compaction_schedule: "53 4 * * 0"
+# Start five minutes after the hourly retention pruner. This leaves 55 minutes
+# before the next delete pass, so a full collection rewrite does not race newly
+# deleted needles into volumes it has already checked.
+object_storage_cache_volume_compaction_schedule: "28 4 * * 0"
 object_storage_cache_volume_compaction_threshold: "0.3"
 object_storage_cache_volume_collections:
   - gitlab-runner-cache
