@@ -195,7 +195,8 @@ def test_nx_cache_retention_and_growth_are_enforced_by_seaweedfs():
     assert "name: seaweedfs-cache-volume-compaction" in tasks
     assert "volume.vacuum -collection={{ collection }}" in tasks
     assert "garbageThreshold={{ object_storage_cache_volume_compaction_threshold }}" in tasks
-    assert tasks.count("volume.list -collectionPattern=$collection -readonly -v=5") == 2
+    assert tasks.count("volume.list -collectionPattern=$collection -v=5") == 2
+    assert "collectionPattern=$collection -readonly" not in tasks
     assert tasks.count("| /usr/bin/weed shell 2>&1") == 2
     assert tasks.count("vacuum_readonly_volumes()") == 2
     assert tasks.count('sub(/^.*DataNode /, "", node)') == 2

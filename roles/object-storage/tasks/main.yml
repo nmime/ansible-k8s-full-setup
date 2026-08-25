@@ -995,7 +995,7 @@
                             vacuum_readonly_volumes() {
                               collection="$1"
                               readonly_map=/tmp/readonly-volume-map
-                              printf '%s\n' "volume.list -collectionPattern=$collection -readonly -v=5" \
+                              printf '%s\n' "volume.list -collectionPattern=$collection -v=5" \
                                 | /usr/bin/weed shell 2>&1 \
                                 | awk '
                                     /volume Id:/ && /ReadOnly:true/ {
@@ -1252,7 +1252,7 @@
                             vacuum_readonly_volumes() {
                               collection="$1"
                               readonly_map=/tmp/readonly-volume-map
-                              printf '%s\n' "volume.list -collectionPattern=$collection -readonly -v=5" \
+                              printf '%s\n' "volume.list -collectionPattern=$collection -v=5" \
                                 | /usr/bin/weed shell 2>&1 \
                                 | awk '
                                     /volume Id:/ && /ReadOnly:true/ {
