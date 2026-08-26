@@ -62,8 +62,11 @@
           requests.memory: 12Gi
           limits.cpu: '16'
           limits.memory: 32Gi
-          requests.ephemeral-storage: 64Gi
-          limits.ephemeral-storage: 96Gi
+          # Execution stays serialized by request_concurrency=1. The quota
+          # also admits a replacement while the previous job pod is still
+          # terminating and counted by Kubernetes.
+          requests.ephemeral-storage: 128Gi
+          limits.ephemeral-storage: 176Gi
           pods: '12'
           services: '6'
           secrets: '24'
@@ -82,9 +85,9 @@
       spec:
         limits:
           - type: Container
-            max: {cpu: '4', memory: 8Gi}
-            defaultRequest: {cpu: 250m, memory: 256Mi}
-            default: {cpu: '2', memory: 4Gi}
+            max: {cpu: '4', memory: 8Gi, ephemeral-storage: 80Gi}
+            defaultRequest: {cpu: 250m, memory: 256Mi, ephemeral-storage: 1Gi}
+            default: {cpu: '2', memory: 4Gi, ephemeral-storage: 4Gi}
 
 - name: Image builder | Remove legacy protected budget objects (superseded)
   kubernetes.core.k8s:
@@ -235,8 +238,10 @@
       checkInterval: 3
       strategy:
         rollingUpdate:
-          maxSurge: 1
-          maxUnavailable: 0
+          # Keep the singleton from accepting work through two managers
+          # during a chart rollout.
+          maxSurge: 0
+          maxUnavailable: 1
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
