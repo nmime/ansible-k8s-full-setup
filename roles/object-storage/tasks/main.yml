@@ -573,6 +573,56 @@
       delay: 10
       until: _r_wait_seaweedfs_core is not failed
 
+    - name: Bound backup volume growth without adding path TTL
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ns="{{ object_storage_namespace_resolved }}"
+        master="{{ object_storage_release_name | default('seaweedfs') }}-master-0"
+        replication="{{ object_storage_replication_placement | default('000') }}"
+        growth="{{ object_storage_backup_volume_growth_count | int }}"
+        changed=0
+        read_config() {
+          kubectl exec --namespace "$ns" "$master" -- sh -c \
+            "printf 'fs.configure\\n' | weed shell -master=127.0.0.1:9333"
+        }
+        reconcile_backup_prefix() {
+          backup_prefix="$1"
+          config="$(read_config)"
+          if ! jq -e \
+            --arg prefix "$backup_prefix" \
+            --arg replication "$replication" \
+            --argjson growth "$growth" \
+            'any(.locations[]?; .locationPrefix == $prefix and .collection == "" and .replication == $replication and .ttl == "" and .volumeGrowthCount == $growth and .readOnly != true)' \
+            <<<"$config" >/dev/null; then
+            if jq -e --arg prefix "$backup_prefix" \
+              'any(.locations[]?; .locationPrefix == $prefix)' \
+              <<<"$config" >/dev/null; then
+              kubectl exec --namespace "$ns" "$master" -- sh -c \
+                "printf 'fs.configure -locationPrefix=%s -delete -apply\\n' '$backup_prefix' | weed shell -master=127.0.0.1:9333"
+            fi
+            kubectl exec --namespace "$ns" "$master" -- sh -c \
+              "printf 'fs.configure -locationPrefix=%s -replication=%s -volumeGrowthCount=%s -apply\\n' '$backup_prefix' '$replication' '$growth' | weed shell -master=127.0.0.1:9333"
+            changed=1
+          fi
+          read_config | jq -e \
+            --arg prefix "$backup_prefix" \
+            --arg replication "$replication" \
+            --argjson growth "$growth" \
+            'any(.locations[]?; .locationPrefix == $prefix and .collection == "" and .replication == $replication and .ttl == "" and .volumeGrowthCount == $growth and .readOnly != true)' \
+            >/dev/null
+        }
+        {% for backup_prefix in object_storage_bounded_backup_paths | default(['/buckets/gitlab-backups/', '/buckets/backups/']) %}
+        reconcile_backup_prefix '{{ backup_prefix }}'
+        {% endfor %}
+        echo "configured=$changed"
+      args:
+        executable: /bin/bash
+      register: _r_configure_backup_volume_growth
+      changed_when: "'configured=1' in _r_configure_backup_volume_growth.stdout"
+      retries: 3
+      delay: 10
+      until: _r_configure_backup_volume_growth is not failed
+
     - name: Verify migrated SeaweedFS volume pods use durable colocated indexes
       ansible.builtin.shell: |
         set -euo pipefail

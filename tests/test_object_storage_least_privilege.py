@@ -246,6 +246,17 @@ def test_gitlab_backup_growth_is_bounded_without_automatic_deletion():
 
     assert "gitlab-backups" in quotas
     assert "92160" in quotas["gitlab-backups"]["quota_mib"]
+    assert "if object_storage_replication_placement" in str(
+        defaults["object_storage_backup_volume_growth_count"]
+    )
+    assert defaults["object_storage_bounded_backup_paths"] == [
+        "/buckets/gitlab-backups/",
+        "/buckets/backups/",
+    ]
+    assert "Bound backup volume growth without adding path TTL" in tasks
+    assert "fs.configure -locationPrefix=%s -replication=%s -volumeGrowthCount=%s -apply" in tasks
+    assert '.ttl == ""' in tasks
+    assert "_r_configure_backup_volume_growth" in tasks
     assert "object_storage_additional_bucket_quotas" in tasks
     assert "s3.bucket.quota.enforce -apply" in tasks
     assert "s3.rm" not in tasks
