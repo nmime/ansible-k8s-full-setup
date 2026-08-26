@@ -320,10 +320,14 @@
               cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).cpu_limit | default(gitlab_image_builder_cpu_limit) }}"
               memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_request | default(gitlab_image_builder_memory_request) }}"
               memory_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).memory_limit | default(gitlab_image_builder_memory_limit) }}"
+              ephemeral_storage_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).ephemeral_storage_request | default(gitlab_image_builder_ephemeral_storage_request) }}"
+              ephemeral_storage_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).ephemeral_storage_limit | default(gitlab_image_builder_ephemeral_storage_limit) }}"
               helper_cpu_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_cpu_request | default(gitlab_image_builder_helper_cpu_request) }}"
               helper_cpu_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_cpu_limit | default(gitlab_image_builder_helper_cpu_limit) }}"
               helper_memory_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_memory_request | default(gitlab_image_builder_helper_memory_request) }}"
               helper_memory_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_memory_limit | default(gitlab_image_builder_helper_memory_limit) }}"
+              helper_ephemeral_storage_request = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_ephemeral_storage_request | default(gitlab_image_builder_helper_ephemeral_storage_request) }}"
+              helper_ephemeral_storage_limit = "{{ (gitlab.runner.image_builder.job_resources | default({})).helper_ephemeral_storage_limit | default(gitlab_image_builder_helper_ephemeral_storage_limit) }}"
               [runners.kubernetes.pod_security_context]
                 [runners.kubernetes.pod_security_context.seccomp_profile]
                   type = "RuntimeDefault"
