@@ -433,6 +433,12 @@ class TestMediumOptimizedContract:
             ]
             == 4
         )
+        assert (
+            self.profile["gitlab"]["runner"]["docker_host"][
+                "concurrent_jobs"
+            ]
+            == 1
+        )
         assert self.profile["gitlab"]["runner"]["docker_host"][
             "job_resources"
         ] == {

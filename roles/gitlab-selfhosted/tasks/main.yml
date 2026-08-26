@@ -231,12 +231,12 @@
       - gitlab_docker_host_runner_token | string | trim !=
         gitlab_image_builder_runner_token | string | trim
       - gitlab_docker_host_runner_replicas | int > 0
-      - gitlab_docker_host_runner_concurrent | int == 2
+      - gitlab_docker_host_runner_concurrent | int == 1
       - gitlab_docker_host_runner_worker_index | int > 0
       - gitlab_docker_host_runner_worker_index | int <= worker_count | int
     fail_msg: >-
       Docker smoke jobs require a distinct protected Runner identity, one
-      replica, exactly two concurrent jobs, and a valid dedicated worker index.
+      replica, exactly one concurrent job, and a valid dedicated worker index.
       Reusing either restricted Runner identity or a shared production worker
       for the privileged DinD service is forbidden.
     quiet: true

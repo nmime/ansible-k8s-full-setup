@@ -343,7 +343,10 @@ gitlab:
     docker_host:
       enabled: true
       replicas: 1
-      concurrent_jobs: 2
+      # One DinD job can reserve 60Gi across build, helper, and service
+      # containers. Keep concurrency aligned with the 96Gi namespace budget
+      # and the dedicated worker's kubelet eviction floor.
+      concurrent_jobs: 1
       dedicated_worker_index: 4
       # Browser plus Testcontainers evidence exceeded the generic 2Gi build
       # ceiling. Keep the privileged DinD service unchanged and reserve only
