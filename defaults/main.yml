@@ -314,8 +314,8 @@ gitlab_image_builder_cpu_request: 1000m
 gitlab_image_builder_cpu_limit: 4000m
 gitlab_image_builder_memory_request: 2Gi
 gitlab_image_builder_memory_limit: 8Gi
-gitlab_image_builder_ephemeral_storage_request: 24Gi
-gitlab_image_builder_ephemeral_storage_limit: 48Gi
+gitlab_image_builder_ephemeral_storage_request: 48Gi
+gitlab_image_builder_ephemeral_storage_limit: 72Gi
 gitlab_image_builder_helper_cpu_request: 100m
 gitlab_image_builder_helper_cpu_limit: 500m
 gitlab_image_builder_helper_memory_request: 256Mi
