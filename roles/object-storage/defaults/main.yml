@@ -37,6 +37,15 @@ object_storage_filer_replicas: "{{ 2 if resource_tier | default(tier) in ['mediu
 # Keep one additional copy on another volume server whenever the topology has
 # enough servers. SeaweedFS otherwise defaults to 000 even with three pods.
 object_storage_replication_placement: "{{ '001' if (object_storage_volume_replicas | int) > 1 else '000' }}"
+# Backup archives are sequential large-object streams. Grow one replicated
+# volume set at a time (two physical copies for placement 001) so a retained
+# archive cannot preallocate hundreds of mostly empty 256 MiB volumes. Retention
+# remains owned by the backup jobs; these path policies deliberately set no TTL.
+object_storage_backup_volume_growth_count: >-
+  {{ 2 if object_storage_replication_placement | default('000') != '000' else 1 }}
+object_storage_bounded_backup_paths:
+  - /buckets/gitlab-backups/
+  - /buckets/backups/
 
 object_storage_endpoint_hostport: "seaweedfs-filer.{{ object_storage_namespace | default('storage') }}.svc.cluster.local:8333"
 object_storage_endpoint: "http://{{ object_storage_endpoint_hostport | default('seaweedfs-filer.storage.svc.cluster.local:8333') }}"
