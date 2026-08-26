@@ -62,7 +62,7 @@
           requests.memory: 12Gi
           limits.cpu: '16'
           limits.memory: 32Gi
-          requests.ephemeral-storage: 48Gi
+          requests.ephemeral-storage: 64Gi
           limits.ephemeral-storage: 96Gi
           pods: '12'
           services: '6'

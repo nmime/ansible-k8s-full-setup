@@ -327,8 +327,11 @@ gitlab:
         cpu_limit: 2500m
         memory_request: 4Gi
         memory_limit: 8Gi
-        ephemeral_storage_request: 24Gi
-        ephemeral_storage_limit: 48Gi
+        # A measured monorepo cold release peaks just above 48Gi while BuildKit
+        # creates the shared Nx workspace layer. Reserve that normal peak and
+        # retain a bounded 24Gi burst margin below the worker eviction floor.
+        ephemeral_storage_request: 48Gi
+        ephemeral_storage_limit: 72Gi
         helper_cpu_request: 100m
         helper_cpu_limit: 500m
         helper_memory_request: 256Mi
