@@ -1138,7 +1138,7 @@ class TestChart10ValuesStructure:
         assert "gitlab_docker_host_runner_token" in gate
         assert "gitlab_runner_token" in gate
         assert "gitlab_image_builder_runner_token" in gate
-        assert "gitlab_docker_host_runner_concurrent | int == 2" in gate
+        assert "gitlab_docker_host_runner_concurrent | int == 1" in gate
         assert "gitlab_docker_host_runner_worker_index | int > 0" in gate
         assert "no_log: true" in gate
 
@@ -1234,6 +1234,10 @@ class TestChart10ValuesStructure:
         assert values["concurrent"] == (
             "{{ gitlab_docker_host_runner_concurrent | int }}"
         )
+        assert values["strategy"]["rollingUpdate"] == {
+            "maxSurge": 0,
+            "maxUnavailable": 1,
+        }
         assert (
             "request_concurrency = {{ gitlab_docker_host_runner_concurrent | int }}"
             in config
