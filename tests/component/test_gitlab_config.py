@@ -996,6 +996,14 @@ class TestChart10ValuesStructure:
         assert 'BucketName = "gitlab-runner-cache"' in config
         assert "gitlab.runner.image_builder.job_resources" in config
         assert "gitlab_image_builder_memory_request" in config
+        assert "gitlab_image_builder_ephemeral_storage_request" in config
+        assert "gitlab_image_builder_ephemeral_storage_limit" in config
+        assert "gitlab_image_builder_helper_ephemeral_storage_request" in config
+        assert "gitlab_image_builder_helper_ephemeral_storage_limit" in config
+        assert 'ephemeral_storage_request = "{{' in config
+        assert 'ephemeral_storage_limit = "{{' in config
+        assert 'helper_ephemeral_storage_request = "{{' in config
+        assert 'helper_ephemeral_storage_limit = "{{' in config
         assert (
             "[runners.kubernetes.build_container_security_context]" in config
         )

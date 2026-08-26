@@ -327,10 +327,14 @@ gitlab:
         cpu_limit: 2500m
         memory_request: 4Gi
         memory_limit: 8Gi
+        ephemeral_storage_request: 24Gi
+        ephemeral_storage_limit: 48Gi
         helper_cpu_request: 100m
         helper_cpu_limit: 500m
         helper_memory_request: 256Mi
         helper_memory_limit: 512Mi
+        helper_ephemeral_storage_request: 256Mi
+        helper_ephemeral_storage_limit: 2Gi
     # Backward-compatible docker-host tag without Docker access on bastion:
     # only the digest-pinned DinD service is privileged in its own namespace.
     docker_host:

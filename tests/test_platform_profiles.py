@@ -498,6 +498,10 @@ class TestMediumOptimizedContract:
         ]["job_resources"]
         assert image_builder_resources["memory_request"] == "4Gi"
         assert image_builder_resources["memory_limit"] == "8Gi"
+        assert image_builder_resources["ephemeral_storage_request"] == "24Gi"
+        assert image_builder_resources["ephemeral_storage_limit"] == "48Gi"
+        assert image_builder_resources["helper_ephemeral_storage_request"] == "256Mi"
+        assert image_builder_resources["helper_ephemeral_storage_limit"] == "2Gi"
         assert self.profile["gitlab"]["runner"]["general_pool_quota"] == {
             "requests_cpu": "12",
             "requests_memory": "20Gi",
