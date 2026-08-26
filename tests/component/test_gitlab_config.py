@@ -978,6 +978,10 @@ class TestChart10ValuesStructure:
         assert values["concurrent"] == (
             "{{ gitlab_image_builder_runner_concurrent | int }}"
         )
+        assert values["strategy"]["rollingUpdate"] == {
+            "maxSurge": 0,
+            "maxUnavailable": 1,
+        }
         assert values["runners"]["tags"] == "image-build"
         assert values["runners"]["runUntagged"] is False
         assert values["runners"]["cache"]["secretName"] == (
@@ -1046,7 +1050,17 @@ class TestChart10ValuesStructure:
         )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
         assert quota["limits.cpu"] == "16"
         assert quota["limits.memory"] == "32Gi"
+        assert quota["requests.ephemeral-storage"] == "128Gi"
+        assert quota["limits.ephemeral-storage"] == "176Gi"
         assert quota["persistentvolumeclaims"] == "0"
+        container_limit = next(
+            task for task in tasks
+            if task.get("name")
+            == "Image builder | Bound each container (RUNNERS-DYN pool defaults)"
+        )["kubernetes.core.k8s"]["definition"]["spec"]["limits"][0]
+        assert container_limit["defaultRequest"]["ephemeral-storage"] == "1Gi"
+        assert container_limit["default"]["ephemeral-storage"] == "4Gi"
+        assert container_limit["max"]["ephemeral-storage"] == "80Gi"
 
         network = read(IMAGE_BUILDER_NETWORK_PATH)
         assert (
@@ -1326,6 +1340,8 @@ class TestChart10ValuesStructure:
         )["kubernetes.core.k8s"]["definition"]["spec"]["hard"]
         assert quota["limits.cpu"] == "16"
         assert quota["limits.memory"] == "32Gi"
+        assert quota["requests.ephemeral-storage"] == "48Gi"
+        assert quota["limits.ephemeral-storage"] == "128Gi"
         assert quota["persistentvolumeclaims"] == "0"
         assert (
             "Establish the fail-closed network boundary" in runner

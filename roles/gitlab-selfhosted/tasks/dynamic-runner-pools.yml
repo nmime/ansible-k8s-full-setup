@@ -206,8 +206,10 @@
           requests.memory: 12Gi
           limits.cpu: '16'
           limits.memory: 32Gi
-          requests.ephemeral-storage: 64Gi
-          limits.ephemeral-storage: 96Gi
+          # Keep execution serialized while allowing one terminating job pod
+          # to overlap its replacement in ResourceQuota accounting.
+          requests.ephemeral-storage: 128Gi
+          limits.ephemeral-storage: 176Gi
           services: '6'
           secrets: '24'
           configmaps: '16'
@@ -225,9 +227,9 @@
       spec:
         limits:
           - type: Container
-            defaultRequest: {cpu: 250m, memory: 256Mi}
-            default: {cpu: '2', memory: 4Gi}
-            max: {cpu: '4', memory: 8Gi}
+            defaultRequest: {cpu: 250m, memory: 256Mi, ephemeral-storage: 1Gi}
+            default: {cpu: '2', memory: 4Gi, ephemeral-storage: 4Gi}
+            max: {cpu: '4', memory: 8Gi, ephemeral-storage: 80Gi}
 
 - name: RUNNERS-DYN | ResourceQuota for docker-host pool
   kubernetes.core.k8s:
@@ -245,8 +247,10 @@
           requests.memory: 16Gi
           limits.cpu: '16'
           limits.memory: 32Gi
+          # Keep execution serialized while allowing one terminating job pod
+          # to overlap its replacement in ResourceQuota accounting.
           requests.ephemeral-storage: 48Gi
-          limits.ephemeral-storage: 96Gi
+          limits.ephemeral-storage: 128Gi
           services: '6'
           secrets: '24'
           configmaps: '16'

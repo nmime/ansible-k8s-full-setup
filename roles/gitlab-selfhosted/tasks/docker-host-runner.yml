@@ -85,8 +85,10 @@
           requests.memory: 16Gi
           limits.cpu: '16'
           limits.memory: 32Gi
+          # The 128 GiB limit budget covers the manager plus a terminating
+          # 60 GiB job pod and its replacement during quota accounting.
           requests.ephemeral-storage: 48Gi
-          limits.ephemeral-storage: 96Gi
+          limits.ephemeral-storage: 128Gi
           pods: '12'
           services: '6'
           secrets: '24'
